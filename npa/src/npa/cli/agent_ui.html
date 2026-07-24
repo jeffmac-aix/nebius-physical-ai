@@ -3655,7 +3655,8 @@
           mountLichtblickIframe(currentLichtblickSimViz);
           return;
         }
-        const rid = String(activeRunId || "").trim();
+        const pick = (id) => { const el = document.getElementById(id); return el ? String(el.value || "").trim() : ""; };
+        const rid = String(activeRunId || "").trim() || pick("runIdSelect") || pick("runIdInput");
         if (!rid) {
           mountLichtblickIframe(currentLichtblickSimViz || {});
           setStatus("Select a run to view its MCAP in Lichtblick.");
@@ -3712,6 +3713,14 @@
         const previewUrl = String((simViz && simViz.artifact_preview_url) || "");
         const downloadUrl = String((simViz && simViz.artifact_download_url) || previewUrl || "");
         const safeRender = String(render || "");
+        if (safeRender === "mcap" || safeRender === "lichtblick") {
+          // MCAP renders in the embedded Lichtblick pane, not the media/host preview;
+          // handle it here too so refresh()/status re-applies keep the Lichtblick view.
+          hideArtifactPreview();
+          setRenderMode("lichtblick");
+          mountLichtblickIframe(simViz);
+          return;
+        }
         if (safeRender === "video") setRenderMode("video");
         else if (safeRender === "image") setRenderMode("image");
         else if (safeRender === "json" || safeRender === "text" || safeRender === "download") setRenderMode("data");
