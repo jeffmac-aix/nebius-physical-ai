@@ -27,6 +27,7 @@ subprocess are imported lazily so unit tests can exercise it with injected fakes
 
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import tempfile
@@ -646,7 +647,7 @@ def build_rerun_rrd_from_mcap(
         try:
             disconnect(recording=recording)
         except Exception:  # noqa: BLE001 - best-effort flush
-            pass
+            logging.getLogger(__name__).debug("rerun disconnect failed", exc_info=True)
 
     total = sum(counts.values())
     if total == 0:
