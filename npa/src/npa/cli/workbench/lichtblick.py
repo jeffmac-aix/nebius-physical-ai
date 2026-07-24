@@ -15,6 +15,7 @@ from npa.workbench.lichtblick import (
     DEFAULT_HOST,
     DEFAULT_PORT,
     LichtblickError,
+    convert_mcap_to_rerun,
     serve_viewer,
 )
 
@@ -122,6 +123,54 @@ def launch_cmd(
         image=image,
         output=output,
     )
+
+
+@app.command("to-rerun")
+def to_rerun_cmd(
+    input_path: str = typer.Option(..., "--input-path", "-i", help="S3/local MCAP artifact to decode."),
+    output_path: str = typer.Option(
+        "",
+        "--output-path",
+        "-o",
+        help="Local .rrd path to write (default: ./<name>.rrd next to the CWD).",
+    ),
+    execute: bool = typer.Option(
+        False,
+        "--execute/--plan",
+        help="Actually stage the MCAP and write the .rrd (default: print the plan only).",
+    ),
+    output: OutputFormat = typer.Option(OutputFormat.text, "--output", help="Output format."),
+) -> None:
+    """Decode an MCAP into a native Rerun ``.rrd`` so Rerun renders it.
+
+    Rerun's built-in MCAP loader keeps our JSON/foxglove messages as raw blobs, so
+    this maps the well-known schemas to Rerun archetypes (``foxglove.CompressedImage``
+    -> image, ``foxglove.Log`` -> text log, numeric JSON -> scalar time-series).
+    Open the result with ``rerun <name>.rrd`` or ``npa workbench sim2real rerun serve``.
+    """
+
+    from pathlib import PurePosixPath
+
+    name = PurePosixPath(input_path.split("://", 1)[-1]).stem or "recording"
+    rrd_path = output_path.strip() or f"{name}.rrd"
+    if not execute:
+        _emit(
+            {
+                "status": "planned",
+                "input_path": input_path.strip(),
+                "output_rrd_path": rrd_path,
+                "action": "decode foxglove/JSON MCAP -> native Rerun .rrd (images/logs/scalars)",
+                "note": "re-run with --execute to write the .rrd",
+            },
+            output,
+        )
+        return
+    try:
+        summary = convert_mcap_to_rerun(input_path, rrd_path)
+    except LichtblickError as exc:
+        _fail(str(exc))
+        return
+    _emit({"status": "written", **summary}, output)
 
 
 @app.command("status")

@@ -536,6 +536,164 @@ def _default_docker_runner(argv: list[str]) -> Any:
     return subprocess.run(argv, check=True, text=True, capture_output=True)
 
 
+# --------------------------------------------------------------------------- #
+# MCAP -> Rerun: decode foxglove/JSON messages into native Rerun archetypes
+# --------------------------------------------------------------------------- #
+_MCAP_RERUN_TIMELINE = "mcap_time"
+
+
+def _import_rerun_sdk() -> Any:
+    try:
+        import rerun as rr
+    except ImportError as exc:  # pragma: no cover - exercised via injected fake
+        raise LichtblickError(
+            "rerun-sdk is not installed; cannot convert MCAP to a Rerun .rrd "
+            "(install the 'viz' extra: pip install 'npa[viz]')."
+        ) from exc
+    return rr
+
+
+def _rr_set_time(rr: Any, recording: Any, seconds: float) -> None:
+    for attempt in (
+        lambda: rr.set_time(_MCAP_RERUN_TIMELINE, timestamp=seconds, recording=recording),
+        lambda: rr.set_time_seconds(_MCAP_RERUN_TIMELINE, seconds, recording=recording),
+        lambda: rr.set_time(_MCAP_RERUN_TIMELINE, duration=seconds, recording=recording),
+    ):
+        try:
+            attempt()
+            return
+        except Exception:  # noqa: BLE001 - try the next SDK-version signature
+            continue
+
+
+def _rr_scalar(rr: Any, value: float) -> Any:
+    if hasattr(rr, "Scalars"):
+        return rr.Scalars(value)
+    return rr.Scalar(value)
+
+
+def build_rerun_rrd_from_mcap(
+    mcap_path: str,
+    output_rrd: str,
+    *,
+    rr: Any | None = None,
+    application_id: str = "npa_mcap_to_rerun",
+) -> dict[str, Any]:
+    """Decode a foxglove/JSON MCAP into a native Rerun ``.rrd`` recording.
+
+    Rerun's built-in MCAP loader keeps JSON-encoded foxglove messages as raw blobs
+    (its decoders target ROS2/protobuf), so it opens the file but does not render
+    our camera/critique/signal streams. This converter maps our well-known schemas
+    to native Rerun archetypes so the same MCAP renders with full fidelity:
+
+    - ``foxglove.CompressedImage`` -> ``rr.EncodedImage`` (Spatial2D image panel),
+    - ``foxglove.Log`` -> ``rr.TextLog`` (text-log panel),
+    - any JSON message with a numeric ``value`` -> ``rr.Scalars`` (time-series),
+    - anything else -> ``rr.TextDocument`` (raw JSON), so nothing is dropped.
+
+    ``rr`` may be injected for testing. Returns a summary dict.
+    """
+
+    import base64
+    import json as _json
+
+    if not str(mcap_path).strip():
+        raise LichtblickError("mcap_path is required.")
+    if not str(output_rrd).lower().endswith(".rrd"):
+        raise LichtblickError(f"output path must end in .rrd, got: {output_rrd}")
+
+    from mcap.reader import make_reader
+
+    rr = rr or _import_rerun_sdk()
+    os.makedirs(os.path.dirname(os.path.abspath(output_rrd)) or ".", exist_ok=True)
+
+    recording = rr.RecordingStream(application_id) if hasattr(rr, "RecordingStream") else None
+    rr.save(output_rrd, recording=recording)
+
+    counts = {"images": 0, "scalars": 0, "logs": 0, "other": 0}
+    with open(mcap_path, "rb") as handle:
+        reader = make_reader(handle)
+        for schema, channel, message in reader.iter_messages():
+            topic = (channel.topic or "mcap").strip("/") or "mcap"
+            schema_name = (schema.name if schema is not None else "") or ""
+            _rr_set_time(rr, recording, message.log_time / 1_000_000_000)
+            try:
+                payload = _json.loads(message.data)
+            except (ValueError, TypeError):
+                continue
+            if schema_name == "foxglove.CompressedImage":
+                raw = base64.b64decode(str(payload.get("data", "")) or "")
+                fmt = str(payload.get("format", "png")).lower()
+                media_type = "image/jpeg" if fmt in ("jpeg", "jpg") else "image/png"
+                rr.log(topic, rr.EncodedImage(contents=raw, media_type=media_type), recording=recording)
+                counts["images"] += 1
+            elif schema_name == "foxglove.Log":
+                rr.log(topic, rr.TextLog(str(payload.get("message", ""))), recording=recording)
+                counts["logs"] += 1
+            elif isinstance(payload, dict) and isinstance(payload.get("value"), (int, float)):
+                rr.log(topic, _rr_scalar(rr, float(payload["value"])), recording=recording)
+                counts["scalars"] += 1
+            else:
+                rr.log(
+                    topic,
+                    rr.TextDocument(_json.dumps(payload)[:4000]),
+                    recording=recording,
+                )
+                counts["other"] += 1
+
+    disconnect = getattr(rr, "disconnect", None)
+    if callable(disconnect):
+        try:
+            disconnect(recording=recording)
+        except Exception:  # noqa: BLE001 - best-effort flush
+            pass
+
+    total = sum(counts.values())
+    if total == 0:
+        raise LichtblickError(f"no decodable messages found in MCAP: {mcap_path}")
+    return {
+        "output_rrd_path": output_rrd,
+        "message_count": total,
+        "image_count": counts["images"],
+        "scalar_count": counts["scalars"],
+        "log_count": counts["logs"],
+        "other_count": counts["other"],
+    }
+
+
+def convert_mcap_to_rerun(
+    input_path: str,
+    output_rrd: str,
+    *,
+    workdir: str = "",
+    s3_client: Any | None = None,
+    rr: Any | None = None,
+) -> dict[str, Any]:
+    """Stage an MCAP (S3 or local) and decode it into a native Rerun ``.rrd``.
+
+    Downloads ``input_path`` from S3 when needed (via npa-managed credentials),
+    then calls :func:`build_rerun_rrd_from_mcap`. Returns the converter summary.
+    """
+
+    value = (input_path or "").strip()
+    if not value:
+        raise LichtblickError("--input-path is required.")
+    if value.startswith("s3://"):
+        work = workdir or tempfile.mkdtemp(prefix="npa-mcap2rrd-")
+        os.makedirs(work, exist_ok=True)
+        client = s3_client or _default_s3_client()
+        bucket, key = _split_s3(value)
+        local_mcap = os.path.join(work, PurePosixPath(key).name or "input.mcap")
+        client.download_file(bucket, key, local_mcap)
+    else:
+        if not os.path.isfile(value):
+            raise LichtblickError(f"local MCAP not found: {value}")
+        local_mcap = value
+    summary = build_rerun_rrd_from_mcap(local_mcap, output_rrd, rr=rr)
+    summary["input_path"] = value
+    return summary
+
+
 __all__ = [
     "CONTAINER_PORT",
     "CONVERTIBLE_IMAGE_SUFFIXES",
@@ -550,7 +708,9 @@ __all__ = [
     "SUPPORTED_SUFFIXES",
     "build_launch_plan",
     "build_mcap_from_frames",
+    "build_rerun_rrd_from_mcap",
     "compressed_image_message",
+    "convert_mcap_to_rerun",
     "encode_frame_to_compressed_bytes",
     "launch_viewer",
     "serve_viewer",

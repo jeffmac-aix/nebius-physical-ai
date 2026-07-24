@@ -34,6 +34,13 @@ npa workbench lichtblick serve \
 npa workbench lichtblick launch  # alias for serve
 npa workbench lichtblick status
 npa workbench lichtblick list
+
+# Decode an MCAP into a native Rerun .rrd so Rerun renders it too (Rerun's built-in
+# MCAP loader keeps foxglove/JSON messages as raw blobs; this maps the well-known
+# schemas to archetypes). Open the result with `rerun x.rrd` or `sim2real rerun serve`.
+npa workbench lichtblick to-rerun \
+  --input-path s3://bucket/sim2real-b/<run-id>/reports/sim2real.mcap \
+  --output-path <run-id>.rrd --execute
 ```
 
 SDK: `npa.sdk.workbench.lichtblick` (`serve`, `launch`, `status`, `list`).
@@ -67,6 +74,14 @@ pipeline):
 - **Staging + launch** (`--execute`): `serve_viewer` stages the artifact from S3
   (`stage_input_to_mcap`) and runs the `npa-lichtblick` container so the log is
   live at the returned URL. Without `--execute` it prints the plan (infra-free).
+- **MCAP → Rerun** (`to-rerun` / `build_rerun_rrd_from_mcap`): Rerun *can* open an
+  MCAP (`rerun mcap convert`), but its decoders target ROS2/protobuf, so our
+  JSON/foxglove messages land as raw `McapMessage:data` blobs (topics + timeline,
+  no image/scalar/log panels). `build_rerun_rrd_from_mcap` decodes the well-known
+  schemas into native archetypes — `foxglove.CompressedImage` → `rr.EncodedImage`,
+  `foxglove.Log` → `rr.TextLog`, numeric JSON (`value`) → `rr.Scalars` — so the
+  same MCAP renders with full fidelity in Rerun. Complements the natively-emitted
+  `reports/sim2real.rrd`; useful for any MCAP (incl. real-robot logs) → Rerun.
 
 ## Deploy / launch contract
 

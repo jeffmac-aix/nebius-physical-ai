@@ -8,10 +8,14 @@ serve = make_cli_wrapper("npa.cli.workbench.lichtblick", "serve_cmd", "Plan a Li
 launch = make_cli_wrapper("npa.cli.workbench.lichtblick", "launch_cmd", "Launch a Lichtblick viewer.")
 status = make_cli_wrapper("npa.cli.workbench.lichtblick", "status_cmd", "Show Lichtblick status.")
 list = make_cli_wrapper("npa.cli.workbench.lichtblick", "list_cmd", "List Lichtblick formats.")
+to_rerun = make_cli_wrapper(
+    "npa.cli.workbench.lichtblick", "to_rerun_cmd", "Decode an MCAP into a native Rerun .rrd."
+)
 
 __all__ = [
     "launch",
     "list",
     "serve",
     "status",
+    "to_rerun",
 ]

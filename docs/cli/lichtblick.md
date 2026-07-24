@@ -12,6 +12,7 @@ Options
 Commands
 serve  Serve a robotics log in Lichtblick, staged from S3.
 launch  Alias for ``serve``: stage and view a robotics log in Lichtblick.
+to-rerun  Decode an MCAP into a native Rerun ``.rrd`` so Rerun renders it.
 status  Show Lichtblick tool status.
 list  List artifact formats the Lichtblick viewer can open.
 ```
@@ -28,6 +29,7 @@ list  List artifact formats the Lichtblick viewer can open.
 | --- | --- |
 | `serve` | Serve a robotics log in Lichtblick, staged from S3. |
 | `launch` | Alias for ``serve``: stage and view a robotics log in Lichtblick. |
+| `to-rerun` | Decode an MCAP into a native Rerun ``.rrd`` so Rerun renders it. |
 | `status` | Show Lichtblick tool status. |
 | `list` | List artifact formats the Lichtblick viewer can open. |
 

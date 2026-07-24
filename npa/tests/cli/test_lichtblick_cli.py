@@ -223,6 +223,124 @@ def test_build_mcap_from_frames_rejects_empty(tmp_path: Path) -> None:
         build_mcap_from_frames([], str(tmp_path / "x.mcap"))
 
 
+def _write_multi_schema_mcap(path: str) -> None:
+    """A tiny MCAP with the three schemas the sim2real MCAP emits."""
+    import base64
+
+    from mcap.writer import CompressionType, Writer
+
+    with open(path, "wb") as handle:
+        writer = Writer(handle, compression=CompressionType.NONE)
+        writer.start(profile="", library="test")
+        cam_schema = writer.register_schema("foxglove.CompressedImage", "jsonschema", b"{}")
+        cam_ch = writer.register_channel("/rollouts/camera", "json", cam_schema)
+        writer.add_message(
+            cam_ch, log_time=0, publish_time=0,
+            data=json.dumps({"data": base64.b64encode(_PNG + b"x").decode(), "format": "png"}).encode(),
+        )
+        log_schema = writer.register_schema("foxglove.Log", "jsonschema", b"{}")
+        log_ch = writer.register_channel("/rollouts/critique", "json", log_schema)
+        writer.add_message(
+            log_ch, log_time=100, publish_time=100,
+            data=json.dumps({"message": "drifted off target"}).encode(),
+        )
+        sc_schema = writer.register_schema("npa.sim2real.Scalar", "jsonschema", b"{}")
+        sc_ch = writer.register_channel("/signal/reward", "json", sc_schema)
+        writer.add_message(
+            sc_ch, log_time=200, publish_time=200, data=json.dumps({"value": 0.42}).encode(),
+        )
+        writer.finish()
+
+
+class _FakeRerunSink:
+    """In-memory Rerun stand-in so the MCAP->Rerun decoder tests need no rerun-sdk."""
+
+    def __init__(self) -> None:
+        self.logged: list[tuple[str, str]] = []
+
+    def RecordingStream(self, application_id):  # noqa: N802
+        return object()
+
+    def save(self, path, recording=None):
+        with open(path, "wb") as handle:
+            handle.write(b"RRF2-fake")
+
+    def set_time(self, *args, **kwargs):
+        return None
+
+    def EncodedImage(self, contents=None, media_type=None):  # noqa: N802
+        return {"kind": "encoded_image", "media_type": media_type, "bytes": len(contents or b"")}
+
+    def TextLog(self, text, **kwargs):  # noqa: N802
+        return {"kind": "text_log", "text": text}
+
+    def Scalars(self, value):  # noqa: N802
+        return {"kind": "scalars", "value": value}
+
+    def TextDocument(self, text, **kwargs):  # noqa: N802
+        return {"kind": "text", "text": text}
+
+    def log(self, entity, archetype, recording=None):
+        self.logged.append((entity, archetype.get("kind", "?")))
+
+    def disconnect(self, recording=None):
+        return None
+
+
+def test_build_rerun_rrd_from_mcap_decodes_schemas(tmp_path: Path) -> None:
+    """The MCAP->Rerun converter maps foxglove/JSON schemas to native archetypes."""
+    pytest.importorskip("mcap")
+    from npa.workbench.lichtblick import build_rerun_rrd_from_mcap
+
+    mcap_path = tmp_path / "multi.mcap"
+    _write_multi_schema_mcap(str(mcap_path))
+    out_rrd = tmp_path / "out.rrd"
+    fake = _FakeRerunSink()
+    summary = build_rerun_rrd_from_mcap(str(mcap_path), str(out_rrd), rr=fake)
+
+    assert summary["image_count"] == 1
+    assert summary["log_count"] == 1
+    assert summary["scalar_count"] == 1
+    assert summary["message_count"] == 3
+    assert out_rrd.is_file() and out_rrd.stat().st_size > 0
+    kinds = {kind for _entity, kind in fake.logged}
+    assert {"encoded_image", "text_log", "scalars"} <= kinds
+    # Camera decodes to an image entity, signal to a scalar entity.
+    entities = {entity: kind for entity, kind in fake.logged}
+    assert entities.get("rollouts/camera") == "encoded_image"
+    assert entities.get("signal/reward") == "scalars"
+
+
+def test_build_rerun_rrd_from_mcap_rejects_bad_output(tmp_path: Path) -> None:
+    pytest.importorskip("mcap")
+    from npa.workbench.lichtblick import build_rerun_rrd_from_mcap
+
+    mcap_path = tmp_path / "m.mcap"
+    _write_multi_schema_mcap(str(mcap_path))
+    with pytest.raises(LichtblickError):
+        build_rerun_rrd_from_mcap(str(mcap_path), str(tmp_path / "out.bin"), rr=_FakeRerunSink())
+
+
+def test_cli_to_rerun_plan() -> None:
+    result = runner.invoke(
+        app,
+        [
+            "workbench",
+            "lichtblick",
+            "to-rerun",
+            "--input-path",
+            "s3://bucket/run/reports/sim2real.mcap",
+            "--output",
+            "json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["status"] == "planned"
+    assert payload["output_rrd_path"].endswith(".rrd")
+    assert "sim2real" in payload["output_rrd_path"]
+
+
 def test_build_mcap_transcodes_ppm_rollout_frames(tmp_path: Path) -> None:
     """Sim2Real rollout raw ``.ppm`` frames are transcoded to PNG, not skipped."""
 
