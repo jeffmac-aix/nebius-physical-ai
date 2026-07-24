@@ -42,7 +42,12 @@ except Exception:  # pragma: no cover - embedded backend fallback
 _RERUN_EXTENSIONS = {".rrd"}
 _MCAP_EXTENSIONS = {".mcap"}
 _VIDEO_EXTENSIONS = {".mp4", ".webm", ".mov"}
-_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+# Browser-native image types (served as-is).
+_BROWSER_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+# PIL-readable image types browsers cannot decode (e.g. sim2real rollout .ppm dumps);
+# the agent transcodes these to PNG on serve, so they still render as images.
+_TRANSCODE_IMAGE_EXTENSIONS = {".ppm", ".pgm", ".pnm", ".bmp", ".tif", ".tiff"}
+_IMAGE_EXTENSIONS = _BROWSER_IMAGE_EXTENSIONS | _TRANSCODE_IMAGE_EXTENSIONS
 _JSON_EXTENSIONS = {".json"}
 _TEXT_EXTENSIONS = {".txt", ".log", ".csv", ".yaml", ".yml", ".md"}
 _RENDER_ORDER = {
@@ -201,6 +206,13 @@ def artifact_media_type(filename: str) -> str:
         ".jpeg": "image/jpeg",
         ".gif": "image/gif",
         ".webp": "image/webp",
+        # PIL-only image types are transcoded to PNG by the agent before serving.
+        ".ppm": "image/png",
+        ".pgm": "image/png",
+        ".pnm": "image/png",
+        ".bmp": "image/png",
+        ".tif": "image/png",
+        ".tiff": "image/png",
         ".json": "application/json",
         ".txt": "text/plain; charset=utf-8",
         ".log": "text/plain; charset=utf-8",

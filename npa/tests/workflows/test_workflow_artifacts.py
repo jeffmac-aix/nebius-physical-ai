@@ -159,6 +159,17 @@ def test_render_hint_maps_mcap_to_lichtblick_render() -> None:
     assert is_inline_render("mcap") is True
 
 
+def test_render_hint_and_media_type_handle_ppm_as_image() -> None:
+    # .ppm (sim2real rollout camera dumps) are classified as images and transcoded to
+    # PNG on serve (browsers cannot decode PPM), so they render in the Image pane.
+    from npa.workflows.artifacts import artifact_media_type
+
+    for key in ("run/rollout/camera-000.ppm", "run/x.pgm", "run/y.bmp", "run/z.tiff"):
+        assert render_hint_for_object(key=key) == "image"
+    assert artifact_media_type("camera-000.ppm") == "image/png"
+    assert artifact_media_type("x.bmp") == "image/png"
+
+
 def test_artifact_media_type_prefers_explicit_browser_types() -> None:
     assert artifact_media_type("demo.mp4") == "video/mp4"
     assert artifact_media_type("demo.webm") == "video/webm"

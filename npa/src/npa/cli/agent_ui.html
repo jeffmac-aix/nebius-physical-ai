@@ -1372,6 +1372,7 @@
                   <select id="artifactTypeFilter">
                     <option value="">All types</option>
                     <option value="rerun">Rerun .rrd</option>
+                    <option value="mcap">MCAP (Lichtblick)</option>
                     <option value="video">Video .mp4/.webm/.mov</option>
                     <option value="json">JSON</option>
                     <option value="text">Text/logs</option>
@@ -1840,7 +1841,13 @@
         }
         document.querySelectorAll(".render-mode-tab[data-render-mode]").forEach((btn) => {
           btn.addEventListener("click", () => {
-            setRenderMode(String(btn.getAttribute("data-render-mode") || "rerun"));
+            const mode = String(btn.getAttribute("data-render-mode") || "rerun");
+            setRenderMode(mode);
+            // Clicking the Lichtblick tab should load the active run's MCAP, not just
+            // reveal an empty viewer (the .mcap is 1-of-many artifacts, easy to miss).
+            if (mode === "lichtblick") {
+              ensureLichtblickForActiveRun().catch((err) => console.warn("lichtblick autoload failed", err));
+            }
           });
         });
         setRenderMode("rerun");
@@ -3640,20 +3647,50 @@
         lichtblickIframeLoaded = true;
         if (placeholder) placeholder.hidden = ready;
       }
-      function openLichtblickTab() {
+      async function ensureLichtblickForActiveRun() {
+        // Load the active run's reports/sim2real.mcap into the embed. The .mcap is one
+        // of many artifacts (easy to miss in the list), so the Lichtblick tab/reload
+        // finds and loads it directly instead of showing an empty viewer.
+        if (currentLichtblickSimViz && currentLichtblickSimViz.lichtblick_ready) {
+          mountLichtblickIframe(currentLichtblickSimViz);
+          return;
+        }
+        const rid = String(activeRunId || "").trim();
+        if (!rid) {
+          mountLichtblickIframe(currentLichtblickSimViz || {});
+          setStatus("Select a run to view its MCAP in Lichtblick.");
+          return;
+        }
+        setStatus("Loading MCAP for " + rid + "…");
+        let data = null;
+        try {
+          data = await loadJson("/api/artifacts/run/" + encodeURIComponent(rid));
+        } catch (err) {
+          mountLichtblickIframe(currentLichtblickSimViz || {});
+          setStatus("Could not list artifacts for " + rid);
+          return;
+        }
+        const arts = (data && data.artifacts) || [];
+        const mcap =
+          arts.find((a) => String(a && a.render) === "mcap") ||
+          arts.find((a) => String((a && a.key) || "").toLowerCase().endsWith(".mcap"));
+        if (mcap && mcap.key) {
+          await loadArtifact({ run_id: rid, key: String(mcap.key), s3_uri: String(mcap.s3_uri || "") });
+        } else {
+          mountLichtblickIframe(currentLichtblickSimViz || {});
+          setStatus("No sim2real.mcap artifact for " + rid + " (run the pipeline with NPA_SIM2REAL_MCAP on).");
+        }
+      }
+      async function openLichtblickTab() {
         setRenderMode("lichtblick");
+        await ensureLichtblickForActiveRun();
         const url = lichtblickIframeUrlFor(currentLichtblickSimViz || {});
-        if (url) window.open(url, "_blank", "noopener");
+        if (url && url !== "/lichtblick/") window.open(url, "_blank", "noopener");
         return false;
       }
       async function reloadLichtblickViewer() {
         setRenderMode("lichtblick");
-        const iframe = document.getElementById("lichtblickFrame");
-        if (iframe) {
-          lichtblickIframeLoaded = false;
-          iframe.setAttribute("src", "about:blank");
-        }
-        mountLichtblickIframe(currentLichtblickSimViz || {});
+        await ensureLichtblickForActiveRun();
         setStatus("Reloaded Lichtblick data");
       }
       async function authenticatedPreviewObjectUrl(previewUrl, host) {

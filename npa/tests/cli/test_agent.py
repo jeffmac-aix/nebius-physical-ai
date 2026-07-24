@@ -392,6 +392,25 @@ def test_bootstrap_ui_embeds_lichtblick_render_mode() -> None:
     assert "View in Lichtblick" in source
 
 
+def test_bootstrap_ui_lichtblick_autoloads_run_mcap() -> None:
+    # Clicking the Lichtblick tab / reload finds and loads the run's .mcap directly,
+    # and the artifact type filter exposes an 'mcap' option so it is discoverable.
+    source = _agent_ui_bundle()
+    assert "function ensureLichtblickForActiveRun" in source
+    assert '<option value="mcap">' in source
+    assert 'ensureLichtblickForActiveRun()' in source
+
+
+def test_bootstrap_artifact_file_transcodes_ppm_to_png() -> None:
+    from npa.cli import agent as agent_module
+
+    source = Path(agent_module.__file__).read_text(encoding="utf-8")
+    # .ppm/.bmp/.tiff are transcoded to PNG on serve so the browser can render them.
+    assert 'target.suffix.lower() in {{".ppm", ".pgm", ".pnm", ".bmp", ".tif", ".tiff"}}' in source
+    assert "encode_frame_to_compressed_bytes(str(target))" in source
+    assert 'media_type="image/png"' in source
+
+
 def test_franka_rerun_fallback_keeps_3d_outside_pinhole_projection() -> None:
     from npa.cli import agent as agent_module
 

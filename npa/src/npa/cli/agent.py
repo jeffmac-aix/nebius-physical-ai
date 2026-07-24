@@ -5442,6 +5442,18 @@ def artifact_file(filename: str):
     target = RECORDINGS_DIR / safe_name
     if not target.is_file():
         raise HTTPException(status_code=404, detail=f"artifact file not found: {{filename}}")
+    # Browsers cannot decode .ppm/.pgm/.bmp/.tiff (e.g. sim2real rollout camera dumps);
+    # transcode to PNG on the fly so the Image pane renders them instead of showing nothing.
+    if target.suffix.lower() in {{".ppm", ".pgm", ".pnm", ".bmp", ".tif", ".tiff"}}:
+        try:
+            from fastapi.responses import Response as _Response
+
+            from npa.workbench.lichtblick import encode_frame_to_compressed_bytes
+
+            png_bytes, _fmt = encode_frame_to_compressed_bytes(str(target))
+            return _Response(content=png_bytes, media_type="image/png")
+        except Exception:  # noqa: BLE001 - fall back to raw bytes if transcode fails
+            return FileResponse(str(target), media_type=artifact_media_type(safe_name))
     # artifact_media_type comes from the embedded workflows/artifacts.py module.
     return FileResponse(str(target), media_type=artifact_media_type(safe_name))
 
