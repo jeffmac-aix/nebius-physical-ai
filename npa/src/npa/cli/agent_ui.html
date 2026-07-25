@@ -5234,9 +5234,14 @@
                   lb.setAttribute("src", "/lichtblick/");
                 }
                 await warmPromise;
-                await ensureFrankaRerunLoaded();
+                const mountMode = await ensureFrankaRerunLoaded();
                 const iframe = document.getElementById("rerunFrame");
-                if (!safeHideRerunBundleCover(iframe)) {
+                if (mountMode === "media" || mountMode === "pending-run") {
+                  // Active artifact is non-Rerun (mcap/video/image) or the run recording
+                  // isn't ready — there is no Rerun canvas to wait for, so clear the cover
+                  // instead of stalling on it for 45s.
+                  hideRerunBundleCover();
+                } else if (!safeHideRerunBundleCover(iframe)) {
                   showRerunBundleCover("Opening viewer…", "Almost ready…");
                   scheduleRerunBundleUncover(iframe).catch(() => {
                     safeHideRerunBundleCover(iframe, { force: true });
