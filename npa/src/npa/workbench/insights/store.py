@@ -247,6 +247,12 @@ def _extract(
     if schema_id == DATASET_VALIDATION_SCHEMA:
         return (*_extract_validation_report(payload, source_uri, workflow, workflow_run), schema_id)
     if schema_id == SCENARIO_ADVERSARIAL_SCHEMA:
+        # The set manifest carries the ``scenarios`` list; per-scenario config
+        # files reuse the same schema tag but describe a single scenario. Only
+        # ingest the aggregate manifest so per-scenario configs are not counted
+        # as zero-metric records.
+        if not isinstance(payload.get("scenarios"), list):
+            return [], [], None
         return (*_extract_adversarial_set(payload, source_uri, workflow, workflow_run), schema_id)
     if "decision" in payload and not schema_id:
         return (*_extract_decision(payload, source_uri, workflow, workflow_run), "decision")

@@ -195,6 +195,38 @@ def test_ingest_run_extracts_metrics_and_lineage(tmp_path: Path) -> None:
     assert (manifest_uri, str(tmp_path / "run" / "validation" / "validation_report.json"), "evaluated_on") in relations
 
 
+def test_ingest_run_skips_per_scenario_config_files(tmp_path: Path) -> None:
+    run = tmp_path / "run"
+    (run / "adversarial" / "scenarios").mkdir(parents=True)
+    # Aggregate set manifest (has a scenarios list).
+    (run / "adversarial" / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema": "npa.scenario_gen.adversarial_set.v1",
+                "run_id": "gpu-run",
+                "scenario_count": 2,
+                "lineage": {"workflow_run": "gpu-run", "policy_uri": "s3://p/ckpt.pt", "base_config_uri": "s3://c/t.json"},
+                "scenarios": [
+                    {"scenario_id": "adv-0", "severity": 0.9, "diversity": 0.5},
+                    {"scenario_id": "adv-1", "severity": 0.6, "diversity": 0.4},
+                ],
+            }
+        )
+    )
+    # Per-scenario config files reuse the schema tag but have no scenarios list.
+    for index in range(2):
+        (run / "adversarial" / "scenarios" / f"adv-{index}.json").write_text(
+            json.dumps({"schema": "npa.scenario_gen.adversarial_set.v1", "run_id": "gpu-run", "scenario_id": f"adv-{index}", "perturbation": {}})
+        )
+    store = str(tmp_path / "store")
+    response = ingest_run(IngestRunRequest(input_uri=str(run), output_uri=store, workflow="wf"))
+    assert response.scanned == 3
+    # Only the aggregate manifest is ingested (4 metrics); the 2 configs skipped.
+    assert response.recorded_count == 4
+    scenario_counts = [r["value"] for r in read_records(store) if r["metric_name"] == "scenario_count"]
+    assert scenario_counts == [2.0]
+
+
 def test_ingest_run_empty_prefix_raises(tmp_path: Path) -> None:
     (tmp_path / "empty").mkdir()
     with pytest.raises(InsightsStoreError):
