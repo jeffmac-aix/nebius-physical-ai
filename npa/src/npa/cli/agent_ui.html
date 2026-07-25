@@ -3311,6 +3311,7 @@
       let mountedRerunRunKey = "";
       let lichtblickIframeLoaded = false;
       let currentLichtblickSimViz = null;
+      let rerunEnsureInFlight = null;
       let activeRunId = "";
       let activeArtifactRender = "";
       let lastRerunBlobStatus = "pending";
@@ -4697,7 +4698,16 @@
       }
       async function refresh() {
         try {
-          const session = await loadJson("/api/session");
+          const statusPath = activeRunId
+            ? "/api/sim-viz/status?run_id=" + encodeURIComponent(activeRunId)
+            : "/api/sim-viz/status";
+          // Fetch independent state in parallel to cut UI-load and per-action latency
+          // (was three sequential round-trips: session -> sim-assets -> sim-viz status).
+          const [session, assets, simViz] = await Promise.all([
+            loadJson("/api/session"),
+            loadJson("/api/sim-assets"),
+            loadJson(statusPath),
+          ]);
           if (session && session.llm) {
             const currentModel = String(
               (session.llm.model || session.llm.default_model || session.llm.default || "")
@@ -4716,11 +4726,6 @@
               setWorkflowYaml(draftYaml, session.workflow_draft.validation || {});
             }
           }
-          const assets = await loadJson("/api/sim-assets");
-          const statusPath = activeRunId
-            ? "/api/sim-viz/status?run_id=" + encodeURIComponent(activeRunId)
-            : "/api/sim-viz/status";
-          const simViz = await loadJson(statusPath);
           activeRunId = String((simViz && (simViz.active_run_id || simViz.run_id)) || activeRunId || "").trim();
           updateRunSelector(simViz);
           await loadRunDetails(activeRunId);
@@ -5142,6 +5147,17 @@
         }
       }
       async function ensureFrankaRerunLoaded() {
+        // Dedup concurrent callers (background boot mount + a Viewer-tab click) so the
+        // wasm viewer is never mounted twice.
+        if (rerunEnsureInFlight) return rerunEnsureInFlight;
+        rerunEnsureInFlight = _ensureFrankaRerunLoadedInner();
+        try {
+          return await rerunEnsureInFlight;
+        } finally {
+          rerunEnsureInFlight = null;
+        }
+      }
+      async function _ensureFrankaRerunLoadedInner() {
         const simViz = await loadJson("/api/sim-viz/status");
         const artifactRender = String((simViz && simViz.artifact_render) || "");
         const runId = String((simViz && (simViz.active_run_id || simViz.run_id)) || "").trim();
@@ -5202,24 +5218,43 @@
             setStatus("Ready");
             showToast("Mobile chat ready", "success");
           } else {
-            // Finish asset warm + session work first, then mount under the cover.
-            await Promise.all([refreshPromise, artifactsPromise, warmPromise]);
-            const mountMode = await ensureFrankaRerunLoaded();
-            const iframe = document.getElementById("rerunFrame");
-            if (!safeHideRerunBundleCover(iframe)) {
-              // Background uncover waits for non-blank canvas — never flash Rerun splash.
-              showRerunBundleCover("Opening viewer…", "Almost ready…");
-              scheduleRerunBundleUncover(iframe).catch(() => {
-                safeHideRerunBundleCover(iframe, { force: true });
-              });
-              window.setTimeout(() => {
-                if (!safeHideRerunBundleCover(iframe)) {
-                  hideRerunBundleCover();
-                }
-              }, 45000);
-            }
+            // UI is usable once session + refresh + artifact discovery finish. Do NOT
+            // block readiness on the heavy Rerun wasm warm+mount — run it in the
+            // background and clear the cover when its canvas is ready. This removes the
+            // wasm mount from the UI-load critical path (Chat/Lichtblick are instant).
+            await Promise.all([refreshPromise, artifactsPromise]);
             setStatus("Ready");
-            showToast(mountMode === "demo" ? "Franka demo ready in Rerun" : "Workbench ready", "success");
+            showToast("Workbench ready", "success");
+            (async () => {
+              try {
+                // Pre-warm the Lichtblick SPA bundle so opening it later only swaps the
+                // data source (no first-load app download). Best-effort; needs the sidecar.
+                const lb = document.getElementById("lichtblickFrame");
+                if (lb && (!lb.getAttribute("src") || lb.getAttribute("src") === "about:blank")) {
+                  lb.setAttribute("src", "/lichtblick/");
+                }
+                await warmPromise;
+                await ensureFrankaRerunLoaded();
+                const iframe = document.getElementById("rerunFrame");
+                if (!safeHideRerunBundleCover(iframe)) {
+                  showRerunBundleCover("Opening viewer…", "Almost ready…");
+                  scheduleRerunBundleUncover(iframe).catch(() => {
+                    safeHideRerunBundleCover(iframe, { force: true });
+                  });
+                  window.setTimeout(() => {
+                    if (!safeHideRerunBundleCover(iframe)) {
+                      hideRerunBundleCover();
+                    }
+                  }, 45000);
+                }
+              } catch (bgErr) {
+                console.warn("background rerun mount failed", bgErr);
+                const iframe = document.getElementById("rerunFrame");
+                if (!safeHideRerunBundleCover(iframe)) hideRerunBundleCover();
+              } finally {
+                rerunBootInProgress = false;
+              }
+            })();
           }
         } catch (err) {
           console.warn("franka auto-load failed", err);
