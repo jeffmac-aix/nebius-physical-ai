@@ -614,6 +614,11 @@ def build_isaac_job_manifest(
                 "spec": {
                     "restartPolicy": "Never",
                     "serviceAccountName": service_account,
+                    # The npa-isaac-lab image defaults to the non-root ``ubuntu``
+                    # user, but ``/isaac-sim`` (owned by ``isaac-sim``) is not
+                    # traversable by it, so ``/isaac-sim/python.sh`` resolves empty
+                    # and training exits 127. Isaac Sim runs fine as root.
+                    "securityContext": {"runAsUser": 0},
                     "imagePullSecrets": [
                         {"name": "agent-sa"},
                         {"name": "ngc-nvcr-imagepullsecret"},

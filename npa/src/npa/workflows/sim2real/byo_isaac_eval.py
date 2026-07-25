@@ -566,6 +566,10 @@ def build_isaac_eval_job_manifest(
                 "spec": {
                     "restartPolicy": "Never",
                     "serviceAccountName": service_account,
+                    # npa-isaac-lab defaults to non-root ``ubuntu``, which cannot
+                    # traverse ``/isaac-sim``; run as root so ``python.sh`` (and
+                    # the rendered held-out eval) works.
+                    "securityContext": {"runAsUser": 0},
                     "imagePullSecrets": [
                         {"name": "agent-sa"},
                         {"name": "ngc-nvcr-imagepullsecret"},

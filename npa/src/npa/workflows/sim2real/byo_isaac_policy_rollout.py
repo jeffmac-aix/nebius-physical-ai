@@ -390,6 +390,9 @@ def build_isaac_rollout_job_manifest(
                 "spec": {
                     "restartPolicy": "Never",
                     "serviceAccountName": service_account,
+                    # npa-isaac-lab defaults to non-root ``ubuntu`` which cannot
+                    # traverse ``/isaac-sim``; run as root so ``python.sh`` works.
+                    "securityContext": {"runAsUser": 0},
                     "imagePullSecrets": [
                         {"name": "agent-sa"},
                         {"name": "ngc-nvcr-imagepullsecret"},
