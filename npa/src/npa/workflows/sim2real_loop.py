@@ -2265,14 +2265,23 @@ def _run_kubernetes_image_component(
     job_name = _k8s_job_name(config.run_id, component)
     env = _ensure_sibling_source_env(config, env)
     # Refresh before each sibling Job: IAM registry tokens expire mid-pipeline.
+    # Best-effort: sibling Jobs already carry the run's imagePullSecrets (e.g.
+    # ``agent-sa``), so a mint failure (no ``nebius`` CLI / no ``NEBIUS_IAM_TOKEN``
+    # in-pod) must not crash the orchestrator — a genuinely stale secret surfaces
+    # as a sibling ImagePullBackOff rather than a hard orchestrator failure.
     from npa.workflows.sim2real.registry_auth import ensure_registry_pull_secret_for_images
 
-    ensure_registry_pull_secret_for_images(
-        image,
-        namespace=namespace,
-        kubeconfig=config.k8s_kubeconfig,
-        k8s_context=config.k8s_context,
-    )
+    try:
+        ensure_registry_pull_secret_for_images(
+            image,
+            namespace=namespace,
+            kubeconfig=config.k8s_kubeconfig,
+            k8s_context=config.k8s_context,
+        )
+    except RuntimeError as exc:
+        logging.getLogger(__name__).warning(
+            "sibling registry pull-secret refresh skipped for %s: %s", image, exc
+        )
     manifest = _component_job_manifest(
         image,
         component=component,
