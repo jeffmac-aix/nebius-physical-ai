@@ -5218,48 +5218,39 @@
             setStatus("Ready");
             showToast("Mobile chat ready", "success");
           } else {
-            // UI is usable once session + refresh + artifact discovery finish. Do NOT
-            // block readiness on the heavy Rerun wasm warm+mount — run it in the
-            // background and clear the cover when its canvas is ready. This removes the
-            // wasm mount from the UI-load critical path (Chat/Lichtblick are instant).
+            // UI is usable once session + refresh + artifact discovery finish, so mark
+            // Ready before the heavy Rerun wasm warm+mount (Chat/Lichtblick are usable
+            // immediately). The Rerun cover logic still runs synchronously below so its
+            // clear-when-canvas-ready behavior stays deterministic.
             await Promise.all([refreshPromise, artifactsPromise]);
             setStatus("Ready");
             showToast("Workbench ready", "success");
-            (async () => {
-              try {
-                // Pre-warm the Lichtblick SPA bundle so opening it later only swaps the
-                // data source (no first-load app download). Best-effort; needs the sidecar.
-                const lb = document.getElementById("lichtblickFrame");
-                if (lb && (!lb.getAttribute("src") || lb.getAttribute("src") === "about:blank")) {
-                  lb.setAttribute("src", "/lichtblick/");
-                }
-                await warmPromise;
-                const mountMode = await ensureFrankaRerunLoaded();
-                const iframe = document.getElementById("rerunFrame");
-                if (mountMode === "media" || mountMode === "pending-run") {
-                  // Active artifact is non-Rerun (mcap/video/image) or the run recording
-                  // isn't ready — there is no Rerun canvas to wait for, so clear the cover
-                  // instead of stalling on it for 45s.
+            // Pre-warm the Lichtblick SPA bundle so opening it later only swaps the data
+            // source (no first-load app download). Best-effort; needs the sidecar.
+            const lb = document.getElementById("lichtblickFrame");
+            if (lb && (!lb.getAttribute("src") || lb.getAttribute("src") === "about:blank")) {
+              lb.setAttribute("src", "/lichtblick/");
+            }
+            await warmPromise;
+            const mountMode = await ensureFrankaRerunLoaded();
+            const iframe = document.getElementById("rerunFrame");
+            if (mountMode === "media" || mountMode === "pending-run") {
+              // Active artifact is non-Rerun (mcap/video/image) or the run recording is
+              // not ready — no Rerun canvas to wait for, so clear the cover instead of
+              // stalling on it for 45s.
+              hideRerunBundleCover();
+            } else if (!safeHideRerunBundleCover(iframe)) {
+              // Background uncover waits for a non-blank canvas — never flash Rerun splash.
+              showRerunBundleCover("Opening viewer…", "Almost ready…");
+              scheduleRerunBundleUncover(iframe).catch(() => {
+                safeHideRerunBundleCover(iframe, { force: true });
+              });
+              window.setTimeout(() => {
+                if (!safeHideRerunBundleCover(iframe)) {
                   hideRerunBundleCover();
-                } else if (!safeHideRerunBundleCover(iframe)) {
-                  showRerunBundleCover("Opening viewer…", "Almost ready…");
-                  scheduleRerunBundleUncover(iframe).catch(() => {
-                    safeHideRerunBundleCover(iframe, { force: true });
-                  });
-                  window.setTimeout(() => {
-                    if (!safeHideRerunBundleCover(iframe)) {
-                      hideRerunBundleCover();
-                    }
-                  }, 45000);
                 }
-              } catch (bgErr) {
-                console.warn("background rerun mount failed", bgErr);
-                const iframe = document.getElementById("rerunFrame");
-                if (!safeHideRerunBundleCover(iframe)) hideRerunBundleCover();
-              } finally {
-                rerunBootInProgress = false;
-              }
-            })();
+              }, 45000);
+            }
           }
         } catch (err) {
           console.warn("franka auto-load failed", err);
