@@ -169,6 +169,26 @@ describe("NPA agent UI with mocked APIs", () => {
     cy.get("#renderedDataSummary").should("contain.text", "mcap");
   });
 
+  it("lists artifacts for a pasted run id over a stale dropdown selection", () => {
+    cy.get("#tabRerun").click();
+    cy.get("#panelRerun").should("have.class", "is-active");
+    cy.get("#artifactRefreshRuns").click();
+    cy.wait("@artifactRuns");
+    // Leave a stale dropdown selection (mock-run) without firing its change handler,
+    // then paste a different specific run id into the input.
+    cy.get("#runIdSelect").then(($s) => {
+      $s[0].value = "mock-run";
+    });
+    cy.get("#runIdInput").clear().type(NON_STOCK_RUN_ID);
+    // Clicking the button steals focus from the input, but "List artifacts" must still
+    // use the pasted run id, not the stale dropdown value.
+    cy.get("#artifactLoadRunArtifacts").click();
+    cy.wait("@nonStockArtifactList");
+    cy.get("#artifactList").should("contain.text", `${NON_STOCK_RUN_ID}/reports/sim2real.mcap`);
+    cy.get("#artifactList").should("contain.text", "View in Lichtblick");
+    cy.get("#artifactList").should("not.contain.text", "mock-run/preview.png");
+  });
+
   it("covers chat quick actions, sessions, model selection, submit, and copy", () => {
     cy.get("#chatActionS3").click();
     cy.get("#chatInput").should("contain.value", "configure S3");

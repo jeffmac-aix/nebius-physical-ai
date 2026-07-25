@@ -4345,15 +4345,17 @@
         const stages = document.getElementById("stagesRunSelect");
         const runInput = document.getElementById("runIdInput");
         const stagesInput = document.getElementById("stagesRunInput");
-        const typed = String((runInput && runInput.value) || (stagesInput && stagesInput.value) || "").trim();
+        const typedRun = String((runInput && runInput.value) || "").trim();
         const selected = String(
           (select && select.value) || (stages && stages.value) || activeRunId || ""
         ).trim();
-        // Prefer an explicit paste/search when present; otherwise the consolidated dropdown.
-        if (document.activeElement === runInput || document.activeElement === stagesInput) {
-          return resolveStagesRunChoice(typed, selected);
-        }
-        return selected || typed;
+        // A run id pasted/loaded into the artifact panel's own input is an explicit
+        // choice and wins over a (possibly stale) dropdown selection — even after focus
+        // moved to a button. resolveStagesRunChoice also loads ids not yet discovered.
+        if (typedRun) return resolveStagesRunChoice(typedRun, selected);
+        if (selected) return selected;
+        const typedStages = String((stagesInput && stagesInput.value) || "").trim();
+        return typedStages ? resolveStagesRunChoice(typedStages, selected) : "";
       }
       function resolveStagesRunChoice(typed, selected) {
         const query = String(typed || "").trim();
