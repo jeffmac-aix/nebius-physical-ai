@@ -707,41 +707,115 @@ def _read_png(path: Path) -> np.ndarray | None:
         return None
     if not data.startswith(b"\x89PNG\r\n\x1a\n"):
         return None
+    # Prefer Pillow when available: it decodes every PNG colour type, bit depth,
+    # and row filter correctly. The hand-rolled decoder below is a dependency-free
+    # fallback (in-pod finalize can lack Pillow) and MUST apply PNG row filters —
+    # real renders use Sub/Up/Paeth, and ignoring them turns the image into noise.
+    pil = _read_png_with_pillow(data)
+    if pil is not None:
+        return pil
+    return _decode_png_bytes(data)
+
+
+def _read_png_with_pillow(data: bytes) -> np.ndarray | None:
+    try:
+        import io
+
+        from PIL import Image
+    except ImportError:
+        return None
+    try:
+        with Image.open(io.BytesIO(data)) as image:
+            return np.asarray(image.convert("RGB"), dtype=np.uint8).copy()
+    except Exception:
+        logging.getLogger(__name__).debug("Pillow PNG decode failed", exc_info=True)
+        return None
+
+
+def _paeth(a: int, b: int, c: int) -> int:
+    p = a + b - c
+    pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+    if pa <= pb and pa <= pc:
+        return a
+    if pb <= pc:
+        return b
+    return c
+
+
+def _decode_png_bytes(data: bytes) -> np.ndarray | None:
+    """Minimal but correct 8-bit PNG decoder (applies row filters)."""
+
     import struct
     import zlib
 
     index = 8
-    width = height = 0
+    width = height = bit_depth = color_type = 0
     idat = bytearray()
     while index + 8 <= len(data):
         length = struct.unpack("!I", data[index : index + 4])[0]
         chunk_type = data[index + 4 : index + 8]
         chunk = data[index + 8 : index + 8 + length]
         index += 12 + length
-        if chunk_type == b"IHDR" and len(chunk) >= 8:
-            width, height = struct.unpack("!II", chunk[:8])
+        if chunk_type == b"IHDR" and len(chunk) >= 10:
+            width, height, bit_depth, color_type = struct.unpack("!IIBB", chunk[:10])
         elif chunk_type == b"IDAT":
             idat.extend(chunk)
         elif chunk_type == b"IEND":
             break
-    if width <= 0 or height <= 0 or not idat:
+    channels = {0: 1, 2: 3, 4: 2, 6: 4}.get(color_type)
+    if width <= 0 or height <= 0 or not idat or bit_depth != 8 or channels is None:
         return None
     try:
         raw = zlib.decompress(bytes(idat))
     except zlib.error:
         return None
-    stride = width * 3 + 1
+    stride = width * channels + 1
     if len(raw) < height * stride:
         return None
-    pixels = np.empty((height, width, 3), dtype=np.uint8)
+    bpp = channels
+    recon = np.zeros((height, width * channels), dtype=np.int32)
+    prev = np.zeros(width * channels, dtype=np.int32)
     offset = 0
     for row in range(height):
+        ftype = raw[offset]
         offset += 1
-        pixels[row] = np.frombuffer(raw, dtype=np.uint8, count=width * 3, offset=offset).reshape(
-            width, 3
+        line = np.frombuffer(raw, dtype=np.uint8, count=width * channels, offset=offset).astype(
+            np.int32
         )
-        offset += width * 3
-    return pixels.copy()
+        offset += width * channels
+        if ftype == 0:
+            cur = line
+        elif ftype == 1:  # Sub: reconstructed == per-channel cumulative sum of raw
+            cur = line.copy()
+            for c in range(bpp):
+                cur[c::bpp] = np.cumsum(cur[c::bpp]) % 256
+        elif ftype == 2:  # Up
+            cur = (line + prev) % 256
+        elif ftype == 3:  # Average (sequential in x)
+            cur = line.copy()
+            for i in range(len(cur)):
+                left = cur[i - bpp] if i >= bpp else 0
+                cur[i] = (cur[i] + ((left + prev[i]) // 2)) % 256
+        elif ftype == 4:  # Paeth (sequential in x)
+            cur = line.copy()
+            for i in range(len(cur)):
+                left = cur[i - bpp] if i >= bpp else 0
+                up_left = prev[i - bpp] if i >= bpp else 0
+                cur[i] = (cur[i] + _paeth(int(left), int(prev[i]), int(up_left))) % 256
+        else:
+            return None
+        recon[row] = cur
+        prev = cur
+    pixels = recon.reshape(height, width, channels).astype(np.uint8)
+    if channels == 3:
+        rgb = pixels
+    elif channels == 4:
+        rgb = pixels[..., :3]
+    elif channels == 1:
+        rgb = np.repeat(pixels, 3, axis=2)
+    else:  # channels == 2 (gray + alpha)
+        rgb = np.repeat(pixels[..., :1], 3, axis=2)
+    return np.ascontiguousarray(rgb, dtype=np.uint8)
 
 
 def _read_ppm(path: Path) -> np.ndarray | None:

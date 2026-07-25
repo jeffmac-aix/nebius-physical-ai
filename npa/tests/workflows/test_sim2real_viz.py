@@ -322,6 +322,78 @@ def _write_test_png(path: Path, *, red: int, green: int, blue: int) -> None:
     path.write_bytes(png)
 
 
+def _gradient_rgb(width: int = 48, height: int = 32) -> Any:
+    import numpy as np
+
+    ys, xs = np.mgrid[0:height, 0:width]
+    r = (xs * 255 // max(1, width - 1)).astype("uint8")
+    g = (ys * 255 // max(1, height - 1)).astype("uint8")
+    b = ((xs + ys) * 255 // max(1, width + height - 2)).astype("uint8")
+    return np.dstack([r, g, b]).astype("uint8")
+
+
+def test_decode_png_applies_row_filters(tmp_path: Path) -> None:
+    """Regression: renders use Sub/Up/Paeth filters; ignoring them yields noise."""
+    import io
+
+    import numpy as np
+
+    Image = pytest.importorskip("PIL.Image")
+
+    arr = _gradient_rgb()
+    # Pillow chooses adaptive per-row filters (not all-zero) for a gradient.
+    buffer = io.BytesIO()
+    Image.fromarray(arr, "RGB").save(buffer, format="PNG")
+    data = buffer.getvalue()
+
+    # Confirm the encoder actually used non-zero filters, otherwise the test is moot.
+    import struct
+    import zlib
+
+    idx = 8
+    width = height = 0
+    idat = bytearray()
+    while idx + 8 <= len(data):
+        length = struct.unpack("!I", data[idx : idx + 4])[0]
+        ctype = data[idx + 4 : idx + 8]
+        chunk = data[idx + 8 : idx + 8 + length]
+        idx += 12 + length
+        if ctype == b"IHDR":
+            width, height = struct.unpack("!II", chunk[:8])
+        elif ctype == b"IDAT":
+            idat.extend(chunk)
+        elif ctype == b"IEND":
+            break
+    raw = zlib.decompress(bytes(idat))
+    stride = width * 3 + 1
+    filters = {raw[row * stride] for row in range(height)}
+    assert filters - {0}, "expected Pillow to use non-zero row filters"
+
+    # Manual fallback decoder must reconstruct the exact pixels (not noise).
+    decoded = viz_module._decode_png_bytes(data)
+    assert decoded is not None
+    assert decoded.shape == arr.shape
+    assert np.array_equal(decoded, arr)
+
+    # Public reader (Pillow fast path) must also match.
+    png_path = tmp_path / "gradient.png"
+    png_path.write_bytes(data)
+    via_reader = viz_module._read_png(png_path)
+    assert via_reader is not None
+    assert np.array_equal(via_reader, arr)
+
+
+def test_decode_png_matches_pillow_on_filter0(tmp_path: Path) -> None:
+    import numpy as np
+
+    _write_test_png(tmp_path / "solid.png", red=12, green=200, blue=77)
+    decoded = viz_module._read_png(tmp_path / "solid.png")
+    assert decoded is not None
+    assert decoded.shape == (64, 64, 3)
+    assert np.array_equal(decoded[0, 0], np.array([12, 200, 77], dtype="uint8"))
+    assert int(decoded.mean()) == int(np.array([12, 200, 77]).mean())
+
+
 def test_is_reference_stub_rollout_detects_reference_fixture(tmp_path: Path) -> None:
     actions_dir = tmp_path / "actions"
     rollouts = generate_action_rollouts(actions_dir, count=1, steps_per_rollout=2, seed=3, quality=0.5)
