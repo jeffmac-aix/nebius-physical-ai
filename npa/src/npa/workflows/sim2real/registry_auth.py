@@ -10,8 +10,16 @@ from typing import Any
 
 
 def mint_nebius_registry_token(*, nebius_cli: str = "nebius") -> str:
-    """Return a short-lived IAM token for ``cr.*.nebius.cloud`` pulls."""
+    """Return a short-lived IAM token for ``cr.*.nebius.cloud`` pulls.
 
+    Prefers a ``NEBIUS_IAM_TOKEN`` from the environment (in-pod contexts often
+    have the token injected but not the ``nebius`` CLI), falling back to
+    ``nebius iam get-access-token`` when the env var is unset.
+    """
+
+    env_token = os.environ.get("NEBIUS_IAM_TOKEN", "").strip()
+    if env_token:
+        return env_token
     try:
         result = subprocess.run(
             [nebius_cli, "iam", "get-access-token"],

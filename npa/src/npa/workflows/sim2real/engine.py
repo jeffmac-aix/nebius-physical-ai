@@ -1890,12 +1890,22 @@ def _refresh_registry_pull_secret_for_sibling_job(
 
     from npa.workflows.sim2real.registry_auth import ensure_registry_pull_secret_for_images
 
-    ensure_registry_pull_secret_for_images(
-        image,
-        namespace=namespace,
-        kubeconfig=config.k8s_kubeconfig,
-        k8s_context=config.k8s_context,
-    )
+    # Best-effort: sibling Jobs already carry the run's imagePullSecrets (e.g.
+    # ``agent-sa``) via ``config.k8s_image_pull_secrets``, so a refresh failure
+    # (no ``nebius`` CLI / no ``NEBIUS_IAM_TOKEN`` in-pod) must not crash the
+    # orchestrator. Log and continue; a genuinely stale secret surfaces as an
+    # ImagePullBackOff on the sibling rather than a hard orchestrator failure.
+    try:
+        ensure_registry_pull_secret_for_images(
+            image,
+            namespace=namespace,
+            kubeconfig=config.k8s_kubeconfig,
+            k8s_context=config.k8s_context,
+        )
+    except RuntimeError as exc:
+        logging.getLogger(__name__).warning(
+            "sibling registry pull-secret refresh skipped for %s: %s", image, exc
+        )
 
 
 def _run_kubernetes_indexed_image_component(
