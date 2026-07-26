@@ -707,6 +707,67 @@ function installAgentApiMocks() {
   }).as("runDetails");
 }
 
+// --- MCAP substance helpers (shared by smoke + live Lichtblick specs) ---------
+// An uncompressed MCAP stores channel topics/schema names and JSON messages
+// verbatim, so we can assert the viewer is fed real camera data straight from the
+// served bytes without a full MCAP parser.
+
+function mcapCameraTopicCount(binaryBody) {
+  return (String(binaryBody || "").match(/\/camera/g) || []).length;
+}
+
+function mcapHasCompressedImage(binaryBody) {
+  return String(binaryBody || "").indexOf("foxglove.CompressedImage") >= 0;
+}
+
+function mcapHasHeldoutCamera(binaryBody) {
+  return String(binaryBody || "").indexOf("/heldout/camera/") >= 0;
+}
+
+function firstMcapPngPayload(binaryBody) {
+  const match = String(binaryBody || "").match(/"data":"([A-Za-z0-9+/=]+)","format":"png"/);
+  return match ? match[1] : null;
+}
+
+// Decode a base64 PNG payload and return {width,height,mean} using an offscreen
+// canvas. Catches BOTH regressions: 32x32 solid stubs (tiny dims) and the
+// PNG-row-filter corruption that turned real renders into dark noise (low mean).
+function decodePngStats(base64Payload) {
+  return new Cypress.Promise((resolve, reject) => {
+    try {
+      const binary = atob(base64Payload);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+      const blob = new Blob([bytes], { type: "image/png" });
+      const url = URL.createObjectURL(blob);
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement("canvas");
+        canvas.width = img.naturalWidth;
+        canvas.height = img.naturalHeight;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0);
+        const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+        let sum = 0;
+        let count = 0;
+        for (let i = 0; i < data.length; i += 4) {
+          sum += (data[i] + data[i + 1] + data[i + 2]) / 3;
+          count += 1;
+        }
+        URL.revokeObjectURL(url);
+        resolve({ width: img.naturalWidth, height: img.naturalHeight, mean: sum / Math.max(1, count) });
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(url);
+        reject(new Error("PNG decode failed"));
+      };
+      img.src = url;
+    } catch (err) {
+      reject(err);
+    }
+  });
+}
+
 Cypress.Commands.add("installAgentApiMocks", installAgentApiMocks);
 Cypress.Commands.add("visitMockAgent", () => {
   installAgentApiMocks();
@@ -733,9 +794,14 @@ export {
   ASSETS,
   CAMERAS,
   COMPLEX_WORKFLOW_YAML,
+  decodePngStats,
   FIELD_IDS,
+  firstMcapPngPayload,
   GENERIC_WORKFLOW_RUN_DETAILS,
   GENERIC_WORKFLOW_YAML,
+  mcapCameraTopicCount,
+  mcapHasCompressedImage,
+  mcapHasHeldoutCamera,
   NON_STOCK_ARTIFACTS,
   NON_STOCK_RUN_ID,
   SIM_VIZ,

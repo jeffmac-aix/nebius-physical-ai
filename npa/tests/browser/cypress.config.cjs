@@ -97,11 +97,14 @@ function startMockServer(port) {
       return;
     }
     if (url.pathname === "/lichtblick/recordings/sim2real.mcap") {
+      // Serve a real (small) MCAP fixture with genuine camera topics so smoke
+      // tests can assert the viewer is fed substantive data, not a stub.
+      const fixtureMcap = path.join(__dirname, "cypress/fixtures/sim2real_sample.mcap");
       res.writeHead(200, {
         "content-type": "application/octet-stream",
         "accept-ranges": "bytes",
       });
-      res.end(Buffer.alloc(256, 2));
+      res.end(fs.readFileSync(fixtureMcap));
       return;
     }
     res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
