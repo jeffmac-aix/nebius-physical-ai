@@ -13,8 +13,9 @@ Options
 TTY).
 --provision  --no-provision  Auto-create a Nebius S3 bucket (when missing) and an access key
 (default). Reuse an existing bucket by name, or press Enter to
-create a default npa-bucket with standard storage and a size cap.
-Use --no-provision to enter existing S3 credentials.
+create a default npa-bucket-<hash> bucket with standard storage
+and a size cap. Use --no-provision to enter existing S3
+credentials.
 [default: provision]
 --token-factory-key  <str>  Store a Nebius Token Factory API key in ~/.npa/credentials.yaml
 under tokens.NEBIUS_TOKEN_FACTORY_KEY (skips interactive setup).

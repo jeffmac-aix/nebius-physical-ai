@@ -327,7 +327,8 @@ def _provision_object_storage(
 
     typer.echo(
         "\nObject storage: enter an existing bucket name to reuse it, "
-        "or press Enter to have npa create a default npa-bucket for this project."
+        "or press Enter to have npa create a default npa-bucket-<hash> bucket "
+        "for this project (the hash is derived from your tenant and project ids)."
     )
     bucket_name = ask("Object-storage bucket name")
     if not bucket_name:
@@ -627,7 +628,8 @@ def configure(
         help=(
             "Auto-create a Nebius S3 bucket (when missing) and an access key "
             "(default). Reuse an existing bucket by name, or press Enter to "
-            "create a default npa-bucket with standard storage and a size cap. "
+            "create a default npa-bucket-<hash> bucket with standard storage and "
+            "a size cap. "
             "Use --no-provision to enter existing S3 credentials."
         ),
     ),
@@ -671,7 +673,8 @@ def init(
         help=(
             "Auto-create a Nebius S3 bucket (when missing) and an access key "
             "(default). Reuse an existing bucket by name, or press Enter to "
-            "create a default npa-bucket with standard storage and a size cap. "
+            "create a default npa-bucket-<hash> bucket with standard storage and "
+            "a size cap. "
             "Use --no-provision to enter existing S3 credentials."
         ),
     ),
