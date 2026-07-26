@@ -184,6 +184,31 @@ pip install -e "npa[dev]"       # tests, lint (pytest, ruff); see Section 6
 Before running cloud workloads (Sections 5+), install `npa[full]` so every
 workbench tool has its dependencies.
 
+### 3a. Uninstall npa
+
+To remove the package from your active virtual environment:
+
+```bash
+pip uninstall npa
+```
+
+Because the recommended install uses a dedicated virtualenv, the cleanest
+removal is to deactivate and delete the environment directory — this drops
+`npa` and every dependency it pulled in:
+
+```bash
+deactivate            # leave the virtual environment
+rm -rf .venv          # or the path you chose, e.g. ~/.venvs/npa
+```
+
+User-level configuration and credentials live outside the package under
+`~/.npa` and are not touched by `pip uninstall`. Remove them only if you no
+longer need your saved projects, workbenches, and tokens:
+
+```bash
+rm -rf ~/.npa         # config.yaml, credentials.yaml, and cached state
+```
+
 ## 4. Configure credentials
 
 For credential setup, `npa` has one user-authored file:

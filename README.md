@@ -76,6 +76,11 @@ npa --version
 > supported. Platform-specific install blocks:
 > [docs/quickstart.md § Fast install](docs/quickstart.md#fast-install-by-platform).
 
+To uninstall, run `pip uninstall npa`, or delete the virtualenv entirely with
+`deactivate && rm -rf .venv`. User config and credentials live under `~/.npa`
+and are removed separately with `rm -rf ~/.npa`. Full steps:
+[docs/quickstart.md § Uninstall](docs/quickstart.md#3a-uninstall-npa).
+
 ---
 
 ### A. 60-second try-it

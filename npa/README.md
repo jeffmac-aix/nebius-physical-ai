@@ -16,12 +16,21 @@ The Python package exposes the same building blocks as importable modules: Nebiu
 
 ## Install
 
+Install into a dedicated virtual environment so `npa` and its dependencies stay
+isolated from other Python projects. From the repository root:
+
 ```bash
+python3 -m venv .venv          # create a virtual environment (Python 3.10+)
+source .venv/bin/activate      # Windows: use WSL2 Ubuntu and this same command
+pip install --upgrade pip
 pip install -e .
 pip install -e ".[server]"   # policy server
 pip install -e ".[adapter]"  # dataset conversion
 pip install -e ".[genesis]"  # Genesis + distillation stages
 ```
+
+Activate the venv (`source .venv/bin/activate`) in every new shell before
+running `npa`, or call the interpreter directly with `./.venv/bin/npa`.
 
 Extra tools required by specific commands:
 
@@ -30,6 +39,29 @@ Extra tools required by specific commands:
 - `ffmpeg` for `npa adapter convert`
 - `ffmpeg` and Chrome/Chromium for `npa convert lerobot-to-mp4 --renderer rerun`
   (`NPA_RERUN_FFMPEG` and `NPA_RERUN_CHROME` may point to explicit executables)
+
+## Uninstall
+
+Remove the package from your active virtual environment:
+
+```bash
+pip uninstall npa
+```
+
+To remove the environment entirely, deactivate and delete the venv directory:
+
+```bash
+deactivate            # leave the virtual environment
+rm -rf .venv          # delete the venv created during install
+```
+
+User-level configuration and credentials live outside the package. Delete them
+only if you no longer need them (this removes saved projects, workbenches, and
+tokens):
+
+```bash
+rm -rf ~/.npa         # config.yaml, credentials.yaml, and cached state
+```
 
 ## CLI layout
 
