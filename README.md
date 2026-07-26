@@ -163,9 +163,10 @@ Composable `toolRef` steps: [`npa.workflow` tool catalog](docs/workbench/npa-wor
    export PATH="${HOME}/.nebius/bin:${PATH}"   # add to ~/.zshrc or ~/.bashrc
    ```
 
-3. Interactive setup — creates or reuses your Nebius CLI profile and prompts
-   for project, tenant, region, container registry, bucket, and optional API
-   keys (in that order):
+3. Interactive setup — creates or reuses your Nebius CLI profile, then prompts
+   in order for project id, tenant id, region, container registry, bucket, the
+   optional API keys (Hugging Face, Nebius AI Cloud, Nebius Token Factory, NGC),
+   and finally a local project alias:
 
    ```bash
    npa configure --interactive

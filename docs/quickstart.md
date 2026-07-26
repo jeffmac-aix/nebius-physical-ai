@@ -142,7 +142,7 @@ environment. The venv can live anywhere (for example `.venv` in the repo, or
 `~/.venvs/npa`); activating it puts `npa` on your `PATH`:
 
 ```bash
-git clone <REPO_URL> nebius-physical-ai
+git clone https://github.com/nebius/nebius-physical-ai.git
 cd nebius-physical-ai
 
 python3 -m venv .venv
@@ -245,21 +245,33 @@ long-lived `NEBIUS_TOKEN` in `~/.npa/credentials.yaml`.
 
 Before running `npa configure`, sign up for Nebius AI Cloud, note your tenant
 id, and create a project in the target region. An Object Storage bucket is
-optional — `npa configure` creates a default `npa-bucket` with **standard**
-storage and a size cap when you press Enter at the bucket prompt (you can choose
-`enhanced` storage or a custom size for new buckets). To reuse your own bucket,
+optional — `npa configure` creates a default bucket named
+`npa-bucket-<hash>` (a short hash derived from your tenant and project ids, for
+example `npa-bucket-1a2b3c4d`) with **standard** storage and a size cap when you
+press Enter at the bucket prompt (you can choose `enhanced` storage or a custom
+size for new buckets). To reuse your own bucket,
 create one first; see the README **Nebius AI Cloud account** section,
 [Creating a tenant](https://docs.nebius.com/iam/create-tenants),
 [Manage projects](https://docs.nebius.com/iam/manage-projects), and
 [Manage buckets](https://docs.nebius.com/object-storage/buckets/manage).
 
-Run interactive setup in a terminal. `npa configure` creates or reuses your
-Nebius CLI profile first, then prompts for your project id and tenant id (in
-that order, no defaults shown), your region and container registry (defaults are
-discovered from the project), guides you to reuse an existing bucket or create a
-default `npa-bucket` (standard storage, size limit in GB), and asks for a local
-**project alias** (default = region; used later as `-p <alias>`). It then
-writes `~/.npa/credentials.yaml` and `~/.npa/config.yaml`:
+Run interactive setup in a terminal. `npa configure` prompts in this order:
+
+1. **Nebius CLI profile** — created or reused first; no manual
+   `nebius profile create` step.
+2. **Project id**, then **tenant id** (no defaults shown).
+3. **Region**, then **container registry** (defaults discovered from the
+   project).
+4. **Object storage** — reuse an existing bucket, or press Enter to create a
+   default `npa-bucket-<hash>` bucket (choose standard/enhanced storage and a
+   size limit in GB for new buckets).
+5. Four secret prompts, each optional and hidden as you type:
+   **Hugging Face token** (`HF_TOKEN`), **Nebius AI Cloud API key**
+   (`NEBIUS_AI_CLOUD_KEY`), **Nebius Token Factory API key**
+   (`NEBIUS_TOKEN_FACTORY_KEY`), and **NVIDIA NGC API key** (`NGC_API_KEY`).
+6. **Project alias** (default = region; used later as `-p <alias>`).
+
+It then writes `~/.npa/credentials.yaml` and `~/.npa/config.yaml`:
 
 ```bash
 npa configure
@@ -294,6 +306,8 @@ Use these canonical keys in `~/.npa/credentials.yaml`.
 | Need | `credentials.yaml` key | Environment override | Required when |
 |---|---|---|---|
 | Hugging Face token | `tokens.HF_TOKEN` | `HF_TOKEN` | Downloading gated Hugging Face models, datasets, or weights |
+| Nebius Token Factory key | `tokens.NEBIUS_TOKEN_FACTORY_KEY` | `NEBIUS_TOKEN_FACTORY_KEY` | Zero-GPU hosted inference (Token Factory / OpenAI-compatible) paths |
+| Nebius AI Cloud key | `tokens.NEBIUS_AI_CLOUD_KEY` | `NEBIUS_AI_CLOUD_KEY` | Calling Nebius AI Cloud APIs |
 | NGC API key | `ngc.api_key` | `NGC_API_KEY` | Using NGC-backed GR00T model references |
 | NGC organization | `ngc.org` | `NGC_ORG` | Your NGC key is organization-scoped |
 | NGC team | `ngc.team` | `NGC_TEAM` | Your NGC key is team-scoped |
@@ -317,11 +331,19 @@ export NPA_STORAGE_ENDPOINT=storage.eu-north1.nebius.cloud
 
 ### 4c. Populate `~/.npa/credentials.yaml`
 
+If you completed the interactive `npa configure` flow above, these keys are
+already written for you — edit this file by hand only to add keys you skipped or
+to set up credentials without running `npa configure`.
+
 Use this complete template and delete keys you do not need yet:
 
 ```yaml
 tokens:
   HF_TOKEN: <YOUR_HUGGING_FACE_TOKEN>
+  # Optional: Nebius Token Factory API key (zero-GPU hosted inference; starts with "v1.").
+  NEBIUS_TOKEN_FACTORY_KEY: <YOUR_TOKEN_FACTORY_KEY>
+  # Optional: Nebius AI Cloud API key.
+  NEBIUS_AI_CLOUD_KEY: <YOUR_NEBIUS_AI_CLOUD_KEY>
 
 ngc:
   api_key: <YOUR_NGC_API_KEY>
@@ -392,7 +414,10 @@ NGC, or Hugging Face network access. Note that a bare `npa configure` in a
 terminal is interactive and provisions object storage by default (it creates an
 S3 bucket and access key); use `npa configure --show` for a read-only view of
 the file layout, or `npa configure --no-provision` to enter existing S3
-credentials by hand.
+credentials by hand. Because auto-provisioning needs an authenticated Nebius CLI
+profile, a bare `npa configure` exits immediately (code 1, writing nothing under
+`~/.npa`) if no profile is available yet — install and authenticate the Nebius
+CLI first, or re-run with `--no-provision`.
 
 ### 5a. Your first real result (offline)
 
