@@ -80,6 +80,7 @@ describe("Lichtblick MCAP viewer (mocked smoke)", () => {
     cy.get("#artifactTypeFilter").select("mcap");
     cy.get("#artifactRefreshRuns").click();
     cy.wait("@artifactRuns");
+    cy.get("#runIdSelect").select(NON_STOCK_RUN_ID);
     cy.wait("@nonStockArtifactList");
     cy.get("#artifactList").should("contain.text", `${NON_STOCK_RUN_ID}/reports/sim2real.mcap`);
     cy.get("#artifactList").should("contain.text", "View in Lichtblick");
@@ -93,6 +94,7 @@ describe("Lichtblick MCAP viewer (mocked smoke)", () => {
     cy.get("#artifactPrefix").clear().type("sim2real-b/custom-assets");
     cy.get("#artifactRefreshRuns").click();
     cy.wait("@artifactRuns");
+    cy.get("#runIdSelect").select(NON_STOCK_RUN_ID);
     cy.wait("@nonStockArtifactList");
     cy.get(`#artifactList button[data-key="${NON_STOCK_RUN_ID}/reports/sim2real.mcap"]`).click();
     cy.wait("@loadArtifact");

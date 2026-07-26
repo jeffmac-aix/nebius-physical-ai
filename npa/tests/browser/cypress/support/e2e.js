@@ -725,7 +725,10 @@ function mcapHasHeldoutCamera(binaryBody) {
 }
 
 function firstMcapPngPayload(binaryBody) {
-  const match = String(binaryBody || "").match(/"data":"([A-Za-z0-9+/=]+)","format":"png"/);
+  // json.dumps emits ", " / ": " separators, so allow optional whitespace.
+  const match = String(binaryBody || "").match(
+    /"data":\s*"([A-Za-z0-9+/=]+)"\s*,\s*"format":\s*"png"/
+  );
   return match ? match[1] : null;
 }
 
