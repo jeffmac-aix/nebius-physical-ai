@@ -371,6 +371,16 @@ try:
                 col = (np.clip(col, 0.0, 1.0) * 255).astype(np.uint8) if col.max() <= 1.0 else col.astype(np.uint8)
             good = np.isfinite(xyz).all(axis=1)
             xyz, col = xyz[good], col[good]
+            # Clip to the workspace neighbourhood so the far ground plane does not
+            # dominate the 3D view (keep points within RANGE_M of the camera).
+            try:
+                cam_pos = cam.data.pos_w[0].detach().cpu().numpy().reshape(3)
+                range_m = float(os.environ.get("NPA_SIM2REAL_POINTCLOUD_RANGE_M", "5.0"))
+                near = np.linalg.norm(xyz - cam_pos[None, :], axis=1) <= range_m
+                if int(near.sum()) >= 200:
+                    xyz, col = xyz[near], col[near]
+            except Exception as _pe:
+                print("pc_clip_err", repr(_pe), flush=True)
             if xyz.shape[0] > 6000:
                 sel = np.random.default_rng(0).choice(xyz.shape[0], 6000, replace=False)
                 xyz, col = xyz[sel], col[sel]
