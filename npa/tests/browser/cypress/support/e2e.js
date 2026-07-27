@@ -724,6 +724,11 @@ function mcapHasHeldoutCamera(binaryBody) {
   return String(binaryBody || "").indexOf("/heldout/camera/") >= 0;
 }
 
+function mcapHasPointCloud(binaryBody) {
+  const text = String(binaryBody || "");
+  return text.indexOf("foxglove.PointCloud") >= 0 && text.indexOf("/heldout/points") >= 0;
+}
+
 function firstMcapPngPayload(binaryBody) {
   // json.dumps emits ", " / ": " separators, so allow optional whitespace.
   const match = String(binaryBody || "").match(
@@ -805,6 +810,7 @@ export {
   mcapCameraTopicCount,
   mcapHasCompressedImage,
   mcapHasHeldoutCamera,
+  mcapHasPointCloud,
   NON_STOCK_ARTIFACTS,
   NON_STOCK_RUN_ID,
   SIM_VIZ,

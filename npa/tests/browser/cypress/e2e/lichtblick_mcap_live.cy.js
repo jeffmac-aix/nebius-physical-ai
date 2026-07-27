@@ -4,6 +4,7 @@ import {
   mcapCameraTopicCount,
   mcapHasCompressedImage,
   mcapHasHeldoutCamera,
+  mcapHasPointCloud,
 } from "../support/e2e";
 
 const requiredLiveEnv = ["NPA_AGENT_BASE_URL", "NPA_AGENT_USER", "NPA_AGENT_PASSWORD"];
@@ -90,6 +91,8 @@ describe("Lichtblick MCAP viewer (live system)", () => {
         expect(mcapHasCompressedImage(body), "has foxglove.CompressedImage").to.be.true;
         expect(mcapHasHeldoutCamera(body), "has /heldout/camera/ topics").to.be.true;
         expect(mcapCameraTopicCount(body), "camera topic occurrences").to.be.greaterThan(4);
+        // GPU-reconstructed 3D point cloud for the 3D panel.
+        expect(mcapHasPointCloud(body), "has foxglove.PointCloud on /heldout/points").to.be.true;
       });
     });
   });

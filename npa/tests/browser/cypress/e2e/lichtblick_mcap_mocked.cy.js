@@ -5,6 +5,7 @@ import {
   mcapCameraTopicCount,
   mcapHasCompressedImage,
   mcapHasHeldoutCamera,
+  mcapHasPointCloud,
 } from "../support/e2e";
 
 const MCAP_RECORDING_PATH = "/lichtblick/recordings/sim2real.mcap";
@@ -29,6 +30,13 @@ describe("Lichtblick MCAP viewer (mocked smoke)", () => {
       expect(mcapHasCompressedImage(body), "has foxglove.CompressedImage schema").to.be.true;
       expect(mcapHasHeldoutCamera(body), "has /heldout/camera/ topics").to.be.true;
       expect(mcapCameraTopicCount(body), "camera topic occurrences").to.be.greaterThan(3);
+    });
+  });
+
+  it("includes a GPU 3D point-cloud stream for the 3D panel", () => {
+    cy.request({ url: MCAP_RECORDING_PATH, encoding: "binary" }).then((resp) => {
+      expect(mcapHasPointCloud(resp.body || ""), "has foxglove.PointCloud on /heldout/points").to.be
+        .true;
     });
   });
 
