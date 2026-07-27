@@ -93,6 +93,7 @@ class Sim2RealVizResult:
     frame_count: int = 0
     heldout_env_count: int = 0
     heldout_frame_count: int = 0
+    pointcloud_frame_count: int = 0
     mp4_paths: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -104,6 +105,7 @@ class Sim2RealVizResult:
             "frame_count": self.frame_count,
             "heldout_env_count": self.heldout_env_count,
             "heldout_frame_count": self.heldout_frame_count,
+            "pointcloud_frame_count": self.pointcloud_frame_count,
             "mp4_paths": list(self.mp4_paths),
         }
 
@@ -119,6 +121,7 @@ class Sim2RealMcapResult:
     camera_message_count: int = 0
     scalar_message_count: int = 0
     log_message_count: int = 0
+    pointcloud_message_count: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -129,6 +132,7 @@ class Sim2RealMcapResult:
             "camera_message_count": self.camera_message_count,
             "scalar_message_count": self.scalar_message_count,
             "log_message_count": self.log_message_count,
+            "pointcloud_message_count": self.pointcloud_message_count,
         }
 
 
@@ -213,6 +217,12 @@ def emit_sim2real_rerun(
         start_seconds=seconds,
     )
     seconds = max(seconds, heldout_seconds)
+    pointcloud_frame_count = _log_heldout_pointclouds(
+        rr,
+        recording,
+        _heldout_pointcloud_frames(local_dir),
+        counts,
+    )
     heldout_env_count = _log_heldout(
         rr,
         recording,
@@ -243,6 +253,7 @@ def emit_sim2real_rerun(
         frame_count=frame_count,
         heldout_env_count=heldout_env_count,
         heldout_frame_count=heldout_frame_count,
+        pointcloud_frame_count=pointcloud_frame_count,
         mp4_paths=mp4_paths,
     )
 
@@ -534,6 +545,35 @@ def _log_heldout_cameras(
     return logged, end_seconds
 
 
+def _log_heldout_pointclouds(
+    rr: Any,
+    recording: Any,
+    frames: list[tuple[np.ndarray, np.ndarray]],
+    counts: dict[str, int],
+) -> int:
+    """Log GPU-reconstructed held-out point clouds under ``world/heldout/points``.
+
+    The Scene-overview Spatial3DView (contents ``world/**``) renders these on the
+    client GPU, time-aligned with the ``/camera`` stream.
+    """
+
+    if not frames:
+        return 0
+    seconds = 0.0
+    logged = 0
+    for xyz, rgb in frames:
+        _set_time(rr, recording, seconds)
+        rr.log(
+            "world/heldout/points",
+            rr.Points3D(np.ascontiguousarray(xyz, dtype=np.float32), colors=rgb),
+            recording=recording,
+        )
+        _bump(counts, "world/heldout/points")
+        seconds += ROLLOUT_FRAME_SECONDS
+        logged += 1
+    return logged
+
+
 def is_reference_stub_rollout(rollout_dir: Path, frames: list[np.ndarray]) -> bool:
     """Return True for stage-7 reference adapter solid-color PPM fixtures."""
 
@@ -586,6 +626,47 @@ def _heldout_render_episodes(
         if frames:
             episodes.append((env_dir.name, frames))
     return episodes
+
+
+# Sub-directory (under eval/heldout/renders) where the Isaac held-out eval writes
+# GPU-derived colored point clouds (one .npz per rendered frame, world frame).
+POINTCLOUD_SUBDIR = "_pointcloud"
+
+
+def _heldout_pointcloud_frames(local_dir: Path) -> list[tuple[np.ndarray, np.ndarray]]:
+    """Load GPU-rendered held-out point clouds as ``(xyz[N,3], rgb[N,3])`` frames.
+
+    Returns the primary env's per-frame clouds (time-aligned to the ``/camera``
+    stream) so both the Rerun 3D view and the Lichtblick 3D panel show the
+    reconstructed sim geometry. Empty when no point clouds were captured.
+    """
+
+    root = local_dir / "eval" / "heldout" / "renders" / POINTCLOUD_SUBDIR
+    if not root.is_dir():
+        return []
+    env_dirs = sorted(path for path in root.iterdir() if path.is_dir())
+    if not env_dirs:
+        return []
+    frames: list[tuple[np.ndarray, np.ndarray]] = []
+    for cloud_path in sorted(env_dirs[0].glob("cloud-*.npz")):
+        cloud = _read_pointcloud_npz(cloud_path)
+        if cloud is not None:
+            frames.append(cloud)
+    return frames
+
+
+def _read_pointcloud_npz(path: Path) -> tuple[np.ndarray, np.ndarray] | None:
+    try:
+        with np.load(path) as data:
+            xyz = np.asarray(data["xyz"], dtype=np.float32).reshape(-1, 3)
+            rgb = np.asarray(data["rgb"], dtype=np.uint8).reshape(-1, 3)
+    except (OSError, ValueError, KeyError):
+        logging.getLogger(__name__).debug("unreadable point cloud %s", path, exc_info=True)
+        return None
+    count = min(xyz.shape[0], rgb.shape[0])
+    if count == 0:
+        return None
+    return xyz[:count], rgb[:count]
 
 
 def _build_blueprint(
@@ -1008,6 +1089,7 @@ class _McapEmitter:
         self.camera_message_count = 0
         self.scalar_message_count = 0
         self.log_message_count = 0
+        self.pointcloud_message_count = 0
 
     def _schema(self, name: str, schema: dict[str, Any]) -> int:
         if name not in self._schema_ids:
@@ -1068,6 +1150,18 @@ class _McapEmitter:
         }
         self._add(topic, channel_id, message, stamp_ns)
         self.log_message_count += 1
+
+    def log_pointcloud(
+        self, topic: str, points: Any, colors: Any, stamp_ns: int
+    ) -> None:
+        from npa.workbench.lichtblick import _POINTCLOUD_SCHEMA, pointcloud_message
+
+        channel_id = self._channel(topic, "foxglove.PointCloud", _POINTCLOUD_SCHEMA)
+        message = pointcloud_message(
+            points, colors, stamp_ns=stamp_ns, frame_id=MCAP_FRAME_ID
+        )
+        self._add(topic, channel_id, message, stamp_ns)
+        self.pointcloud_message_count += 1
 
 
 def emit_sim2real_mcap(
@@ -1148,6 +1242,9 @@ def emit_sim2real_mcap(
         _emit_mcap_heldout_cameras(
             emitter, heldout_episodes, frame_period_ns=frame_period_ns
         )
+        _emit_mcap_pointclouds(
+            emitter, _heldout_pointcloud_frames(local_dir), frame_period_ns=frame_period_ns
+        )
         _emit_mcap_heldout_scores(emitter, heldout_report, heldout_period_ns=heldout_period_ns)
 
         writer.finish()
@@ -1158,6 +1255,7 @@ def emit_sim2real_mcap(
         emitter.camera_message_count
         + emitter.scalar_message_count
         + emitter.log_message_count
+        + emitter.pointcloud_message_count
     )
     if total == 0:
         raise Sim2RealVizError(
@@ -1171,6 +1269,7 @@ def emit_sim2real_mcap(
         camera_message_count=emitter.camera_message_count,
         scalar_message_count=emitter.scalar_message_count,
         log_message_count=emitter.log_message_count,
+        pointcloud_message_count=emitter.pointcloud_message_count,
     )
 
 
@@ -1283,6 +1382,24 @@ def _emit_mcap_heldout_cameras(
             if episode_index == 0:
                 emitter.log_image_bytes("/camera", payload, "png", stamp_ns)
             stamp_ns += frame_period_ns
+
+
+def _emit_mcap_pointclouds(
+    emitter: _McapEmitter,
+    frames: list[tuple[np.ndarray, np.ndarray]],
+    *,
+    frame_period_ns: int,
+) -> None:
+    """Emit GPU-reconstructed held-out point clouds on ``/heldout/points``.
+
+    Lichtblick renders ``foxglove.PointCloud`` in its GPU-accelerated 3D panel,
+    time-aligned with the ``/camera`` stream.
+    """
+
+    stamp_ns = 0
+    for xyz, rgb in frames:
+        emitter.log_pointcloud("/heldout/points", xyz, rgb, stamp_ns)
+        stamp_ns += frame_period_ns
 
 
 def _emit_mcap_heldout_scores(

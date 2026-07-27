@@ -266,6 +266,72 @@ def test_emit_mcap_roundtrip_camera_signal_critique(tmp_path: Path) -> None:
     assert first_camera["format"] == "png"
 
 
+def _write_pointcloud_npz(tmp_path: Path, env_id: str = "env-0001", frames: int = 3) -> None:
+    import numpy as np
+
+    root = tmp_path / "eval" / "heldout" / "renders" / viz_module.POINTCLOUD_SUBDIR / env_id
+    root.mkdir(parents=True, exist_ok=True)
+    rng = np.random.default_rng(3)
+    for i in range(frames):
+        xyz = rng.uniform(-0.5, 0.5, size=(500, 3)).astype("float32")
+        rgb = rng.integers(0, 256, size=(500, 3), dtype="uint8")
+        np.savez_compressed(root / f"cloud-{i:04d}.npz", xyz=xyz, rgb=rgb)
+
+
+def test_pointcloud_message_packs_xyz_and_rgb() -> None:
+    import base64
+
+    import numpy as np
+
+    from npa.workbench.lichtblick import (
+        _POINTCLOUD_POINT_STRIDE,
+        pointcloud_message,
+    )
+
+    xyz = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype="float32")
+    rgb = np.array([[10, 20, 30], [40, 50, 60]], dtype="uint8")
+    msg = pointcloud_message(xyz, rgb, stamp_ns=500_000_000, frame_id="sim2real")
+    assert msg["point_stride"] == _POINTCLOUD_POINT_STRIDE
+    assert [f["name"] for f in msg["fields"]] == ["x", "y", "z", "red", "green", "blue"]
+    raw = base64.b64decode(msg["data"])
+    assert len(raw) == 2 * _POINTCLOUD_POINT_STRIDE
+    # First point: xyz float32 then rgb uint8.
+    assert np.frombuffer(raw[0:12], dtype="<f4").tolist() == [1.0, 2.0, 3.0]
+    assert list(raw[12:15]) == [10, 20, 30]
+
+
+def test_heldout_pointcloud_frames_reads_npz(tmp_path: Path) -> None:
+    _write_pointcloud_npz(tmp_path, frames=3)
+    frames = viz_module._heldout_pointcloud_frames(tmp_path)
+    assert len(frames) == 3
+    xyz, rgb = frames[0]
+    assert xyz.shape[1] == 3 and rgb.shape[1] == 3
+    assert xyz.dtype.name == "float32" and rgb.dtype.name == "uint8"
+
+
+def test_emit_mcap_includes_pointclouds(tmp_path: Path) -> None:
+    pytest.importorskip("mcap")
+    from mcap.reader import make_reader
+
+    inner_evidence, heldout_report = _build_run_tree(tmp_path)
+    _write_pointcloud_npz(tmp_path, frames=4)
+    out = tmp_path / "reports" / "sim2real.mcap"
+    result = viz_module.emit_sim2real_mcap(
+        local_dir=tmp_path,
+        inner_evidence=inner_evidence,
+        heldout_report=heldout_report,
+        output_mcap=out,
+    )
+    assert result.pointcloud_message_count == 4
+    with open(out, "rb") as fh:
+        reader = make_reader(fh)
+        summary = reader.get_summary()
+        topics = {channel.topic for channel in summary.channels.values()}
+        schema_names = {schema.name for schema in summary.schemas.values()}
+    assert "/heldout/points" in topics
+    assert "foxglove.PointCloud" in schema_names
+
+
 def test_emit_mcap_raises_when_mcap_unavailable(monkeypatch, tmp_path: Path) -> None:
     inner_evidence, heldout_report = _build_run_tree(tmp_path)
 
