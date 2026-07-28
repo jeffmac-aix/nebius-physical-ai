@@ -3674,6 +3674,28 @@
         // If the Lichtblick pane is already the active viewer, keep it in sync.
         if (activeRenderMode === "lichtblick") mountLichtblickIframe(simViz);
       }
+      // Lichtblick persists the last layout in IndexedDB (lichtblick-layouts) and the
+      // selected layout id in localStorage (studio.profile-data). It only applies our
+      // injected default layout (3D point cloud + camera) when NO layout is saved, so a
+      // returning browser keeps showing the stale built-in default (empty 3D). The embed
+      // is same-origin, so clear that persisted layout before (re)mounting to guarantee
+      // our default — and the GPU point cloud — actually render.
+      function resetLichtblickLayoutStorage() {
+        try { window.localStorage.removeItem("studio.profile-data"); } catch (_e) { /* ignore */ }
+        try { window.localStorage.removeItem("studio.layout"); } catch (_e) { /* ignore */ }
+        return new Promise((resolve) => {
+          let settled = false;
+          const finish = () => { if (!settled) { settled = true; resolve(); } };
+          try {
+            const req = window.indexedDB.deleteDatabase("lichtblick-layouts");
+            req.onsuccess = finish;
+            req.onerror = finish;
+            req.onblocked = finish;
+          } catch (_e) { finish(); }
+          setTimeout(finish, 1500);
+        });
+      }
+      let lichtblickResetInFlight = null;
       function mountLichtblickIframe(simViz) {
         const iframe = document.getElementById("lichtblickFrame");
         if (!iframe) return;
@@ -3681,7 +3703,12 @@
         const ready = Boolean(simViz && (simViz.lichtblick_ready || simViz.mcap_uri));
         const src = lichtblickIframeUrlFor(simViz);
         if (iframe.getAttribute("src") !== src) {
-          iframe.setAttribute("src", src);
+          // Neutralize the frame so Lichtblick releases its IndexedDB handle, wipe the
+          // persisted layout so the injected default wins, then mount the real source.
+          try { iframe.setAttribute("src", "about:blank"); } catch (_e) { /* ignore */ }
+          lichtblickResetInFlight = resetLichtblickLayoutStorage().then(() => {
+            iframe.setAttribute("src", src);
+          });
         }
         lichtblickIframeLoaded = true;
         if (placeholder) placeholder.hidden = ready;
