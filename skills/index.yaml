@@ -21,6 +21,9 @@ licenses:
       - cosmos3-setup
       - cosmos3-inference
       - cosmos3-post-training
+  - path: skills/NOTICE-NVIDIA-SKILLS
+    applies_to:
+      - physical-ai-data-factory
 skills:
   - name: agent-development
     category: atomic
@@ -103,7 +106,7 @@ skills:
         contains: "json"
       - type: workflow_yaml
         paths:
-          - npa/workflows/workbench/skypilot/cosmos3-ea-fetch.yaml
+          - npa/src/npa/workflows/skypilot/cosmos3-ea-fetch.yaml
   - name: gpu-selection
     category: atomic
     when_to_use: "Choose or review GPU targets for training, rendering, inference, and workflow YAML resources."
@@ -122,8 +125,8 @@ skills:
     smoke:
       - type: workflow_yaml
         paths:
-          - npa/workflows/workbench/skypilot/bdd100k-pipeline.yaml
-          - npa/workflows/workbench/skypilot/sim-to-real-pipeline.yaml
+          - npa/src/npa/workflows/skypilot/bdd100k-pipeline.yaml
+          - npa/src/npa/workflows/skypilot/sim-to-real-pipeline.yaml
   - name: review-checklist
     category: atomic
     when_to_use: "Code reviews and risk classification."
@@ -142,7 +145,7 @@ skills:
         contains: "workflow"
       - type: workflow_yaml
         paths:
-          - npa/workflows/workbench/skypilot/bdd100k-pipeline.yaml
+          - npa/src/npa/workflows/skypilot/bdd100k-pipeline.yaml
   - name: super-prompt-patterns
     category: atomic
     when_to_use: "Draft, execute, or review Codex super-prompts for this repository."
@@ -166,6 +169,39 @@ skills:
       - type: cli_help
         args: ["workbench", "cosmos", "train", "--help"]
         contains: "serverless"
+  - name: dataset
+    category: tools
+    when_to_use: "Ingest, validate, curate, or query production sensor data as a versioned dataset-of-record (filter by event, location, quality), or wire the dataset-ingest-curate workflow."
+    path: skills/tools/dataset/SKILL.md
+    smoke:
+      - type: cli_help
+        args: ["workbench", "dataset", "ingest", "--help"]
+        contains: "input-path"
+      - type: cli_help
+        args: ["workbench", "dataset", "curate", "--help"]
+        contains: "event"
+      - type: npa_workflow_yaml
+        paths:
+          - npa/workflows/workbench/npa-workflows/dataset-ingest-curate.yaml
+      - type: workflow_yaml
+        paths:
+          - npa/src/npa/workflows/skypilot/dataset-ingest-curate.yaml
+  - name: insights
+    category: tools
+    when_to_use: "Turn the reports/manifests other workbench tools emit into a queryable lineage graph + common metrics store; query/compare metrics, trace artifact lineage, or build a run dashboard."
+    path: skills/tools/insights/SKILL.md
+    smoke:
+      - type: cli_help
+        args: ["workbench", "insights", "query", "--help"]
+        contains: "input-path"
+      - type: cli_help
+        args: ["workbench", "insights", "compare", "--help"]
+        contains: "base-run"
+      - type: npa_workflow_yaml
+        paths:
+          - npa/workflows/workbench/npa-workflows/insights-smoke.yaml
+          - npa/workflows/workbench/npa-workflows/insights-aggregate.yaml
+          - npa/workflows/workbench/npa-workflows/hardening-with-insights.yaml
   - name: fiftyone
     category: tools
     when_to_use: "FiftyOne deployment, dataset curation, visualization, launch, and load-dataset behavior."
@@ -240,7 +276,7 @@ skills:
         contains: "checkpoint"
       - type: workflow_yaml
         paths:
-          - npa/workflows/workbench/skypilot/mjlab-eval.yaml
+          - npa/src/npa/workflows/skypilot/mjlab-eval.yaml
   - name: nebius-infra
     category: tools
     when_to_use: "Runtime configuration, provision-if-absent setup, registry, storage, Kubernetes, and credential assumptions."
@@ -275,7 +311,24 @@ skills:
         contains: "output"
       - type: workflow_yaml
         paths:
-          - npa/workflows/workbench/skypilot/retargeting.yaml
+          - npa/src/npa/workflows/skypilot/retargeting.yaml
+  - name: scenario-gen
+    category: tools
+    when_to_use: "Generate adversarial scenarios via an RL adversary that maximizes failures of a policy-under-test, rank mined hard scenarios, or wire the adversarial-scenario-hardening workflow."
+    path: skills/tools/scenario-gen/SKILL.md
+    smoke:
+      - type: cli_help
+        args: ["workbench", "scenario-gen", "generate", "--help"]
+        contains: "output"
+      - type: cli_help
+        args: ["workbench", "scenario-gen", "rank", "--help"]
+        contains: "output"
+      - type: npa_workflow_yaml
+        paths:
+          - npa/workflows/workbench/npa-workflows/adversarial-scenario-hardening.yaml
+      - type: workflow_yaml
+        paths:
+          - npa/src/npa/workflows/skypilot/scenario-gen-adversarial.yaml
   - name: skypilot-workflows
     category: tools
     when_to_use: "SkyPilot workflow authoring, runner scripts, limitations, and cleanup."
@@ -310,7 +363,7 @@ skills:
     smoke:
       - type: workflow_yaml
         paths:
-          - npa/workflows/workbench/skypilot/cosmos3-text-to-image-inference.yaml
+          - npa/src/npa/workflows/skypilot/cosmos3-text-to-image-inference.yaml
   - name: cosmos3-post-training
     category: workflows
     when_to_use: "Plan or review Cosmos3 supervised fine-tuning and post-training support."
@@ -326,8 +379,8 @@ skills:
     smoke:
       - type: workflow_yaml
         paths:
-          - npa/workflows/workbench/skypilot/sim-to-real-loop.yaml
-          - npa/workflows/workbench/skypilot/sim-to-real-pipeline.yaml
+          - npa/src/npa/workflows/skypilot/sim-to-real-loop.yaml
+          - npa/src/npa/workflows/skypilot/sim-to-real-pipeline.yaml
       - type: cli_help
         args: ["workbench", "workflow", "trigger", "--help"]
         contains: "trigger"
@@ -371,8 +424,8 @@ skills:
         contains: "policy"
       - type: workflow_yaml
         paths:
-          - npa/workflows/workbench/skypilot/isaac-lab-rl-train.yaml
-          - npa/workflows/workbench/skypilot/sonic-train-standalone.yaml
+          - npa/src/npa/workflows/skypilot/isaac-lab-rl-train.yaml
+          - npa/src/npa/workflows/skypilot/sonic-train-standalone.yaml
   - name: byof-onboard
     category: workflows
     when_to_use: "Onboard an OSS repo via BYOF — Ubuntu or Isaac Lab base, registry push, container-verify or sim workloads; NPA agent onboard_solution."
@@ -390,7 +443,7 @@ skills:
           - npa/workflows/workbench/npa-workflows/byof.yaml
       - type: workflow_yaml
         paths:
-          - npa/workflows/workbench/skypilot/byof-container-smoke-rtxpro.yaml
+          - npa/src/npa/workflows/skypilot/byof-container-smoke-rtxpro.yaml
   - name: oss-solution-registry-onboard
     category: workflows
     when_to_use: "Evaluate and onboard an open-source Physical AI solution into the NPA registry/catalog by reading upstream docs, testing real capabilities, and running smoke plus live Nebius validation."
@@ -427,10 +480,11 @@ skills:
           - npa/workflows/workbench/npa-workflows/bdd100k-pipeline.yaml
           - npa/workflows/workbench/npa-workflows/av-night-scene-hardening.yaml
           - npa/workflows/workbench/npa-workflows/cosmos-synth-fanout-curation.yaml
+          - npa/workflows/physical-ai-data-factory.yaml
           - npa/workflows/workbench/npa-workflows/tokenfactory-cosmos-gate.yaml
   - name: generate-npa-workflow
     category: workflows
-    when_to_use: "Design a new creative npa.workflow/v0.0.1 pipeline from the tool catalog (loops, gates, golden YAML)."
+    when_to_use: "Design a new creative npa.workflow/v0.0.1 pipeline from the tool catalog (loops, gates, reference YAML)."
     path: skills/workflows/generate-npa-workflow/SKILL.md
     smoke:
       - type: file_exists
@@ -460,20 +514,37 @@ skills:
     smoke:
       - type: workflow_yaml
         paths:
-          - npa/workflows/workbench/skypilot/bdd100k-pipeline.yaml
-          - npa/workflows/workbench/skypilot/cosmos3-ea-fetch.yaml
-          - npa/workflows/workbench/skypilot/cosmos3-text-to-image-inference.yaml
-          - npa/workflows/workbench/skypilot/isaac-lab-rl-train.yaml
-          - npa/workflows/workbench/skypilot/isaac-lab-rl-sweep.yaml
-          - npa/workflows/workbench/skypilot/mjlab-eval.yaml
-          - npa/workflows/workbench/skypilot/retargeting.yaml
-          - npa/workflows/workbench/skypilot/sim-to-real-loop.yaml
-          - npa/workflows/workbench/skypilot/sim-to-real-pipeline.yaml
-          - npa/workflows/workbench/skypilot/sim-to-real-trigger.yaml
-          - npa/workflows/workbench/skypilot/sonic-eval.yaml
-          - npa/workflows/workbench/skypilot/sonic-export-eval.yaml
-          - npa/workflows/workbench/skypilot/sonic-export.yaml
-          - npa/workflows/workbench/skypilot/sonic-locomotion-finetuning.yaml
-          - npa/workflows/workbench/skypilot/sonic-train-standalone.yaml
-          - npa/workflows/workbench/skypilot/vlm-eval.yaml
-          - npa/workflows/workbench/skypilot/vlm-eval-benchmark.yaml
+          - npa/src/npa/workflows/skypilot/bdd100k-pipeline.yaml
+          - npa/src/npa/workflows/skypilot/cosmos3-ea-fetch.yaml
+          - npa/src/npa/workflows/skypilot/cosmos3-text-to-image-inference.yaml
+          - npa/src/npa/workflows/skypilot/isaac-lab-rl-train.yaml
+          - npa/src/npa/workflows/skypilot/isaac-lab-rl-sweep.yaml
+          - npa/src/npa/workflows/skypilot/mjlab-eval.yaml
+          - npa/src/npa/workflows/skypilot/retargeting.yaml
+          - npa/src/npa/workflows/skypilot/sim-to-real-loop.yaml
+          - npa/src/npa/workflows/skypilot/sim-to-real-pipeline.yaml
+          - npa/src/npa/workflows/skypilot/sim-to-real-trigger.yaml
+          - npa/src/npa/workflows/skypilot/sonic-eval.yaml
+          - npa/src/npa/workflows/skypilot/sonic-export-eval.yaml
+          - npa/src/npa/workflows/skypilot/sonic-export.yaml
+          - npa/src/npa/workflows/skypilot/sonic-locomotion-finetuning.yaml
+          - npa/src/npa/workflows/skypilot/sonic-train-standalone.yaml
+          - npa/src/npa/workflows/skypilot/vlm-eval.yaml
+          - npa/src/npa/workflows/skypilot/vlm-eval-benchmark.yaml
+  - name: physical-ai-data-factory
+    category: workflows
+    when_to_use: "Author, run, submit, or view the NVIDIA Physical AI Data Factory blueprint on Nebius + SkyPilot (no OSMO): annotate -> Cosmos augment -> evaluate/validate gate -> re-label -> FiftyOne curate -> Rerun visualize."
+    path: skills/workflows/physical-ai-data-factory/SKILL.md
+    smoke:
+      - type: npa_workflow_yaml
+        paths:
+          - npa/workflows/physical-ai-data-factory.yaml
+  - name: real-components
+    category: atomic
+    when_to_use: "Ensure every advertised workbench pipeline stage invokes the real component (Cosmos Transfer, FiftyOne, VLM eval), not an echo/manifest stub masquerading as real work."
+    path: skills/atomic/real-components/SKILL.md
+    smoke:
+      - type: file_exists
+        path: npa/tests/orchestration/npa_workflow/test_real_components.py
+      - type: file_exists
+        path: npa/src/npa/workflows/data_factory_stages.py

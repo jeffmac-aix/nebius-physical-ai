@@ -116,10 +116,31 @@ TOOL_CATALOG: dict[str, ToolEntry] = {
             "workbench",
             "cosmos2",
             "transfer",
-            "--input-path",
+            "--input-uri",
             "{{config.trigger_uri}}",
-            "--output-path",
+            "--output-uri",
             "{{config.augment_uri}}",
+            "--run-id",
+            "{{run.id}}",
+        ],
+    ),
+    "workbench.cosmos2.transfer_execute": ToolEntry(
+        name="workbench.cosmos2.transfer_execute",
+        description="Run the REAL Cosmos-Transfer2.5 model (GPU) and upload augmented video + frames to S3.",
+        argv_template=[
+            "npa",
+            "workbench",
+            "cosmos2",
+            "transfer",
+            "--input-uri",
+            "{{config.trigger_uri}}",
+            "--output-uri",
+            "{{config.augment_uri}}",
+            "--run-id",
+            "{{run.id}}",
+            "--configs-uri",
+            "{{config.configs_uri}}",
+            "--execute",
         ],
     ),
     "workbench.sim2real_envgen.raw_shard": ToolEntry(
@@ -294,6 +315,66 @@ TOOL_CATALOG: dict[str, ToolEntry] = {
             ),
         ],
     ),
+    "workbench.scenario_gen.generate": ToolEntry(
+        name="workbench.scenario_gen.generate",
+        description=(
+            "Mine a ranked adversarial scenario set that maximizes failures of a "
+            "policy-under-test via a pluggable adversary backend (Isaac Lab RL "
+            "intended; deterministic heuristic default, GPU-free)."
+        ),
+        argv_template=[
+            "npa",
+            "workbench",
+            "scenario-gen",
+            "generate",
+            "--policy-uri",
+            "{{config.policy_uri}}",
+            "--input-path",
+            "{{config.base_config_uri}}",
+            "--output-path",
+            "{{config.adversarial_set_uri}}",
+            "--task",
+            "{{config.task_name}}",
+            "--num-scenarios",
+            "{{config.num_scenarios}}",
+            "--adversary-steps",
+            "{{config.adversary_steps}}",
+            "--workflow-run",
+            "{{run.id}}",
+        ],
+    ),
+    "workbench.scenario_gen.rank": ToolEntry(
+        name="workbench.scenario_gen.rank",
+        description="Score/rank adversarial scenarios by failure severity + diversity.",
+        argv_template=[
+            "npa",
+            "workbench",
+            "scenario-gen",
+            "rank",
+            "--input-path",
+            "{{config.adversarial_set_uri}}manifest.json",
+            "--output-path",
+            "{{config.ranked_set_uri}}",
+            "--top-k",
+            "{{config.rank_top_k}}",
+            "--workflow-run",
+            "{{run.id}}",
+        ],
+    ),
+    "workbench.scenario_gen.write_hardening_decision": ToolEntry(
+        name="workbench.scenario_gen.write_hardening_decision",
+        description="Write promote/loop decision from the configured failure-rate threshold.",
+        argv_template=[
+            "python3",
+            "-c",
+            (
+                "from npa.orchestration.npa_workflow.decisions import write_decision;"
+                "threshold=float('{{config.failure_rate_threshold}}');"
+                "decision='promote_checkpoint' if threshold >= 0.5 else 'loop_back';"
+                "write_decision('{{config.decision_uri}}', decision)"
+            ),
+        ],
+    ),
     "workbench.rl.report_failure": ToolEntry(
         name="workbench.rl.report_failure",
         description="Write terminal RL failure report when threshold is not met.",
@@ -309,6 +390,194 @@ TOOL_CATALOG: dict[str, ToolEntry] = {
             ),
         ],
     ),
+    "workbench.dataset.ingest": ToolEntry(
+        name="workbench.dataset.ingest",
+        description=(
+            "Ingest raw sensor data, validate against a sensor schema, normalize "
+            "to canonical records, and register a versioned dataset-of-record manifest."
+        ),
+        argv_template=[
+            "npa",
+            "workbench",
+            "dataset",
+            "ingest",
+            "--input-path",
+            "{{config.raw_sensor_uri}}",
+            "--output-path",
+            "{{config.dataset_root_uri}}",
+            "--dataset-id",
+            "{{config.dataset_id}}",
+            "--version",
+            "{{config.dataset_version}}",
+            "--source",
+            "{{config.dataset_source}}",
+            "--workflow-run",
+            "{{run.id}}",
+        ],
+    ),
+    "workbench.dataset.validate": ToolEntry(
+        name="workbench.dataset.validate",
+        description="Validate a dataset manifest against schema + quality thresholds.",
+        argv_template=[
+            "npa",
+            "workbench",
+            "dataset",
+            "validate",
+            "--input-path",
+            "{{config.manifest_uri}}",
+            "--output-path",
+            "{{config.validation_uri}}",
+            "--completeness-min",
+            "{{config.completeness_min}}",
+            "--max-corruption-rate",
+            "{{config.max_corruption_rate}}",
+            "--workflow-run",
+            "{{run.id}}",
+        ],
+    ),
+    "workbench.dataset.curate": ToolEntry(
+        name="workbench.dataset.curate",
+        description="Slice a dataset version by event/location/quality with lineage.",
+        argv_template=[
+            "npa",
+            "workbench",
+            "dataset",
+            "curate",
+            "--input-path",
+            "{{config.manifest_uri}}",
+            "--output-path",
+            "{{config.curated_root_uri}}",
+            "--event",
+            "{{config.event_of_interest}}",
+            "--location",
+            "{{config.location_of_interest}}",
+            "--quality-metric",
+            "{{config.quality_metric}}",
+            "--min-quality",
+            "{{config.min_quality}}",
+            "--workflow-run",
+            "{{run.id}}",
+        ],
+    ),
+    "workbench.dataset.query": ToolEntry(
+        name="workbench.dataset.query",
+        description="Query dataset records by event/location/quality facets (LanceDB-backed).",
+        argv_template=[
+            "npa",
+            "workbench",
+            "dataset",
+            "query",
+            "--input-path",
+            "{{config.curated_manifest_uri}}",
+            "--event",
+            "{{config.event_of_interest}}",
+            "--location",
+            "{{config.location_of_interest}}",
+            "--lancedb-endpoint",
+            "{{config.lancedb_endpoint}}",
+        ],
+    ),
+    "workbench.dataset.write_quality_decision": ToolEntry(
+        name="workbench.dataset.write_quality_decision",
+        description="Write accept/reject decision from a validation quality gate.",
+        argv_template=[
+            "python3",
+            "-c",
+            (
+                "from npa.orchestration.npa_workflow.decisions import write_decision;"
+                "threshold=float('{{config.quality_gate}}');"
+                "decision='promote_checkpoint' if threshold >= 0.5 else 'loop_back';"
+                "write_decision('{{config.decision_uri}}', decision)"
+            ),
+        ],
+    ),
+    "workbench.dataset.report_rejection": ToolEntry(
+        name="workbench.dataset.report_rejection",
+        description="Write terminal rejection report when a dataset breaches the quality gate.",
+        argv_template=[
+            "python3",
+            "-c",
+            (
+                "import json;from pathlib import Path;"
+                "payload={'validation_uri':'{{config.validation_uri}}','decision_uri':'{{config.decision_uri}}',"
+                "'status':'rejected'};"
+                "Path('/tmp/npa-dataset-rejection.json').write_text(json.dumps(payload));"
+                "print(json.dumps(payload))"
+            ),
+        ],
+    ),
+    "workbench.insights.record": ToolEntry(
+        name="workbench.insights.record",
+        description=(
+            "Record metric emissions + lineage edges (from an upstream metrics "
+            "JSON) into the append-only insights store keyed by run id."
+        ),
+        argv_template=[
+            "npa",
+            "workbench",
+            "insights",
+            "record",
+            "--input-path",
+            "{{config.metrics_input_uri}}",
+            "--output-path",
+            "{{config.insights_store_uri}}",
+            "--workflow-run",
+            "{{run.id}}",
+        ],
+    ),
+    "workbench.insights.ingest_run": ToolEntry(
+        name="workbench.insights.ingest_run",
+        description=(
+            "Non-invasively scan an S3 run prefix for known tool manifests/reports "
+            "and extract their metrics + provenance into the insights store."
+        ),
+        argv_template=[
+            "npa",
+            "workbench",
+            "insights",
+            "ingest-run",
+            "--input-path",
+            "{{config.run_prefix_uri}}",
+            "--output-path",
+            "{{config.insights_store_uri}}",
+            "--workflow",
+            "{{config.workflow_name}}",
+            "--workflow-run",
+            "{{run.id}}",
+        ],
+    ),
+    "workbench.insights.compare": ToolEntry(
+        name="workbench.insights.compare",
+        description="Compare a metric set between two runs; flag regressed/improved.",
+        argv_template=[
+            "npa",
+            "workbench",
+            "insights",
+            "compare",
+            "--input-path",
+            "{{config.insights_store_uri}}",
+            "--base-run",
+            "{{config.base_run}}",
+            "--candidate-run",
+            "{{config.candidate_run}}",
+            "--output-path",
+            "{{config.comparison_uri}}",
+        ],
+    ),
+    "workbench.insights.dashboard": ToolEntry(
+        name="workbench.insights.dashboard",
+        description="Emit a dashboard rollup JSON + self-contained static HTML report.",
+        argv_template=[
+            "npa",
+            "workbench",
+            "insights",
+            "dashboard",
+            "--input-path",
+            "{{config.insights_store_uri}}",
+            "--output-path",
+            "{{config.dashboard_uri}}",
+        ],
+    ),
     "workbench.lancedb.import_bdd100k": ToolEntry(
         name="workbench.lancedb.import_bdd100k",
         description="Import BDD100K rows into LanceDB through the workbench service.",
@@ -319,6 +588,8 @@ TOOL_CATALOG: dict[str, ToolEntry] = {
             "import-bdd100k",
             "--source",
             "{{config.source_uri}}",
+            "--synthetic",
+            "{{config.synthetic_rows}}",
             "--table",
             "{{config.lance_table}}",
             "--lance-uri",
@@ -691,6 +962,8 @@ TOOL_CATALOG: dict[str, ToolEntry] = {
             "{{config.checkpoint_uri}}",
             "--data-path",
             "{{config.data_uri}}",
+            "--output-path",
+            "{{config.training_uri}}",
             "--output",
             "json",
         ],

@@ -50,6 +50,16 @@ _NON_STOCK_ARTIFACT_DISCOVERY_RE = re.compile(
 
 _INTENT_RULES: list[tuple[str, re.Pattern[str]]] = [
     (
+        "drive_sim2real",
+        re.compile(
+            r"\b(?:drive|orchestrate|automate|auto[- ]?run)\b.{0,80}\b(?:sim\s*[- ]?2\s*[- ]?real|sim2real)\b"
+            r"|\bautonomous(?:ly)?\b.{0,80}\b(?:sim\s*[- ]?2\s*[- ]?real|sim2real)\b"
+            r"|\b(?:sim\s*[- ]?2\s*[- ]?real|sim2real)\b.{0,60}\b(?:outer\s+loop)\b.{0,40}\b(?:drive|automate|autonomous|self[- ]?driv\w*)\b"
+            r"|\b(?:close|drive)\b.{0,40}\b(?:the\s+)?(?:outer\s+)?loop\b.{0,60}\b(?:sim\s*[- ]?2\s*[- ]?real|sim2real)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
         "start_sim2real",
         re.compile(
             r"\b(?:start|run|launch|execute|kick\s*off|submit)\b"
@@ -106,6 +116,21 @@ _INTENT_RULES: list[tuple[str, re.Pattern[str]]] = [
             r"\b(load|show|open)\b.*\b(franka|demo)\b"
             r"|\b(franka|demo)\b.*\b(load|rerun|show|view)\b"
             r"|\bload franka\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "create_data_factory_workflow",
+        re.compile(
+            r"\b(?:create|generate|build|make|draft|compose|write|author)\b"
+            r".{0,140}\b(?:paidf|physical[\s-]?ai[\s-]?data[\s-]?factory|data[\s-]?factory)\b"
+            r"|\b(?:paidf|physical[\s-]?ai[\s-]?data[\s-]?factory)\b.{0,80}\b(?:workflow|yaml|spec|pipeline|blueprint)\b"
+            r"|\bdata[\s-]?factory\b.{0,80}\b(?:workflow|yaml|spec|pipeline|blueprint)\b"
+            r"|\b(?:create|generate|build|make|draft|compose|write|author)\b"
+            r".{0,120}\bvideo[\s-]?(?:data[\s-]?)?augmentation\b.{0,80}\b(?:workflow|yaml|spec|pipeline)\b"
+            r"|\baugment\b.{0,80}\b(?:fan[\s-]?out|fanout|multiply|amplify)\b.{0,80}\b(?:scenario|scenarios|variant|variants)\b"
+            r"|\b(?:fan[\s-]?out|fanout|multiply|amplify)\b.{0,60}\b(?:scenario|scenarios|variant|variants)\b.{0,80}\baugment\b"
+            r"|\b(?:cosmos[\s-]?transfer)\b.{0,80}\b(?:multiply|fan[\s-]?out|scenarios?|variants?)\b.{0,80}\b(?:workflow|yaml|spec|pipeline)\b",
             re.IGNORECASE,
         ),
     ),
@@ -184,7 +209,16 @@ _INTENT_RULES: list[tuple[str, re.Pattern[str]]] = [
             r".{0,120}\bgpu\b"
             r".{0,120}\b(?:workflow|yaml|spec)\b"
             r"|\b(?:generate|create|draft|write|show)\b.{0,80}\b(?:example|simple|minimal)?\b.{0,120}\bworkflow\b.{0,80}\b(?:yaml|spec)\b"
-            r"|\bworkflow\b.{0,80}\b(?:yaml|spec)\b.{0,80}\b(?:example|simple|minimal)\b",
+            r"|\bworkflow\b.{0,80}\b(?:yaml|spec)\b.{0,80}\b(?:example|simple|minimal)\b"
+            # Author requests that say "npa yaml/spec/pipeline" or "N-step ..." without
+            # the literal word "workflow" (e.g. "write me a 2 step npa yaml that uses cosmos").
+            r"|\b(?:create|generate|build|make|draft|compose|write)\b"
+            r".{0,60}\b(?:\d+[\s-]?step|multi[\s-]?step|single[\s-]?step)\b"
+            r".{0,60}\b(?:npa[\s.-]?)?(?:workflow|yaml|spec|pipeline)\b"
+            r"|\b(?:create|generate|build|make|draft|compose|write)\b"
+            r".{0,60}\bnpa\b.{0,20}\b(?:workflow|yaml|spec|pipeline)\b"
+            r"|\b(?:create|generate|build|make|draft|compose|write)\b"
+            r".{0,80}\b(?:workflow|yaml|spec|pipeline)\b.{0,40}\bthat uses\b",
             re.IGNORECASE,
         ),
     ),
@@ -395,6 +429,12 @@ _INTENT_RULES: list[tuple[str, re.Pattern[str]]] = [
 ]
 
 INTENT_APIS: dict[str, list[str]] = {
+    "drive_sim2real": [
+        "agent/sim2real/drive",
+        "workflows/sim2real/submit",
+        "workflows/sim2real/status",
+        "workflows/sim2real/runs/{run_id}",
+    ],
     "start_sim2real": ["workflows/sim2real/submit"],
     "watch_sim": ["sim-viz/status", "sim-viz/rrd", "sim-viz/rrd-blob", "workflows/sim2real/status"],
     "find_artifacts": ["artifacts/runs", "artifacts/run/{run_id}", "sim-viz/load-artifact", "sim-viz/status"],
@@ -403,6 +443,7 @@ INTENT_APIS: dict[str, list[str]] = {
     "create_gate_workflow": ["workflows/draft", "workflows/validate", "workflows/plan"],
     "create_loop_gate_workflow": ["workflows/draft", "workflows/validate", "workflows/plan"],
     "create_rl_policy_workflow": ["workflows/draft", "workflows/validate", "workflows/plan"],
+    "create_data_factory_workflow": ["workflows/draft", "workflows/validate", "workflows/plan"],
     "onboard_solution": ["tools", "workflows/validate", "workflows/plan"],
     "infra_backends": ["infra/k8s", "infra/provision", "workflows/submit"],
     "mk8s_provision": ["infra/mk8s", "infra/mk8s/provision", "infra/k8s"],
@@ -568,14 +609,39 @@ def _success_gated_watch_request(lowered: str) -> bool:
     return has_rerun_surface and has_success_gate
 
 
+# Metric / resource / comparison qualifiers that turn a "runs" question into an
+# insights metrics-store query rather than a grounded run-history listing. When
+# one of these appears on a run-listing / artifact turn, ``match_chat_intent``
+# falls through (returns None) so the insights tool loop answers from real
+# ingested data. This only inspects the QUERY text — never any run id or value.
+METRIC_RESOURCE_QUALIFIER_RE = re.compile(
+    r"\b(?:gpus?|accelerators?|vram|metrics?|regress(?:ed|ion|ions)?|compare|comparison|"
+    r"delta|deltas|success[ _-]?rate|collision(?:[ _-]?rate)?|failure[ _-]?rate|"
+    r"throughput|latency|severity)\b"
+    r"|\bby\b.{0,20}\bcounts?\b"
+    r"|\b(?:more|greater|less|fewer|at\s+least|at\s+most|over|under)\b.{0,20}\d+.{0,20}\b(?:gpus?|steps?)\b",
+    re.IGNORECASE,
+)
+
+# Grounded intents that only enumerate run/recording history; a metric/resource
+# qualifier means the operator wants insights, not this history listing.
+_RUN_LISTING_INTENTS = frozenset({"find_artifacts", "list_recordings"})
+
+
+def has_metric_resource_qualifier(text: str) -> bool:
+    """True when the turn carries a metric/resource/comparison qualifier."""
+    return bool(METRIC_RESOURCE_QUALIFIER_RE.search(str(text or "")))
+
+
 def match_chat_intent(user_text: str) -> str | None:
     text = str(user_text or "").strip()
     if not text:
         return None
     lowered = _normalize_intent_text(text)
+    metric_qualified = has_metric_resource_qualifier(lowered)
     if re.search(r"\b(soperator|slurm(?:[- ]on[- ]k(?:ubernetes|8s))?|slurm cluster|deploy\s+slurm|slurm\s+deploy)\b", text, re.IGNORECASE):
         return "soperator"
-    if _NON_STOCK_ARTIFACT_DISCOVERY_RE.search(text) or _NON_STOCK_ARTIFACT_DISCOVERY_RE.search(lowered):
+    if (_NON_STOCK_ARTIFACT_DISCOVERY_RE.search(text) or _NON_STOCK_ARTIFACT_DISCOVERY_RE.search(lowered)) and not metric_qualified:
         return "find_artifacts"
     if _success_gated_watch_request(lowered):
         return "watch_sim"
@@ -595,6 +661,10 @@ def match_chat_intent(user_text: str) -> str | None:
         return "watch_sim"
     for intent, pattern in _INTENT_RULES:
         if pattern.search(text) or pattern.search(lowered):
+            # A metric/resource/comparison qualifier means a run-listing turn is
+            # really an insights query — fall through so the tool loop answers it.
+            if intent in _RUN_LISTING_INTENTS and metric_qualified:
+                continue
             return intent
     return None
 
@@ -1165,6 +1235,30 @@ def format_find_artifacts() -> str:
     )
 
 
+def format_drive_sim2real_guidance(state: dict[str, Any]) -> str:
+    """Grounded guidance for the autonomous Sim2Real drive (confirmation-gated)."""
+    sim_viz = _sim_viz(state)
+    run_id = str(sim_viz.get("run_id") or "").strip() or "none"
+    stage = str(sim_viz.get("stage") or "idle").strip() or "idle"
+    return "\n".join(
+        [
+            "**Autonomous Sim2Real drive** (agent-orchestrated outer loop):",
+            f"- **active_run_id**: `{run_id}`  **stage**: `{stage}`",
+            "- The agent composes: launch sim → run eval → read gate metrics → "
+            "diagnose failure mode → adjust config → re-run.",
+            "- Each iteration surfaces a **promote_checkpoint** / **loop_back** decision "
+            "with the reason (`success_rate` vs `threshold`).",
+            "- **GPU-spending** — every launch passes through a confirmation gate. "
+            "The drive is *proposed* first; re-send with the returned confirmation token to execute.",
+            "- A stage is marked complete only when `workflows/sim2real/status` / "
+            "`runs/{run_id}` confirms it — no fabricated run data.",
+            "- Drive it: `POST /api/agent/sim2real/drive` with "
+            "`{ \"config\": {\"run_id\": ..., \"threshold\": 0.8, \"max_iterations\": 3}, \"confirm_token\": ... }`.",
+            "- Read-only observation stays on `GET /api/workflows/sim2real/status`.",
+        ]
+    )
+
+
 def build_grounded_reply(
     intent: str,
     state: dict[str, Any],
@@ -1174,6 +1268,8 @@ def build_grounded_reply(
     loaded_franka_now: bool = False,
     default_cameras: list[dict[str, Any]] | None = None,
 ) -> str:
+    if intent == "drive_sim2real":
+        return format_drive_sim2real_guidance(state)
     if intent == "watch_sim":
         sim_viz = _sim_viz(state)
         iframe_url = str(sim_viz.get("rerun_iframe_url") or "/rerun/").strip() or "/rerun/"
@@ -1255,6 +1351,7 @@ def build_grounded_reply(
         "create_gate_workflow",
         "create_loop_gate_workflow",
         "create_rl_policy_workflow",
+        "create_data_factory_workflow",
     }:
         draft = state.get("workflow_draft", {})
         if not isinstance(draft, dict):
@@ -1281,6 +1378,8 @@ def build_grounded_reply(
                     template = "loop-gate"
                 elif intent == "create_rl_policy_workflow":
                     template = "rl-policy-success"
+                elif intent == "create_data_factory_workflow":
+                    template = "physical-ai-data-factory"
                 else:
                     template = "two-step"
             return format_generate_workflow(yaml_text, validation, template=template, plan=plan, runnable=runnable)
