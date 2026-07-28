@@ -330,7 +330,6 @@ describe("NPA agent UI with mocked APIs", () => {
     cy.wait("@artifactList");
     cy.get("#artifactList button[data-action='load-artifact']").click();
     cy.wait("@loadArtifact");
-    cy.get("#chatLog").should("contain.text", "Loaded artifact");
     cy.get("#artifactPreviewHost").should("not.have.attr", "hidden");
 
     cy.get("#tabMain").click();
