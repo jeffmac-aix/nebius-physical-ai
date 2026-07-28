@@ -98,7 +98,6 @@ describe("Lichtblick MCAP viewer (mocked smoke)", () => {
 
   it("filters discovered artifacts to the MCAP (Lichtblick) type", () => {
     cy.get("#tabRerun").click();
-    cy.get("#artifactPrefix").clear().type("sim2real-b/custom-assets");
     cy.get("#artifactTypeFilter").select("mcap");
     cy.get("#artifactRefreshRuns").click();
     cy.wait("@artifactRuns");
@@ -113,7 +112,6 @@ describe("Lichtblick MCAP viewer (mocked smoke)", () => {
 
   it("loads an MCAP artifact into the Lichtblick pane with an mcap summary", () => {
     cy.get("#tabRerun").click();
-    cy.get("#artifactPrefix").clear().type("sim2real-b/custom-assets");
     cy.get("#artifactRefreshRuns").click();
     cy.wait("@artifactRuns");
     cy.get("#runIdSelect").select(NON_STOCK_RUN_ID);

@@ -152,7 +152,6 @@ describe("NPA agent UI with mocked APIs", () => {
   it("loads a sim2real.mcap artifact into the embedded Lichtblick viewer", () => {
     cy.get("#tabRerun").click();
     cy.get("#panelRerun").should("have.class", "is-active");
-    cy.get("#artifactPrefix").clear().type("sim2real-b/custom-assets");
     cy.get("#artifactRefreshRuns").click();
     cy.wait("@artifactRuns");
     cy.get("#runIdSelect").select(NON_STOCK_RUN_ID);
