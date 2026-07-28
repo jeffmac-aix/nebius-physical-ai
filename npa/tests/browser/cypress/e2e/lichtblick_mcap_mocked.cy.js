@@ -116,7 +116,7 @@ describe("Lichtblick MCAP viewer (mocked smoke)", () => {
     cy.wait("@artifactRuns");
     cy.get("#runIdSelect").select(NON_STOCK_RUN_ID);
     cy.wait("@nonStockArtifactList");
-    cy.get(`#artifactList button[data-key="${NON_STOCK_RUN_ID}/reports/sim2real.mcap"]`).click();
+    cy.get(`#artifactList button[data-action="load-artifact"][data-key="${NON_STOCK_RUN_ID}/reports/sim2real.mcap"]`).click();
     cy.wait("@loadArtifact");
     cy.get("#renderModeLichtblick").should("have.class", "is-active");
     cy.get("#viewerPaneLichtblick").should("have.class", "is-active-viewer");

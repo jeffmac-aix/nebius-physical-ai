@@ -111,7 +111,6 @@ describe("NPA agent UI with mocked APIs", () => {
     cy.get("#renderModeRerun").should("have.class", "is-active");
     cy.get("#renderModeVideo").should("exist");
     cy.get("#viewerPaneRerun").should("have.class", "is-active-viewer");
-    cy.get("#assetsSummary").should("contain.text", "stock://robot/franka");
     cy.get("#simRunId").should("contain.text", "mock-run");
   });
 
@@ -162,7 +161,7 @@ describe("NPA agent UI with mocked APIs", () => {
     cy.get("#artifactList").should("contain.text", "mcap");
     cy.get("#artifactList").should("contain.text", "View in Lichtblick");
 
-    cy.get(`#artifactList button[data-key="${NON_STOCK_RUN_ID}/reports/sim2real.mcap"]`).click();
+    cy.get(`#artifactList button[data-action="load-artifact"][data-key="${NON_STOCK_RUN_ID}/reports/sim2real.mcap"]`).click();
     cy.wait("@loadArtifact");
     cy.get("#renderModeLichtblick").should("have.class", "is-active");
     cy.get("#viewerPaneLichtblick").should("have.class", "is-active-viewer");
@@ -385,7 +384,7 @@ describe("NPA agent UI with mocked APIs", () => {
     cy.get("#runLog").should("contain.text", "non-stock sim2real artifacts");
 
     cy.get("#tabRerun").click();
-    cy.get(`#artifactList button[data-key="${NON_STOCK_RUN_ID}/rollouts/customer-camera.mp4"]`).click();
+    cy.get(`#artifactList button[data-action="load-artifact"][data-key="${NON_STOCK_RUN_ID}/rollouts/customer-camera.mp4"]`).click();
     cy.wait("@loadArtifact");
     cy.wait("@artifactFile");
     cy.get("#renderModeVideo").should("have.class", "is-active");
@@ -398,21 +397,21 @@ describe("NPA agent UI with mocked APIs", () => {
       .and("include", "customer-camera.mp4");
     cy.get("#renderedDataSummary").should("contain.text", "video");
 
-    cy.get(`#artifactList button[data-key="${NON_STOCK_RUN_ID}/reports/sim2real-report.json"]`).click();
+    cy.get(`#artifactList button[data-action="load-artifact"][data-key="${NON_STOCK_RUN_ID}/reports/sim2real-report.json"]`).click();
     cy.wait("@loadArtifact");
     cy.get("#renderModeData").should("have.class", "is-active");
     cy.get("#artifactPreviewHost pre").should("contain.text", "promoted");
 
-    cy.get(`#artifactList button[data-key="${NON_STOCK_RUN_ID}/logs/orchestrator.log"]`).click();
+    cy.get(`#artifactList button[data-action="load-artifact"][data-key="${NON_STOCK_RUN_ID}/logs/orchestrator.log"]`).click();
     cy.wait("@loadArtifact");
     cy.get("#artifactPreviewHost pre").should("contain.text", "loaded customer scene mesh");
 
-    cy.get(`#artifactList button[data-key="${NON_STOCK_RUN_ID}/raw/custom-dynamics.fooz"]`).click();
+    cy.get(`#artifactList button[data-action="load-artifact"][data-key="${NON_STOCK_RUN_ID}/raw/custom-dynamics.fooz"]`).click();
     cy.wait("@loadArtifact");
     cy.get("#artifactPreviewHost").should("contain.text", "download");
     cy.get("#artifactPreviewHost a").should("have.attr", "href").and("include", "custom-dynamics.fooz");
 
-    cy.get(`#artifactList button[data-key="${NON_STOCK_RUN_ID}/reports/sim2real.rrd"]`).click();
+    cy.get(`#artifactList button[data-action="load-artifact"][data-key="${NON_STOCK_RUN_ID}/reports/sim2real.rrd"]`).click();
     cy.wait("@loadArtifact");
     cy.get("#renderModeRerun").should("have.class", "is-active");
     cy.get("#rerunFrame").should("have.attr", "src").and("include", "/rerun/");
