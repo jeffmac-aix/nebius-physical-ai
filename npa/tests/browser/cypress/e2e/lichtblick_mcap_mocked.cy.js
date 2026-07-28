@@ -70,6 +70,20 @@ describe("Lichtblick MCAP viewer (mocked smoke)", () => {
     });
   });
 
+  it("uses Lichtblick-appropriate CTA copy (never Rerun) on the Lichtblick tab", () => {
+    // Regression for the reported bug: the shared CTA banner said "No run-specific
+    // Rerun recording yet" while the Lichtblick tab was active. The banner copy
+    // must track the active render mode and never mention Rerun in Lichtblick mode.
+    cy.get("#tabRerun").click();
+    cy.get("#renderModeLichtblick").click();
+    cy.get("#viewerPaneLichtblick").should("have.class", "is-active-viewer");
+    cy.get("#simvizCta")
+      .invoke("text")
+      .should((text) => {
+        expect(text).to.not.match(/Rerun recording/i);
+      });
+  });
+
   it("decodes the iframe ds.url to the co-served recording path", () => {
     cy.get("#tabRerun").click();
     cy.get("#renderModeLichtblick").click();

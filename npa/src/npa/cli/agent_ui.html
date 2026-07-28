@@ -3311,6 +3311,7 @@
       let mountedRerunRunKey = "";
       let lichtblickIframeLoaded = false;
       let currentLichtblickSimViz = null;
+      let lastSimVizStatus = null;
       let rerunEnsureInFlight = null;
       let activeRunId = "";
       let activeArtifactRender = "";
@@ -3595,6 +3596,40 @@
         host.innerHTML = "";
       }
       let activeRenderMode = "rerun";
+      function updateSimvizCta(simViz) {
+        // The CTA banner is shared across viewer tabs, so its copy must track the
+        // active render mode. Previously it always used Rerun wording, so the
+        // Lichtblick tab showed "No run-specific Rerun recording yet" — the bug
+        // in the reported screenshot. Keep each mode's message self-consistent.
+        const cta = document.getElementById("simvizCta");
+        if (!cta) return;
+        const status = simViz || lastSimVizStatus || {};
+        if (activeRenderMode === "lichtblick") {
+          const ready = Boolean(status.lichtblick_ready || status.mcap_uri);
+          // Always set Lichtblick-appropriate copy so the shared banner never
+          // retains stale Rerun wording from a previous tab, even when hidden.
+          cta.textContent = ready
+            ? "Lichtblick (MCAP) recording loaded: camera, reward/advantage signals, " +
+              "and the GPU 3D point cloud play in the panels below."
+            : "No run-specific Lichtblick (MCAP) recording yet. Load a run with a " +
+              "reports/sim2real.mcap to play its camera, reward/advantage signals, and " +
+              "GPU 3D point cloud here.";
+          cta.hidden = ready;
+          return;
+        }
+        if (activeRenderMode !== "rerun") {
+          // Media panes (video/image/data) render inline; no Rerun/Lichtblick CTA.
+          cta.hidden = true;
+          return;
+        }
+        const ready = Boolean(status.rerun_ready || status.rrd_uri);
+        cta.hidden = ready && rerunIframeLoaded;
+        if (!ready) {
+          cta.textContent =
+            "No run-specific Rerun recording yet. Use the Run status/logs panel below " +
+            "for stage progress and result.";
+        }
+      }
       function setRenderMode(mode) {
         const next = String(mode || "rerun");
         activeRenderMode = ["video", "image", "data", "lichtblick"].includes(next) ? next : "rerun";
@@ -3618,6 +3653,7 @@
         if (isLichtblick) {
           mountLichtblickIframe(currentLichtblickSimViz || {});
         }
+        updateSimvizCta(lastSimVizStatus);
       }
       // --- Lichtblick (Foxglove-compatible MCAP viewer) embed ---------------
       function lichtblickIframeUrlFor(simViz) {
@@ -4735,14 +4771,9 @@
           document.getElementById("simCamera").textContent = String(simViz.camera || "workspace");
           updateRenderedDataSummary(simViz);
           activeArtifactRender = String((simViz && simViz.artifact_render) || activeArtifactRender || "");
-          const cta = document.getElementById("simvizCta");
           const ready = Boolean(simViz.rerun_ready || simViz.rrd_uri);
-          if (cta) {
-            cta.hidden = ready && rerunIframeLoaded;
-            if (!ready) {
-              cta.textContent = "No run-specific Rerun recording yet. Use the Run status/logs panel below for stage progress and result.";
-            }
-          }
+          lastSimVizStatus = simViz || lastSimVizStatus;
+          updateSimvizCta(simViz);
           if (activeArtifactRender && activeArtifactRender !== "rerun") {
             // Keep the Rerun iframe mounted under the media pane; authenticated blob
             // preview handles basic-auth so <video>/<img> can play without 401s.
