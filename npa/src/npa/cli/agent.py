@@ -1611,6 +1611,81 @@ def _agent_public_login_form_html(auth_user: str) -> str:
     </script>"""
 
 
+# Placeholder token the Lichtblick web bundle ships in its index.html inline
+# script: ``LICHTBLICK_SUITE_DEFAULT_LAYOUT = [/*...PLACEHOLDER*/][0];``. Replacing
+# the comment with a layout object is the upstream-supported self-hosting hook, so
+# the embedded viewer opens with the sim2real point cloud + camera already shown
+# (Lichtblick otherwise hides point-cloud topics and picks no image topic).
+LICHTBLICK_DEFAULT_LAYOUT_PLACEHOLDER = "/*LICHTBLICK_SUITE_DEFAULT_LAYOUT_PLACEHOLDER*/"
+
+
+def _lichtblick_default_layout_json() -> str:
+    """Return the compact JSON for the embedded viewer's default layout.
+
+    A 3D panel with ``/heldout/points`` made visible (colored by its RGB fields)
+    and framed on the workspace, alongside an Image panel bound to ``/camera``. The
+    JSON is single-quote-free so it can be injected as an nginx ``sub_filter``
+    replacement without escaping.
+    """
+
+    layout = {
+        "configById": {
+            "3D!npasim2real": {
+                "cameraState": {
+                    "distance": 7.0,
+                    "perspective": True,
+                    "phi": 55.0,
+                    "target": [0.0, 0.0, 0.0],
+                    # Orbit around the fixed-camera reconstruction's workspace
+                    # centroid so the cloud is framed on load (follow-none).
+                    "targetOffset": [2.3, -1.2, -0.15],
+                    "thetaOffset": 45.0,
+                    "fovy": 45.0,
+                    "near": 0.1,
+                    "far": 5000.0,
+                },
+                "followTf": "sim2real",
+                "followMode": "follow-none",
+                "scene": {},
+                "topics": {
+                    "/heldout/points": {
+                        "visible": True,
+                        "colorMode": "rgba-fields",
+                        "pointSize": 4.0,
+                    }
+                },
+                "layers": {
+                    "npa-grid": {
+                        "visible": True,
+                        "frameLocked": True,
+                        "label": "Grid",
+                        "instanceId": "npa-grid",
+                        "layerId": "foxglove.Grid",
+                        "size": 10,
+                        "divisions": 10,
+                        "lineWidth": 1,
+                        "color": "#248eff",
+                        "position": [0.0, 0.0, 0.0],
+                        "rotation": [0.0, 0.0, 0.0],
+                        "order": 1,
+                    }
+                },
+            },
+            "Image!npacamera": {"imageMode": {"imageTopic": "/camera"}},
+        },
+        "globalVariables": {},
+        "userNodes": {},
+        "playbackConfig": {"speed": 1.0},
+        "layout": {
+            "first": "3D!npasim2real",
+            "second": "Image!npacamera",
+            "direction": "row",
+            "splitPercentage": 62,
+        },
+    }
+    return json.dumps(layout, separators=(",", ":"))
+
+
 def _nginx_agent_site_body(
     *,
     backend_port: int,
@@ -1618,6 +1693,8 @@ def _nginx_agent_site_body(
     lichtblick_port: int = DEFAULT_LICHTBLICK_PORT,
 ) -> str:
     """Shared nginx locations for the agent UI (HTTP and HTTPS server blocks)."""
+    lichtblick_default_layout = _lichtblick_default_layout_json()
+    lichtblick_layout_placeholder = LICHTBLICK_DEFAULT_LAYOUT_PLACEHOLDER
     return f"""  auth_basic "NPA Agent";
   auth_basic_user_file /etc/nginx/.npa-agent-htpasswd;
   # Describe-this / multimodal chat posts JPEG data-URLs; default 1m rejects them (413 → browser Failed to fetch).
@@ -1709,6 +1786,24 @@ def _nginx_agent_site_body(
     # readable (CORS-exposed) response header, else "Support for HTTP Range request" fails.
     add_header Access-Control-Expose-Headers "Accept-Ranges, Content-Length, Content-Range" always;
     add_header Cross-Origin-Resource-Policy "cross-origin" always;
+  }}
+  location = /lichtblick/ {{
+    # Exact-match the viewer document so we can inject the sim2real default layout
+    # into its index.html (the point cloud + camera show without manual topic
+    # enabling). Assets keep long caching via the prefix location below.
+    auth_basic off;
+    proxy_pass http://127.0.0.1:{lichtblick_port}/;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    # Force an uncompressed upstream response so sub_filter can rewrite the HTML.
+    proxy_set_header Accept-Encoding "";
+    proxy_connect_timeout 30s;
+    proxy_read_timeout 300s;
+    proxy_send_timeout 300s;
+    sub_filter_once on;
+    sub_filter_types text/html;
+    sub_filter '{lichtblick_layout_placeholder}' '{lichtblick_default_layout}';
+    add_header Cache-Control "no-store" always;
   }}
   location /lichtblick/ {{
     auth_basic off;

@@ -3,6 +3,7 @@ import {
   firstMcapPngPayload,
   mcapCameraTopicCount,
   mcapHasCompressedImage,
+  mcapHasFrameTransform,
   mcapHasHeldoutCamera,
   mcapHasPointCloud,
 } from "../support/e2e";
@@ -93,7 +94,27 @@ describe("Lichtblick MCAP viewer (live system)", () => {
         expect(mcapCameraTopicCount(body), "camera topic occurrences").to.be.greaterThan(4);
         // GPU-reconstructed 3D point cloud for the 3D panel.
         expect(mcapHasPointCloud(body), "has foxglove.PointCloud on /heldout/points").to.be.true;
+        // A coordinate transform so the 3D panel can place the point cloud.
+        expect(mcapHasFrameTransform(body), "has foxglove.FrameTransform on /tf").to.be.true;
       });
+    });
+  });
+
+  it("injects a default layout so the 3D point cloud + camera show without setup", () => {
+    // The embedded viewer document must carry the self-hosted default layout that
+    // makes /heldout/points visible in the 3D panel and binds /camera to the Image
+    // panel — otherwise Lichtblick opens with the point cloud hidden (empty 3D).
+    agentReq("/lichtblick/", { failOnStatusCode: false }).then((resp) => {
+      expect([200, 304]).to.include(resp.status);
+      const html = String(resp.body || "");
+      expect(html, "LICHTBLICK_SUITE_DEFAULT_LAYOUT global").to.include(
+        "LICHTBLICK_SUITE_DEFAULT_LAYOUT",
+      );
+      expect(html, "placeholder replaced with a real layout").to.not.include(
+        "LICHTBLICK_SUITE_DEFAULT_LAYOUT_PLACEHOLDER",
+      );
+      expect(html, "3D panel shows the point cloud topic").to.include("/heldout/points");
+      expect(html, "Image panel bound to the camera").to.include('"imageTopic":"/camera"');
     });
   });
 

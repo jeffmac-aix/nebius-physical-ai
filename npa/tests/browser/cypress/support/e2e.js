@@ -729,6 +729,11 @@ function mcapHasPointCloud(binaryBody) {
   return text.indexOf("foxglove.PointCloud") >= 0 && text.indexOf("/heldout/points") >= 0;
 }
 
+function mcapHasFrameTransform(binaryBody) {
+  const text = String(binaryBody || "");
+  return text.indexOf("foxglove.FrameTransform") >= 0 && text.indexOf("/tf") >= 0;
+}
+
 function firstMcapPngPayload(binaryBody) {
   // json.dumps emits ", " / ": " separators, so allow optional whitespace.
   const match = String(binaryBody || "").match(
@@ -809,6 +814,7 @@ export {
   GENERIC_WORKFLOW_YAML,
   mcapCameraTopicCount,
   mcapHasCompressedImage,
+  mcapHasFrameTransform,
   mcapHasHeldoutCamera,
   mcapHasPointCloud,
   NON_STOCK_ARTIFACTS,

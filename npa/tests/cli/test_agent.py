@@ -379,6 +379,25 @@ def test_bootstrap_embeds_lichtblick_viewer() -> None:
     assert "lichtblick embed probe" in source
 
 
+def test_bootstrap_injects_lichtblick_default_layout() -> None:
+    from npa.cli import agent as agent_module
+
+    source = Path(agent_module.__file__).read_text(encoding="utf-8")
+    # The viewer document is exact-matched so nginx can inject a default layout via
+    # the upstream-provided placeholder, so the point cloud + camera show on load.
+    assert "location = /lichtblick/ {{" in source
+    assert "sub_filter '{lichtblick_layout_placeholder}' '{lichtblick_default_layout}';" in source
+    assert "def _lichtblick_default_layout_json" in source
+
+    layout = json.loads(agent_module._lichtblick_default_layout_json())
+    panels = layout["configById"]
+    three_d = next(v for k, v in panels.items() if k.startswith("3D!"))
+    assert three_d["topics"]["/heldout/points"]["visible"] is True
+    assert three_d["followTf"] == "sim2real"
+    image = next(v for k, v in panels.items() if k.startswith("Image!"))
+    assert image["imageMode"]["imageTopic"] == "/camera"
+
+
 def test_bootstrap_ui_embeds_lichtblick_render_mode() -> None:
     source = _agent_ui_bundle()
     assert 'id="renderModeLichtblick"' in source
