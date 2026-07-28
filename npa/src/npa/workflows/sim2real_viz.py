@@ -1289,14 +1289,15 @@ def emit_sim2real_mcap(
 
     if not output_mcap.exists() or output_mcap.stat().st_size == 0:
         raise Sim2RealVizError(f"MCAP recording was not written: {output_mcap}")
-    total = (
+    # The transform is scaffolding (a coordinate frame), not content — a recording
+    # with only a transform is still empty, so it must not satisfy this guard.
+    content_total = (
         emitter.camera_message_count
         + emitter.scalar_message_count
         + emitter.log_message_count
         + emitter.pointcloud_message_count
-        + emitter.transform_message_count
     )
-    if total == 0:
+    if content_total == 0:
         raise Sim2RealVizError(
             "Sim2Real MCAP recording has no camera, signal, critique, or held-out content"
         )
@@ -1304,7 +1305,7 @@ def emit_sim2real_mcap(
         status="written",
         output_mcap_path=str(output_mcap),
         channel_counts=emitter.channel_counts,
-        message_count=total,
+        message_count=content_total + emitter.transform_message_count,
         camera_message_count=emitter.camera_message_count,
         scalar_message_count=emitter.scalar_message_count,
         log_message_count=emitter.log_message_count,
