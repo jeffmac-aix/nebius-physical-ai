@@ -323,6 +323,9 @@ def test_emit_mcap_includes_pointclouds(tmp_path: Path) -> None:
         output_mcap=out,
     )
     assert result.pointcloud_message_count == 4
+    # A coordinate transform must accompany the point cloud so a Foxglove-compatible
+    # 3D panel has a defined frame to place it in (otherwise nothing renders).
+    assert result.transform_message_count >= 1
     with open(out, "rb") as fh:
         reader = make_reader(fh)
         summary = reader.get_summary()
@@ -330,6 +333,8 @@ def test_emit_mcap_includes_pointclouds(tmp_path: Path) -> None:
         schema_names = {schema.name for schema in summary.schemas.values()}
     assert "/heldout/points" in topics
     assert "foxglove.PointCloud" in schema_names
+    assert "/tf" in topics
+    assert "foxglove.FrameTransform" in schema_names
 
 
 def test_emit_mcap_raises_when_mcap_unavailable(monkeypatch, tmp_path: Path) -> None:

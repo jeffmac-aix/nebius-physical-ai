@@ -215,6 +215,63 @@ def pointcloud_message(
     }
 
 
+# foxglove.FrameTransform well-known schema. A viewer's 3D panel needs a
+# coordinate frame to place a PointCloud; without a transform defining the frame
+# referenced by the point cloud, the 3D panel renders nothing. We emit a single
+# static transform so the sim2real frame is well-defined and the cloud renders.
+_FRAME_TRANSFORM_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "title": "foxglove.FrameTransform",
+    "properties": {
+        "timestamp": {
+            "type": "object",
+            "title": "time",
+            "properties": {"sec": {"type": "integer"}, "nsec": {"type": "integer"}},
+        },
+        "parent_frame_id": {"type": "string"},
+        "child_frame_id": {"type": "string"},
+        "translation": {
+            "type": "object",
+            "properties": {
+                "x": {"type": "number"},
+                "y": {"type": "number"},
+                "z": {"type": "number"},
+            },
+        },
+        "rotation": {
+            "type": "object",
+            "properties": {
+                "x": {"type": "number"},
+                "y": {"type": "number"},
+                "z": {"type": "number"},
+                "w": {"type": "number"},
+            },
+        },
+    },
+}
+
+
+def frame_transform_message(
+    *,
+    parent_frame_id: str,
+    child_frame_id: str,
+    stamp_ns: int,
+    translation: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    rotation: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 1.0),
+) -> dict[str, Any]:
+    """Build a ``foxglove.FrameTransform`` JSON message (identity by default)."""
+
+    tx, ty, tz = translation
+    rx, ry, rz, rw = rotation
+    return {
+        "timestamp": {"sec": stamp_ns // 1_000_000_000, "nsec": stamp_ns % 1_000_000_000},
+        "parent_frame_id": parent_frame_id,
+        "child_frame_id": child_frame_id,
+        "translation": {"x": float(tx), "y": float(ty), "z": float(tz)},
+        "rotation": {"x": float(rx), "y": float(ry), "z": float(rz), "w": float(rw)},
+    }
+
+
 class LichtblickError(ValueError):
     """Raised when a Lichtblick viewer request is invalid."""
 
@@ -814,6 +871,7 @@ __all__ = [
     "compressed_image_message",
     "convert_mcap_to_rerun",
     "encode_frame_to_compressed_bytes",
+    "frame_transform_message",
     "launch_viewer",
     "serve_viewer",
     "stage_input_to_mcap",

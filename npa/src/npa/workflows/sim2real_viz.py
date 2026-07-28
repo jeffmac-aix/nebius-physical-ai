@@ -48,6 +48,11 @@ class McapUnavailableError(Sim2RealVizError):
 
 
 MCAP_FRAME_ID = "sim2real"
+# Root/world frame the sim2real frame is anchored to. The 3D panel needs a defined
+# coordinate frame to place the point cloud, so the emitter publishes a static
+# ``world`` -> ``sim2real`` transform on ``/tf``.
+MCAP_ROOT_FRAME_ID = "world"
+MCAP_TF_TOPIC = "/tf"
 # foxglove.Log level for INFO-severity critique/summary messages.
 _LOG_LEVEL_INFO = 2
 _LOG_SCHEMA: dict[str, Any] = {
@@ -122,6 +127,7 @@ class Sim2RealMcapResult:
     scalar_message_count: int = 0
     log_message_count: int = 0
     pointcloud_message_count: int = 0
+    transform_message_count: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -133,6 +139,7 @@ class Sim2RealMcapResult:
             "scalar_message_count": self.scalar_message_count,
             "log_message_count": self.log_message_count,
             "pointcloud_message_count": self.pointcloud_message_count,
+            "transform_message_count": self.transform_message_count,
         }
 
 
@@ -1090,6 +1097,7 @@ class _McapEmitter:
         self.scalar_message_count = 0
         self.log_message_count = 0
         self.pointcloud_message_count = 0
+        self.transform_message_count = 0
 
     def _schema(self, name: str, schema: dict[str, Any]) -> int:
         if name not in self._schema_ids:
@@ -1163,6 +1171,27 @@ class _McapEmitter:
         self._add(topic, channel_id, message, stamp_ns)
         self.pointcloud_message_count += 1
 
+    def log_transform(
+        self,
+        *,
+        parent_frame_id: str,
+        child_frame_id: str,
+        stamp_ns: int,
+        topic: str = MCAP_TF_TOPIC,
+    ) -> None:
+        """Emit a static (identity) ``foxglove.FrameTransform`` so the frame exists."""
+
+        from npa.workbench.lichtblick import _FRAME_TRANSFORM_SCHEMA, frame_transform_message
+
+        channel_id = self._channel(topic, "foxglove.FrameTransform", _FRAME_TRANSFORM_SCHEMA)
+        message = frame_transform_message(
+            parent_frame_id=parent_frame_id,
+            child_frame_id=child_frame_id,
+            stamp_ns=stamp_ns,
+        )
+        self._add(topic, channel_id, message, stamp_ns)
+        self.transform_message_count += 1
+
 
 def emit_sim2real_mcap(
     *,
@@ -1203,6 +1232,15 @@ def emit_sim2real_mcap(
         writer = writer_cls(handle, compression=compression_none)
         writer.start(profile="", library="npa-sim2real")
         emitter = _McapEmitter(writer)
+
+        # Publish a static world->sim2real transform first so the 3D panel has a
+        # defined coordinate frame to place the held-out point cloud (without it,
+        # a Foxglove-compatible 3D panel cannot render the cloud).
+        emitter.log_transform(
+            parent_frame_id=MCAP_ROOT_FRAME_ID,
+            child_frame_id=MCAP_FRAME_ID,
+            stamp_ns=0,
+        )
 
         stamp_ns = 0
         for record in inner_evidence.get("iterations") or []:
@@ -1256,6 +1294,7 @@ def emit_sim2real_mcap(
         + emitter.scalar_message_count
         + emitter.log_message_count
         + emitter.pointcloud_message_count
+        + emitter.transform_message_count
     )
     if total == 0:
         raise Sim2RealVizError(
@@ -1270,6 +1309,7 @@ def emit_sim2real_mcap(
         scalar_message_count=emitter.scalar_message_count,
         log_message_count=emitter.log_message_count,
         pointcloud_message_count=emitter.pointcloud_message_count,
+        transform_message_count=emitter.transform_message_count,
     )
 
 
