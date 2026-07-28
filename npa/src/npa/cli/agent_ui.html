@@ -3609,12 +3609,14 @@
           // Always set Lichtblick-appropriate copy so the shared banner never
           // retains stale Rerun wording from a previous tab, even when hidden.
           cta.textContent = ready
-            ? "Lichtblick (MCAP) recording loaded: camera, reward/advantage signals, " +
-              "and the GPU 3D point cloud play in the panels below."
+            ? "Lichtblick (MCAP) recording loaded: camera and reward/advantage signals " +
+              "play in the panels below. The GPU 3D point cloud is on /heldout/points — " +
+              "enable that topic in the 3D panel (Lichtblick hides point clouds by " +
+              "default). The Rerun tab shows the same 3D point cloud automatically."
             : "No run-specific Lichtblick (MCAP) recording yet. Load a run with a " +
               "reports/sim2real.mcap to play its camera, reward/advantage signals, and " +
-              "GPU 3D point cloud here.";
-          cta.hidden = ready;
+              "GPU 3D point cloud (topic /heldout/points) here.";
+          cta.hidden = false;
           return;
         }
         if (activeRenderMode !== "rerun") {
