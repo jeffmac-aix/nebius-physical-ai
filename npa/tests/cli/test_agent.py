@@ -425,8 +425,7 @@ def test_bootstrap_artifact_file_transcodes_ppm_to_png() -> None:
 
     source = Path(agent_module.__file__).read_text(encoding="utf-8")
     # .ppm/.bmp/.tiff are transcoded to PNG on serve so the browser can render them.
-    assert 'target.suffix.lower() in {{".ppm", ".pgm", ".pnm", ".bmp", ".tif", ".tiff"}}' in source
-    assert "encode_frame_to_compressed_bytes(str(target))" in source
+    assert "needs_image_transcode(safe_name)" in source
     assert 'media_type="image/png"' in source
 
 
