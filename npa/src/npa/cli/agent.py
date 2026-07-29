@@ -2013,7 +2013,8 @@ server {{
     # from whichever registry is reachable instead of depending on a locally-built
     # image. Candidates = primary + mirror registry (see deploy.images).
     lichtblick_pull_candidates = " ".join(
-        shlex.quote(ref) for ref in container_image_candidates("lichtblick")
+        shlex.quote(ref)
+        for ref in container_image_candidates("lichtblick", preferred_region=region)
     )
     setup_script = f"""set -euo pipefail
 sudo apt-get update

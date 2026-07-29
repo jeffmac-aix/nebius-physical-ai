@@ -249,11 +249,16 @@ def container_image_candidates(
     tag: str | None = None,
     gpu_target: str | None = None,
     image_variant: str | None = None,
+    preferred_region: str | None = None,
 ) -> list[str]:
-    """Return image refs to try in order: primary first, then the backup registry.
+    """Return image refs to try in order across both mirror registries.
 
-    Callers that support pull failover should iterate these. When the primary is
-    explicitly overridden, the backup is still appended unless it is identical.
+    Callers that support pull failover should iterate these so a pull works
+    region-agnostically: every image is mirrored to both registries, and a caller
+    that cannot reach one region (cross-region 403, or an identity without read on
+    the other project's registry) falls through to the other. ``preferred_region``
+    reorders so the caller's local-region registry (``cr.<region>.nebius.cloud``)
+    is tried first, avoiding a guaranteed-denied cross-region attempt.
     """
     primary = container_image_for_tool(
         tool, registry=registry, tag=tag, gpu_target=gpu_target, image_variant=image_variant
@@ -266,6 +271,12 @@ def container_image_candidates(
         )
         if backup != primary:
             candidates.append(backup)
+    region = (preferred_region or "").strip().lower()
+    if region:
+        host_prefix = f"cr.{region}.nebius.cloud/"
+        local = [ref for ref in candidates if ref.startswith(host_prefix)]
+        other = [ref for ref in candidates if not ref.startswith(host_prefix)]
+        candidates = local + other
     return candidates
 
 

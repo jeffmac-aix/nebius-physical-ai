@@ -49,6 +49,19 @@ def test_lichtblick_resolves_in_both_regions() -> None:
     )
 
 
+def test_preferred_region_is_tried_first() -> None:
+    # A us-central1 caller (which cannot read the eu-north1 registry) must try the
+    # us-central1 mirror first; an eu-north1 caller tries eu-north1 first.
+    us_first = container_image_candidates("lichtblick", preferred_region="us-central1")
+    assert us_first[0].startswith("cr.us-central1.nebius.cloud/")
+    eu_first = container_image_candidates("lichtblick", preferred_region="eu-north1")
+    assert eu_first[0].startswith("cr.eu-north1.nebius.cloud/")
+    # Both still cover both registries regardless of ordering.
+    for candidates in (us_first, eu_first):
+        hosts = {ref.split("/", 1)[0] for ref in candidates}
+        assert hosts == {"cr.eu-north1.nebius.cloud", "cr.us-central1.nebius.cloud"}
+
+
 def test_backup_registry_env_override(monkeypatch) -> None:
     monkeypatch.setenv("NPA_BACKUP_REGISTRY", "cr.us-central1.nebius.cloud/custom")
     assert backup_container_registry() == "cr.us-central1.nebius.cloud/custom"
