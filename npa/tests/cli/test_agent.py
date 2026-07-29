@@ -377,6 +377,11 @@ def test_bootstrap_embeds_lichtblick_viewer() -> None:
     assert "npa-lichtblick.service" in source
     # verify() probes the embed plumbing.
     assert "lichtblick embed probe" in source
+    # Region-agnostic image acquisition: the sidecar pulls from whichever mirror
+    # registry (eu-north1 or us-central1) is reachable, not a locally-built image.
+    assert "lichtblick_pull_candidates" in source
+    assert "for lb_cand in {lichtblick_pull_candidates}" in source
+    assert "npa-lichtblick image acquired from" in source
 
 
 def test_bootstrap_injects_lichtblick_default_layout() -> None:

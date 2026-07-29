@@ -37,6 +37,7 @@ from npa.clients.network import (
 )
 from npa.clients.ssh import SSHClient, SSHError
 from npa.deploy import provisioner
+from npa.deploy.images import container_image_candidates
 from npa.deploy.provisioner import ProvisionerError
 from npa.orchestration.npa_workflow.catalog import TOOL_CATALOG
 
@@ -2006,6 +2007,13 @@ server {{
     lichtblick_port = DEFAULT_LICHTBLICK_PORT
     lichtblick_image = str(
         os.environ.get("NPA_AGENT_LICHTBLICK_IMAGE", "").strip() or "npa-lichtblick:1.26.0"
+    )
+    # Region-agnostic image acquisition: the Lichtblick image is mirrored to both
+    # the eu-north1 and us-central1 registries, so a fresh VM in any region pulls
+    # from whichever registry is reachable instead of depending on a locally-built
+    # image. Candidates = primary + mirror registry (see deploy.images).
+    lichtblick_pull_candidates = " ".join(
+        shlex.quote(ref) for ref in container_image_candidates("lichtblick")
     )
     setup_script = f"""set -euo pipefail
 sudo apt-get update
@@ -8292,6 +8300,22 @@ sudo systemctl reset-failed npa-agent-backend npa-rerun nginx || true
 sudo systemctl enable --now npa-agent-backend npa-rerun nginx
 sudo systemctl restart npa-rerun nginx
 sudo systemctl restart npa-agent-backend
+# Region-agnostic Lichtblick image acquisition: pull from whichever mirror
+# registry (eu-north1 or us-central1) is reachable and retag to the sidecar's
+# image, so a fresh VM in any region works without a locally-built image. Falls
+# back to any local image. Best-effort — never blocks the deploy.
+for lb_cand in {lichtblick_pull_candidates}; do
+  lb_host="${{lb_cand%%/*}}"
+  if command -v nebius >/dev/null 2>&1; then
+    lb_tok="$(nebius iam get-access-token 2>/dev/null || true)"
+    [ -n "$lb_tok" ] && printf '%s' "$lb_tok" | sudo docker login "$lb_host" -u iam --password-stdin >/dev/null 2>&1 || true
+  fi
+  if sudo docker pull "$lb_cand" >/dev/null 2>&1; then
+    sudo docker tag "$lb_cand" {lichtblick_image} >/dev/null 2>&1 || true
+    echo "npa-lichtblick image acquired from $lb_host"
+    break
+  fi
+done
 # Best-effort Lichtblick sidecar (never blocks deploy if docker/image are absent).
 sudo systemctl enable --now npa-lichtblick 2>/dev/null || echo "npa-lichtblick sidecar not started (docker/image unavailable; /lichtblick/ embed degrades gracefully)"
 """
