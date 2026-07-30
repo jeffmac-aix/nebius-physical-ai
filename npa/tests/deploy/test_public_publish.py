@@ -17,8 +17,10 @@ import yaml
 from npa.deploy.images import (
     CONTAINER_IMAGE_NAMES,
     DEFAULT_PUBLIC_CONTAINER_REGISTRY,
+    OMNIVERSE_RESTRICTED_DERIVED_IMAGES,
     OMNIVERSE_RESTRICTED_TOOLS,
     is_publicly_redistributable,
+    omniverse_restricted_image_names,
     public_container_registry,
     publicly_publishable_tools,
 )
@@ -78,6 +80,23 @@ def test_publish_plan_targets_public_registry_by_default() -> None:
     assert len(plan) == 16
     for item in plan:
         assert item.target_ref.startswith(DEFAULT_PUBLIC_CONTAINER_REGISTRY + "/npa-")
+
+
+def test_restricted_image_names_cover_every_contract_restricted_image() -> None:
+    """The operator-facing excluded list must name every restricted image, derived
+    variants included, without any caller hardcoding them."""
+    contract = yaml.safe_load(CONTRACT_PATH.read_text(encoding="utf-8"))
+    contract_restricted = {
+        name
+        for name, entry in contract["images"].items()
+        if entry.get("redistribution") == "restricted"
+    }
+    names = omniverse_restricted_image_names()
+    assert names == sorted(names), "names must be stable/sorted for operator output"
+    assert contract_restricted <= set(names), sorted(contract_restricted - set(names))
+    # Derived variants are not canonical tools, so they never reach the public set.
+    assert set(OMNIVERSE_RESTRICTED_DERIVED_IMAGES).isdisjoint(CONTAINER_IMAGE_NAMES)
+    assert set(OMNIVERSE_RESTRICTED_DERIVED_IMAGES).isdisjoint(publicly_publishable_tools())
 
 
 def test_selector_matches_packaging_contract_classification() -> None:

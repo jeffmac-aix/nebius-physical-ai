@@ -59,6 +59,13 @@ CONTAINER_IMAGE_NAMES = {
 # (0.1.2, 0.1.2-k8s-runtime) and the derived ``npa-sonic-mujoco`` image.
 OMNIVERSE_RESTRICTED_TOOLS = frozenset({"isaac-lab", "sonic", "groot"})
 
+# Images built FROM a restricted tool image, so they inherit the baked Omniverse
+# Kit and the same no-public-redistribution rule. They are not separate
+# CONTAINER_IMAGE_NAMES entries (they are variants of their parent tool), so they
+# never reach publicly_publishable_tools(); they are listed here so operator-facing
+# output can name every excluded image without hardcoding it at the call site.
+OMNIVERSE_RESTRICTED_DERIVED_IMAGES = frozenset({"sonic-mujoco"})
+
 # Public mirror registry for the OSS-redistributable image subset. Nebius CR does
 # NOT support anonymous/public pulls and has no cross-tenant / all-authenticated
 # grant, so making images pullable by any Nebius tenant (or anyone) means
@@ -316,6 +323,11 @@ def is_publicly_redistributable(tool: str) -> bool:
     ``OMNIVERSE_RESTRICTED_TOOLS``).
     """
     return tool not in OMNIVERSE_RESTRICTED_TOOLS
+
+
+def omniverse_restricted_image_names() -> list[str]:
+    """Return every image name excluded from public registries (tools + variants)."""
+    return sorted(OMNIVERSE_RESTRICTED_TOOLS | OMNIVERSE_RESTRICTED_DERIVED_IMAGES)
 
 
 def publicly_publishable_tools() -> list[str]:

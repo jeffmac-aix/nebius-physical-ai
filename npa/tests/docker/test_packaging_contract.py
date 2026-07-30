@@ -37,6 +37,34 @@ def _runtime_commands(dockerfile_text: str) -> list[str]:
     return _entrypoints(dockerfile_text) or _cmds(dockerfile_text)
 
 
+def _base_image_refs(dockerfile_text: str) -> list[str]:
+    """Image refs this Dockerfile builds on: ``FROM`` targets plus ``ARG *BASE*``
+    defaults (most workbench images parameterize their parent as
+    ``ARG BASE_IMAGE=<ref>`` and then ``FROM ${BASE_IMAGE}``)."""
+    refs = [
+        match.group(1)
+        for match in re.finditer(r"(?im)^\s*FROM\s+(?:--\S+\s+)*(\S+)", dockerfile_text)
+    ]
+    refs.extend(
+        match.group(1)
+        for match in re.finditer(r"(?im)^\s*ARG\s+\w*BASE\w*=(\S+)", dockerfile_text)
+    )
+    return refs
+
+
+def _workbench_parents(dockerfile_text: str, contract_images: dict) -> set[str]:
+    """Contract image names this Dockerfile inherits from (``npa-<name>`` refs)."""
+    parents: set[str] = set()
+    for ref in _base_image_refs(dockerfile_text):
+        name = ref.rsplit("/", 1)[-1].split("@", 1)[0].split(":", 1)[0]
+        if not name.startswith("npa-"):
+            continue
+        parent = name[len("npa-") :]
+        if parent in contract_images:
+            parents.add(parent)
+    return parents
+
+
 def _exposes(dockerfile_text: str) -> list[int]:
     ports: list[int] = []
     for match in re.finditer(r"(?im)^\s*EXPOSE\s+(.+?)\s*$", dockerfile_text):
@@ -131,10 +159,21 @@ def test_omniverse_images_are_restricted(image_name: str) -> None:
             f"redistribution: restricted (NVIDIA proprietary — public redistribution "
             f"needs an NVIDIA AI Enterprise license)"
         )
-    elif entry.get("redistribution") == "public":
-        # A public image derived from another workbench image inherits that
-        # parent's contents; only flag first-party Omniverse bakes here.
-        assert not bakes_omniverse, image_name
+        return
+
+    # An image built FROM a restricted workbench image inherits that parent's baked
+    # Omniverse Kit even though its own Dockerfile carries no marker (e.g.
+    # sonic-mujoco derives from sonic), so it must be restricted too.
+    restricted_parents = sorted(
+        parent
+        for parent in _workbench_parents(text, contract["images"])
+        if contract["images"][parent].get("redistribution") == "restricted"
+    )
+    assert not restricted_parents or entry.get("redistribution") == "restricted", (
+        f"{image_name}: builds FROM restricted workbench image(s) "
+        f"{restricted_parents} and inherits their baked Omniverse Kit; it must be "
+        f"redistribution: restricted"
+    )
 
 
 def test_packaging_doc_exists() -> None:

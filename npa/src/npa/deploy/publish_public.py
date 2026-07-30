@@ -27,6 +27,7 @@ from npa.deploy.images import (
     OMNIVERSE_RESTRICTED_TOOLS,
     container_image_for_tool,
     is_publicly_redistributable,
+    omniverse_restricted_image_names,
     primary_container_registry,
     public_container_registry,
     publicly_publishable_tools,
@@ -94,9 +95,9 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("no target registry; pass --target or set NPA_PUBLIC_REGISTRY")
 
     plan = build_publish_plan(target_registry=args.target, source_registry=args.source_registry)
-    restricted = ", ".join(sorted(OMNIVERSE_RESTRICTED_TOOLS))
+    restricted = ", ".join(omniverse_restricted_image_names())
     print(f"Publishing {len(plan)} OSS image(s) to {args.target.rstrip('/')}")
-    print(f"Excluded (NVIDIA Omniverse Kit, not for public registries): {restricted}, sonic-mujoco")
+    print(f"Excluded (NVIDIA Omniverse Kit, not for public registries): {restricted}")
     for item in plan:
         print(f"  {item.source_ref}  ->  {item.target_ref}")
     if args.dry_run:
