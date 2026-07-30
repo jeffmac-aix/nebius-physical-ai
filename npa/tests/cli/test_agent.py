@@ -425,6 +425,25 @@ def test_ui_pins_lichtblick_recording_fetch_to_the_page_origin() -> None:
     assert "return pinLichtblickDsToSameOrigin(url) || \"/lichtblick/\";" in source
 
 
+def test_ui_seeds_the_lichtblick_layout_once_rather_than_wiping_every_mount() -> None:
+    """The layout wipe evicts a pre-injection layout; it must not run every mount.
+
+    Wiping on each (re)mount also discards a layout the user arranged inside the
+    embed, so the wipe is gated on a per-UI-version seed marker.
+    """
+
+    source = _agent_ui_bundle()
+    assert "function lichtblickNeedsLayoutSeed" in source
+    assert "function markLichtblickLayoutSeeded" in source
+    # The wipe is reachable only behind the seed check.
+    mount = source.split("function mountLichtblickIframe", 1)[1].split(
+        "async function ensureLichtblickForActiveRun", 1
+    )[0]
+    assert "if (lichtblickNeedsLayoutSeed()) {" in mount
+    reset_calls = mount.count("resetLichtblickLayoutStorage()")
+    assert reset_calls == 1, f"expected one guarded wipe, found {reset_calls}"
+
+
 def test_bootstrap_injects_lichtblick_default_layout() -> None:
     from npa.cli import agent as agent_module
 

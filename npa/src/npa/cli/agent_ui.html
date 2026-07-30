@@ -4184,8 +4184,33 @@
       // selected layout id in localStorage (studio.profile-data). It only applies our
       // injected default layout (3D point cloud + camera) when NO layout is saved, so a
       // returning browser keeps showing the stale built-in default (empty 3D). The embed
-      // is same-origin, so clear that persisted layout before (re)mounting to guarantee
-      // our default — and the GPU point cloud — actually render.
+      // is same-origin, so clear that persisted layout to guarantee our default — and the
+      // GPU point cloud — actually render.
+      //
+      // Seed it once per UI version rather than on every mount. The wipe only needs to
+      // evict a layout saved BEFORE our default existed; once seeded, whatever is stored
+      // is either our default or a layout the user arranged themselves inside the embed,
+      // and wiping on every run switch would silently discard their arrangement. A UI
+      // redeploy bumps the version tag and re-seeds, so a changed default still lands.
+      // If localStorage is unavailable we fall back to always resetting, keeping the
+      // "3D panel must not be empty" guarantee.
+      const LICHTBLICK_LAYOUT_SEED_KEY = "npa.lichtblick.layout-seed";
+      function lichtblickLayoutSeedTag() {
+        const meta = document.querySelector("meta[name='npa-ui-version']");
+        return String((meta && meta.getAttribute("content")) || "0");
+      }
+      function lichtblickNeedsLayoutSeed() {
+        try {
+          return window.localStorage.getItem(LICHTBLICK_LAYOUT_SEED_KEY) !== lichtblickLayoutSeedTag();
+        } catch (_e) {
+          return true;
+        }
+      }
+      function markLichtblickLayoutSeeded() {
+        try {
+          window.localStorage.setItem(LICHTBLICK_LAYOUT_SEED_KEY, lichtblickLayoutSeedTag());
+        } catch (_e) { /* ignore */ }
+      }
       function resetLichtblickLayoutStorage() {
         try { window.localStorage.removeItem("studio.profile-data"); } catch (_e) { /* ignore */ }
         try { window.localStorage.removeItem("studio.layout"); } catch (_e) { /* ignore */ }
@@ -4209,12 +4234,19 @@
         const ready = Boolean(simViz && (simViz.lichtblick_ready || simViz.mcap_uri));
         const src = lichtblickIframeUrlFor(simViz);
         if (iframe.getAttribute("src") !== src) {
-          // Neutralize the frame so Lichtblick releases its IndexedDB handle, wipe the
-          // persisted layout so the injected default wins, then mount the real source.
-          try { iframe.setAttribute("src", "about:blank"); } catch (_e) { /* ignore */ }
-          lichtblickResetInFlight = resetLichtblickLayoutStorage().then(() => {
+          if (lichtblickNeedsLayoutSeed()) {
+            // Neutralize the frame so Lichtblick releases its IndexedDB handle, wipe the
+            // pre-injection layout so the injected default wins, then mount the source.
+            try { iframe.setAttribute("src", "about:blank"); } catch (_e) { /* ignore */ }
+            lichtblickResetInFlight = resetLichtblickLayoutStorage().then(() => {
+              markLichtblickLayoutSeeded();
+              iframe.setAttribute("src", src);
+            });
+          } else {
+            // Already seeded: keep whatever layout is stored (ours, or the user's own
+            // arrangement) and just point the viewer at the new recording.
             iframe.setAttribute("src", src);
-          });
+          }
         }
         lichtblickIframeLoaded = true;
         if (placeholder) placeholder.hidden = ready;
@@ -6522,6 +6554,9 @@
           mountLichtblickIframe,
           lichtblickIframeUrlFor,
           pinLichtblickDsToSameOrigin,
+          lichtblickNeedsLayoutSeed,
+          markLichtblickLayoutSeeded,
+          LICHTBLICK_LAYOUT_SEED_KEY,
         };
         try {
           wireUi();

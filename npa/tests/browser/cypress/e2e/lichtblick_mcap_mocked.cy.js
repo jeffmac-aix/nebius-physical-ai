@@ -135,6 +135,52 @@ describe("Lichtblick MCAP viewer (mocked smoke)", () => {
     });
   });
 
+  it("seeds the injected default layout once instead of wiping it on every mount", () => {
+    // The wipe exists to evict a layout saved before our default existed. Doing it on
+    // every mount would also discard a layout the user arranged inside the embed, so
+    // it must happen once per UI version.
+    cy.get("#tabRerun").click();
+    cy.get("#renderModeLichtblick").click();
+    cy.get("#lichtblickFrame").should("have.attr", "src").and("include", "ds.url");
+    // The wipe resolves asynchronously (IndexedDB deleteDatabase), so retry until the
+    // seed is recorded rather than racing it.
+    cy.window()
+      .should((win) => {
+        const api = win.__NPA_AGENT_TEST__;
+        expect(win.localStorage.getItem(api.LICHTBLICK_LAYOUT_SEED_KEY)).to.be.a("string");
+      })
+      .then((win) => {
+        const api = win.__NPA_AGENT_TEST__;
+        const key = api.LICHTBLICK_LAYOUT_SEED_KEY;
+        const version = win.document
+          .querySelector("meta[name='npa-ui-version']")
+          .getAttribute("content");
+
+        expect(win.localStorage.getItem(key), "seeded with the UI version").to.eq(version);
+        expect(api.lichtblickNeedsLayoutSeed(), "already seeded, no further wipe").to.be.false;
+
+        // A UI redeploy bumps the version tag, which re-seeds so a changed default lands.
+        win.localStorage.setItem(key, "0");
+        expect(api.lichtblickNeedsLayoutSeed(), "stale seed re-seeds").to.be.true;
+        api.markLichtblickLayoutSeeded();
+        expect(win.localStorage.getItem(key)).to.eq(version);
+
+        // Behavioural check: with the seed in place, mounting a different recording
+        // must leave a layout the user arranged in the embed untouched.
+        win.localStorage.setItem("studio.profile-data", "user-arranged-layout");
+        api.mountLichtblickIframe({
+          lichtblick_ready: true,
+          lichtblick_iframe_url:
+            "/lichtblick/?ds=remote-file&ds.url=" +
+            encodeURIComponent("/lichtblick/recordings/another-run.mcap"),
+        });
+        expect(
+          win.localStorage.getItem("studio.profile-data"),
+          "user layout survives switching runs",
+        ).to.eq("user-arranged-layout");
+      });
+  });
+
   it("filters discovered artifacts to the MCAP (Lichtblick) type", () => {
     cy.get("#tabRerun").click();
     cy.get("#artifactTypeFilter").select("mcap");
