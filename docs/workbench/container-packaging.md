@@ -111,26 +111,37 @@ hold `viewer`/`editor`, which cascades to image pull — so developers inside th
 owning org can pull every image, including the `restricted` ones (internal R&D
 use).
 
-**Public exposure.** Nebius Container Registry has **no anonymous/public mode** —
-every pull requires an authenticated Nebius identity (IAM token or static key),
-and the broadest grant Nebius offers is tenant-wide (`viewers`). So making images
-pullable by anyone (outside a Nebius tenant, unauthenticated) is **not possible
-on the Nebius registries themselves**; it requires mirroring to a public-capable
-registry such as GHCR (`ghcr.io`), Docker Hub, or Quay.
+**Pulling from any Nebius tenant / publicly.** Nebius Container Registry cannot
+express "any Nebius tenant can pull": it has **no anonymous/public mode** and
+**no `allAuthenticatedUsers` / cross-tenant grant**. Every pull needs an
+authenticated identity, tenants are strictly isolated, and the only way to admit
+an out-of-tenant identity is to invite that specific account into the owning
+tenant and add it to a group — which does not scale to "anyone from any tenant."
+The only way to make the images pullable by every Nebius tenant (which is also
+pullable by anyone) is therefore to **mirror to a public-capable registry** —
+GHCR (`ghcr.io`, the default), Docker Hub, or Quay.
 
-Only the `public`-classified subset may be mirrored publicly. Use the
-license-guarded publisher, which copies exactly `publicly_publishable_tools()`
-and refuses the Omniverse-Kit images:
+Only the `public`-classified subset may be mirrored. Use the license-guarded
+publisher, which copies exactly `publicly_publishable_tools()` (16 images) and
+hard-refuses the Omniverse-Kit images:
 
 ```bash
-python -m npa.deploy.publish_public --target ghcr.io/<org>/<repo> --dry-run
+# defaults to $NPA_PUBLIC_REGISTRY, else ghcr.io/nebius/nebius-physical-ai
+python -m npa.deploy.publish_public --dry-run
 python -m npa.deploy.publish_public --target ghcr.io/<org>/<repo>
 ```
 
 or the `Publish public images` GitHub Actions workflow (manual dispatch,
-dry-run by default). Never flip a mixed registry to anonymous read and never add
-the `restricted` images to a public target — that redistributes NVIDIA Omniverse
-Kit to third parties (needs an NVIDIA AI Enterprise license).
+dry-run by default). **Consumers in any tenant** then pull the OSS images by
+pointing the resolver at the public mirror:
+
+```bash
+export NPA_REGISTRY=ghcr.io/nebius/nebius-physical-ai   # OSS images, any tenant
+```
+
+Never add the `restricted` images to a public target — that redistributes NVIDIA
+Omniverse Kit to third parties (needs an NVIDIA AI Enterprise license). Those
+stay build-your-own (each operator builds with their own NGC credentials + EULA).
 
 ## Feature exposure
 

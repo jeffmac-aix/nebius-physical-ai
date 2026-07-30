@@ -60,10 +60,15 @@ CONTAINER_IMAGE_NAMES = {
 OMNIVERSE_RESTRICTED_TOOLS = frozenset({"isaac-lab", "sonic", "groot"})
 
 # Public mirror registry for the OSS-redistributable image subset. Nebius CR does
-# not support anonymous/public pulls, so wide/public exposure means mirroring the
-# publicly_publishable_tools() set to a public-capable registry (e.g. GHCR).
-# Override with NPA_PUBLIC_REGISTRY. Empty by default (no public mirror wired).
+# NOT support anonymous/public pulls and has no cross-tenant / all-authenticated
+# grant, so making images pullable by any Nebius tenant (or anyone) means
+# mirroring the publicly_publishable_tools() set to a public-capable registry.
+# GHCR is the default (public, anonymous pull, native to the GitHub org). A
+# registry path is a public locator, not a credential. Override with
+# NPA_PUBLIC_REGISTRY; consumers in any tenant pull the OSS images by setting
+# NPA_REGISTRY to this value.
 PUBLIC_CONTAINER_REGISTRY_ENV = "NPA_PUBLIC_REGISTRY"
+DEFAULT_PUBLIC_CONTAINER_REGISTRY = "ghcr.io/nebius/nebius-physical-ai"
 
 SUPPORTED_TOOL_VERSIONS = {
     # Default LeRobot pin. Selectable additional versions: see
@@ -299,8 +304,8 @@ def container_image_candidates(
 
 
 def public_container_registry() -> str:
-    """Return the public mirror registry override (``NPA_PUBLIC_REGISTRY``), or ""."""
-    return os.environ.get(PUBLIC_CONTAINER_REGISTRY_ENV, "").strip()
+    """Return the public mirror registry: ``NPA_PUBLIC_REGISTRY`` or the default."""
+    return os.environ.get(PUBLIC_CONTAINER_REGISTRY_ENV, "").strip() or DEFAULT_PUBLIC_CONTAINER_REGISTRY
 
 
 def is_publicly_redistributable(tool: str) -> bool:

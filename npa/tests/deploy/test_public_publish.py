@@ -16,8 +16,10 @@ import yaml
 
 from npa.deploy.images import (
     CONTAINER_IMAGE_NAMES,
+    DEFAULT_PUBLIC_CONTAINER_REGISTRY,
     OMNIVERSE_RESTRICTED_TOOLS,
     is_publicly_redistributable,
+    public_container_registry,
     publicly_publishable_tools,
 )
 from npa.deploy.publish_public import build_publish_plan
@@ -58,6 +60,24 @@ def test_publish_plan_never_targets_a_restricted_image() -> None:
 def test_publish_plan_requires_a_target() -> None:
     with pytest.raises(ValueError):
         build_publish_plan(target_registry="")
+
+
+def test_public_registry_defaults_to_ghcr(monkeypatch) -> None:
+    monkeypatch.delenv("NPA_PUBLIC_REGISTRY", raising=False)
+    assert public_container_registry() == DEFAULT_PUBLIC_CONTAINER_REGISTRY
+    assert DEFAULT_PUBLIC_CONTAINER_REGISTRY.startswith("ghcr.io/")
+
+
+def test_public_registry_honors_env_override(monkeypatch) -> None:
+    monkeypatch.setenv("NPA_PUBLIC_REGISTRY", "docker.io/nebius/workbench")
+    assert public_container_registry() == "docker.io/nebius/workbench"
+
+
+def test_publish_plan_targets_public_registry_by_default() -> None:
+    plan = build_publish_plan(target_registry=DEFAULT_PUBLIC_CONTAINER_REGISTRY)
+    assert len(plan) == 16
+    for item in plan:
+        assert item.target_ref.startswith(DEFAULT_PUBLIC_CONTAINER_REGISTRY + "/npa-")
 
 
 def test_selector_matches_packaging_contract_classification() -> None:
