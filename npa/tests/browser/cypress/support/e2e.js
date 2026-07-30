@@ -325,9 +325,9 @@ const FIELD_IDS = [
   "stageList",
   "runLog",
   "stagesPanel",
+  // Selection / Scene-mode controls were removed from the UI.
   "runIdInput",
   "runIdSelect",
-  "artifactPrefix",
   "artifactTypeFilter",
   "artifactSort",
   "artifactStageFilter",
