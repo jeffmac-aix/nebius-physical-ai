@@ -400,10 +400,17 @@ def test_lichtblick_recordings_grant_no_cross_origin_read() -> None:
     recordings_location = source.split("location /lichtblick/recordings/ {{", 1)[1].split(
         "location = /lichtblick/ {{", 1
     )[0]
-    assert "auth_basic off;" in recordings_location
-    assert "Access-Control-Allow-Origin" not in recordings_location
-    assert "Access-Control-Expose-Headers" not in recordings_location
-    assert 'Cross-Origin-Resource-Policy "same-origin"' in recordings_location
+    # Compare directives only: the block's comment names these headers to explain
+    # why they are absent, so a bare substring check would match the prose.
+    directives = [
+        line.strip()
+        for line in recordings_location.splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    assert "auth_basic off;" in directives
+    granted = [line for line in directives if "Access-Control" in line]
+    assert not granted, f"recordings must grant no CORS access, got {granted}"
+    assert 'add_header Cross-Origin-Resource-Policy "same-origin" always;' in directives
 
 
 def test_ui_pins_lichtblick_recording_fetch_to_the_page_origin() -> None:
