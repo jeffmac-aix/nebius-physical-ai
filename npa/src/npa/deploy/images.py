@@ -15,9 +15,12 @@ from typing import Any
 # or `container_registry` in ~/.npa/config.yaml.
 DEFAULT_CONTAINER_REGISTRY_ID = "e00cm0vc6t09m0z5gw"
 DEFAULT_CONTAINER_REGISTRY = f"cr.eu-north1.nebius.cloud/{DEFAULT_CONTAINER_REGISTRY_ID}"
-# Backup registry (us-central1) used for failover when the primary is
-# unavailable. Override with NPA_BACKUP_REGISTRY.
-BACKUP_CONTAINER_REGISTRY = "cr.us-central1.nebius.cloud/registry-u00gwj4vqcp98k7ph6"
+# Mirror registry (us-central1) used for region-agnostic failover: every tool
+# image is mirrored to both this and the primary (eu-north1) registry, so a pull
+# succeeds regardless of the caller's region — e.g. an in-cluster us-central1 pull
+# cannot reach the cross-region eu-north1 registry, and vice versa. A registry
+# path is a public locator, not a credential. Override with NPA_BACKUP_REGISTRY.
+BACKUP_CONTAINER_REGISTRY = "cr.us-central1.nebius.cloud/u00j7q4jjkahvsx0jy"
 DEFAULT_VLM_IMAGE_ENV = "NPA_VLM_IMAGE"
 DEFAULT_WORKBENCH_IMAGE_ENV = "NPA_WORKBENCH_IMAGE"
 SONIC_IMAGE_MANIFEST_RESOURCE = "sonic_image_manifest.json"
