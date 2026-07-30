@@ -100,6 +100,43 @@ def test_image_matches_packaging_contract(image_name: str) -> None:
         assert re.search(pattern, text) is None, f"{image_name}: Dockerfile matches secret pattern {pattern}"
 
 
+@pytest.mark.parametrize("image_name", sorted(_load_contract()["images"]))
+def test_image_declares_redistribution_class(image_name: str) -> None:
+    contract = _load_contract()
+    entry = contract["images"][image_name]
+    classes = contract["redistribution"]["classes"]
+    cls = entry.get("redistribution")
+    assert cls in classes, (
+        f"{image_name}: redistribution must be one of {sorted(classes)}, got {cls!r}"
+    )
+
+
+@pytest.mark.parametrize("image_name", sorted(_load_contract()["images"]))
+def test_omniverse_images_are_restricted(image_name: str) -> None:
+    """An image that bakes NVIDIA Omniverse Kit (Isaac Sim) is NOT freely
+    redistributable and must be classified ``restricted`` so it is never
+    published to a public registry. This detects the marker in the Dockerfile so
+    a newly added Omniverse-baking image cannot silently be marked ``public``.
+    """
+    contract = _load_contract()
+    entry = contract["images"][image_name]
+    dockerfile = WORKBENCH_DOCKER / entry["dockerfile"]
+    text = dockerfile.read_text(encoding="utf-8")
+    markers = contract["redistribution"]["omniverse_markers"]
+    bakes_omniverse = any(marker in text for marker in markers)
+
+    if bakes_omniverse:
+        assert entry.get("redistribution") == "restricted", (
+            f"{image_name}: Dockerfile bakes Omniverse Kit (Isaac Sim); it must be "
+            f"redistribution: restricted (NVIDIA proprietary — public redistribution "
+            f"needs an NVIDIA AI Enterprise license)"
+        )
+    elif entry.get("redistribution") == "public":
+        # A public image derived from another workbench image inherits that
+        # parent's contents; only flag first-party Omniverse bakes here.
+        assert not bakes_omniverse, image_name
+
+
 def test_packaging_doc_exists() -> None:
     doc = ROOT / "docs" / "workbench" / "container-packaging.md"
     assert doc.is_file()

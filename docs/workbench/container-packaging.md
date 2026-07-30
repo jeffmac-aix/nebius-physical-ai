@@ -63,6 +63,39 @@ Strongly recommended for `service` images:
 - Bind to an explicit address; do not assume public `0.0.0.0` without auth
 - Token auth when the service is network-reachable (LanceDB pattern)
 
+## Redistribution (who may pull, and how widely)
+
+The workbench is open source, and images should be pullable widely — but "widely"
+has a license boundary that the contract encodes in a `redistribution` field per
+image (`public` | `restricted`), enforced by
+`npa/tests/docker/test_packaging_contract.py`.
+
+- **`public`** — OSS-redistributable. Code is under OSI-approved licenses
+  (Apache-2.0 / BSD-3 / MIT / MPL-2.0), the CUDA/PyTorch base images
+  (`nvidia/cuda`, `pytorch/pytorch` on Docker Hub) are freely redistributable,
+  and any gated model weights (Cosmos, GR00T N1, Cosmos-Reason) are pulled at
+  **runtime** by the operator, never baked into the image. These may be published
+  to a public/anonymous registry.
+- **`restricted`** — bakes **NVIDIA Omniverse Kit (Isaac Sim)** binaries
+  (`isaac-lab`, `sonic`, `sonic-mujoco`, `groot`). The Isaac Sim *source* is
+  Apache-2.0, but the shipped binary bundles the Omniverse Kit SDK + NVIDIA
+  assets, which are NVIDIA-proprietary (the `isaacsim` PyPI package's own license
+  field reads *"NVIDIA Proprietary Software"*). NVIDIA allows this **free for
+  internal R&D**, but **redistribution to third parties** — publishing to a
+  public registry, shipping in a product, or delivering as a hosted service —
+  **requires an NVIDIA AI Enterprise license**. Keep these off any public
+  registry.
+
+Access model today (both regions): each workbench registry
+(`cr.eu-north1.nebius.cloud/…` primary, `cr.us-central1.nebius.cloud/…` mirror)
+is **already readable org/tenant-wide** — the tenant `viewers`/`editors` groups
+hold `viewer`/`editor`, which cascades to image pull — so developers inside the
+owning org can pull every image, including the `restricted` ones (internal R&D
+use). Neither registry is anonymously public. To distribute the OSS images
+**publicly**, publish only the `public`-classified images to a dedicated public
+registry; do not flip a mixed registry to anonymous read, which would
+redistribute the `restricted` Omniverse images to third parties.
+
 ## Feature exposure
 
 | Access mode | Contract |
