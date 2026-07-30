@@ -516,6 +516,99 @@ def test_decode_png_applies_row_filters(tmp_path: Path) -> None:
     assert np.array_equal(via_reader, arr)
 
 
+def _encode_png_with_filter(pixels, filter_type: int) -> bytes:
+    """Encode an 8-bit RGB PNG forcing every scanline onto ``filter_type``.
+
+    Pillow picks row filters adaptively, so it cannot be told to exercise a
+    specific one. The fallback decoder has a separate branch per filter, and
+    Average/Paeth are the hand-written recurrences, so each needs direct coverage.
+    """
+
+    import struct
+    import zlib
+
+    height, width, channels = pixels.shape
+    raw = bytearray()
+    prev = [0] * (width * channels)
+    for y in range(height):
+        cur = [int(v) for v in pixels[y].reshape(-1)]
+        line = bytearray()
+        for i, value in enumerate(cur):
+            left = cur[i - channels] if i >= channels else 0
+            up = prev[i]
+            up_left = prev[i - channels] if i >= channels else 0
+            if filter_type == 0:
+                pred = 0
+            elif filter_type == 1:
+                pred = left
+            elif filter_type == 2:
+                pred = up
+            elif filter_type == 3:
+                pred = (left + up) // 2
+            else:
+                pred = viz_module._paeth(left, up, up_left)
+            line.append((value - pred) & 0xFF)
+        raw.append(filter_type)
+        raw.extend(line)
+        prev = cur
+
+    def _chunk(tag: bytes, payload: bytes) -> bytes:
+        return (
+            struct.pack("!I", len(payload))
+            + tag
+            + payload
+            + struct.pack("!I", zlib.crc32(tag + payload) & 0xFFFFFFFF)
+        )
+
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + _chunk(b"IHDR", struct.pack("!IIBBBBB", width, height, 8, 2, 0, 0, 0))
+        + _chunk(b"IDAT", zlib.compress(bytes(raw)))
+        + _chunk(b"IEND", b"")
+    )
+
+
+def _noisy_rgb(width: int = 24, height: int = 18):
+    """Deterministic high-frequency image.
+
+    A smooth gradient is a degenerate case for Paeth: with ``left`` and
+    ``up_left`` equal along an axis-aligned ramp, the predictor picks ``up``
+    whether or not ``up_left`` is read, so a decoder that ignored ``up_left``
+    would still decode a gradient perfectly. Noise makes every term matter.
+    """
+
+    import numpy as np
+
+    rng = np.random.default_rng(20260731)
+    return rng.integers(0, 256, size=(height, width, 3), dtype="uint8")
+
+
+@pytest.mark.parametrize("filter_type", [0, 1, 2, 3, 4])
+@pytest.mark.parametrize("image", ["gradient", "noise"])
+def test_decode_png_matches_pillow_for_every_row_filter(filter_type: int, image: str) -> None:
+    """Each filter branch must reconstruct exactly what Pillow does."""
+
+    import io
+
+    import numpy as np
+
+    Image = pytest.importorskip("PIL.Image")
+
+    expected = _gradient_rgb() if image == "gradient" else _noisy_rgb()
+    data = _encode_png_with_filter(expected, filter_type)
+
+    # Cross-check the hand-rolled encoder itself, so a bug there cannot make the
+    # decoder look correct against a wrong reference.
+    with Image.open(io.BytesIO(data)) as image:
+        via_pillow = np.asarray(image.convert("RGB"), dtype="uint8")
+    assert np.array_equal(via_pillow, expected), f"filter {filter_type}: encoder is wrong"
+
+    decoded = viz_module._decode_png_bytes(data)
+    assert decoded is not None
+    assert decoded.dtype == np.uint8
+    assert np.array_equal(decoded, expected), f"filter {filter_type}: fallback decode differs"
+
+
 def test_decode_png_matches_pillow_on_filter0(tmp_path: Path) -> None:
     import numpy as np
 

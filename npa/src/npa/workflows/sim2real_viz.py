@@ -862,44 +862,53 @@ def _decode_png_bytes(data: bytes) -> np.ndarray | None:
         raw = zlib.decompress(bytes(idat))
     except zlib.error:
         return None
-    stride = width * channels + 1
+    row_len = width * channels
+    stride = row_len + 1
     if len(raw) < height * stride:
         return None
     bpp = channels
-    recon = np.zeros((height, width * channels), dtype=np.int32)
-    prev = np.zeros(width * channels, dtype=np.int32)
+    # Rows are carried as Python int lists, not numpy rows. Average and Paeth are
+    # recurrences in x (each byte needs the reconstructed byte bpp to its left), so
+    # they cannot be vectorized along the row; the only choice is how expensive each
+    # scalar step is, and numpy scalar indexing is far dearer than list indexing.
+    # Measured on a 256x256 RGB frame: Average 65ms -> 29ms, Paeth 119ms -> 76ms.
+    # (Vectorizing across the bpp colour lanes instead was tried and is 2.5-4x
+    # SLOWER than the original -- per-slice numpy overhead dwarfs 3-element math.)
+    # Sub and Up are vectorizable, so those two still go through numpy.
+    recon = np.zeros((height, row_len), dtype=np.uint8)
+    prev: list[int] = [0] * row_len
     offset = 0
     for row in range(height):
         ftype = raw[offset]
         offset += 1
-        line = np.frombuffer(raw, dtype=np.uint8, count=width * channels, offset=offset).astype(
-            np.int32
-        )
-        offset += width * channels
+        line = raw[offset : offset + row_len]
+        offset += row_len
         if ftype == 0:
-            cur = line
+            cur = list(line)
         elif ftype == 1:  # Sub: reconstructed == per-channel cumulative sum of raw
-            cur = line.copy()
+            arr = np.frombuffer(line, dtype=np.uint8).astype(np.int32)
             for c in range(bpp):
-                cur[c::bpp] = np.cumsum(cur[c::bpp]) % 256
-        elif ftype == 2:  # Up
-            cur = (line + prev) % 256
-        elif ftype == 3:  # Average (sequential in x)
-            cur = line.copy()
-            for i in range(len(cur)):
+                arr[c::bpp] = np.cumsum(arr[c::bpp]) % 256
+            cur = arr.tolist()
+        elif ftype == 2:  # Up: depends only on the previous row, so vectorizable
+            arr = np.frombuffer(line, dtype=np.uint8).astype(np.int32)
+            cur = ((arr + np.asarray(prev, dtype=np.int32)) % 256).tolist()
+        elif ftype == 3:  # Average (recurrence in x)
+            cur = list(line)
+            for i in range(row_len):
                 left = cur[i - bpp] if i >= bpp else 0
-                cur[i] = (cur[i] + ((left + prev[i]) // 2)) % 256
-        elif ftype == 4:  # Paeth (sequential in x)
-            cur = line.copy()
-            for i in range(len(cur)):
+                cur[i] = (cur[i] + ((left + prev[i]) // 2)) & 0xFF
+        elif ftype == 4:  # Paeth (recurrence in x)
+            cur = list(line)
+            for i in range(row_len):
                 left = cur[i - bpp] if i >= bpp else 0
                 up_left = prev[i - bpp] if i >= bpp else 0
-                cur[i] = (cur[i] + _paeth(int(left), int(prev[i]), int(up_left))) % 256
+                cur[i] = (cur[i] + _paeth(left, prev[i], up_left)) & 0xFF
         else:
             return None
         recon[row] = cur
         prev = cur
-    pixels = recon.reshape(height, width, channels).astype(np.uint8)
+    pixels = recon.reshape(height, width, channels)
     if channels == 3:
         rgb = pixels
     elif channels == 4:
