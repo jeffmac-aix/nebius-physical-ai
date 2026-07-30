@@ -622,9 +622,17 @@ def build_isaac_eval_job_manifest(
                 "spec": {
                     "restartPolicy": "Never",
                     "serviceAccountName": service_account,
-                    # npa-isaac-lab defaults to non-root ``ubuntu``, which cannot
-                    # traverse ``/isaac-sim``; run as root so ``python.sh`` (and
-                    # the rendered held-out eval) works.
+                    # Deliberate, scoped privilege: npa-isaac-lab defaults to the
+                    # non-root ``ubuntu`` user, but ``/isaac-sim`` is owned by the
+                    # image's ``isaac-sim`` user and is not traversable by it, so
+                    # ``/isaac-sim/python.sh`` resolves empty and the rendered
+                    # held-out eval exits 127. runAsGroup/fsGroup do not help (the
+                    # blocked bit is directory execute for other, not group
+                    # ownership), and chown-ing the Isaac tree at start-up would
+                    # itself need root. This stays bounded: root inside the
+                    # container only, never privileged, no host namespaces, and no
+                    # host paths mounted (enforced by
+                    # npa/tests/workflows/test_isaac_job_security_context.py).
                     "securityContext": {"runAsUser": 0},
                     "imagePullSecrets": [
                         {"name": "agent-sa"},

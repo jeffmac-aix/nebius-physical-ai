@@ -614,10 +614,15 @@ def build_isaac_job_manifest(
                 "spec": {
                     "restartPolicy": "Never",
                     "serviceAccountName": service_account,
-                    # The npa-isaac-lab image defaults to the non-root ``ubuntu``
-                    # user, but ``/isaac-sim`` (owned by ``isaac-sim``) is not
-                    # traversable by it, so ``/isaac-sim/python.sh`` resolves empty
-                    # and training exits 127. Isaac Sim runs fine as root.
+                    # Deliberate, scoped privilege: the npa-isaac-lab image defaults
+                    # to the non-root ``ubuntu`` user, but ``/isaac-sim`` (owned by
+                    # ``isaac-sim``) is not traversable by it, so
+                    # ``/isaac-sim/python.sh`` resolves empty and training exits 127.
+                    # runAsGroup/fsGroup do not help (the blocked bit is directory
+                    # execute for other, not group ownership). This stays bounded:
+                    # root inside the container only, never privileged, no host
+                    # namespaces, and no host paths mounted (enforced by
+                    # npa/tests/workflows/test_isaac_job_security_context.py).
                     "securityContext": {"runAsUser": 0},
                     "imagePullSecrets": [
                         {"name": "agent-sa"},
