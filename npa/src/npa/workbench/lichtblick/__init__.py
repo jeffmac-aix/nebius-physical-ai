@@ -116,7 +116,7 @@ def compressed_image_message(
 
 # foxglove.PointCloud well-known schema. Lichtblick / Foxglove render this in the
 # GPU-accelerated 3D panel. ``data`` is a base64 packed byte buffer; ``fields``
-# describe the per-point layout (x/y/z FLOAT32 + red/green/blue UINT8 here).
+# describe the per-point layout (x/y/z FLOAT32 + red/green/blue/alpha UINT8 here).
 _POINTCLOUD_SCHEMA: dict[str, Any] = {
     "type": "object",
     "title": "foxglove.PointCloud",
@@ -168,8 +168,14 @@ _POINTCLOUD_SCHEMA: dict[str, Any] = {
 # foxglove PackedElementField NumericType values used below.
 _FOXGLOVE_UINT8 = 1
 _FOXGLOVE_FLOAT32 = 7
-# Packed layout: x,y,z float32 (12 bytes) + red,green,blue uint8 (3 bytes).
-_POINTCLOUD_POINT_STRIDE = 15
+# Packed layout: x,y,z float32 (12 bytes) + red,green,blue,alpha uint8 (4 bytes).
+#
+# ``alpha`` is mandatory, not decorative: the viewer only enables its
+# ``rgba-fields`` color mode when ALL FOUR of red/green/blue/alpha are present,
+# and a missing field falls back to a reader that returns 0 — so an RGB-only
+# cloud would be drawn with alpha 0, i.e. fully transparent (an empty 3D panel).
+_POINTCLOUD_ALPHA_OPAQUE = 255
+_POINTCLOUD_POINT_STRIDE = 16
 _POINTCLOUD_FIELDS = [
     {"name": "x", "offset": 0, "type": _FOXGLOVE_FLOAT32},
     {"name": "y", "offset": 4, "type": _FOXGLOVE_FLOAT32},
@@ -177,11 +183,16 @@ _POINTCLOUD_FIELDS = [
     {"name": "red", "offset": 12, "type": _FOXGLOVE_UINT8},
     {"name": "green", "offset": 13, "type": _FOXGLOVE_UINT8},
     {"name": "blue", "offset": 14, "type": _FOXGLOVE_UINT8},
+    {"name": "alpha", "offset": 15, "type": _FOXGLOVE_UINT8},
 ]
 
 
 def pack_pointcloud_bytes(points: Any, colors: Any) -> bytes:
-    """Pack ``(N,3)`` float xyz + ``(N,3)`` uint8 rgb into foxglove point bytes."""
+    """Pack ``(N,3)`` float xyz + ``(N,3)`` uint8 rgb into foxglove point bytes.
+
+    Emits a fully-opaque ``alpha`` channel per point so the viewer's
+    ``rgba-fields`` color mode is available and the points are visible.
+    """
 
     import numpy as np
 
@@ -191,13 +202,14 @@ def pack_pointcloud_bytes(points: Any, colors: Any) -> bytes:
     buffer = np.zeros((count, _POINTCLOUD_POINT_STRIDE), dtype=np.uint8)
     buffer[:, 0:12] = xyz[:count].view(np.uint8).reshape(count, 12)
     buffer[:, 12:15] = rgb[:count]
+    buffer[:, 15] = _POINTCLOUD_ALPHA_OPAQUE
     return buffer.tobytes()
 
 
 def pointcloud_message(
     points: Any, colors: Any, *, stamp_ns: int, frame_id: str
 ) -> dict[str, Any]:
-    """Build a ``foxglove.PointCloud`` JSON message (identity pose, RGB points)."""
+    """Build a ``foxglove.PointCloud`` JSON message (identity pose, RGBA points)."""
 
     import base64
 

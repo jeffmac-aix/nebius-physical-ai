@@ -6,6 +6,7 @@ import {
   mcapHasFrameTransform,
   mcapHasHeldoutCamera,
   mcapHasPointCloud,
+  mcapPointCloudHasRgbaFields,
 } from "../support/e2e";
 
 const requiredLiveEnv = ["NPA_AGENT_BASE_URL", "NPA_AGENT_USER", "NPA_AGENT_PASSWORD"];
@@ -94,6 +95,10 @@ describe("Lichtblick MCAP viewer (live system)", () => {
         expect(mcapCameraTopicCount(body), "camera topic occurrences").to.be.greaterThan(4);
         // GPU-reconstructed 3D point cloud for the 3D panel.
         expect(mcapHasPointCloud(body), "has foxglove.PointCloud on /heldout/points").to.be.true;
+        // ...with the full RGBA field set the layout's rgba-fields mode requires
+        // (a missing alpha reads as 0, i.e. an invisible cloud).
+        expect(mcapPointCloudHasRgbaFields(body), "point cloud has red/green/blue/alpha").to.be
+          .true;
         // A coordinate transform so the 3D panel can place the point cloud.
         expect(mcapHasFrameTransform(body), "has foxglove.FrameTransform on /tf").to.be.true;
       });

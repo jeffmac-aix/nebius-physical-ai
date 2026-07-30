@@ -236,8 +236,10 @@ def test_emit_mcap_roundtrip_camera_signal_critique(tmp_path: Path) -> None:
 
     assert result.status == "written"
     assert out.is_file() and out.stat().st_size > 0
-    # 2 rollouts x 3 frames of raw .ppm camera dumps, all transcoded to PNG.
-    assert result.camera_message_count == 6
+    # 2 rollouts x 3 frames of raw .ppm camera dumps, all transcoded to PNG, plus
+    # the first rollout's 3 frames mirrored onto the primary /camera topic (this run
+    # has no held-out episodes, which would otherwise own that topic).
+    assert result.camera_message_count == 9
     assert result.scalar_message_count > 0
     assert result.log_message_count > 0
 
@@ -253,6 +255,9 @@ def test_emit_mcap_roundtrip_camera_signal_critique(tmp_path: Path) -> None:
         )
 
     assert any(topic.endswith("/camera") for topic in topics)
+    # The embedded viewer's default layout binds its Image panel to this one
+    # well-known topic, so it must be populated even without held-out episodes.
+    assert viz_module.MCAP_PRIMARY_CAMERA_TOPIC in topics
     assert "/signal/reward" in topics
     assert "/signal/advantage" in topics
     assert "/signal/reward_trend" in topics
@@ -278,12 +283,51 @@ def _write_pointcloud_npz(tmp_path: Path, env_id: str = "env-0001", frames: int 
         np.savez_compressed(root / f"cloud-{i:04d}.npz", xyz=xyz, rgb=rgb)
 
 
-def test_pointcloud_message_packs_xyz_and_rgb() -> None:
+def test_emit_mcap_primary_camera_prefers_heldout_over_rollout_mirror(tmp_path: Path) -> None:
+    """When held-out episodes exist they own the primary camera topic outright.
+
+    The rollout fallback exists only for runs without held-out cameras; if both
+    wrote to it the panel would interleave two unrelated, misaligned streams.
+    """
+
+    pytest.importorskip("mcap")
+
+    inner_evidence, heldout_report = _build_run_tree(tmp_path)
+    renders_dir = tmp_path / "eval" / "heldout" / "renders" / "heldout-0000"
+    _write_test_png(renders_dir / "camera-000.png", red=40, green=120, blue=200)
+    _write_test_png(renders_dir / "camera-001.png", red=50, green=130, blue=210)
+    heldout_report["render_manifest"] = {
+        "schema": "npa.sim2real.heldout_renders.v1",
+        "sim_backend": "isaac",
+        "episodes": [
+            {"env_id": "heldout-0000", "frames": ["camera-000.png", "camera-001.png"]}
+        ],
+    }
+
+    result = viz_module.emit_sim2real_mcap(
+        local_dir=tmp_path,
+        inner_evidence=inner_evidence,
+        heldout_report=heldout_report,
+        output_mcap=tmp_path / "reports" / "heldout.mcap",
+    )
+
+    assert result.channel_counts[viz_module.MCAP_PRIMARY_CAMERA_TOPIC] == 2
+
+
+def test_pointcloud_message_packs_xyz_and_rgba() -> None:
+    """The cloud must carry an opaque ``alpha`` channel alongside red/green/blue.
+
+    The viewer only offers its ``rgba-fields`` color mode when all four color
+    fields are present, and it reads a missing field as 0 — so an RGB-only cloud
+    is drawn fully transparent (an empty 3D panel).
+    """
+
     import base64
 
     import numpy as np
 
     from npa.workbench.lichtblick import (
+        _POINTCLOUD_ALPHA_OPAQUE,
         _POINTCLOUD_POINT_STRIDE,
         pointcloud_message,
     )
@@ -292,12 +336,30 @@ def test_pointcloud_message_packs_xyz_and_rgb() -> None:
     rgb = np.array([[10, 20, 30], [40, 50, 60]], dtype="uint8")
     msg = pointcloud_message(xyz, rgb, stamp_ns=500_000_000, frame_id="sim2real")
     assert msg["point_stride"] == _POINTCLOUD_POINT_STRIDE
-    assert [f["name"] for f in msg["fields"]] == ["x", "y", "z", "red", "green", "blue"]
+    assert [f["name"] for f in msg["fields"]] == [
+        "x",
+        "y",
+        "z",
+        "red",
+        "green",
+        "blue",
+        "alpha",
+    ]
+    # Declared offsets must match the packed layout the viewer will read.
+    assert {f["name"]: f["offset"] for f in msg["fields"]}["alpha"] == 15
     raw = base64.b64decode(msg["data"])
     assert len(raw) == 2 * _POINTCLOUD_POINT_STRIDE
-    # First point: xyz float32 then rgb uint8.
+    # First point: xyz float32, then rgb uint8, then an opaque alpha.
     assert np.frombuffer(raw[0:12], dtype="<f4").tolist() == [1.0, 2.0, 3.0]
     assert list(raw[12:15]) == [10, 20, 30]
+    assert raw[15] == _POINTCLOUD_ALPHA_OPAQUE
+    # Every point is opaque, not just the first.
+    assert list(raw[_POINTCLOUD_POINT_STRIDE + 12 : 2 * _POINTCLOUD_POINT_STRIDE]) == [
+        40,
+        50,
+        60,
+        _POINTCLOUD_ALPHA_OPAQUE,
+    ]
 
 
 def test_heldout_pointcloud_frames_reads_npz(tmp_path: Path) -> None:

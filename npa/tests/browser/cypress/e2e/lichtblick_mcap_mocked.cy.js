@@ -4,8 +4,10 @@ import {
   firstMcapPngPayload,
   mcapCameraTopicCount,
   mcapHasCompressedImage,
+  mcapHasFrameTransform,
   mcapHasHeldoutCamera,
   mcapHasPointCloud,
+  mcapPointCloudColorFields,
 } from "../support/e2e";
 
 const MCAP_RECORDING_PATH = "/lichtblick/recordings/sim2real.mcap";
@@ -35,8 +37,17 @@ describe("Lichtblick MCAP viewer (mocked smoke)", () => {
 
   it("includes a GPU 3D point-cloud stream for the 3D panel", () => {
     cy.request({ url: MCAP_RECORDING_PATH, encoding: "binary" }).then((resp) => {
-      expect(mcapHasPointCloud(resp.body || ""), "has foxglove.PointCloud on /heldout/points").to.be
-        .true;
+      const body = resp.body || "";
+      expect(mcapHasPointCloud(body), "has foxglove.PointCloud on /heldout/points").to.be.true;
+      // The default layout colors the cloud with "rgba-fields", which the viewer
+      // only enables when all four color fields exist; a missing alpha reads as 0
+      // and draws every point fully transparent.
+      expect(
+        mcapPointCloudColorFields(body),
+        "point cloud declares red/green/blue/alpha",
+      ).to.deep.equal(["red", "green", "blue", "alpha"]);
+      // Without a transform defining the cloud's frame the 3D panel places nothing.
+      expect(mcapHasFrameTransform(body), "has foxglove.FrameTransform on /tf").to.be.true;
     });
   });
 

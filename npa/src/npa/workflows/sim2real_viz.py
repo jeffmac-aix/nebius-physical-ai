@@ -53,6 +53,11 @@ MCAP_FRAME_ID = "sim2real"
 # ``world`` -> ``sim2real`` transform on ``/tf``.
 MCAP_ROOT_FRAME_ID = "world"
 MCAP_TF_TOPIC = "/tf"
+# Topic the embedded viewer's default layout binds its Image panel to (see
+# ``npa.cli.agent._lichtblick_default_layout_json``). Held-out and rollout cameras
+# also get their own per-episode topics; this one is the single well-known stream
+# the default layout can rely on, so the emitter must always populate it.
+MCAP_PRIMARY_CAMERA_TOPIC = "/camera"
 # foxglove.Log level for INFO-severity critique/summary messages.
 _LOG_LEVEL_INFO = 2
 _LOG_SCHEMA: dict[str, Any] = {
@@ -1207,6 +1212,11 @@ def emit_sim2real_mcap(
     reward/advantage/score signals as numeric samples a Plot panel can chart, so a
     Foxglove-compatible viewer (Lichtblick) can play back the same rollout as
     Rerun. Reuses ``npa.workbench.lichtblick`` for the CompressedImage encoding.
+
+    Whenever any camera frame is emitted, ``MCAP_PRIMARY_CAMERA_TOPIC`` is
+    populated too (from the held-out episode when there is one, else mirrored from
+    the first rollout), because the embedded viewer's default layout binds its
+    Image panel to that one well-known topic.
     """
 
     writer_cls, compression_none = _import_mcap()
@@ -1267,6 +1277,14 @@ def emit_sim2real_mcap(
                     start_ns=stamp_ns,
                     frame_period_ns=frame_period_ns,
                     encode=encode_frame_to_compressed_bytes,
+                    # Held-out episodes own the primary camera topic when present.
+                    # Without them (a run with rollout cameras only), mirror the
+                    # first rollout onto it so the default layout's Image panel is
+                    # never empty.
+                    mirror_primary_camera=(
+                        not has_heldout_cameras
+                        and MCAP_PRIMARY_CAMERA_TOPIC not in emitter.channel_counts
+                    ),
                 )
 
         for index, value in enumerate(inner_evidence.get("reward_trend") or []):
@@ -1359,6 +1377,7 @@ def _emit_mcap_rollout(
     start_ns: int,
     frame_period_ns: int,
     encode: Any,
+    mirror_primary_camera: bool = False,
 ) -> int:
     per_step_eval = {
         int(item.get("step", index)): item
@@ -1379,6 +1398,8 @@ def _emit_mcap_rollout(
             stamp_ns += frame_period_ns
             continue
         emitter.log_image_bytes(f"{root}/camera", payload, fmt, stamp_ns)
+        if mirror_primary_camera:
+            emitter.log_image_bytes(MCAP_PRIMARY_CAMERA_TOPIC, payload, fmt, stamp_ns)
 
         eval_step = per_step_eval.get(step, {})
         critique = str(eval_step.get("critique_text") or summary or "")
@@ -1421,7 +1442,9 @@ def _emit_mcap_heldout_cameras(
             payload = _png_bytes(frame)
             emitter.log_image_bytes(f"{root}/camera", payload, "png", stamp_ns)
             if episode_index == 0:
-                emitter.log_image_bytes("/camera", payload, "png", stamp_ns)
+                # Mirror the primary episode onto the well-known topic the default
+                # layout binds to.
+                emitter.log_image_bytes(MCAP_PRIMARY_CAMERA_TOPIC, payload, "png", stamp_ns)
             stamp_ns += frame_period_ns
 
 
