@@ -46,6 +46,29 @@ CONTAINER_IMAGE_NAMES = {
     "detection-training": "npa-detection-training",
 }
 
+# Tools whose built image bakes NVIDIA Omniverse Kit (Isaac Sim) binaries. Isaac
+# Sim's source is Apache-2.0, but the shipped binary bundles the Omniverse Kit
+# SDK + NVIDIA assets (NVIDIA-proprietary). They are fine to pull inside the
+# owning org (internal-R&D use) and to build-your-own via your own NGC/EULA, but
+# they must NEVER be published to a public/anonymous registry — that would make
+# us the third-party redistributor of Omniverse Kit (needs an NVIDIA AI
+# Enterprise license). Kept in sync with
+# npa/docker/workbench/packaging-contract.yaml (redistribution: restricted) by
+# npa/tests/deploy/test_public_publish.py. ``sonic`` covers all sonic variants
+# (0.1.2, 0.1.2-k8s-runtime) and the derived ``npa-sonic-mujoco`` image.
+OMNIVERSE_RESTRICTED_TOOLS = frozenset({"isaac-lab", "sonic", "groot"})
+
+# Public mirror registry for the OSS-redistributable image subset. Nebius CR does
+# NOT support anonymous/public pulls and has no cross-tenant / all-authenticated
+# grant, so making images pullable by any Nebius tenant (or anyone) means
+# mirroring the publicly_publishable_tools() set to a public-capable registry.
+# GHCR is the default (public, anonymous pull, native to the GitHub org). A
+# registry path is a public locator, not a credential. Override with
+# NPA_PUBLIC_REGISTRY; consumers in any tenant pull the OSS images by setting
+# NPA_REGISTRY to this value.
+PUBLIC_CONTAINER_REGISTRY_ENV = "NPA_PUBLIC_REGISTRY"
+DEFAULT_PUBLIC_CONTAINER_REGISTRY = "ghcr.io/nebius/nebius-physical-ai"
+
 SUPPORTED_TOOL_VERSIONS = {
     # Default LeRobot pin. Selectable additional versions: see
     # lerobot_version_manifest.json (0.5.1 default + 0.6.0).
@@ -275,6 +298,34 @@ def container_image_candidates(
         other = [ref for ref in candidates if not ref.startswith(host_prefix)]
         candidates = local + other
     return candidates
+
+
+def public_container_registry() -> str:
+    """Return the public mirror registry: ``NPA_PUBLIC_REGISTRY`` or the default."""
+    return (
+        os.environ.get(PUBLIC_CONTAINER_REGISTRY_ENV, "").strip()
+        or DEFAULT_PUBLIC_CONTAINER_REGISTRY
+    )
+
+
+def is_publicly_redistributable(tool: str) -> bool:
+    """Whether a tool image may be published to a public/anonymous registry.
+
+    ``False`` for images that bake NVIDIA Omniverse Kit (Isaac Sim); those are
+    licensed for internal-R&D / build-your-own use only (see
+    ``OMNIVERSE_RESTRICTED_TOOLS``).
+    """
+    return tool not in OMNIVERSE_RESTRICTED_TOOLS
+
+
+def publicly_publishable_tools() -> list[str]:
+    """Return the workbench tools that are OSS-redistributable to a public registry.
+
+    Excludes the Omniverse-Kit-bearing tools (``isaac-lab``, ``sonic``,
+    ``groot``); publishing those publicly would redistribute NVIDIA-proprietary
+    Omniverse Kit to third parties.
+    """
+    return sorted(tool for tool in CONTAINER_IMAGE_NAMES if is_publicly_redistributable(tool))
 
 
 def default_vlm_image(*, registry: str | None = None) -> str:
