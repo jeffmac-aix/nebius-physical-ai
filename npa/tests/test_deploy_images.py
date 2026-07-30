@@ -3,8 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from npa.deploy.images import (
+    BACKUP_CONTAINER_REGISTRY,
     DEFAULT_CONTAINER_REGISTRY,
     SUPPORTED_TOOL_VERSIONS,
+    backup_container_registry,
+    container_image_candidates,
     container_image_for_tool,
     default_vlm_image,
     default_workbench_image,
@@ -52,6 +55,32 @@ def test_primary_container_registry_defaults_when_unset(monkeypatch) -> None:
 
 def test_default_registry_is_real_first_party_registry() -> None:
     assert DEFAULT_CONTAINER_REGISTRY == "cr.eu-north1.nebius.cloud/e00cm0vc6t09m0z5gw"
+
+
+def test_backup_registry_is_real_us_central1_registry() -> None:
+    # The backup path must be the live us-central1 mirror, addressed by its bare
+    # registry id. A "registry-" prefix is the API resource id, not a valid
+    # Docker repository path, so it must never appear here.
+    assert BACKUP_CONTAINER_REGISTRY == "cr.us-central1.nebius.cloud/u00j7q4jjkahvsx0jy"
+    assert "/registry-" not in BACKUP_CONTAINER_REGISTRY
+
+
+def test_backup_registry_honors_env_override(monkeypatch) -> None:
+    monkeypatch.setenv("NPA_BACKUP_REGISTRY", "registry.example/backup")
+    assert backup_container_registry() == "registry.example/backup"
+    monkeypatch.delenv("NPA_BACKUP_REGISTRY", raising=False)
+    assert backup_container_registry() == BACKUP_CONTAINER_REGISTRY
+
+
+def test_container_image_candidates_include_primary_then_backup(monkeypatch) -> None:
+    monkeypatch.delenv("NPA_REGISTRY", raising=False)
+    monkeypatch.delenv("NPA_REGISTRY_ID", raising=False)
+    monkeypatch.delenv("NPA_BACKUP_REGISTRY", raising=False)
+    candidates = container_image_candidates("lancedb")
+    assert candidates == [
+        "cr.eu-north1.nebius.cloud/e00cm0vc6t09m0z5gw/npa-lancedb:0.30.3",
+        "cr.us-central1.nebius.cloud/u00j7q4jjkahvsx0jy/npa-lancedb:0.30.3",
+    ]
 
 
 def test_non_sonic_workbench_images_resolve_from_supported_tools() -> None:

@@ -16,8 +16,11 @@ from typing import Any
 DEFAULT_CONTAINER_REGISTRY_ID = "e00cm0vc6t09m0z5gw"
 DEFAULT_CONTAINER_REGISTRY = f"cr.eu-north1.nebius.cloud/{DEFAULT_CONTAINER_REGISTRY_ID}"
 # Backup registry (us-central1) used for failover when the primary is
-# unavailable. Override with NPA_BACKUP_REGISTRY.
-BACKUP_CONTAINER_REGISTRY = "cr.us-central1.nebius.cloud/registry-u00gwj4vqcp98k7ph6"
+# unavailable. Override with NPA_BACKUP_REGISTRY. The Docker path uses the bare
+# registry id (no "registry-" prefix); the previous value pointed at a
+# non-existent registry id and included the API-only "registry-" prefix, so
+# failover pulls to us-central1 always 404'd.
+BACKUP_CONTAINER_REGISTRY = "cr.us-central1.nebius.cloud/u00j7q4jjkahvsx0jy"
 DEFAULT_VLM_IMAGE_ENV = "NPA_VLM_IMAGE"
 DEFAULT_WORKBENCH_IMAGE_ENV = "NPA_WORKBENCH_IMAGE"
 SONIC_IMAGE_MANIFEST_RESOURCE = "sonic_image_manifest.json"
