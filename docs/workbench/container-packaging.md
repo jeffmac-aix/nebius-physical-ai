@@ -144,6 +144,35 @@ Never add the `restricted` images to a public target — that redistributes NVID
 Omniverse Kit to third parties (needs an NVIDIA AI Enterprise license). Those
 stay build-your-own (each operator builds with their own NGC credentials + EULA).
 
+### Why not just open up the Nebius registry?
+
+Three approaches come up, and none of them work:
+
+- **Turn on anonymous pull.** There is no such setting: the registry resource has
+  no visibility field (`nebius registry create/update` expose only name,
+  description, labels, parent). The registry does advertise a Bearer token realm
+  and *will* hand out a token to an unauthenticated caller, which looks
+  promising — but that token carries no identity, so the pull itself returns
+  `DENIED: permission denied`.
+- **Grant another tenant read access.** Access permits are IAM-only
+  (`nebius registry` has no access subcommand), and `iam access-permit create`
+  requires the subject to be a parent within the resource's own hierarchy —
+  "if parent of subject is not from resource's hierarchy, NOT_FOUND will be
+  thrown." There is no `allUsers`-style pseudo-subject. Tenants cannot even
+  resolve each other's principals: looking up a foreign tenant's group returns
+  `PermissionDenied` in both directions. Inviting each account individually
+  (`nebius iam invitation`) works but does not scale and puts outsiders in our
+  tenant.
+- **Publish a shared read-only static key.** Technically functional, but it is an
+  unrevocable-per-consumer shared secret with a default 6-month expiry, and
+  handing it out publicly is just a worse public registry.
+
+If the images must stay on Nebius infrastructure, the remaining option is to run
+an OCI registry that permits anonymous reads (zot, Harbor, CNCF distribution) on
+Nebius compute behind a public endpoint — at the cost of operating, securing, and
+paying egress for it. Mirroring to GHCR gets the same reach for no operational
+burden, which is why it is the default here.
+
 ## Feature exposure
 
 | Access mode | Contract |
