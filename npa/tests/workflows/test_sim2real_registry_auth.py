@@ -58,6 +58,55 @@ def test_sibling_refresh_is_best_effort_on_mint_failure(
     )
 
 
+def test_apply_secret_reports_missing_kubectl_as_runtime_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An in-pod orchestrator often has no kubectl; that must stay in contract.
+
+    Callers treat this refresh as best-effort and catch ``RuntimeError``, so a
+    bare ``FileNotFoundError`` from ``subprocess.run`` would escape them and abort
+    the run instead of degrading to an ImagePullBackOff on the sibling.
+    """
+
+    monkeypatch.setattr(
+        "npa.workflows.sim2real.registry_auth.mint_nebius_registry_token",
+        lambda **kwargs: "fresh-token",
+    )
+
+    def _no_kubectl(cmd, **kwargs):
+        raise FileNotFoundError(2, "No such file or directory", "kubectl")
+
+    monkeypatch.setattr("npa.workflows.sim2real.registry_auth.subprocess.run", _no_kubectl)
+    with pytest.raises(RuntimeError, match="registry pull secret"):
+        ensure_nebius_registry_pull_secret(registry_server="cr.eu-north1.nebius.cloud")
+
+
+@pytest.mark.parametrize(
+    "error",
+    [FileNotFoundError(2, "No such file or directory", "kubectl"), ValueError("boom")],
+)
+def test_sibling_refresh_never_aborts_the_run(
+    monkeypatch: pytest.MonkeyPatch, error: Exception
+) -> None:
+    """The refresh is advertised as best-effort, so no failure type may propagate."""
+
+    from npa.workflows.sim2real import engine
+
+    def _raise(*images, **kwargs):
+        raise error
+
+    monkeypatch.setattr(
+        "npa.workflows.sim2real.registry_auth.ensure_registry_pull_secret_for_images",
+        _raise,
+    )
+    config = Sim2RealLoopConfig(run_id="run-best-effort-any", k8s_context="ctx")
+    engine._refresh_registry_pull_secret_for_sibling_job(
+        "cr.us-central1.nebius.cloud/reg/npa-lerobot-vlm-rl:1.0",
+        config=config,
+        namespace="default",
+    )
+
+
 def test_docker_config_json_uses_iam_username() -> None:
     payload = docker_config_json(registry_server="cr.eu-north1.nebius.cloud", token="tok")
     entry = payload["auths"]["cr.eu-north1.nebius.cloud"]

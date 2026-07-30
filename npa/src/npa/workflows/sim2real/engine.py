@@ -1902,7 +1902,7 @@ def _refresh_registry_pull_secret_for_sibling_job(
             kubeconfig=config.k8s_kubeconfig,
             k8s_context=config.k8s_context,
         )
-    except RuntimeError as exc:
+    except Exception as exc:  # noqa: BLE001 - best-effort refresh must never abort the run
         logging.getLogger(__name__).warning(
             "sibling registry pull-secret refresh skipped for %s: %s", image, exc
         )
