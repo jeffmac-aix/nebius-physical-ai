@@ -1734,10 +1734,16 @@ LICHTBLICK_DEFAULT_LAYOUT_PLACEHOLDER = "/*LICHTBLICK_SUITE_DEFAULT_LAYOUT_PLACE
 def _lichtblick_default_layout_json() -> str:
     """Return the compact JSON for the embedded viewer's default layout.
 
-    A 3D panel with ``/heldout/points`` made visible (colored by its RGB fields)
+    A 3D panel with ``/heldout/points`` made visible (colored by its RGBA fields)
     and framed on the workspace, alongside an Image panel bound to ``/camera``. The
     JSON is single-quote-free so it can be injected as an nginx ``sub_filter``
     replacement without escaping.
+
+    ``rgba-fields`` requires the cloud to carry all four of red/green/blue/alpha;
+    ``npa.workbench.lichtblick.pack_pointcloud_bytes`` emits the opaque alpha
+    channel that makes this mode valid (without it the points read alpha 0 and are
+    invisible). ``/camera`` is always emitted by the sim2real MCAP writer — from
+    the held-out episode when there is one, else mirrored from the first rollout.
     """
 
     layout = {
@@ -1897,13 +1903,15 @@ def _nginx_agent_site_body(
     # nginx's static module already emits `Accept-Ranges: bytes`; do NOT add it again
     # (a duplicate makes the browser join it to "bytes, bytes", which fails Lichtblick's
     # `headers.get("accept-ranges") === "bytes"` range-support check).
-    add_header Access-Control-Allow-Origin * always;
-    add_header Access-Control-Allow-Methods "GET, HEAD, OPTIONS" always;
-    add_header Access-Control-Allow-Headers "Range" always;
-    # Lichtblick/Foxglove stream MCAP via HTTP Range and require Accept-Ranges to be a
-    # readable (CORS-exposed) response header, else "Support for HTTP Range request" fails.
-    add_header Access-Control-Expose-Headers "Accept-Ranges, Content-Length, Content-Range" always;
-    add_header Cross-Origin-Resource-Policy "cross-origin" always;
+    #
+    # Deliberately NO Access-Control-* headers here. A run's MCAP carries camera
+    # frames, VLM critiques and reward signals, and this location is unauthenticated
+    # (wasm/worker fetches cannot carry basic auth). Granting `Allow-Origin: *` would
+    # let any web page a viewer visits read those recordings off this host. The embed
+    # never needs it: the viewer document is proxied from this same origin under
+    # /lichtblick/ and the UI pins ds.url to window.location.origin, so the fetch is
+    # same-origin — which also makes Accept-Ranges readable without Expose-Headers.
+    add_header Cross-Origin-Resource-Policy "same-origin" always;
   }}
   location = /lichtblick/ {{
     # Exact-match the viewer document so we can inject the sim2real default layout
@@ -8522,6 +8530,10 @@ UNIT
 # Lichtblick (Foxglove-compatible MCAP viewer) sidecar — best-effort: the agent UI
 # embeds it at /lichtblick/ and co-serves the run MCAP at /lichtblick/recordings/.
 # Requires docker + the npa-lichtblick image on the VM; degrades gracefully if absent.
+# The sidecar serves only the viewer bundle: the MCAP itself is served by nginx from
+# the recordings alias below (so it needs no mount into the container), and the file
+# is pre-created so that location returns an empty 200 rather than 404 before a run
+# is loaded.
 sudo mkdir -p /opt/npa-agent/recordings
 sudo touch /opt/npa-agent/recordings/sim2real.mcap
 cat <<'UNIT' | sudo tee /etc/systemd/system/npa-lichtblick.service >/dev/null
@@ -8531,7 +8543,7 @@ After=network.target docker.service
 [Service]
 Type=simple
 ExecStartPre=-/usr/bin/docker rm -f npa-lichtblick
-ExecStart=/usr/bin/docker run --rm --name npa-lichtblick -p 127.0.0.1:{lichtblick_port}:8080 -v /opt/npa-agent/recordings/sim2real.mcap:/srv/data/sim2real.mcap:ro {lichtblick_image}
+ExecStart=/usr/bin/docker run --rm --name npa-lichtblick -p 127.0.0.1:{lichtblick_port}:8080 {lichtblick_image}
 ExecStop=-/usr/bin/docker rm -f npa-lichtblick
 Restart=always
 RestartSec=10

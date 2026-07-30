@@ -107,6 +107,34 @@ describe("Lichtblick MCAP viewer (mocked smoke)", () => {
       });
   });
 
+  it("pins a foreign-origin ds.url onto the page origin", () => {
+    // /lichtblick/recordings/ is unauthenticated and grants no CORS, so the viewer's
+    // fetch must be same-origin. The backend can build ds.url from a configured
+    // public origin (NPA_AGENT_PUBLIC_*) that differs from the origin actually being
+    // browsed, so the UI rewrites it back onto window.location.origin.
+    cy.window().then((win) => {
+      const pin = win.__NPA_AGENT_TEST__.pinLichtblickDsToSameOrigin;
+      const foreign =
+        "/lichtblick/?ds=remote-file&ds.url=" +
+        encodeURIComponent("https://agent.example.test/lichtblick/recordings/sim2real.mcap");
+      const pinned = pin(foreign);
+      const ds = decodeURIComponent(
+        new URL(pinned, win.location.origin).searchParams.get("ds.url") || "",
+      );
+      expect(ds, "recording fetched from the browsed origin").to.eq(
+        win.location.origin + "/lichtblick/recordings/sim2real.mcap",
+      );
+      // An already-same-origin (relative) ds.url is left addressing this origin.
+      const relative =
+        "/lichtblick/?ds=remote-file&ds.url=" +
+        encodeURIComponent("/lichtblick/recordings/sim2real.mcap");
+      const relativeDs = decodeURIComponent(
+        new URL(pin(relative), win.location.origin).searchParams.get("ds.url") || "",
+      );
+      expect(relativeDs).to.include("/lichtblick/recordings/sim2real.mcap");
+    });
+  });
+
   it("filters discovered artifacts to the MCAP (Lichtblick) type", () => {
     cy.get("#tabRerun").click();
     cy.get("#artifactTypeFilter").select("mcap");

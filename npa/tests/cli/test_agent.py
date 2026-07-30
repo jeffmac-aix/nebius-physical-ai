@@ -384,6 +384,40 @@ def test_bootstrap_embeds_lichtblick_viewer() -> None:
     assert "npa-lichtblick image acquired from" in source
 
 
+def test_lichtblick_recordings_grant_no_cross_origin_read() -> None:
+    """The MCAP alias is unauthenticated, so it must not be CORS-readable.
+
+    A run's MCAP carries camera frames, VLM critiques and reward signals, and the
+    location runs with ``auth_basic off`` (wasm/worker fetches cannot carry basic
+    auth). A wildcard ``Access-Control-Allow-Origin`` would let any page a viewer
+    visits read those recordings off this host; the embed is same-origin and needs
+    no CORS grant at all.
+    """
+
+    from npa.cli import agent as agent_module
+
+    source = Path(agent_module.__file__).read_text(encoding="utf-8")
+    recordings_location = source.split("location /lichtblick/recordings/ {{", 1)[1].split(
+        "location = /lichtblick/ {{", 1
+    )[0]
+    assert "auth_basic off;" in recordings_location
+    assert "Access-Control-Allow-Origin" not in recordings_location
+    assert "Access-Control-Expose-Headers" not in recordings_location
+    assert 'Cross-Origin-Resource-Policy "same-origin"' in recordings_location
+
+
+def test_ui_pins_lichtblick_recording_fetch_to_the_page_origin() -> None:
+    """Because the recordings alias grants no CORS, the viewer's fetch must be
+    same-origin even when the backend built ds.url from a configured public
+    origin that differs from the origin the page was loaded from."""
+
+    source = _agent_ui_bundle()
+    assert "function pinLichtblickDsToSameOrigin" in source
+    assert "window.location.origin" in source
+    # The iframe URL always flows through the rewrite.
+    assert "return pinLichtblickDsToSameOrigin(url) || \"/lichtblick/\";" in source
+
+
 def test_bootstrap_injects_lichtblick_default_layout() -> None:
     from npa.cli import agent as agent_module
 

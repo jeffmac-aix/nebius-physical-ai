@@ -4138,11 +4138,37 @@
         updateSimvizCta(lastSimVizStatus);
       }
       // --- Lichtblick (Foxglove-compatible MCAP viewer) embed ---------------
+      // /lichtblick/recordings/ serves the MCAP unauthenticated and grants no CORS,
+      // so the viewer's fetch has to be same-origin. The backend may build ds.url
+      // from a configured public origin (NPA_AGENT_PUBLIC_*) that differs from the
+      // origin this page was actually loaded from (e.g. the https:// name vs. the
+      // plain HTTP port), so rewrite the recording URL onto the current origin and
+      // keep its path/query. Also keeps Accept-Ranges readable, which Lichtblick
+      // requires to stream the MCAP by range.
+      function pinLichtblickDsToSameOrigin(rawUrl) {
+        if (!rawUrl) return "";
+        try {
+          const origin = window.location.origin;
+          const viewer = new URL(rawUrl, origin);
+          const ds = viewer.searchParams.get("ds.url");
+          if (ds) {
+            const recording = new URL(ds, origin);
+            if (recording.origin !== origin) {
+              viewer.searchParams.set("ds.url", origin + recording.pathname + recording.search);
+            }
+          }
+          // Preserve the backend's relative form so the embed stays origin-agnostic.
+          if (/^https?:\/\//i.test(rawUrl)) return viewer.toString();
+          return viewer.pathname + viewer.search + viewer.hash;
+        } catch (_e) {
+          return rawUrl;
+        }
+      }
       function lichtblickIframeUrlFor(simViz) {
         // Prefer the backend-computed URL (same-origin nginx proxy or sidecar port);
         // fall back to the co-served viewer root so the embed still mounts.
         const url = String((simViz && simViz.lichtblick_iframe_url) || "").trim();
-        return url || "/lichtblick/";
+        return pinLichtblickDsToSameOrigin(url) || "/lichtblick/";
       }
       function applyLichtblickSimViz(simViz) {
         currentLichtblickSimViz = simViz || {};
@@ -6495,6 +6521,7 @@
           applyLichtblickSimViz,
           mountLichtblickIframe,
           lichtblickIframeUrlFor,
+          pinLichtblickDsToSameOrigin,
         };
         try {
           wireUi();
