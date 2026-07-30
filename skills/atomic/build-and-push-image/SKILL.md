@@ -41,6 +41,24 @@ Security baseline: non-root final USER, no secrets in layers, digest-pinned
 bases where possible, Trivy scan coverage. Service images should expose ports
 and prefer a `HEALTHCHECK` or K8s probe on `/health`.
 
+## Redistribution Class
+
+Every image in the packaging contract also declares
+`redistribution: public | restricted`, which decides whether it may leave the
+owning org:
+
+- `public` — OSS-redistributable, may be mirrored to a public registry.
+- `restricted` — bakes NVIDIA Omniverse Kit (Isaac Sim): `isaac-lab`, `sonic`,
+  `sonic-mujoco`, `groot`. Internal pulls and build-your-own (the operator's own
+  NGC credentials + EULA) are fine; hosting them prebuilt on a public registry is
+  not, because that makes us the third-party redistributor of Omniverse Kit.
+
+When adding an image, set its class. `npa/tests/docker/test_packaging_contract.py`
+fails the build if a Dockerfile trips an Omniverse marker (or is built `FROM` a
+restricted image) while claiming `public`. Keep
+`images.OMNIVERSE_RESTRICTED_TOOLS` in sync; it is what
+`npa.deploy.publish_public` uses to decide what may be mirrored publicly.
+
 ## Gotchas
 
 - Do not commit concrete registry IDs or private image digests from a live
