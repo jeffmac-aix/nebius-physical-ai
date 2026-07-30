@@ -109,10 +109,28 @@ Access model today (both regions): each workbench registry
 is **already readable org/tenant-wide** — the tenant `viewers`/`editors` groups
 hold `viewer`/`editor`, which cascades to image pull — so developers inside the
 owning org can pull every image, including the `restricted` ones (internal R&D
-use). Neither registry is anonymously public. To distribute the OSS images
-**publicly**, publish only the `public`-classified images to a dedicated public
-registry; do not flip a mixed registry to anonymous read, which would
-redistribute the `restricted` Omniverse images to third parties.
+use).
+
+**Public exposure.** Nebius Container Registry has **no anonymous/public mode** —
+every pull requires an authenticated Nebius identity (IAM token or static key),
+and the broadest grant Nebius offers is tenant-wide (`viewers`). So making images
+pullable by anyone (outside a Nebius tenant, unauthenticated) is **not possible
+on the Nebius registries themselves**; it requires mirroring to a public-capable
+registry such as GHCR (`ghcr.io`), Docker Hub, or Quay.
+
+Only the `public`-classified subset may be mirrored publicly. Use the
+license-guarded publisher, which copies exactly `publicly_publishable_tools()`
+and refuses the Omniverse-Kit images:
+
+```bash
+python -m npa.deploy.publish_public --target ghcr.io/<org>/<repo> --dry-run
+python -m npa.deploy.publish_public --target ghcr.io/<org>/<repo>
+```
+
+or the `Publish public images` GitHub Actions workflow (manual dispatch,
+dry-run by default). Never flip a mixed registry to anonymous read and never add
+the `restricted` images to a public target — that redistributes NVIDIA Omniverse
+Kit to third parties (needs an NVIDIA AI Enterprise license).
 
 ## Feature exposure
 
