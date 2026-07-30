@@ -80,11 +80,29 @@ image (`public` | `restricted`), enforced by
   (`isaac-lab`, `sonic`, `sonic-mujoco`, `groot`). The Isaac Sim *source* is
   Apache-2.0, but the shipped binary bundles the Omniverse Kit SDK + NVIDIA
   assets, which are NVIDIA-proprietary (the `isaacsim` PyPI package's own license
-  field reads *"NVIDIA Proprietary Software"*). NVIDIA allows this **free for
-  internal R&D**, but **redistribution to third parties** — publishing to a
-  public registry, shipping in a product, or delivering as a hosted service —
-  **requires an NVIDIA AI Enterprise license**. Keep these off any public
-  registry.
+  field reads *"NVIDIA Proprietary Software"*).
+
+  The compliant way customers get these is **build-your-own**: each deployment
+  builds the image into its **own** registry (`build.sh --registry
+  cr.<region>.nebius.cloud/<your-registry-id> --push`, `NPA_REGISTRY_ID` is
+  per-operator), pulling the `nvcr.io/nvidia/isaac-lab` base / `isaacsim` wheels
+  with the operator's **own NGC credentials + EULA acceptance**
+  (`OMNI_KIT_ACCEPT_EULA=YES`). NVIDIA therefore delivers Omniverse Kit to each
+  operator under that operator's own acceptance, and we ship only the Dockerfile
+  + orchestration — not the proprietary binaries. This is why using their own
+  NGC/HF tokens keeps customers compliant.
+
+  The **one** thing that is *not* allowed is hosting these images **prebuilt on a
+  public/anonymous registry**: a pull from such a registry needs no NGC token and
+  bypasses the EULA gate, which would make us the third-party redistributor of
+  Omniverse Kit (that needs an NVIDIA AI Enterprise license). So keep the
+  `restricted` set off any public registry.
+
+Model weights are a separate axis and are never baked into any image: Cosmos,
+GR00T N1, and Cosmos-Reason weights (and VLMs) are downloaded at **runtime**
+using the customer's own HF/NGC token, so the customer accepts each model
+license (e.g. the NVIDIA Open Model License) directly. We never redistribute
+weights.
 
 Access model today (both regions): each workbench registry
 (`cr.eu-north1.nebius.cloud/…` primary, `cr.us-central1.nebius.cloud/…` mirror)

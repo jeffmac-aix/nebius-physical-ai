@@ -60,10 +60,17 @@ redistribution:
         Bakes NVIDIA Omniverse Kit (Isaac Sim) binaries. The Isaac Sim SOURCE is
         Apache-2.0, but the shipped binary bundles the Omniverse Kit SDK + NVIDIA
         assets, which are NVIDIA-proprietary (the isaacsim PyPI package lists its
-        license as "NVIDIA Proprietary Software"). Free for internal R&D, but
-        redistributing to third parties (public registry / product / hosted
-        service) requires an NVIDIA AI Enterprise license. Must NOT be published
-        to a public/anonymous registry.
+        license as "NVIDIA Proprietary Software"). Compliant distribution: each
+        deployment BUILDS these into its own registry (build.sh --registry
+        <your-registry> --push), pulling the nvcr.io base / isaacsim wheels with
+        the operator's OWN NGC credentials + EULA acceptance (OMNI_KIT_ACCEPT_EULA)
+        — so NVIDIA delivers Omniverse Kit to each operator under their own
+        acceptance and we ship only the Dockerfile. Internal-org pulls are
+        licensed internal-R&D use. The one thing that is NOT allowed: hosting
+        these PREBUILT on a public/anonymous registry, which strips the NGC/EULA
+        gate and makes us the third-party redistributor (that would require an
+        NVIDIA AI Enterprise license). So: never publish these to a public
+        registry.
       reason: bundles-omniverse-kit
 
 # Relative to npa/docker/workbench/
