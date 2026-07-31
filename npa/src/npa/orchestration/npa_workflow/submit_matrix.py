@@ -178,6 +178,24 @@ SUBMIT_LIVE_MATRIX: tuple[SubmitLiveCase, ...] = (
         notes="Insights ingest + dashboard over one run prefix. CPU-only.",
     ),
     SubmitLiveCase(
+        "tokenfactory-train-triage.yaml",
+        "multi",
+        secret_envs=(
+            "NEBIUS_TOKEN_FACTORY_KEY",
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+            "HF_TOKEN",
+        ),
+        requires_token_factory=True,
+        image_tool="lerobot",
+        notes=(
+            "The producer/consumer combo: LeRobot trains in the stage's own pod (the vendor "
+            "image's LeRobot, one step) and publishes the run's checkpoint AND textual "
+            "artifacts, then a hosted text model triages that run with no GPU. Both stages "
+            "need the lerobot image; the triage stage only reads text, so it stays cheap."
+        ),
+    ),
+    SubmitLiveCase(
         "cosmos-fetch.yaml",
         "cpu",
         # setup stages the npa source from S3 with boto3, so the keys are needed even
