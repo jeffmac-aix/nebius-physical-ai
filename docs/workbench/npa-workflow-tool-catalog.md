@@ -25,6 +25,8 @@ This table must list every `TOOL_CATALOG` key (enforced by
 | `workbench.sonic.train` | `npa workbench sonic train` | `config.checkpoint_uri`, `config.data_uri` | training checkpoint | no |
 | `workbench.sonic.export` | `npa workbench sonic export` | `config.checkpoint_uri` | `config.onnx_uri` | no |
 | `workbench.sonic.eval` | `npa workbench sonic eval` | `config.onnx_uri` | eval report | no |
+| `workbench.cosmos.check` | `npa workbench cosmos check` | `config.cosmos_source_repo`, `config.cosmos_model_id` | access report (stdout JSON) | no |
+| `workbench.cosmos.fetch` | `npa workbench cosmos fetch` | `config.cosmos_source_repo`, `config.cosmos_model_id` | source + checkpoint in `config.cosmos_cache_dir` | no |
 | `workbench.sim2real_envgen.raw_shard` | `python -m npa.workflows.sim2real_envgen raw-shard` | `config.envgen_root_uri`, `config.env_count`, `config.shard_index` | `envs/raw/raw-shard-<ii>-summary.json` | no |
 | `workbench.sim2real_envgen.split` | `python -m npa.workflows.sim2real_envgen split` | `config.envgen_root_uri`, `config.train_fraction` | `envs/manifest/split-manifest.json` | no |
 | `workbench.sim2real.policy_rollouts` | workflow stub (`echo`) | `config.rollouts_uri` | rollout prefix on S3 | yes |
