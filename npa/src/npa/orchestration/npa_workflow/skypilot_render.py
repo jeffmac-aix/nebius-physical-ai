@@ -238,11 +238,13 @@ def resolve_task_image(
     return container_image_for_tool(tool, **kwargs)
 
 
-#: How long to wait for a self-hosted model server to answer /health. A 7B VLM has to
-#: download weights and load them onto the GPU first; the retired SkyPilot template
-#: allowed 120 x 5 s for exactly this.
-VLM_SERVER_READY_ATTEMPTS = 120
-VLM_SERVER_READY_INTERVAL_SECONDS = 5
+#: How long to wait for a self-hosted model server to answer /health, and how often to ask.
+#: The server has to download a multi-GB checkpoint and load it onto the GPU first. The
+#: retired ``vlm-eval.yaml`` allowed 120 x 5 s = 600 s; a *cold* HF download of a 7B
+#: checkpoint routinely exceeds that, so the default is more generous. Override per spec
+#: with ``config.vlm_serve_ready_seconds``.
+DEFAULT_VLM_SERVER_READY_SECONDS = 900
+VLM_SERVER_POLL_INTERVAL_SECONDS = 5
 DEFAULT_VLM_SERVE_PORT = 8000
 
 
@@ -273,6 +275,19 @@ def render_self_hosted_vlm_preamble(config: Mapping[str, Any]) -> str:
         "False",
     }
     trust_flag = " --trust-remote-code" if trust_remote_code else ""
+    interval = VLM_SERVER_POLL_INTERVAL_SECONDS
+    try:
+        ready_seconds = int(config.get("vlm_serve_ready_seconds") or DEFAULT_VLM_SERVER_READY_SECONDS)
+    except (TypeError, ValueError) as exc:
+        raise NpaWorkflowRenderError(
+            f"config.vlm_serve_ready_seconds must be an integer number of seconds, "
+            f"got {config.get('vlm_serve_ready_seconds')!r}"
+        ) from exc
+    if ready_seconds < interval:
+        raise NpaWorkflowRenderError(
+            f"config.vlm_serve_ready_seconds must be at least {interval}, got {ready_seconds}"
+        )
+    attempts = ready_seconds // interval
     return (
         "# Self-hosted VLM backend: serve the model this stage is about to call.\n"
         f"npa_vlm_model={shlex.quote(model)}\n"
@@ -296,7 +311,7 @@ def render_self_hosted_vlm_preamble(config: Mapping[str, Any]) -> str:
         "import urllib.request\n"
         "\n"
         "pid, port, log_path = int(sys.argv[1]), sys.argv[2], sys.argv[3]\n"
-        f"attempts, interval = {VLM_SERVER_READY_ATTEMPTS}, {VLM_SERVER_READY_INTERVAL_SECONDS}\n"
+        f"attempts, interval = {attempts}, {interval}\n"
         "\n"
         "def alive() -> bool:\n"
         "    try:\n"

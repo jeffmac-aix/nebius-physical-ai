@@ -18,7 +18,9 @@ import yaml
 from npa.orchestration.npa_workflow.interpreter import build_plan
 from npa.orchestration.npa_workflow.skypilot_render import (
     DEFAULT_VLM_SERVE_PORT,
-    VLM_SERVER_READY_ATTEMPTS,
+    NpaWorkflowRenderError,
+    DEFAULT_VLM_SERVER_READY_SECONDS,
+    VLM_SERVER_POLL_INTERVAL_SECONDS,
     SkypilotRenderOptions,
     assert_no_unresolved_placeholders,
     render_run_preamble_for_tool,
@@ -52,7 +54,21 @@ def test_preamble_starts_waits_and_tears_down() -> None:
     assert preamble.count("&\n") >= 1
     assert "trap 'kill \"$npa_vlm_pid\" 2>/dev/null || true' EXIT" in preamble
     assert "/health" in preamble
-    assert str(VLM_SERVER_READY_ATTEMPTS) in preamble
+    expected_attempts = DEFAULT_VLM_SERVER_READY_SECONDS // VLM_SERVER_POLL_INTERVAL_SECONDS
+    assert f"attempts, interval = {expected_attempts}, {VLM_SERVER_POLL_INTERVAL_SECONDS}" in preamble
+
+
+def test_ready_window_is_configurable_and_validated() -> None:
+    """A cold multi-GB checkpoint download is the slow part; specs may need longer."""
+
+    preamble = render_self_hosted_vlm_preamble({"vlm_serve_ready_seconds": 60})
+
+    assert f"attempts, interval = {60 // VLM_SERVER_POLL_INTERVAL_SECONDS}" in preamble
+
+    with pytest.raises(NpaWorkflowRenderError, match="at least"):
+        render_self_hosted_vlm_preamble({"vlm_serve_ready_seconds": 1})
+    with pytest.raises(NpaWorkflowRenderError, match="integer number of seconds"):
+        render_self_hosted_vlm_preamble({"vlm_serve_ready_seconds": "soon"})
 
 
 def test_preamble_fails_fast_when_the_server_dies() -> None:
