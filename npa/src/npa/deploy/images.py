@@ -69,6 +69,22 @@ OMNIVERSE_RESTRICTED_TOOLS = frozenset({"isaac-lab", "sonic", "groot"})
 PUBLIC_CONTAINER_REGISTRY_ENV = "NPA_PUBLIC_REGISTRY"
 DEFAULT_PUBLIC_CONTAINER_REGISTRY = "ghcr.io/nebius/nebius-physical-ai"
 
+# Registry hosts that serve anonymous/public pulls. Resolving an Omniverse image
+# against one of these is always wrong: either it is not there (we never publish
+# it) or someone has published NVIDIA-proprietary Omniverse Kit to third parties.
+# Private registries are deliberately absent — an operator building the image
+# into their OWN registry is the licensed path, whichever registry that is.
+PUBLIC_REGISTRY_HOSTS = frozenset(
+    {
+        "ghcr.io",
+        "docker.io",
+        "index.docker.io",
+        "registry-1.docker.io",
+        "quay.io",
+        "public.ecr.aws",
+    }
+)
+
 SUPPORTED_TOOL_VERSIONS = {
     # Default LeRobot pin. Selectable additional versions: see
     # lerobot_version_manifest.json (0.5.1 default + 0.6.0).
@@ -226,6 +242,14 @@ def container_image_for_tool(
         image_name = CONTAINER_IMAGE_NAMES[tool]
         resolved_tag = tag or supported_tool_version(tool)
     resolved_registry = registry or _primary_registry()
+    if not is_publicly_redistributable(tool) and is_public_registry(resolved_registry):
+        raise ValueError(
+            f"{tool!r} bakes NVIDIA Omniverse Kit and is never distributed from a public "
+            f"registry, so {resolved_registry!r} cannot serve it. Build it into your own "
+            f"registry with your own NGC credentials (npa/docker/workbench/<tool>/build.sh "
+            f"--registry <your-registry> --push) and point NPA_REGISTRY at that registry; "
+            f"see docs/workbench/container-packaging.md."
+        )
     return f"{resolved_registry.rstrip('/')}/{image_name}:{resolved_tag}"
 
 
@@ -306,6 +330,24 @@ def public_container_registry() -> str:
         os.environ.get(PUBLIC_CONTAINER_REGISTRY_ENV, "").strip()
         or DEFAULT_PUBLIC_CONTAINER_REGISTRY
     )
+
+
+def is_public_registry(registry: str) -> bool:
+    """Whether a registry serves anonymous/public pulls.
+
+    True for the well-known public hosts and for whatever registry is configured
+    as our public mirror. A Nebius (or other private) registry is not public: an
+    operator's own registry is exactly where the restricted images are supposed
+    to live.
+    """
+    candidate = registry.strip().rstrip("/")
+    if not candidate:
+        return False
+    host = candidate.split("/", 1)[0].lower()
+    if host in PUBLIC_REGISTRY_HOSTS:
+        return True
+    mirror = public_container_registry().strip().rstrip("/")
+    return bool(mirror) and candidate.lower() == mirror.lower()
 
 
 def is_publicly_redistributable(tool: str) -> bool:

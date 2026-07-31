@@ -18,6 +18,8 @@ from npa.deploy.images import (
     CONTAINER_IMAGE_NAMES,
     DEFAULT_PUBLIC_CONTAINER_REGISTRY,
     OMNIVERSE_RESTRICTED_TOOLS,
+    container_image_for_tool,
+    is_public_registry,
     is_publicly_redistributable,
     public_container_registry,
     publicly_publishable_tools,
@@ -99,6 +101,61 @@ def test_publish_plan_targets_public_registry_by_default() -> None:
     assert len(plan) == len(CONTAINER_IMAGE_NAMES) - len(OMNIVERSE_RESTRICTED_TOOLS) == 15
     for item in plan:
         assert item.target_ref.startswith(DEFAULT_PUBLIC_CONTAINER_REGISTRY + "/npa-")
+
+
+@pytest.mark.parametrize(
+    "registry",
+    [
+        "ghcr.io/nebius/nebius-physical-ai",
+        "ghcr.io/someone/else",
+        "docker.io/nebius/workbench",
+        "quay.io/nebius/workbench",
+        "public.ecr.aws/nebius/workbench",
+    ],
+)
+@pytest.mark.parametrize("tool", sorted(OMNIVERSE_RESTRICTED_TOOLS))
+def test_restricted_tools_refuse_to_resolve_from_a_public_registry(tool, registry) -> None:
+    """An external consumer following the docs sets NPA_REGISTRY to the public
+    mirror. Asking for an Omniverse tool then has to fail loudly: we never
+    publish those, so any such reference is either broken or a license breach.
+    """
+    with pytest.raises(ValueError, match="Omniverse Kit"):
+        container_image_for_tool(tool, registry=registry)
+
+
+@pytest.mark.parametrize("tool", sorted(OMNIVERSE_RESTRICTED_TOOLS))
+def test_restricted_tools_still_resolve_from_an_operators_own_registry(tool) -> None:
+    """Build-your-own is the licensed path, so a private registry — ours or any
+    operator's — must keep working."""
+    for registry in (
+        "cr.eu-north1.nebius.cloud/e00example",
+        "cr.us-central1.nebius.cloud/u00example",
+        "registry.internal.example.com/robotics",
+    ):
+        ref = container_image_for_tool(tool, registry=registry)
+        assert ref.startswith(registry + "/npa-")
+
+
+def test_public_registry_detection() -> None:
+    assert is_public_registry("ghcr.io/nebius/nebius-physical-ai")
+    assert is_public_registry("GHCR.IO/Nebius/Workbench")
+    assert not is_public_registry("cr.eu-north1.nebius.cloud/e00example")
+    assert not is_public_registry("")
+
+
+def test_public_mirror_override_is_treated_as_public(monkeypatch) -> None:
+    """Whatever registry is designated the public mirror counts as public, even
+    if its hostname is not a well-known one."""
+    monkeypatch.setenv("NPA_PUBLIC_REGISTRY", "mirror.example.com/workbench")
+    assert is_public_registry("mirror.example.com/workbench")
+    with pytest.raises(ValueError, match="Omniverse Kit"):
+        container_image_for_tool("isaac-lab", registry="mirror.example.com/workbench")
+
+
+def test_oss_tools_resolve_from_the_public_mirror_normally() -> None:
+    """The guard must not get in the way of the images we do publish."""
+    ref = container_image_for_tool("genesis", registry=DEFAULT_PUBLIC_CONTAINER_REGISTRY)
+    assert ref.startswith(DEFAULT_PUBLIC_CONTAINER_REGISTRY + "/npa-genesis:")
 
 
 def test_selector_matches_packaging_contract_classification() -> None:
