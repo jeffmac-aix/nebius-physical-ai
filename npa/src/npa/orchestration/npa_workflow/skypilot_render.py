@@ -293,6 +293,12 @@ def render_self_hosted_vlm_preamble(config: Mapping[str, Any]) -> str:
         f"npa_vlm_model={shlex.quote(model)}\n"
         f"npa_vlm_port={shlex.quote(port)}\n"
         "npa_vlm_log=/tmp/npa-vlm-server.log\n"
+        # vLLM's FlashInfer sampler JIT-compiles a CUDA extension and shells out to `ninja`
+        # (setup pip-installs it). pip puts console scripts beside the interpreter, which is
+        # not necessarily on PATH in this shell, so add it here — in `run:`, since setup runs
+        # in a different shell.
+        "npa_vlm_scripts=$(python3 -c 'import sysconfig; print(sysconfig.get_path(\"scripts\"))')\n"
+        "export PATH=$npa_vlm_scripts:$PATH\n"
         "echo \"starting vLLM for $npa_vlm_model on port $npa_vlm_port\" >&2\n"
         "python3 -m vllm.entrypoints.openai.api_server --host 0.0.0.0 "
         "--port \"$npa_vlm_port\" --model \"$npa_vlm_model\" "
@@ -609,11 +615,18 @@ def render_setup_for_tool(
         parts.append(
             "python3 - <<'PY'\n"
             "import importlib.util\n"
+            "import shutil\n"
             "import subprocess\n"
             "import sys\n"
             "\n"
             "if importlib.util.find_spec('vllm') is None:\n"
             "    subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'vllm>=0.8.5'])\n"
+            "# vLLM's FlashInfer sampler JIT-compiles a CUDA extension on first use and shells\n"
+            "# out to `ninja`, which SkyPilot's default image does not ship: the server died\n"
+            "# during engine init with FileNotFoundError: 'ninja' (live job 214). The pip\n"
+            "# package provides the binary, so no apt/sudo is needed.\n"
+            "if shutil.which('ninja') is None:\n"
+            "    subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'ninja'])\n"
             "PY\n"
         )
     if tool_ref.startswith("workbench.token_factory"):

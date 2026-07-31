@@ -81,6 +81,36 @@ def test_preamble_fails_fast_when_the_server_dies() -> None:
     assert "SystemExit(1)" in preamble
 
 
+def test_preamble_puts_the_interpreters_script_dir_on_path() -> None:
+    """vLLM JIT-compiles with `ninja`; pip installs it beside the interpreter (job 214)."""
+
+    preamble = render_self_hosted_vlm_preamble({})
+
+    assert 'sysconfig.get_path("scripts")' in preamble
+    assert "export PATH=$npa_vlm_scripts:$PATH" in preamble
+    # Must happen before the server starts, or the JIT still cannot find ninja.
+    assert preamble.index("export PATH=") < preamble.index("api_server")
+
+
+def test_setup_installs_ninja_for_the_jit_compiler(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("NPA_SRC_S3_URI", "s3://example-bucket/prefix/npa")
+    spec = load_spec(SPECS / "vlm-eval-single.yaml")
+    plan = build_plan(spec, run_id="render-check")
+
+    text = render_skypilot_yaml(
+        spec,
+        plan,
+        run_id="render-check",
+        options=SkypilotRenderOptions(image_overrides={"*": ""}),
+    )
+
+    setup = [doc for doc in yaml.safe_load_all(text) if doc][1]["setup"]
+    assert "'pip', 'install', 'vllm>=0.8.5'" in setup
+    assert "'pip', 'install', 'ninja'" in setup
+    # Only when it is missing: workbench images may already ship a toolchain.
+    assert "shutil.which('ninja') is None" in setup
+
+
 def test_preamble_uses_python_not_curl_for_the_health_wait() -> None:
     """curl is not guaranteed in every task image; python3 is (setup records one)."""
 
