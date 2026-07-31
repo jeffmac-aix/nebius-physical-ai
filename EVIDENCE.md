@@ -1516,3 +1516,69 @@ pod. Every spec that uses them — `adversarial-scenario-hardening`,
 `sonic-locomotion-finetuning` — is blocked on the same design decision: move the launcher
 out of the workflow, or train in-pod against the vendor image. That is called out rather
 than papered over with `plan_only=True`.
+
+## R16. Phase 4 (continued) — the dataset-of-record specs
+
+`dataset-of-record-smoke.yaml` and `dataset-ingest-curate.yaml` read
+`config.raw_sensor_uri` and had no live coverage because nothing seeded one, so
+`workbench.dataset.ingest` would fail with `raw sensor data not found`.
+
+`npa.workflows.dataset_fixture` generates records against the contract
+`dataset/ingestion.py` enforces (`record_id`/`modality`/`uri` required;
+`event`/`location`/`timestamp`/`quality`/`embedding` each add 0.2 to `completeness`;
+corrupt = empty `uri` **or** `quality.corruption > 0.5`), built to satisfy the *stricter*
+of the two specs so one fixture serves both: completeness 1.0, zero corrupt records, and
+half the set tagged with the queried `cut_in` event in `san_francisco` so the query stage
+returns rows rather than an empty success. Standard library only, so the harness generates
+it inline; `raw_sensor_uri` is a shared path outside the run prefix, so seeding is
+idempotent.
+
+### `dataset-of-record-smoke.yaml` — PASSED
+
+```
+[seed] 12 raw sensor records -> s3://<artifact-bucket>/dataset-of-record-fixtures/records.json
+1 passed in 459.37s (0:07:39)
+```
+
+**Run id** `npa-wf-cpu-dataset-of-record-smoke-4b509956` · **SkyPilot job 211** ·
+**SUCCEEDED** — a 5-stage run (ingest → validate → quality gate → curate → query) with
+real dataset lineage in S3:
+
+```
+    5963  dataset/smoke-fleet/v1/manifest.json                  record_count 12
+    1248  validation/validation_report.json
+      39  gate/decision.json
+    3844  curated/smoke-fleet/v1.curated-2ed91515/manifest.json record_count 6,
+                                                               parent_version v1
+```
+
+12 records ingested, 6 curated, with the curated manifest carrying `parent_version: v1` —
+the lineage link the dataset-of-record tool exists to produce.
+
+### `dataset-ingest-curate.yaml` — four of five stages live, then an infrastructure wall
+
+**Run id** `npa-wf-cpu-dataset-ingest-curate-b1fa3ebd` · **SkyPilot job 212**
+
+| stage | result |
+| --- | --- |
+| `ingest` | SUCCEEDED |
+| `validate` | SUCCEEDED |
+| quality gate | SUCCEEDED |
+| `curate` | SUCCEEDED — real 6-record curated manifest, `parent_version: v1` |
+| `register` | **FAILED** |
+
+```
+Error: Unexpected error: workbench service call failed
+  (http://npa-lancedb.workbench.svc.cluster.local:8686/query):
+  [Errno -2] Name or service not known
+```
+
+The `register` stage indexes the curated dataset into the **LanceDB workbench service**,
+which is not deployed on `npa-rtxpro-mk8s`. That is an infrastructure dependency, not a
+spec or fixture defect, so the case is registered `plan_only=True` **with that reason
+stated in full** — and the note says what to flip when the service is deployed. The same
+tools are covered end to end by `dataset-of-record-smoke.yaml`, which does not register
+into LanceDB.
+
+Live-matrix coverage: **17 uncovered specs → 13**; matrix cases 24 → 30 (four newly
+covered pre-existing specs plus the two new specs).
