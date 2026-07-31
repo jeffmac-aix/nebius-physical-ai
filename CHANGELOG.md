@@ -7,7 +7,7 @@ a versioned heading when a release is cut.
 
 ## Unreleased
 
-### Retiring the raw SkyPilot task catalog (36 → 14 templates)
+### Retiring the raw SkyPilot task catalog (36 → 13 templates)
 
 `npa.workflow/v0.0.1` specs are becoming the only workflow authoring surface.
 SkyPilot remains the execution engine, and `npa workbench workflow submit` still
@@ -29,6 +29,11 @@ under `npa/src/npa/workflows/skypilot/`.
   `npa burst submit --nodes`, outside the workflow surface. Additive: a 1-node profile
   renders exactly as before. Reference spec `npa-workflows/multi-node-probe.yaml`
   verifies one report per rank from distinct hosts.
+- **`isaac-lab-cosmos-sdg-burst-smoke.yaml` relocated** to `npa/src/npa/burst/examples/`:
+  it is a single-task input to `npa burst submit-yaml`, not a workflow (no plan, no stage
+  graph, nothing for a `toolRef` to describe), and the template said so itself. A guardrail
+  pins one-task-per-file and the survival of its `${VAR}` placeholders, and proves burst
+  accepts it offline.
 - **BYOF resource profiles relocated** from `npa/src/npa/workflows/skypilot/` to
   `npa/src/npa/workflows/byof/profiles/` (they are pod shapes reached through
   `byof.yaml`, not workflow templates), and the three BYOF runner scripts gained

@@ -2214,3 +2214,67 @@ overrides them with a public repo and a tiny public checkpoint via `config_vars`
 `git clone` and a real Hugging Face download through the same commands, flags and cache layout —
 the code path is identical, and asset identity is the one thing a live run here cannot prove.
 Same approach as the SONIC and SOMA-CSV fixtures (§R4.1, §R11).
+
+---
+
+## R29. `isaac-lab-cosmos-sdg-burst-smoke.yaml` relocated, not retired (14 → 13)
+
+The tally said "no twin; single-task burst reference". The template says why itself:
+
+```yaml
+# This YAML is intentionally one executable SkyPilot task so it can run through
+# the burst Python-API path. Multi-stage workbench pipelines should use
+# `npa workbench workflow submit`.
+```
+
+and `npa.burst.core.submit_yaml()` agrees in code — it loads one document, substitutes `${VAR}`
+from `--var`, refuses to submit while a placeholder is unresolved, and injects a registry login.
+There is no plan, no stage graph, no decision artifact and nothing for a `toolRef` to describe.
+Authoring a spec for it would misrepresent a *different capability* as a workflow.
+
+So it moved to `npa/src/npa/burst/examples/` with a README stating the boundary — the same call
+as the five BYOF resource profiles (§R14, DESIGN §R10) — which lets the retiring workflow
+catalog go away without breaking `npa burst submit-yaml`'s documented example.
+
+`npa/tests/guardrails/test_burst_examples.py` pins the directory and both invariants:
+
+* **one task per file** — a second stage means it is a workflow, and the test says so in its
+  failure message;
+* **the `${VAR}` placeholders survive** — they are the substitution surface, so no concrete
+  registry id, bucket name or run id can be committed there.
+
+It also proves burst *accepts* the file **offline**, by running `submit_yaml`'s own substitution
+and `_validate_burst_yaml_runtime` without launching. No live run was needed: unlike the BYOF
+profiles (whose paths were resolved by Python constants, hence job 207), nothing in Python
+resolves this path — the only consumer is an operator command line, which the README and the
+catalog README now spell correctly.
+
+## R30. The three Token Factory combos share one blocker, now named
+
+`tokenfactory-rollout-judge`, `tokenfactory-scene-to-rollout-judge` and
+`tokenfactory-train-triage` were recorded as "no twin" or, worse, as having a twin that turned
+out to be a different workflow (§R23). Reading all three shows a single shared blocker:
+
+**each has a GPU stage that runs LeRobot inside the vendor image and produces exactly what the
+Token Factory stage consumes.**
+
+```bash
+# tokenfactory-train-triage, train-gpu stage
+source /opt/lerobot/venv/bin/activate
+lerobot-train  …            # then a python block uploads artifacts to ARTIFACTS_URI
+```
+
+The producer/consumer dependency *is* the point of these combos — a GPU stage on Nebius feeding
+a zero-GPU hosted judge — so a twin cannot drop it. What is missing:
+
+* the catalog has only `workbench.lerobot.eval`, which shells out to `npa workbench lerobot
+  eval`. `npa workbench lerobot` exposes `eval`, `benchmark`, `profile-train`,
+  `train-student`, `list-checkpoints` — but **no plain `train`**; the template deliberately
+  calls `lerobot-train` in the vendor venv;
+* `train-triage` needs one more thing of its own: its triage stage builds `prompts.jsonl` and a
+  system prompt **from the training artifacts** in bash + python before calling
+  `token-factory generate`. No tool does that.
+
+So the remaining work is one coherent piece rather than three unknowns: an in-image LeRobot
+producer toolRef plus a policy/dataset fixture, and a prompt-builder for triage. The tally now
+carries that instead of "no twin".
