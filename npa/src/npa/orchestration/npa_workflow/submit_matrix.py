@@ -137,9 +137,17 @@ SUBMIT_LIVE_MATRIX: tuple[SubmitLiveCase, ...] = (
         "dataset-ingest-curate.yaml",
         "cpu",
         secret_envs=("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"),
+        plan_only=True,
         notes=(
             "Stricter dataset-of-record variant (completeness_min 0.5, "
-            "max_corruption_rate 0.1, location filter). Dynamic gate."
+            "max_corruption_rate 0.1, location filter). Plan-only for an "
+            "INFRASTRUCTURE reason, not a stub one: its `register` stage calls the "
+            "in-cluster LanceDB workbench service "
+            "(http://npa-lancedb.workbench.svc.cluster.local:8686), which is not "
+            "deployed on npa-rtxpro-mk8s. Its first four stages (ingest, validate, "
+            "gate, curate) DID pass live - see EVIDENCE.md; flip to live once the "
+            "service is deployed. dataset-of-record-smoke.yaml covers the same tools "
+            "end to end without it."
         ),
     ),
     SubmitLiveCase(
