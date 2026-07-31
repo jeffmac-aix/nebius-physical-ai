@@ -1,0 +1,46 @@
+# Kubernetes-schedulability prerequisites for an ALREADY BUILT npa-sonic image.
+#
+# Same change the main sonic/Dockerfile now applies, expressed as a derived build so an
+# operator can repair an existing tag without pulling (or rebuilding from) the multi-GB
+# Isaac/SONIC base:
+#
+#   scripts/build-workbench-image-in-cluster.sh \
+#     --base <registry>/npa-sonic:<tag> \
+#     --tag  <registry>/npa-sonic:<tag>-k8s-runtime \
+#     --dockerfile npa/docker/workbench/sonic/Dockerfile.k8s-prereqs
+#
+# Why it is needed: SkyPilot's Kubernetes runtime bootstrap runs inside the task
+# container. Without a system python3, rsync, passwordless sudo for the runtime user and
+# the system interpreter first on PATH, provisioning fails with
+# "Failed to get ssh user for pod ...: container not found (ray-node)" — the exact
+# failure the Isaac Lab image hit on npa-rtxpro-mk8s (see
+# ../isaac-lab/Dockerfile.k8s-prereqs for the live bisection).
+#
+# The SONIC base already ships python3/python3-pip, so this adds the remaining three
+# ingredients. Group membership (never a recursive chmod) keeps the layer tiny, and the
+# image stays non-root.
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+# Must match the runtime user the shipped sonic image ends on.
+ARG NPA_RUNTIME_USER=ubuntu
+
+USER root
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+         python3 python3-pip rsync curl openssh-client sudo netcat-openbsd \
+    && rm -rf /var/lib/apt/lists/* \
+    && (getent group isaac-sim >/dev/null 2>&1 \
+        && usermod -aG isaac-sim "${NPA_RUNTIME_USER}" || true) \
+    && printf '%s ALL=(ALL) NOPASSWD:ALL\n' "${NPA_RUNTIME_USER}" \
+         > /etc/sudoers.d/99-npa-runtime-user \
+    && chmod 0440 /etc/sudoers.d/99-npa-runtime-user \
+    && python3 --version
+
+ENV PATH=/usr/bin:$PATH
+
+WORKDIR /opt/sonic
+USER ${NPA_RUNTIME_USER}
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["smoke"]

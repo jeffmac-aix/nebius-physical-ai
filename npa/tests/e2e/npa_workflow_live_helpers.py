@@ -184,6 +184,43 @@ def seed_live_workflow_inputs(
             )
         return
 
+    if spec_name in {"sonic-export.yaml", "sonic-export-eval.yaml"}:
+        # `npa workbench sonic export` needs a loadable torch policy checkpoint. We do
+        # not vendor NVIDIA's gated nvidia/GEAR-SONIC weights, so the operator stages a
+        # small REAL checkpoint once with scripts/stage-sonic-export-fixture.sh (built
+        # in-cluster from npa.workflows.sonic_fixture) and points this at it.
+        src = os.environ.get("NPA_E2E_SONIC_CHECKPOINT_SRC", "").strip()
+        if not src:
+            pytest.skip(
+                "NPA_E2E_SONIC_CHECKPOINT_SRC not set; stage one with "
+                "scripts/stage-sonic-export-fixture.sh --image <registry>/npa-sonic:<tag> "
+                "--uri s3://<bucket>/<prefix>/checkpoint.pt"
+            )
+        _seed_object_from_source(src, bucket, f"{marker}/checkpoint.pt", client)
+        return
+
+    if spec_name == "sonic-eval.yaml":
+        # The eval twin scores an ALREADY exported ONNX policy plus its sidecar
+        # metadata. Both come from a real `sonic export` run, so the operator stages the
+        # pair the same way (sonic_policy.onnx + sonic_policy.onnx.metadata.json).
+        src = os.environ.get("NPA_E2E_SONIC_ONNX_SRC", "").strip()
+        if not src:
+            pytest.skip(
+                "NPA_E2E_SONIC_ONNX_SRC not set; run the sonic-export twin live first "
+                "and point this at its sonic_policy.onnx"
+            )
+        _seed_object_from_source(src, bucket, f"{marker}/sonic_policy.onnx", client)
+        # The sidecar is optional for the tool (it defaults to <onnx>.metadata.json);
+        # copy it when the staged source has one so the eval sees real export metadata.
+        sidecar = f"{src}.metadata.json"
+        try:
+            _seed_object_from_source(
+                sidecar, bucket, f"{marker}/sonic_policy.onnx.metadata.json", client
+            )
+        except Exception:  # noqa: BLE001 - sidecar is genuinely optional
+            print(f"[seed] no export sidecar at {sidecar}; continuing without it")
+        return
+
     if spec_name == "sonic-locomotion-finetuning.yaml":
         # SONIC retargeting needs a real G1 motion dataset (SOMA/G1 CSV clips,
         # each a directory with joint_pos.csv/body_pos.csv/body_quat.csv). We do
@@ -310,6 +347,27 @@ def write_runtime_evidence(name: str, payload: Any) -> Path:
     path = log_dir / f"runtime-{name}.json"
     path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
     return path
+
+
+def _seed_object_from_source(source: str, bucket: str, dest_key: str, client) -> None:
+    """Copy ONE object (``s3://`` URI or local file) to ``dest_key``."""
+
+    source = source.strip()
+    if source.startswith("s3://"):
+        without = source[len("s3://") :]
+        src_bucket, _, src_key = without.partition("/")
+        if not src_key:
+            pytest.fail(f"expected an s3:// object URI with a key, got {source!r}")
+        client.copy_object(
+            Bucket=bucket,
+            Key=dest_key,
+            CopySource={"Bucket": src_bucket, "Key": src_key},
+        )
+        return
+    local = Path(source.replace("file://", ""))
+    if not local.is_file():
+        pytest.fail(f"fixture source {source!r} is not an s3:// object URI or a file")
+    client.upload_file(str(local), bucket, dest_key)
 
 
 def _seed_prefix_from_source(source: str, bucket: str, dest_prefix: str, client) -> None:

@@ -20,8 +20,10 @@ import pytest
 DOCKER_ROOT = Path(__file__).resolve().parents[2] / "docker" / "workbench"
 
 # Images whose stages are submitted through SkyPilot (npa.workflow / workbench
-# workflows) and therefore must be schedulable in a pod.
-SKYPILOT_HOSTED_IMAGES = ("isaac-lab",)
+# workflows) and therefore must be schedulable in a pod. This list grows as the raw
+# SkyPilot task catalog is retired: once a tool's only workflow surface is an
+# npa.workflow spec, its image MUST be able to host a SkyPilot task.
+SKYPILOT_HOSTED_IMAGES = ("isaac-lab", "sonic")
 
 
 #: The four ingredients a SkyPilot-hosted image needs, established by bisecting
@@ -80,25 +82,27 @@ def test_isaac_lab_grants_its_runtime_user_access_to_isaac_sim() -> None:
     )
 
 
-def test_derived_prereq_dockerfile_matches_the_shipped_one() -> None:
+@pytest.mark.parametrize("tool", SKYPILOT_HOSTED_IMAGES)
+def test_derived_prereq_dockerfile_matches_the_shipped_one(tool: str) -> None:
     """The derived recipe exists and applies the same prerequisites.
 
-    Operators use it to repair an already-published tag without pulling the ~8 GB base
-    (scripts/build-workbench-image-in-cluster.sh); it must not drift from the image.
+    Operators use it to repair an already-published tag without pulling the multi-GB
+    base (scripts/build-workbench-image-in-cluster.sh); it must not drift from the
+    image.
     """
 
-    derived = DOCKER_ROOT / "isaac-lab" / "Dockerfile.k8s-prereqs"
+    derived = DOCKER_ROOT / tool / "Dockerfile.k8s-prereqs"
     assert derived.is_file(), derived
     text = derived.read_text(encoding="utf-8")
     for token in (
         "python3",
         "rsync",
-        "usermod -aG isaac-sim ubuntu",
+        "usermod -aG isaac-sim",
         "NOPASSWD",
         "ENV PATH=/usr/bin:$PATH",
         "ARG BASE_IMAGE",
     ):
-        assert token in text, f"derived prereq Dockerfile is missing {token!r}"
+        assert token in text, f"{tool}: derived prereq Dockerfile is missing {token!r}"
 
 
 def test_in_cluster_build_script_is_executable_and_generic() -> None:

@@ -45,6 +45,18 @@ SECRET_ENV_HINTS: dict[str, tuple[str, ...]] = {
     "workbench.groot": ("HF_TOKEN", "NGC_API_KEY"),
 }
 
+# Optional dependency groups a toolRef's stage needs, declared as npa extras in
+# npa/pyproject.toml. A workbench image bakes these already, but a stage running on
+# SkyPilot's default image (no `--image`, npa installed from NPA_SRC_S3_URI) gets only
+# the base install — and then `npa workbench sonic export` fails with the tool's own
+# message: "SONIC ONNX export requires torch ... or use the npa[sonic] extra".
+# Installing the extra from the SAME source tree is the existing pattern (the renderer
+# already installs vLLM for self-hosted vlm_eval); it is what lets the npa.workflow
+# SONIC specs run without a vendor image at all.
+TOOL_REF_PIP_EXTRAS: dict[str, str] = {
+    "workbench.sonic": "sonic",
+}
+
 
 class NpaWorkflowRenderError(NpaWorkflowError):
     """Raised when an npa.workflow plan cannot be rendered to SkyPilot YAML."""
@@ -119,6 +131,54 @@ def normalize_resources(resources: Mapping[str, Any]) -> dict[str, Any]:
             if raw and not raw.endswith("+"):
                 out[key] = f"{raw}+"
     return out
+
+
+def tool_pip_extra(tool_ref: str) -> str:
+    """Return the npa extra a toolRef's stage needs, or ``""``.
+
+    Longest-prefix match, mirroring :func:`tool_image_key`.
+    """
+
+    if not tool_ref:
+        return ""
+    if tool_ref in TOOL_REF_PIP_EXTRAS:
+        return TOOL_REF_PIP_EXTRAS[tool_ref]
+    best = ""
+    for prefix in TOOL_REF_PIP_EXTRAS:
+        if tool_ref == prefix or tool_ref.startswith(prefix + "."):
+            if len(prefix) > len(best):
+                best = prefix
+    return TOOL_REF_PIP_EXTRAS.get(best, "")
+
+
+def render_pip_extra_setup(extra: str) -> str:
+    """Install ``npa[<extra>]`` from the tree setup already installed npa from.
+
+    Idempotent and best-effort *only* in the sense that it reports a clear error: if
+    the extra cannot be installed the stage would fail anyway with a less obvious
+    ImportError, so failing in ``setup`` is the better signal.
+    """
+
+    if not extra:
+        return ""
+    return (
+        f"# Stage needs the npa[{extra}] optional dependency group.\n"
+        "npa_src_root=\"\"\n"
+        "if [ -s /tmp/npa-src-root ]; then\n"
+        "  npa_src_root=\"$(cat /tmp/npa-src-root)\"\n"
+        "elif [ -d /opt/nebius-physical-ai/npa ]; then\n"
+        "  npa_src_root=/opt/nebius-physical-ai/npa\n"
+        "elif [ -d /tmp/npa-src ]; then\n"
+        "  npa_src_root=/tmp/npa-src\n"
+        "fi\n"
+        "if [ -n \"$npa_src_root\" ]; then\n"
+        f"  echo \"installing npa[{extra}] from $npa_src_root\" >&2\n"
+        f"  npa_pip_install -e \"${{npa_src_root}}[{extra}]\"\n"
+        "else\n"
+        f"  echo 'cannot locate the npa source tree to install npa[{extra}]' >&2\n"
+        "  exit 1\n"
+        "fi\n"
+    )
 
 
 def tool_image_key(tool_ref: str) -> str | None:
@@ -240,6 +300,9 @@ def default_npa_setup() -> str:
     return (
         "set -e\n"
         "export PATH=\"$HOME/.local/bin:$PATH\"\n"
+        # Record where npa was installed from so a per-tool extra (see
+        # TOOL_REF_PIP_EXTRAS) can be layered on top of the SAME source tree.
+        "npa_record_src_root() { printf '%s' \"$1\" > /tmp/npa-src-root; }\n"
         # Debian/Ubuntu >= 24.04 mark the system interpreter externally managed
         # (PEP 668), so a plain `pip install` fails with
         # "error: externally-managed-environment". A task container is disposable, so
@@ -256,6 +319,7 @@ def default_npa_setup() -> str:
         "if ! command -v npa >/dev/null 2>&1; then\n"
         "  if [ -d /opt/nebius-physical-ai/npa ]; then\n"
         "    npa_pip_install -e /opt/nebius-physical-ai/npa\n"
+        "    npa_record_src_root /opt/nebius-physical-ai/npa\n"
         "  else\n"
         "    if [ ! -d /tmp/npa-src ] && [ -n \"$NPA_SRC_S3_URI\" ]; then\n"
         "      npa_pip_install boto3\n"
@@ -295,6 +359,7 @@ def default_npa_setup() -> str:
         "    fi\n"
         "    if [ -d /tmp/npa-src ]; then\n"
         "      npa_pip_install -e /tmp/npa-src\n"
+        "      npa_record_src_root /tmp/npa-src\n"
         "    else\n"
         "      echo 'npa CLI not found; set NPA_SRC_S3_URI or use a workbench image' >&2\n"
         "      exit 1\n"
@@ -400,6 +465,9 @@ def render_setup_for_tool(
     if not options.default_setup:
         return ""
     parts = [default_npa_setup()]
+    extra = tool_pip_extra(tool_ref)
+    if extra:
+        parts.append(render_pip_extra_setup(extra))
     backend = str(config.get("vlm_backend") or "").strip().lower()
     if tool_ref.startswith("workbench.vlm_eval") and backend in {"self-hosted", "self_hosted"}:
         parts.append(
