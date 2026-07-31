@@ -36,7 +36,7 @@ ARG SONIC_REPO_REF=0a87181c9106d0e49293400714b157676e0ec664
 ARG SONIC_VERSION=0.1.2
 # The Isaac interpreter is always the bootstrap shim; the baked venv is separate.
 ARG ISAAC_LAB_PYTHON=/isaac-sim/python.sh
-ARG NPA_ISAAC_VENV=/opt/npa/isaac/venv
+ARG NPA_ISAAC_VENV=/opt/npa/sim/venv
 ARG NPA_ISAAC_SKIP_TORCH=0
 ARG REQUIRE_TORCH_SM120=1
 ARG NPA_DRIVER_PROVISIONING=host-mounted

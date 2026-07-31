@@ -17,7 +17,7 @@ ISAAC_PYTHON="${ISAAC_LAB_PYTHON:-/isaac-sim/python.sh}"
 IMAGE_PYTHON="${NPA_IMAGE_PYTHON:-}"
 if [ -z "$IMAGE_PYTHON" ]; then
   for candidate in \
-    /opt/npa/isaac/venv/bin/python \
+    /opt/npa/sim/venv/bin/python \
     /opt/npa/venv/bin/python \
     /opt/isaac-lab/venv/bin/python \
     "$(command -v python3 || true)"

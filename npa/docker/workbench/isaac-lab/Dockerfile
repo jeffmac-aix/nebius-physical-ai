@@ -52,7 +52,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     ISAAC_SIM_VERSION=${ISAAC_SIM_VERSION} \
     NPA_ISAAC_LAB_SRC_COMMIT=${ISAAC_LAB_SRC_COMMIT} \
     NPA_ISAAC_CACHE_DIR=/opt/isaac-cache \
-    NPA_ISAAC_BASE_PYTHON=/opt/npa/isaac/venv/bin/python \
+    NPA_ISAAC_BASE_PYTHON=/opt/npa/sim/venv/bin/python \
     NPA_ISAAC_WHEELS_FILE=/opt/npa/docker/workbench/common/isaac-nvidia-wheels.txt \
     ISAAC_LAB_PYTHON=/isaac-sim/python.sh \
     NPA_ISAAC_LAB_OUTPUT_DIR=/workspace/isaaclab/npa-runs \
@@ -77,7 +77,7 @@ COPY docker/workbench/isaac-lab/smoke_functional.py /opt/npa/docker/workbench/is
 # it used to prove the presence of.
 RUN chmod +x /opt/npa/docker/workbench/common/*.sh \
     && NPA_RUNTIME_USER="${NPA_RUNTIME_USER}" \
-       NPA_ISAAC_VENV=/opt/npa/isaac/venv \
+       NPA_ISAAC_VENV=/opt/npa/sim/venv \
        /opt/npa/docker/workbench/common/install_isaac_runtime_base.sh
 
 RUN install -d -m 0755 -o "${NPA_RUNTIME_USER}" -g "${NPA_RUNTIME_USER}" \
@@ -87,7 +87,7 @@ RUN install -d -m 0755 -o "${NPA_RUNTIME_USER}" -g "${NPA_RUNTIME_USER}" \
       /tmp/isaac-sim-cache/logs \
     && install -d -m 0700 -o "${NPA_RUNTIME_USER}" -g "${NPA_RUNTIME_USER}" /tmp/xdg-runtime \
     && chown -R "${NPA_RUNTIME_USER}:${NPA_RUNTIME_USER}" /opt/npa/docker/workbench/isaac-lab \
-    && /opt/npa/isaac/venv/bin/python -m py_compile \
+    && /opt/npa/sim/venv/bin/python -m py_compile \
       /opt/npa/docker/workbench/isaac-lab/smoke_env.py \
       /opt/npa/docker/workbench/isaac-lab/smoke_functional.py
 

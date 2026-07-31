@@ -39,7 +39,11 @@ TORCHAUDIO_VERSION="${TORCHAUDIO_VERSION:-2.9.0}"
 # 12.0) requires. Verified in-pod: torch._C._cuda_getArchFlags() reports
 # "sm_70 sm_75 sm_80 sm_86 sm_90 sm_100 sm_120".
 TORCH_INDEX_URL="${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu128}"
-ISAAC_VENV="${NPA_ISAAC_VENV:-/opt/npa/isaac/venv}"
+# Deliberately NOT named /opt/npa/isaac/venv. The redistribution claim is audited by
+# listing every path in the built image that matches a loose `isaac|omni` grep, and an
+# isaac-named venv directory buries that list under 60,000 unrelated site-packages files.
+# Keeping the venv out of the namespace makes the audit output ~20 lines a human can read.
+ISAAC_VENV="${NPA_ISAAC_VENV:-/opt/npa/sim/venv}"
 RUNTIME_USER="${NPA_RUNTIME_USER:-ubuntu}"
 CACHE_DIR="${NPA_ISAAC_CACHE_DIR:-/opt/isaac-cache}"
 COMMON_DIR="${NPA_ISAAC_COMMON_DIR:-/opt/npa/docker/workbench/common}"

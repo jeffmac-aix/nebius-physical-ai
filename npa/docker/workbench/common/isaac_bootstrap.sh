@@ -145,7 +145,7 @@ resolve_base_python() {
     return 0
   fi
   local candidate
-  for candidate in /opt/npa/isaac/venv/bin/python /opt/npa/venv/bin/python \
+  for candidate in /opt/npa/sim/venv/bin/python /opt/npa/venv/bin/python \
                    /opt/isaac-lab/venv/bin/python "$(command -v python3.11 || true)"; do
     if [ -n "$candidate" ] && [ -x "$candidate" ]; then
       printf '%s' "$candidate"

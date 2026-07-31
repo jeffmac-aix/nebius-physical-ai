@@ -86,7 +86,7 @@ case "$VARIANT" in
     # nvcr.io/nvidia/isaac-lab, which baked Omniverse Kit and needed an NGC login.
     BASE_IMAGE_DEFAULT="nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04@sha256:ad6d59a3bbf3e82c1c849c9ac09cfc2a3e0bbb8655042fd899be6681b3fe2a85"
     ISAAC_LAB_PYTHON="/isaac-sim/python.sh"
-    NPA_ISAAC_VENV="/opt/npa/isaac/venv"
+    NPA_ISAAC_VENV="/opt/npa/sim/venv"
     NPA_ISAAC_SKIP_TORCH=0
     REQUIRE_TORCH_SM120=1
     # The container runtime injects the host driver + Vulkan ICD given
@@ -126,8 +126,8 @@ case "$VARIANT" in
     # ISAAC_LAB_PYTHON: that is now a bootstrap shim, so using it here would download
     # 4.5 GB of Isaac Sim during the BUILD and bake it into a layer -- exactly what this
     # whole change exists to prevent.
-    NPA_IMAGE_PYTHON_DEFAULT="/opt/npa/isaac/venv/bin/python"
-    NPA_ISAAC_VENV="/opt/npa/isaac/venv"
+    NPA_IMAGE_PYTHON_DEFAULT="/opt/npa/sim/venv/bin/python"
+    NPA_ISAAC_VENV="/opt/npa/sim/venv"
     NPA_ISAAC_SKIP_TORCH=1
     REQUIRE_TORCH_SM120=0
     NPA_DRIVER_PROVISIONING="inherited"
