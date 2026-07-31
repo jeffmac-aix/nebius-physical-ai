@@ -825,9 +825,14 @@ on the base commit:
 * `npa/tests/unit/test_byof_live.py::test_resolve_byof_kubernetes_target_from_cluster_state`
   — **order-dependent**: it passes in isolation, and in `npa/tests/unit` +
   `npa/tests/cli` together (1452 passed), and when paired with each of
-  `workflows`/`smoke`/`workbench`/`orchestration`/`guardrails`. It fails only in the
-  full-suite ordering, on both trees. Nothing in this change touches BYOF, cluster
-  state or config loading.
+  `workflows`/`smoke`/`workbench`/`orchestration`/`guardrails`. It fails only in certain
+  full-suite orderings, on both trees. Nothing in this change touches BYOF, cluster state
+  or config loading.
+
+  Later confirmation: a full-suite run after more test files had been added reported
+  **1 failed, 3911 passed** — the BYOF test passed that time, because adding files shifted
+  collection order. An intermittent, order-sensitive result on both trees is the signature
+  of pre-existing test-isolation leakage, not of this change.
 
 Two more exclusions carried over from EVIDENCE §1:
 `npa/tests/workbench/test_vlm_eval_backend.py` and `test_vlm_eval_loop_e2e.py` are
