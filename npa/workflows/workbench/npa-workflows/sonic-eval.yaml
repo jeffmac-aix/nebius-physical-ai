@@ -13,6 +13,7 @@ config:
   env: smoke
 
   onnx_uri: "s3://{{config.bucket}}/{{config.prefix}}/sonic_policy.onnx"
+  eval_uri: "s3://{{config.bucket}}/{{config.prefix}}/eval.json"
 
 resources:
   gpu:
@@ -29,6 +30,6 @@ states:
     toolRef: workbench.sonic.eval
     resources: gpu
     outputs:
-      - uri: "s3://{{config.bucket}}/{{config.prefix}}/eval.json"
+      - uri: "{{config.eval_uri}}"
         schema: npa.workbench.sonic.eval.v1
     terminal: true

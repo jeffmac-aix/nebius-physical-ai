@@ -21,8 +21,10 @@ import pytest
 from npa.guardrails.tool_catalog_argv import (
     ArgvResolutionError,
     argv_flag_drift,
+    argv_literal_value_mismatches,
     argv_template_flags,
     catalog_argv_drift,
+    catalog_argv_literal_mismatches,
     resolve_argv_command,
 )
 from npa.orchestration.npa_workflow.catalog import TOOL_CATALOG
@@ -93,6 +95,85 @@ def test_non_cli_argv_entries_are_pinned() -> None:
     )
     stale = NON_CLI_ARGV - actual
     assert not stale, f"NON_CLI_ARGV lists entries that no longer exist: {sorted(stale)}"
+
+
+#: Options typed as a plain ``str`` whose value genuinely IS a format word. Verified by
+#: reading the command: `npa soperator deploy --output json` selects the output format
+#: (the parameter is a str, not an Enum). Pinned so the set can only shrink.
+FORMAT_STYLE_STR_OPTIONS = frozenset({"infra.soperator.deploy"})
+
+
+def test_no_tool_ref_argv_passes_a_format_word_to_a_path_option() -> None:
+    """`--output json` on a path option silently writes the artifact somewhere else.
+
+    Live: `workbench.sonic.eval` passed "json" to `--output`, which is
+    ``output_path: str`` (``--output-format`` is the format). The stage SUCCEEDED and
+    the spec's declared eval.json never appeared — runs
+    ``npa-wf-gpu-sonic-eval-87a704ad`` / ``npa-wf-multi-sonic-export-eval-744b9c1e``.
+    """
+
+    mismatches = {
+        ref: problems
+        for ref, problems in catalog_argv_literal_mismatches().items()
+        if ref not in FORMAT_STYLE_STR_OPTIONS
+    }
+    assert not mismatches, (
+        "toolRef argv passes a literal value its CLI option cannot mean:\n"
+        + "\n".join(f"  {ref}: {problems}" for ref, problems in sorted(mismatches.items()))
+    )
+
+
+def test_sonic_eval_argv_separates_the_result_path_from_the_format() -> None:
+    argv = [str(token) for token in TOOL_CATALOG["workbench.sonic.eval"].argv_template]
+
+    assert "--output" in argv and argv[argv.index("--output") + 1] == "{{config.eval_uri}}"
+    assert "--output-format" in argv and argv[argv.index("--output-format") + 1] == "json"
+
+
+def test_format_style_str_options_are_still_str_typed() -> None:
+    """Pin the exemption's premise: if the option becomes an Enum, drop it here."""
+
+    from npa.guardrails.tool_catalog_argv import (
+        _cli_parameters,
+        _is_enum_annotation,
+        _parameter_for_flag,
+        resolve_argv_command,
+    )
+
+    for ref in FORMAT_STYLE_STR_OPTIONS:
+        command = resolve_argv_command(TOOL_CATALOG[ref].argv_template)
+        param = _parameter_for_flag(_cli_parameters(command.callback_ref), "--output")
+        assert param is not None, ref
+        assert not _is_enum_annotation(param), (
+            f"{ref}: --output is now an Enum, so it no longer needs an exemption"
+        )
+
+
+def test_guardrail_detects_a_format_word_on_a_path_option() -> None:
+    """Negative control for the literal-value check."""
+
+    problems = argv_literal_value_mismatches(
+        ["npa", "workbench", "sonic", "eval", "--onnx", "/p.onnx", "--output", "json"]
+    )
+
+    assert problems and "takes a path/URI" in problems[0]
+
+
+def test_guardrail_detects_a_bad_enum_value() -> None:
+    problems = argv_literal_value_mismatches(
+        ["npa", "workbench", "mjlab", "eval", "--output", "totally-not-a-format"]
+    )
+
+    assert problems and "is not one of" in problems[0]
+
+
+def test_guardrail_ignores_unresolved_templates() -> None:
+    assert (
+        argv_literal_value_mismatches(
+            ["npa", "workbench", "mjlab", "eval", "--output", "{{config.fmt}}"]
+        )
+        == ()
+    )
 
 
 def test_guardrail_detects_an_invented_flag() -> None:

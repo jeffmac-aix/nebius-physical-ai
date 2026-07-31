@@ -158,6 +158,111 @@ def argv_flag_drift(tool_ref: str, argv: Sequence[str]) -> tuple[str, ...]:
     return tuple(flag for flag in argv_template_flags(argv) if flag not in command.flags)
 
 
+#: Words that are output *formats*, never file paths.
+FORMAT_WORDS = frozenset({"json", "text", "yaml", "table"})
+
+#: Flags whose value is a destination path/URI, not a format.
+PATH_LIKE_FLAG_HINTS = ("output", "path", "uri", "dir", "file")
+
+
+def _cli_parameters(callback_ref: str) -> dict[str, inspect.Parameter]:
+    module_name, _, callback_name = callback_ref.partition(":")
+    callback = import_callback(module_name, callback_name)
+    return dict(inspect.signature(callback).parameters)
+
+
+def _parameter_for_flag(
+    parameters: dict[str, inspect.Parameter], flag: str
+) -> inspect.Parameter | None:
+    for param in parameters.values():
+        for decl in getattr(param.default, "param_decls", ()) or ():
+            for part in str(decl).split("/"):
+                if part == flag:
+                    return param
+    return None
+
+
+def _is_enum_annotation(param: inspect.Parameter) -> bool:
+    annotation = param.annotation
+    if isinstance(annotation, type):
+        import enum
+
+        return issubclass(annotation, enum.Enum)
+    # Typer callbacks in this repo annotate with the Enum class directly; a string
+    # annotation (from `from __future__ import annotations`) is matched by name.
+    return isinstance(annotation, str) and annotation.endswith(
+        ("OutputFormat", "Format", "Mode", "Backend", "Profile", "Workload")
+    )
+
+
+def argv_literal_value_mismatches(argv: Sequence[str]) -> tuple[str, ...]:
+    """Report literal argv values that cannot be right for the option they follow.
+
+    Catches the two directions of the same mistake:
+
+    * a bare format word (``json``) handed to an option whose value is a **path**
+      (``sonic eval --output`` is ``output_path: str``, so ``--output json`` silently
+      wrote the eval result to a relative ``json/`` directory inside the pod and the
+      spec's declared ``eval.json`` artifact never appeared — found live, runs
+      ``npa-wf-gpu-sonic-eval-*``);
+    * a value that is not a member of an option's **Enum** type.
+
+    Only literal tokens are checked; ``{{...}}`` templates are resolved per run.
+    """
+
+    tokens = [str(token) for token in argv]
+    command = resolve_argv_command(tokens)
+    parameters = _cli_parameters(command.callback_ref)
+    problems: list[str] = []
+    for index, token in enumerate(tokens[:-1]):
+        if not token.startswith("--"):
+            continue
+        value = tokens[index + 1]
+        if value.startswith("--") or "{{" in value:
+            continue
+        param = _parameter_for_flag(parameters, token)
+        if param is None:
+            continue
+        if _is_enum_annotation(param):
+            annotation = param.annotation
+            if isinstance(annotation, type):
+                allowed = {str(member.value) for member in annotation}
+                if value not in allowed:
+                    problems.append(
+                        f"{token} {value!r} is not one of {sorted(allowed)}"
+                    )
+            continue
+        if value.lower() in FORMAT_WORDS and any(
+            hint in token for hint in PATH_LIKE_FLAG_HINTS
+        ):
+            problems.append(
+                f"{token} takes a path/URI ({param.name}), but the argv passes the "
+                f"format word {value!r}; the declared output artifact will never be "
+                "written where the spec says"
+            )
+    return tuple(problems)
+
+
+def catalog_argv_literal_mismatches() -> dict[str, tuple[str, ...]]:
+    """Map every non-stub ``npa ...`` toolRef to its literal-value problems."""
+
+    from npa.orchestration.npa_workflow.catalog import TOOL_CATALOG
+
+    out: dict[str, tuple[str, ...]] = {}
+    for tool_ref, entry in TOOL_CATALOG.items():
+        if entry.stub:
+            continue
+        if not entry.argv_template or str(entry.argv_template[0]) != "npa":
+            continue
+        try:
+            problems = argv_literal_value_mismatches(entry.argv_template)
+        except ArgvResolutionError:
+            continue  # reported by catalog_argv_drift()
+        if problems:
+            out[tool_ref] = problems
+    return out
+
+
 def catalog_argv_drift() -> dict[str, tuple[str, ...]]:
     """Map every non-stub catalog toolRef to its unaccepted flags.
 
@@ -194,8 +299,12 @@ def import_callback(module_name: str, callback_name: str) -> Any:
 
 __all__ = [
     "ArgvResolutionError",
+    "FORMAT_WORDS",
+    "PATH_LIKE_FLAG_HINTS",
     "ResolvedCommand",
     "argv_flag_drift",
+    "argv_literal_value_mismatches",
+    "catalog_argv_literal_mismatches",
     "argv_template_flags",
     "catalog_argv_drift",
     "import_callback",

@@ -991,7 +991,14 @@ TOOL_CATALOG: dict[str, ToolEntry] = {
             "{{config.episodes}}",
             "--env",
             "{{config.env}}",
+            # `--output` on this command is the RESULT PATH (output_path: str), not a
+            # format; `--output-format` is the format. Passing "json" to --output made
+            # the tool write the eval result to a relative `json/` directory inside the
+            # pod, so the spec's declared eval.json artifact never appeared (found live:
+            # runs npa-wf-gpu-sonic-eval-87a704ad / npa-wf-multi-sonic-export-eval-...).
             "--output",
+            "{{config.eval_uri}}",
+            "--output-format",
             "json",
         ],
     ),
