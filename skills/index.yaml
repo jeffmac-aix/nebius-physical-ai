@@ -511,19 +511,23 @@ skills:
           - npa/src/npa/workflows/skypilot/cosmos3-ea-fetch.yaml
           - npa/src/npa/workflows/skypilot/cosmos3-text-to-image-inference.yaml
           - npa/src/npa/workflows/skypilot/isaac-lab-rl-train.yaml
-          - npa/src/npa/workflows/skypilot/isaac-lab-rl-sweep.yaml
           - npa/src/npa/workflows/skypilot/mjlab-eval.yaml
           - npa/src/npa/workflows/skypilot/retargeting.yaml
           - npa/src/npa/workflows/skypilot/sim-to-real-loop.yaml
           - npa/src/npa/workflows/skypilot/sim-to-real-pipeline.yaml
           - npa/src/npa/workflows/skypilot/sim-to-real-trigger.yaml
-          - npa/src/npa/workflows/skypilot/sonic-eval.yaml
-          - npa/src/npa/workflows/skypilot/sonic-export-eval.yaml
-          - npa/src/npa/workflows/skypilot/sonic-export.yaml
-          - npa/src/npa/workflows/skypilot/sonic-locomotion-finetuning.yaml
           - npa/src/npa/workflows/skypilot/sonic-train-standalone.yaml
           - npa/src/npa/workflows/skypilot/vlm-eval.yaml
           - npa/src/npa/workflows/skypilot/vlm-eval-benchmark.yaml
+      # Retired SkyPilot templates whose npa.workflow spec is now the reference.
+      - type: npa_workflow_yaml
+        paths:
+          - npa/workflows/workbench/npa-workflows/isaac-lab-rl-sweep.yaml
+          - npa/workflows/workbench/npa-workflows/cosmos3-reason.yaml
+          - npa/workflows/workbench/npa-workflows/sonic-eval.yaml
+          - npa/workflows/workbench/npa-workflows/sonic-export.yaml
+          - npa/workflows/workbench/npa-workflows/sonic-export-eval.yaml
+          - npa/workflows/workbench/npa-workflows/sonic-locomotion-finetuning.yaml
   - name: physical-ai-data-factory
     category: workflows
     when_to_use: "Author, run, submit, or view the NVIDIA Physical AI Data Factory blueprint on Nebius + SkyPilot (no OSMO): annotate -> Cosmos augment -> evaluate/validate gate -> re-label -> FiftyOne curate -> Rerun visualize."

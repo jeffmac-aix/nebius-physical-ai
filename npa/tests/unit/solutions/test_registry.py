@@ -34,13 +34,38 @@ CONFIGURED_SOLUTIONS = [
     },
     {
         "name": "sonic-locomotion-finetuning",
-        "description": "SONIC locomotion fine-tuning SkyPilot workflow",
+        "description": (
+            "SONIC locomotion fine-tuning workflow (retarget -> train -> MJLab eval)"
+        ),
         "cli_command": (
             "npa workbench workflow submit "
-            "npa/src/npa/workflows/skypilot/sonic-locomotion-finetuning.yaml"
+            "npa/workflows/workbench/npa-workflows/sonic-locomotion-finetuning.yaml"
         ),
     },
 ]
+
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+def test_configured_solution_workflow_paths_exist() -> None:
+    """A shipped solution must not advertise a workflow file that was deleted.
+
+    `solutions.toml` embeds `npa workbench workflow submit <path>` strings, so a
+    retired workflow YAML silently turns a listed solution into a broken command.
+    """
+
+    missing: list[str] = []
+    for entry in CONFIGURED_SOLUTIONS:
+        command = entry["cli_command"]
+        if "workflow submit " not in command:
+            continue
+        path = command.split("workflow submit ", 1)[1].strip()
+        if not (REPO_ROOT / path).is_file():
+            missing.append(f"{entry['name']}: {path}")
+    assert not missing, "solutions.toml points at missing workflow files: " + ", ".join(
+        missing
+    )
 
 
 @pytest.fixture(autouse=True)
