@@ -71,13 +71,21 @@ def test_every_separately_built_image_has_a_golden_eval() -> None:
     """
     import yaml
 
-    contract = yaml.safe_load(
-        (REPO_ROOT / "npa" / "docker" / "workbench" / "packaging-contract.yaml").read_text(
-            encoding="utf-8"
-        )
+    contract_path = REPO_ROOT / "npa" / "docker" / "workbench" / "packaging-contract.yaml"
+    contract = yaml.safe_load(contract_path.read_text(encoding="utf-8"))
+    # Compare by Dockerfile path, not by key: the two files legitimately use different
+    # names for the same image (contract `sim2real-envgen` is tool `envgen`, contract
+    # `sim2real-eval` is tool `loop-eval`), so a key-set diff reports false positives.
+    covered = {
+        str(Path(spec.dockerfile).relative_to("npa/docker/workbench"))
+        for spec in load_manifest().values()
+        if spec.dockerfile
+    }
+    missing = sorted(
+        f"{name} ({entry['dockerfile']})"
+        for name, entry in contract["images"].items()
+        if entry["dockerfile"] not in covered
     )
-    specs = load_manifest()
-    missing = sorted(set(contract["images"]) - set(specs))
     assert not missing, f"packaging-contract images with no golden-eval entry: {missing}"
 
 
@@ -165,6 +173,16 @@ def test_dockerfile_provides_golden_eval_entrypoint(name: str) -> None:
         )
     elif command.startswith("python /"):
         script_path = command.split("python ", 1)[1].split()[0]
+        assert script_path in dests, (
+            f"{name}: {spec.dockerfile} runs `{command}` but no COPY writes "
+            f"{script_path} into the image"
+        )
+    elif command.startswith("/isaac-sim/python.sh /"):
+        # An image whose ENTRYPOINT is bash cannot use `python <file>`: docker turns it
+        # into `bash python <file>`, and bash then tries to execute the python BINARY as
+        # a shell script ("cannot execute binary file"). Passing an interpreter SCRIPT
+        # works, which is what /isaac-sim/python.sh is - the Isaac bootstrap shim.
+        script_path = command.split(None, 1)[1].split()[0]
         assert script_path in dests, (
             f"{name}: {spec.dockerfile} runs `{command}` but no COPY writes "
             f"{script_path} into the image"
