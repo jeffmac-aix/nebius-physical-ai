@@ -43,9 +43,9 @@ config:
   nighttime_train_uri: "s3://{{config.bucket}}/{{config.prefix}}/training/bdd100k_nighttime_person_train"
   distant_train_uri: "s3://{{config.bucket}}/{{config.prefix}}/training/bdd100k_distant_person_train"
 
-  rider_eval_uri: "s3://{{config.bucket}}/{{config.prefix}}/eval/bdd100k_rider_train"
-  nighttime_eval_uri: "s3://{{config.bucket}}/{{config.prefix}}/eval/bdd100k_nighttime_person_train"
-  distant_eval_uri: "s3://{{config.bucket}}/{{config.prefix}}/eval/bdd100k_distant_person_train"
+  rider_eval_uri: "s3://{{config.bucket}}/{{config.prefix}}/eval/bdd100k_rider_train/"
+  nighttime_eval_uri: "s3://{{config.bucket}}/{{config.prefix}}/eval/bdd100k_nighttime_person_train/"
+  distant_eval_uri: "s3://{{config.bucket}}/{{config.prefix}}/eval/bdd100k_distant_person_train/"
 
 resources:
   cpu:

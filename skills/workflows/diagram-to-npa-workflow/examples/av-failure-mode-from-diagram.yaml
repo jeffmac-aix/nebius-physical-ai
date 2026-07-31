@@ -50,7 +50,7 @@ config:
   synthetic_rows: "0"
   lance_uri: "s3://{{config.bucket}}/{{config.prefix}}/lancedb/"
   rider_train_uri: "s3://{{config.bucket}}/{{config.prefix}}/training/bdd100k_rider_train"
-  rider_eval_uri: "s3://{{config.bucket}}/{{config.prefix}}/eval/bdd100k_rider_train"
+  rider_eval_uri: "s3://{{config.bucket}}/{{config.prefix}}/eval/bdd100k_rider_train/"
 
 resources:
   cpu:

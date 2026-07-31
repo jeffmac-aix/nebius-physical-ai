@@ -53,8 +53,8 @@ config:
   lance_uri: "s3://{{config.bucket}}/{{config.prefix}}/lancedb/"
   nighttime_train_uri: "s3://{{config.bucket}}/{{config.prefix}}/training/nighttime"
   distant_train_uri: "s3://{{config.bucket}}/{{config.prefix}}/training/distant"
-  nighttime_eval_uri: "s3://{{config.bucket}}/{{config.prefix}}/eval/nighttime"
-  distant_eval_uri: "s3://{{config.bucket}}/{{config.prefix}}/eval/distant"
+  nighttime_eval_uri: "s3://{{config.bucket}}/{{config.prefix}}/eval/nighttime/"
+  distant_eval_uri: "s3://{{config.bucket}}/{{config.prefix}}/eval/distant/"
 
 resources:
   cpu:

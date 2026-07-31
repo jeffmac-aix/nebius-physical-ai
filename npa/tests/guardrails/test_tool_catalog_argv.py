@@ -226,3 +226,67 @@ def test_isaac_lab_rl_tool_refs_use_the_real_flag_names() -> None:
     )
     assert "--episodes" not in evaluate
     assert "--num-episodes" in evaluate
+
+
+def test_bash_wrapped_tool_refs_are_audited_too() -> None:
+    """The blind spot that shipped a defect: `bash -c` toolRefs were never checked.
+
+    ``create_failure_views`` passed ``--table`` to ``lancedb create-mv``, whose option is
+    ``--source-table``. The audit skipped it because ``argv_template[0] != "npa"``, and the
+    stage could only fail live with "No such option '--table'".
+    """
+
+    from npa.guardrails.tool_catalog_argv import embedded_npa_commands
+
+    entry = TOOL_CATALOG["workbench.lancedb.create_failure_views"]
+
+    assert entry.argv_template[0] == "bash"
+    commands = embedded_npa_commands(entry.argv_template)
+    # One `npa workbench lancedb create-mv` per failure-mode view.
+    assert len(commands) == 3, commands
+    for command in commands:
+        assert command[:4] == ("npa", "workbench", "lancedb", "create-mv")
+        assert "--source-table" in command
+        assert "--table" not in command
+        assert not argv_flag_drift("workbench.lancedb.create_failure_views", command)
+
+
+def test_embedded_extraction_handles_a_loop_and_shell_keywords() -> None:
+    """`backfill_cpu_bundle` wraps its call in a `for … do … done` loop."""
+
+    from npa.guardrails.tool_catalog_argv import embedded_npa_commands
+
+    commands = embedded_npa_commands(
+        TOOL_CATALOG["workbench.lancedb.backfill_cpu_bundle"].argv_template
+    )
+
+    assert len(commands) == 1, commands
+    command = commands[0]
+    assert command[:4] == ("npa", "workbench", "lancedb", "backfill")
+    assert "done" not in command
+    assert not argv_flag_drift("workbench.lancedb.backfill_cpu_bundle", command)
+
+
+def test_embedded_extraction_ignores_non_bash_and_bare_scripts() -> None:
+    from npa.guardrails.tool_catalog_argv import embedded_npa_commands
+
+    assert embedded_npa_commands(["npa", "workbench", "mjlab", "eval"]) == ()
+    assert embedded_npa_commands(["python", "-c", "print('npa')"]) == ()
+    assert embedded_npa_commands(["bash", "-c", "echo hello"]) == ()
+
+
+def test_the_audit_would_catch_the_original_bash_defect() -> None:
+    """Negative control: the exact broken command must be reported."""
+
+    broken = (
+        "npa",
+        "workbench",
+        "lancedb",
+        "create-mv",
+        "--name",
+        "view",
+        "--table",
+        "bdd100k",
+    )
+
+    assert argv_flag_drift("workbench.lancedb.create_failure_views", broken) == ("--table",)
