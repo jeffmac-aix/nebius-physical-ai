@@ -138,3 +138,28 @@ def test_the_guardrail_would_have_caught_the_missing_run_id() -> None:
 
     with pytest.raises(SystemExit):
         build_parser().parse_args(shipped)
+
+
+def test_no_tool_ref_invokes_bare_python() -> None:
+    """`python` is not guaranteed to exist; `python3` is, and it is what the shim provides.
+
+    Live job 242: `workbench.lerobot.policy_train` ran `python -m …` inside the LeRobot vendor
+    image and died with ``bash: python: command not found`` before training started. The same
+    argv had *worked* two runs earlier on SkyPilot's default image, where miniconda provides
+    `python` — so this is image-dependent breakage that only one image exposes, which is
+    precisely what a rule should catch instead of a live run.
+
+    The renderer's interpreter shim records a `python3`, so `python3` is also the interpreter
+    that can import `npa`.
+    """
+
+    offenders = sorted(
+        tool_ref
+        for tool_ref, entry in TOOL_CATALOG.items()
+        if entry.argv_template and str(entry.argv_template[0]) == "python"
+    )
+
+    assert not offenders, (
+        "these toolRefs invoke bare `python`, which some images do not provide; use `python3`: "
+        f"{offenders}"
+    )

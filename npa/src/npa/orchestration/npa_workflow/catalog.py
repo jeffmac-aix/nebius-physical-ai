@@ -221,7 +221,7 @@ TOOL_CATALOG: dict[str, ToolEntry] = {
         name="workbench.sim2real_envgen.raw_shard",
         description="Generate raw simulation env shard.",
         argv_template=[
-            "python",
+            "python3",
             "-m",
             "npa.workflows.sim2real_envgen",
             "raw-shard",
@@ -256,7 +256,7 @@ TOOL_CATALOG: dict[str, ToolEntry] = {
         name="workbench.sim2real_envgen.split",
         description="Split the generated env catalog into disjoint train and held-out sets.",
         argv_template=[
-            "python",
+            "python3",
             "-m",
             "npa.workflows.sim2real_envgen",
             "split",
@@ -290,7 +290,7 @@ TOOL_CATALOG: dict[str, ToolEntry] = {
         name="workbench.sim2real.write_decision",
         description="Write threshold decision artifact for dynamic transitions (demo stub).",
         argv_template=[
-            "python",
+            "python3",
             "-c",
             (
                 "from npa.orchestration.npa_workflow.decisions import write_decision; "
@@ -1062,7 +1062,7 @@ TOOL_CATALOG: dict[str, ToolEntry] = {
             "Train a LeRobot policy IN the stage's own pod, using the vendor image's LeRobot."
         ),
         argv_template=[
-            "python",
+            "python3",
             "-m",
             "npa.workbench.lerobot.policy_container",
             "train",
@@ -1093,7 +1093,7 @@ TOOL_CATALOG: dict[str, ToolEntry] = {
             "Digest a run's textual artifacts and have a hosted text model write a triage report."
         ),
         argv_template=[
-            "python",
+            "python3",
             "-m",
             "npa.workflows.token_factory_triage",
             "run",
