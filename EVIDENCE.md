@@ -951,3 +951,145 @@ scripts/stage-sonic-export-fixture.sh \
 No torch wheel was downloaded to the dev VM (which sits at **96 % disk, 8.7 GB
 free**); the builder ran in a pod from the SONIC image with the module mounted as a
 ConfigMap.
+
+## R5. `sonic-eval.yaml` and `sonic-export-eval.yaml` twins — PASSED, after a second real defect
+
+Both twins reached **SUCCEEDED on the first attempt** — and produced **no artifact**:
+
+| Run | job | result | run prefix contents |
+| --- | --- | --- | --- |
+| `npa-wf-gpu-sonic-eval-87a704ad` | 194 | SUCCEEDED (244.99 s) | `sonic_policy.onnx`, `.onnx.data`, `.metadata.json` — **no `eval.json`** |
+| `npa-wf-multi-sonic-export-eval-744b9c1e` | 195 | SUCCEEDED (379.38 s) | `checkpoint.pt`, `sonic_policy.*` — **no `eval.json`** |
+
+Both specs declare `outputs: - uri: .../eval.json`. The toolRef argv passed
+`--output json`, but on `npa workbench sonic eval` **`--output` is the result path**
+(`output_path: str`) and `--output-format` is the format — the SkyPilot template it
+replaces passed both correctly (`--output "${SONIC_EVAL_OUTPUT}"` *and*
+`--output-format json`). The tool therefore wrote to a relative `json/` directory
+inside the pod, and the artifact vanished with the container. **A green terminal
+status was not evidence; the artifact listing was.**
+
+Fixed by splitting the two options (`--output {{config.eval_uri}}`
+`--output-format json`, plus an `eval_uri` config key in both specs) and by a new
+guardrail that audits the whole catalog for the mistake in both directions — a format
+word handed to a path option, and a value that is not a member of an option's Enum.
+The audit found this as the only real case; six look-alikes are commands where
+`--output` genuinely *is* the format.
+
+### Passing re-runs
+
+```bash
+NPA_E2E_NPA_WORKFLOW_SUBMIT_TIERS=gpu   NPA_E2E_NPA_WORKFLOW_SUBMIT_SPECS=sonic-eval.yaml        ... # 1 passed in 283.78s
+NPA_E2E_NPA_WORKFLOW_SUBMIT_TIERS=multi NPA_E2E_NPA_WORKFLOW_SUBMIT_SPECS=sonic-export-eval.yaml ... # 1 passed in 410.73s
+```
+
+| Run id | job | status |
+| --- | --- | --- |
+| `npa-wf-gpu-sonic-eval-bb3b9c72` | **198** | SUCCEEDED |
+| `npa-wf-multi-sonic-export-eval-2f5e979e` | **197** | SUCCEEDED |
+
+`s3://<artifact-bucket>/.../npa-wf-gpu-sonic-eval-bb3b9c72/sonic-eval/`:
+
+```
+     4339  eval.json                     <- the artifact the spec declares
+      678  sonic_policy.metadata.json
+     1672  sonic_policy.onnx
+    11776  sonic_policy.onnx.data
+```
+
+`eval.json` is a **real onnxruntime evaluation** — `"status": "completed"`,
+`"backend": "reference"`, 8 episodes each with `action_min` / `action_max` /
+`action_norm` / `episode_return`, and the new `onnx_uri` field recording the durable
+input:
+
+```json
+{"status": "completed", "backend": "reference",
+ "onnx_uri": "s3://<artifact-bucket>/.../npa-wf-gpu-sonic-eval-bb3b9c72/sonic-eval/sonic_policy.onnx",
+ "episodes": [{"episode_index": 0, "action_max": 0.16404074430465698,
+               "action_min": -0.1481434553861618, "action_norm": 0.35056760907173157,
+               "episode_length": 1, "fall": false, "steps": 1}, "... 7 more ..."]}
+```
+
+`sonic-export-eval` (job 197) shows the **chain** working end to end: the export
+stage's ONNX is what the eval stage consumed, and both artifacts sit in one prefix:
+
+```
+    16697  checkpoint.pt                 (staged fixture)
+     1672  sonic_policy.onnx             (export stage output)
+    11776  sonic_policy.onnx.data
+      678  sonic_policy.metadata.json
+     4355  eval.json                     (eval stage output; onnx_uri points at the above)
+```
+
+## R6. Retirement tally: 36 → 31
+
+```bash
+$ ls npa/src/npa/workflows/skypilot/*.yaml | wc -l
+31
+$ for f in cosmos3-reason isaac-lab-rl-sweep sonic-eval sonic-export sonic-export-eval; do
+    rg -n --fixed-strings "skypilot/$f.yaml" . ; done
+# (only EVIDENCE.md / DESIGN.md / CHANGELOG.md history mentions remain)
+```
+
+| Retired template | Twin's live run | job(s) |
+| --- | --- | --- |
+| `cosmos3-reason.yaml` | `npa-wf-gpu-cosmos3-reason-af7ded35` | 182 |
+| `isaac-lab-rl-sweep.yaml` | `npa-wf-multi-isaac-lab-rl-sweep-c4b86dc5` | 185, 186, 187 |
+| `sonic-export.yaml` | `npa-wf-gpu-sonic-export-cb60c5ab` | 192 |
+| `sonic-eval.yaml` | `npa-wf-gpu-sonic-eval-bb3b9c72` | 198 |
+| `sonic-export-eval.yaml` | `npa-wf-multi-sonic-export-eval-2f5e979e` | 197 |
+
+**`sonic-locomotion-finetuning.yaml` was NOT retired.** Its twin's first stage is
+`workbench.retargeting.run`, which needs a real SOMA/G1 motion dataset
+(`NPA_E2E_SONIC_MOTION_SRC`); the repo deliberately does not vendor that dual-licensed
+upstream data, and the pre-existing `retargeting.yaml` live case already fails for the
+same reason (EVIDENCE §6.1). Deleting it on plan-only evidence would break the rule
+this work is built on, so it stays — with that reason recorded next to it in
+`test_skypilot_catalog_retirement.py`.
+
+## R7. Cost
+
+| Item | Amount |
+| --- | --- |
+| GPU tasks (RTXPRO-6000-BLACKWELL) | 13 pods: cosmos3-reason ×1 (57 s), sweep ×4 in 2 batches (~110 s each) + barrier, sonic-export ×3 attempts (~90 s each), sonic-eval ×2 (~90 s), sonic-export-eval ×2 (~190 s) ≈ **~22 GPU-minutes** |
+| Failed/cancelled attempts included above | job 183 (12 min PENDING on `ErrImagePull`, **0 GPU-seconds billed**), jobs 184/188/189 (~90 s each) |
+| CPU pods | 2 in-cluster fixture builds (~2 min each), 1 sweep barrier |
+| Storage | a few hundred KB of checkpoints, ONNX, reports and ledgers under `s3://<artifact-bucket>/npa-workflow-e2e/` |
+| Local | 555-file npa source staged to S3 four times; **no image pulled to the dev VM** |
+
+Approximate spend: **well under half a GPU-hour**. No cluster was provisioned for
+this work.
+
+## R8. Teardown
+
+```bash
+$ sky jobs queue    # every npa-wf-* / manual-* job from this work
+183 CANCELLED  184 FAILED  188 FAILED  189 FAILED       # the diagnosed attempts
+182 SUCCEEDED  185 SUCCEEDED  186 SUCCEEDED  187 SUCCEEDED
+192 SUCCEEDED  194 SUCCEEDED  195 SUCCEEDED  197 SUCCEEDED  198 SUCCEEDED
+```
+
+All terminal. The in-cluster fixture pod, its ConfigMap and its credentials Secret are
+deleted by the staging script's `trap cleanup EXIT`. The only long-lived cluster is
+the **pre-existing, shared** SkyPilot managed-jobs controller, which was up before
+this work. Jobs belonging to other runs (`paidf-*`, `nurec-spike-*`) were left alone.
+
+## R9. Not verified live
+
+1. **`sonic-locomotion-finetuning.yaml`'s twin** — needs a real SOMA/G1 motion
+   dataset. Its template is therefore **not** retired (§R6).
+2. **The `npa[sonic]` extra was only exercised on SkyPilot's default image**, not on
+   top of a baked workbench image (that path is the `NPA_SRC_OVERLAY` branch, which
+   the sweep did exercise, but without an extra).
+3. **The SONIC image's new k8s prerequisites were verified by using the already-built
+   `0.1.2-k8s-runtime` tag**, which carries the same four ingredients; the Dockerfile
+   change itself was not rebuilt and re-run in this change. The guardrail pins the
+   ingredients textually, and `Dockerfile.k8s-prereqs` is the documented repair path.
+4. **`cosmos3-reason` remains a manifest builder that requests a GPU.** That is
+   pre-existing on both sides of the twin (the template ran the same code) and is not
+   changed here; a real Cosmos3 reasoning stage is separate work.
+5. **The eval reference backend runs 1-step episodes** on the fixture policy
+   (`episode_length: 1`). That exercises onnxruntime, the metadata contract and the
+   artifact path for real, but it is not a locomotion quality signal.
+6. **Only the specs listed in §R2–§R5 were submitted live**; the rest of the matrix
+   was covered plan-only (24/24) in this change.
