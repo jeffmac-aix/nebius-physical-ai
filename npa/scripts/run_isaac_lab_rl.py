@@ -15,6 +15,7 @@ from typing import Any
 
 import yaml
 
+from npa.workflows.byof.live import resolve_byof_profile_path
 from npa.orchestration.skypilot import (
     WorkflowResult,  # noqa: F401 - kept for tests and downstream wrapper imports.
     cleanup_all_for_run,
@@ -289,7 +290,15 @@ def _default_run_id() -> str:
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--yaml", "--yaml-path", dest="yaml_path", type=Path, default=DEFAULT_YAML)
+    # `resolve_byof_profile_path` also accepts a bare packaged profile NAME, which is what
+    # an npa.workflow spec must pass: a stage runs in a pod with no repo checkout.
+    parser.add_argument(
+        "--yaml",
+        "--yaml-path",
+        dest="yaml_path",
+        type=resolve_byof_profile_path,
+        default=DEFAULT_YAML,
+    )
     parser.add_argument("--task", default=os.environ.get("ISAAC_LAB_TASK", "Isaac-Cartpole-v0"))
     parser.add_argument("--iterations", type=int, default=int(os.environ.get("ISAAC_LAB_ITERATIONS", "10")))
     parser.add_argument("--run-id", default="")

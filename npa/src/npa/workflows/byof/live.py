@@ -37,6 +37,60 @@ DEFAULT_UBUNTU_VALIDATION_REPO_URL = "https://github.com/githubtraining/hellogit
 DEFAULT_UBUNTU_VALIDATION_REPO_REF = "master"
 
 
+class ByofProfileError(ValueError):
+    """Raised when a ``--yaml`` resource-profile value cannot be resolved."""
+
+
+def available_byof_profiles() -> tuple[str, ...]:
+    """Return the packaged resource-profile names, without the ``.yaml`` suffix."""
+
+    if not BYOF_PROFILES_DIR.is_dir():  # pragma: no cover - packaging failure
+        return ()
+    return tuple(sorted(path.stem for path in BYOF_PROFILES_DIR.glob("*.yaml")))
+
+
+def resolve_byof_profile_path(value: str | Path) -> Path:
+    """Resolve a ``--yaml`` resource-profile value to a real file.
+
+    Accepts, in order:
+
+    1. an absolute path, or any path that exists relative to the current directory —
+       the operator-host case, unchanged;
+    2. a bare profile **name** (with or without ``.yaml``) packaged under
+       ``BYOF_PROFILES_DIR``;
+    3. a path whose *basename* matches a packaged profile — so a value written as a repo
+       path still resolves from an installed package.
+
+    Cases 2 and 3 exist because a BYOF stage in an npa.workflow spec runs in a pod where
+    the repo is **not** checked out: five specs passed
+    ``npa/src/npa/workflows/byof/profiles/byof-solution-smoke-rtxpro-gpu.yaml``, which can
+    only resolve on a developer's machine. The packaged profile always resolves, so specs
+    name the profile instead of a path (guarded by
+    ``tests/guardrails/test_spec_paths_are_not_repo_relative.py``).
+    """
+
+    raw = str(value).strip()
+    if not raw:
+        raise ByofProfileError("resource profile value is empty")
+
+    candidate = Path(raw)
+    if candidate.is_absolute() or candidate.exists():
+        return candidate
+
+    named = BYOF_PROFILES_DIR / (raw if raw.endswith(".yaml") else f"{raw}.yaml")
+    if named.is_file():
+        return named
+
+    packaged = BYOF_PROFILES_DIR / candidate.name
+    if packaged.is_file():
+        return packaged
+
+    raise ByofProfileError(
+        f"resource profile not found: {raw}. Pass an existing path or one of the packaged "
+        f"profile names: {', '.join(available_byof_profiles())}"
+    )
+
+
 @dataclass(frozen=True)
 class ByofKubernetesTarget:
     context: str

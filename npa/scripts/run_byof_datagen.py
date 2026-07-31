@@ -15,6 +15,7 @@ from typing import Any
 
 import yaml
 
+from npa.workflows.byof.live import resolve_byof_profile_path
 from npa.orchestration.skypilot import cleanup_all_for_run, submit_workflow, workflow_status
 from npa.orchestration.skypilot._bin import (
     SkyPilotConfigError,
@@ -125,7 +126,11 @@ def _default_run_id() -> str:
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--yaml", dest="yaml_path", type=Path, default=DEFAULT_YAML)
+    # `resolve_byof_profile_path` also accepts a bare packaged profile NAME, which is what
+    # an npa.workflow spec must pass: a stage runs in a pod with no repo checkout.
+    parser.add_argument(
+        "--yaml", dest="yaml_path", type=resolve_byof_profile_path, default=DEFAULT_YAML
+    )
     parser.add_argument("--run-id", default="")
     parser.add_argument("--task", default="LeIsaac-SO101-PickOrange-v0")
     parser.add_argument("--num-envs", type=int, default=4)

@@ -40,12 +40,26 @@ def _argv_values() -> list[tuple[str, str, str]]:
         plan = build_plan(spec, run_id="repo-relative-check", assume_decision=assume)
         for step in plan.steps:
             for value in step.argv:
-                # "/" filters out single words ("json", "default") that could collide
-                # with a top-level repo entry by accident.
-                if value.startswith("-") or "/" not in value:
-                    continue
-                out.append((path.name, step.state, value))
+                if _looks_like_a_path(value):
+                    out.append((path.name, step.state, value))
     return out
+
+
+#: Longest value still worth treating as a path. Several specs pass inline `python -c`
+#: programs, which contain "/" but are obviously not paths (and are long enough that
+#: `Path.exists()` raises ENAMETOOLONG).
+MAX_PATH_LENGTH = 512
+
+
+def _looks_like_a_path(value: str) -> bool:
+    # "/" filters out single words ("json", "default") that could collide with a
+    # top-level repo entry by accident.
+    if value.startswith("-") or "/" not in value:
+        return False
+    if len(value) > MAX_PATH_LENGTH:
+        return False
+    # Whitespace, ";" and quotes mean this is shell/python source, not a path.
+    return not any(char in value for char in " \t\n;'\"")
 
 
 CASES = _argv_values()
@@ -72,11 +86,27 @@ def test_argv_value_is_not_a_repo_relative_path(spec_name: str, state: str, valu
     )
 
 
-def test_the_guardrail_would_have_caught_the_original_bug() -> None:
-    """The exact value that shipped in vlm-eval-benchmark.yaml must be rejected."""
-
-    original = "npa/src/npa/workbench/vlm_eval/fixtures/sample_benchmark/benchmark.json"
-
-    assert (REPO_ROOT / original).exists(), "fixture moved; update this regression anchor"
+@pytest.mark.parametrize(
+    "original",
+    [
+        # vlm-eval-benchmark.yaml passed this to `--dataset`.
+        "npa/src/npa/workbench/vlm_eval/fixtures/sample_benchmark/benchmark.json",
+        # Five byof-*.yaml specs passed this to `--yaml`; they now name the packaged
+        # profile, which `resolve_byof_profile_path` looks up inside the installed package.
+        "npa/src/npa/workflows/byof/profiles/byof-solution-smoke-rtxpro-gpu.yaml",
+    ],
+)
+def test_the_guardrail_would_have_caught_the_original_bugs(original: str) -> None:
+    assert (REPO_ROOT / original).exists(), "file moved; update this regression anchor"
+    assert _looks_like_a_path(original)
     with pytest.raises(AssertionError, match="inside this repo"):
         test_argv_value_is_not_a_repo_relative_path("spec.yaml", "state", original)
+
+
+def test_inline_programs_are_not_mistaken_for_paths() -> None:
+    """Several specs pass `python -c` source, which contains "/" but is not a path."""
+
+    program = "import json;from pathlib import Path;Path('/tmp/x.json').write_text('{}')"
+
+    assert not _looks_like_a_path(program)
+    assert not _looks_like_a_path("x" * (MAX_PATH_LENGTH + 1) + "/y")

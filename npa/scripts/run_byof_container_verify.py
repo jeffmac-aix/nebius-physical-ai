@@ -16,6 +16,7 @@ from typing import Any
 
 import yaml
 
+from npa.workflows.byof.live import resolve_byof_profile_path
 from npa.clients.project_credentials import storage_env_for_project
 from npa.orchestration.skypilot import submit_workflow, workflow_status
 from npa.orchestration.skypilot._bin import (
@@ -208,7 +209,11 @@ def _resolved_storage_env() -> dict[str, str]:
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--yaml", dest="yaml_path", type=Path, default=DEFAULT_YAML)
+    # `resolve_byof_profile_path` also accepts a bare packaged profile NAME, which is what
+    # an npa.workflow spec must pass: a stage runs in a pod with no repo checkout.
+    parser.add_argument(
+        "--yaml", dest="yaml_path", type=resolve_byof_profile_path, default=DEFAULT_YAML
+    )
     parser.add_argument("--run-id", default="")
     parser.add_argument("--image", default="")
     parser.add_argument("--output-root", default=DEFAULT_OUTPUT_ROOT)
