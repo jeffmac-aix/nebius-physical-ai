@@ -57,6 +57,16 @@ TOOL_REF_PIP_EXTRAS: dict[str, str] = {
     "workbench.sonic": "sonic",
 }
 
+#: toolRef prefix -> third-party pip requirements the tool shells out to, with the executable
+#: that proves each is present. `cosmos fetch` runs `huggingface-cli`; the retired
+#: cosmos3-ea-fetch.yaml pip-installed `huggingface_hub[cli]` in its setup, and that one line
+#: was the only load-bearing part of its ~60-line preamble. Dropping it made the stage fail
+#: with "No such file or directory: 'huggingface-cli'" (live job 226).
+TOOL_REF_PIP_REQUIREMENTS: dict[str, tuple[tuple[str, str], ...]] = {
+    "workbench.cosmos.fetch": (("huggingface-cli", "huggingface_hub[cli]>=0.23,<1.0"),),
+    "workbench.cosmos.check": (("huggingface-cli", "huggingface_hub[cli]>=0.23,<1.0"),),
+}
+
 
 class NpaWorkflowRenderError(NpaWorkflowError):
     """Raised when an npa.workflow plan cannot be rendered to SkyPilot YAML."""
@@ -152,6 +162,39 @@ def tool_pip_extra(tool_ref: str) -> str:
             if len(prefix) > len(best):
                 best = prefix
     return TOOL_REF_PIP_EXTRAS.get(best, "")
+
+
+def tool_pip_requirements(tool_ref: str) -> tuple[tuple[str, str], ...]:
+    """Return (executable, pip requirement) pairs this toolRef shells out to."""
+
+    if tool_ref in TOOL_REF_PIP_REQUIREMENTS:
+        return TOOL_REF_PIP_REQUIREMENTS[tool_ref]
+    best = ""
+    for prefix in TOOL_REF_PIP_REQUIREMENTS:
+        if (tool_ref == prefix or tool_ref.startswith(prefix + ".")) and len(prefix) > len(best):
+            best = prefix
+    return TOOL_REF_PIP_REQUIREMENTS.get(best, ())
+
+
+def render_pip_requirements_setup(requirements: Sequence[tuple[str, str]]) -> str:
+    """Install third-party CLIs a tool shells out to, when they are missing.
+
+    Installed only when the executable is absent, so a purpose-built image that already
+    ships it is untouched. Failing here rather than mid-stage is the better signal: the
+    alternative is a FileNotFoundError from a subprocess after the stage has started.
+    """
+
+    if not requirements:
+        return ""
+    lines = ["# Stage shells out to third-party CLIs; install any that are missing.\n"]
+    for executable, requirement in requirements:
+        lines.append(
+            f"if ! command -v {executable} >/dev/null 2>&1; then\n"
+            f"  echo 'installing {requirement} for {executable}' >&2\n"
+            f"  npa_pip_install '{requirement}'\n"
+            "fi\n"
+        )
+    return "".join(lines)
 
 
 def render_pip_extra_setup(extra: str) -> str:
@@ -641,6 +684,7 @@ def render_setup_for_tool(
     extra = tool_pip_extra(tool_ref)
     if extra:
         parts.append(render_pip_extra_setup(extra))
+    parts.append(render_pip_requirements_setup(tool_pip_requirements(tool_ref)))
     backend = str(config.get("vlm_backend") or "").strip().lower()
     if tool_ref.startswith("workbench.vlm_eval") and backend in {"self-hosted", "self_hosted"}:
         parts.append(
