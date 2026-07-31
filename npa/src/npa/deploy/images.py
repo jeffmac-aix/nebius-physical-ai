@@ -42,6 +42,7 @@ CONTAINER_IMAGE_NAMES = {
     "lerobot-vlm-rl": "npa-lerobot-vlm-rl",
     "loop-eval": "npa-loop-eval",
     "rerun-viewer": "npa-rerun-viewer",
+    "lichtblick": "npa-lichtblick",
     "lancedb": "npa-lancedb",
     "detection-training": "npa-detection-training",
 }
@@ -58,6 +59,13 @@ CONTAINER_IMAGE_NAMES = {
 # (0.1.2, 0.1.2-k8s-runtime) and the derived ``npa-sonic-mujoco`` image.
 OMNIVERSE_RESTRICTED_TOOLS = frozenset({"isaac-lab", "sonic", "groot"})
 
+# Images built FROM a restricted tool image, so they inherit the baked Omniverse
+# Kit and the same no-public-redistribution rule. They are not separate
+# CONTAINER_IMAGE_NAMES entries (they are variants of their parent tool), so they
+# never reach publicly_publishable_tools(); they are listed here so operator-facing
+# output can name every excluded image without hardcoding it at the call site.
+OMNIVERSE_RESTRICTED_DERIVED_IMAGES = frozenset({"sonic-mujoco"})
+
 # Public mirror registry for the OSS-redistributable image subset. Nebius CR does
 # NOT support anonymous/public pulls and has no cross-tenant / all-authenticated
 # grant, so making images pullable by any Nebius tenant (or anyone) means
@@ -69,9 +77,9 @@ OMNIVERSE_RESTRICTED_TOOLS = frozenset({"isaac-lab", "sonic", "groot"})
 PUBLIC_CONTAINER_REGISTRY_ENV = "NPA_PUBLIC_REGISTRY"
 DEFAULT_PUBLIC_CONTAINER_REGISTRY = "ghcr.io/nebius/nebius-physical-ai"
 
-# Registry hosts that serve anonymous/public pulls. Resolving an Omniverse image
+# Registry hosts that serve anonymous/public pulls. Resolving a restricted image
 # against one of these is always wrong: either it is not there (we never publish
-# it) or someone has published NVIDIA-proprietary Omniverse Kit to third parties.
+# it) or someone has published a non-redistributable runtime to third parties.
 # Private registries are deliberately absent — an operator building the image
 # into their OWN registry is the licensed path, whichever registry that is.
 PUBLIC_REGISTRY_HOSTS = frozenset(
@@ -115,6 +123,8 @@ SUPPORTED_TOOL_VERSIONS = {
     # from the registry.
     "loop-eval": "0.1.3-genuine-sm120",
     "rerun-viewer": "0.31.4",
+    # Lichtblick (MPL-2.0): OSS, Foxglove-compatible static web viewer bundle.
+    "lichtblick": "1.26.0",
     "lancedb": "0.30.3",
     "detection-training": "bdd100k-golden-eval-smoke-20260614T210000Z",
     "nebius-cli": "0.12.192",
@@ -244,11 +254,11 @@ def container_image_for_tool(
     resolved_registry = registry or _primary_registry()
     if not is_publicly_redistributable(tool) and is_public_registry(resolved_registry):
         raise ValueError(
-            f"{tool!r} bakes NVIDIA Omniverse Kit and is never distributed from a public "
-            f"registry, so {resolved_registry!r} cannot serve it. Build it into your own "
-            f"registry with your own NGC credentials (npa/docker/workbench/<tool>/build.sh "
-            f"--registry <your-registry> --push) and point NPA_REGISTRY at that registry; "
-            f"see docs/workbench/container-packaging.md."
+            f"{tool!r} is not publicly redistributable and is never distributed from a "
+            f"public registry, so {resolved_registry!r} cannot serve it. Build it into "
+            f"your own registry (npa/docker/workbench/<tool>/build.sh --registry "
+            f"<your-registry> --push) and point NPA_REGISTRY at that registry; see "
+            f"docs/workbench/container-packaging.md."
         )
     return f"{resolved_registry.rstrip('/')}/{image_name}:{resolved_tag}"
 
@@ -337,8 +347,8 @@ def is_public_registry(registry: str) -> bool:
 
     True for the well-known public hosts and for whatever registry is configured
     as our public mirror. A Nebius (or other private) registry is not public: an
-    operator's own registry is exactly where the restricted images are supposed
-    to live.
+    operator's own registry is exactly where a restricted image is supposed to
+    live.
     """
     candidate = registry.strip().rstrip("/")
     if not candidate:
@@ -358,6 +368,11 @@ def is_publicly_redistributable(tool: str) -> bool:
     ``OMNIVERSE_RESTRICTED_TOOLS``).
     """
     return tool not in OMNIVERSE_RESTRICTED_TOOLS
+
+
+def omniverse_restricted_image_names() -> list[str]:
+    """Return every image name excluded from public registries (tools + variants)."""
+    return sorted(OMNIVERSE_RESTRICTED_TOOLS | OMNIVERSE_RESTRICTED_DERIVED_IMAGES)
 
 
 def publicly_publishable_tools() -> list[str]:

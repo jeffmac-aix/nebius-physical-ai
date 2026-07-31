@@ -39,8 +39,15 @@ security:
 # WITHIN the owning org is always permitted; that is not what this gates.
 # Enforced by npa/tests/docker/test_packaging_contract.py.
 redistribution:
-  # Substrings that, if present in a Dockerfile, mean the image bakes NVIDIA
-  # Omniverse Kit (Isaac Sim) binaries and therefore must be "restricted".
+  # Substrings that, if present in a Dockerfile's INSTRUCTIONS, mean the image
+  # bakes NVIDIA Omniverse Kit (Isaac Sim) binaries and therefore must be
+  # "restricted". Comment lines are stripped before matching: prose that merely
+  # names Isaac Sim (e.g. isaac-lab/Dockerfile's "# Tag: nvcr.io/nvidia/isaac-lab"
+  # header) does not bake anything, and must not force an image to "restricted".
+  # Every real baker still matches on an instruction (FROM/ARG base, a pip
+  # install, or an ENV *_ACCEPT_EULA), and images that inherit a restricted parent
+  # without a marker of their own are caught by the parent-inheritance check in
+  # npa/tests/docker/test_packaging_contract.py.
   omniverse_markers:
     - "isaacsim"
     - "isaaclab[isaacsim"
@@ -153,4 +160,11 @@ images:
     tier: job
     ports: [9090]
     final_user: nobody
+    redistribution: public
+  lichtblick:
+    dockerfile: lichtblick/Dockerfile
+    tier: service
+    ports: [8080]
+    final_user: nobody
+    notes: "Lichtblick (MPL-2.0) OSS Foxglove-compatible static web viewer; caddy file-server default CMD + HEALTHCHECK."
     redistribution: public

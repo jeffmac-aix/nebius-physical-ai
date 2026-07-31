@@ -10,8 +10,8 @@ from __future__ import annotations
 
 from npa.deploy.images import (
     BACKUP_CONTAINER_REGISTRY,
-    CONTAINER_IMAGE_NAMES,
     DEFAULT_CONTAINER_REGISTRY,
+    CONTAINER_IMAGE_NAMES,
     backup_container_registry,
     container_image_candidates,
 )
@@ -37,14 +37,14 @@ def test_candidates_cover_both_registries_for_every_tool() -> None:
         assert "cr.us-central1.nebius.cloud" in hosts, tool
 
 
-def test_viewer_resolves_in_both_regions() -> None:
-    candidates = container_image_candidates("rerun-viewer")
+def test_lichtblick_resolves_in_both_regions() -> None:
+    candidates = container_image_candidates("lichtblick")
     assert any(
-        ref.startswith("cr.eu-north1.nebius.cloud/") and "/npa-rerun-viewer:" in ref
+        ref.startswith("cr.eu-north1.nebius.cloud/") and ref.endswith("/npa-lichtblick:1.26.0")
         for ref in candidates
     )
     assert any(
-        ref.startswith("cr.us-central1.nebius.cloud/") and "/npa-rerun-viewer:" in ref
+        ref.startswith("cr.us-central1.nebius.cloud/") and ref.endswith("/npa-lichtblick:1.26.0")
         for ref in candidates
     )
 
@@ -52,9 +52,9 @@ def test_viewer_resolves_in_both_regions() -> None:
 def test_preferred_region_is_tried_first() -> None:
     # A us-central1 caller (which cannot read the eu-north1 registry) must try the
     # us-central1 mirror first; an eu-north1 caller tries eu-north1 first.
-    us_first = container_image_candidates("rerun-viewer", preferred_region="us-central1")
+    us_first = container_image_candidates("lichtblick", preferred_region="us-central1")
     assert us_first[0].startswith("cr.us-central1.nebius.cloud/")
-    eu_first = container_image_candidates("rerun-viewer", preferred_region="eu-north1")
+    eu_first = container_image_candidates("lichtblick", preferred_region="eu-north1")
     assert eu_first[0].startswith("cr.eu-north1.nebius.cloud/")
     # Both still cover both registries regardless of ordering.
     for candidates in (us_first, eu_first):

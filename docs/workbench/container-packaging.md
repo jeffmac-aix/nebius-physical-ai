@@ -77,32 +77,10 @@ image (`public` | `restricted`), enforced by
   **runtime** by the operator, never baked into the image. These may be published
   to a public/anonymous registry.
 - **`restricted`** — bakes **NVIDIA Omniverse Kit (Isaac Sim)** binaries
-  (`isaac-lab`, `sonic`, `sonic-mujoco`, `groot`). Isaac Sim is dual-licensed:
-  the GitHub *source* is Apache-2.0, but building or running it requires
-  NVIDIA-owned components (the Omniverse Kit SDK, 3D models, textures) governed
-  by the **NVIDIA Isaac Sim Additional Software and Materials License**. Those
-  components may not be redistributed; per NVIDIA's Isaac Sim License FAQ,
-  redistributing Isaac Sim (with Omniverse Kit) to third parties — or delivering
-  it to them as a service — requires an **NVIDIA AI Enterprise license**. The
-  `isaacsim` PyPI package's own license field likewise reads *"NVIDIA Proprietary
-  Software"*.
-
-  What this permits: internal R&D is free with **no per-seat limit**, so anyone
-  in our own org may pull and run these from our own registry. Two carve-outs
-  matter for what we sell: selling simulation *outputs* (datasets, videos,
-  reports) needs no license, and neither does selling custom code or USD assets
-  that a customer runs on **their own** Isaac Sim. Our synthetic-data and
-  policy-training products sit inside those carve-outs.
-
-  > **Do not be misled by the general Omniverse licensing page.** As of May 2026
-  > NVIDIA announced Omniverse is free for development, production, *and
-  > redistribution*. That does not lift this restriction: the Isaac Sim
-  > Additional Software and Materials License is the product-specific license for
-  > what these images bake, and the Isaac Sim 6.0 docs — GA'd 4 June 2026, after
-  > that announcement — still require AI Enterprise for third-party
-  > redistribution. More specific and more recent governs. Reclassifying these
-  > images needs written confirmation from NVIDIA, not a reading of the general
-  > page.
+  (`isaac-lab`, `sonic`, `sonic-mujoco`, `groot`). The Isaac Sim *source* is
+  Apache-2.0, but the shipped binary bundles the Omniverse Kit SDK + NVIDIA
+  assets, which are NVIDIA-proprietary (the `isaacsim` PyPI package's own license
+  field reads *"NVIDIA Proprietary Software"*).
 
   The compliant way customers get these is **build-your-own**: each deployment
   builds the image into its **own** registry (`build.sh --registry
@@ -114,17 +92,11 @@ image (`public` | `restricted`), enforced by
   + orchestration — not the proprietary binaries. This is why using their own
   NGC/HF tokens keeps customers compliant.
 
-  What is *not* allowed is handing out these images **prebuilt** — most obviously
-  on a public/anonymous registry, where a pull needs no NGC token and bypasses
-  the EULA gate entirely, but equally by giving a third party access to a private
-  registry that holds them. Either way we become the redistributor of Omniverse
-  Kit. Access control is not a license: keeping a registry private limits who
-  *can* pull, but a third party pulling a prebuilt restricted image with our
-  blessing is still redistribution.
-
-  `container_image_for_tool()` enforces the public half of this at the resolution
-  chokepoint: asking for a restricted tool against a public registry raises
-  rather than returning a reference we must never serve.
+  The **one** thing that is *not* allowed is hosting these images **prebuilt on a
+  public/anonymous registry**: a pull from such a registry needs no NGC token and
+  bypasses the EULA gate, which would make us the third-party redistributor of
+  Omniverse Kit (that needs an NVIDIA AI Enterprise license). So keep the
+  `restricted` set off any public registry.
 
 Model weights are a separate axis and are never baked into any image: Cosmos,
 GR00T N1, and Cosmos-Reason weights (and VLMs) are downloaded at **runtime**
@@ -150,8 +122,8 @@ pullable by anyone) is therefore to **mirror to a public-capable registry** —
 GHCR (`ghcr.io`, the default), Docker Hub, or Quay.
 
 Only the `public`-classified subset may be mirrored. Use the license-guarded
-publisher, which copies exactly `publicly_publishable_tools()` and hard-refuses
-the Omniverse-Kit images:
+publisher, which copies exactly `publicly_publishable_tools()` (16 images) and
+hard-refuses the Omniverse-Kit images:
 
 ```bash
 # defaults to $NPA_PUBLIC_REGISTRY, else ghcr.io/nebius/nebius-physical-ai
@@ -160,9 +132,8 @@ python -m npa.deploy.publish_public --target ghcr.io/<org>/<repo>
 ```
 
 or the `Publish public images` GitHub Actions workflow (manual dispatch,
-dry-run by default). The mirror keeps each image's `name:tag` unchanged, so
-**consumers in any tenant** pull the OSS images by pointing the resolver at the
-public mirror:
+dry-run by default). **Consumers in any tenant** then pull the OSS images by
+pointing the resolver at the public mirror:
 
 ```bash
 export NPA_REGISTRY=ghcr.io/nebius/nebius-physical-ai   # OSS images, any tenant
@@ -171,35 +142,6 @@ export NPA_REGISTRY=ghcr.io/nebius/nebius-physical-ai   # OSS images, any tenant
 Never add the `restricted` images to a public target — that redistributes NVIDIA
 Omniverse Kit to third parties (needs an NVIDIA AI Enterprise license). Those
 stay build-your-own (each operator builds with their own NGC credentials + EULA).
-
-### Why not just open up the Nebius registry?
-
-Three approaches come up, and none of them work:
-
-- **Turn on anonymous pull.** There is no such setting: the registry resource has
-  no visibility field (`nebius registry create/update` expose only name,
-  description, labels, parent). The registry does advertise a Bearer token realm
-  and *will* hand out a token to an unauthenticated caller, which looks
-  promising — but that token carries no identity, so the pull itself returns
-  `DENIED: permission denied`.
-- **Grant another tenant read access.** Access permits are IAM-only
-  (`nebius registry` has no access subcommand), and `iam access-permit create`
-  requires the subject to be a parent within the resource's own hierarchy —
-  "if parent of subject is not from resource's hierarchy, NOT_FOUND will be
-  thrown." There is no `allUsers`-style pseudo-subject. Tenants cannot even
-  resolve each other's principals: looking up a foreign tenant's group returns
-  `PermissionDenied` in both directions. Inviting each account individually
-  (`nebius iam invitation`) works but does not scale and puts outsiders in our
-  tenant.
-- **Publish a shared read-only static key.** Technically functional, but it is an
-  unrevocable-per-consumer shared secret with a default 6-month expiry, and
-  handing it out publicly is just a worse public registry.
-
-If the images must stay on Nebius infrastructure, the remaining option is to run
-an OCI registry that permits anonymous reads (zot, Harbor, CNCF distribution) on
-Nebius compute behind a public endpoint — at the cost of operating, securing, and
-paying egress for it. Mirroring to GHCR gets the same reach for no operational
-burden, which is why it is the default here.
 
 ## Feature exposure
 

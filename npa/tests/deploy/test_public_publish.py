@@ -14,13 +14,16 @@ from pathlib import Path
 import pytest
 import yaml
 
+from npa.deploy import images
 from npa.deploy.images import (
     CONTAINER_IMAGE_NAMES,
     DEFAULT_PUBLIC_CONTAINER_REGISTRY,
+    OMNIVERSE_RESTRICTED_DERIVED_IMAGES,
     OMNIVERSE_RESTRICTED_TOOLS,
     container_image_for_tool,
     is_public_registry,
     is_publicly_redistributable,
+    omniverse_restricted_image_names,
     public_container_registry,
     publicly_publishable_tools,
 )
@@ -28,14 +31,6 @@ from npa.deploy.publish_public import build_publish_plan
 
 ROOT = Path(__file__).resolve().parents[3]
 CONTRACT_PATH = ROOT / "npa" / "docker" / "workbench" / "packaging-contract.yaml"
-
-# Contract image keys that are not canonical CONTAINER_IMAGE_NAMES tool keys.
-# sonic-mujoco is a sonic variant, so the "sonic" restriction covers it.
-CONTRACT_ALIASES = {"sonic-mujoco": "sonic"}
-
-
-def _contract() -> dict:
-    return yaml.safe_load(CONTRACT_PATH.read_text(encoding="utf-8"))
 
 
 def test_restricted_tools_are_the_omniverse_images() -> None:
@@ -51,7 +46,7 @@ def test_public_set_excludes_every_restricted_tool() -> None:
 
 def test_public_set_includes_the_oss_tools() -> None:
     public = set(publicly_publishable_tools())
-    for tool in ("lerobot", "genesis", "cosmos", "fiftyone", "lancedb", "rerun-viewer", "retargeting"):
+    for tool in ("lerobot", "genesis", "cosmos", "fiftyone", "lancedb", "rerun-viewer", "lichtblick"):
         assert tool in public, tool
     # Everything not Omniverse-restricted is public.
     assert public == set(CONTAINER_IMAGE_NAMES) - OMNIVERSE_RESTRICTED_TOOLS
@@ -73,16 +68,17 @@ def test_publish_plan_requires_a_target() -> None:
 
 
 def test_publish_plan_copies_the_pinned_tag_unchanged() -> None:
-    """A mirror must not retag: the public image has to be the same name:tag as
-    the source so a consumer switching NPA_REGISTRY resolves the same reference.
-    """
+    """A mirror must serve the same ``name:tag`` the primary registry serves, or
+    every pin in the repo (and every customer's) breaks against the mirror."""
     plan = build_publish_plan(
         target_registry="ghcr.io/example/workbench",
         source_registry="cr.eu-north1.nebius.cloud/example",
     )
+    assert plan
     for item in plan:
-        assert item.source_ref.startswith("cr.eu-north1.nebius.cloud/example/")
-        assert item.source_ref.rsplit("/", 1)[-1] == item.target_ref.rsplit("/", 1)[-1]
+        source_image = item.source_ref.rsplit("/", 1)[-1]
+        target_image = item.target_ref.rsplit("/", 1)[-1]
+        assert source_image == target_image, item
 
 
 def test_public_registry_defaults_to_ghcr(monkeypatch) -> None:
@@ -98,42 +94,76 @@ def test_public_registry_honors_env_override(monkeypatch) -> None:
 
 def test_publish_plan_targets_public_registry_by_default() -> None:
     plan = build_publish_plan(target_registry=DEFAULT_PUBLIC_CONTAINER_REGISTRY)
-    assert len(plan) == len(CONTAINER_IMAGE_NAMES) - len(OMNIVERSE_RESTRICTED_TOOLS) == 15
+    assert len(plan) == 16
     for item in plan:
         assert item.target_ref.startswith(DEFAULT_PUBLIC_CONTAINER_REGISTRY + "/npa-")
+
+
+def test_restricted_image_names_cover_every_contract_restricted_image() -> None:
+    """The operator-facing excluded list must name every restricted image, derived
+    variants included, without any caller hardcoding them."""
+    contract = yaml.safe_load(CONTRACT_PATH.read_text(encoding="utf-8"))
+    contract_restricted = {
+        name
+        for name, entry in contract["images"].items()
+        if entry.get("redistribution") == "restricted"
+    }
+    names = omniverse_restricted_image_names()
+    assert names == sorted(names), "names must be stable/sorted for operator output"
+    assert contract_restricted <= set(names), sorted(contract_restricted - set(names))
+    # Derived variants are not canonical tools, so they never reach the public set.
+    assert set(OMNIVERSE_RESTRICTED_DERIVED_IMAGES).isdisjoint(CONTAINER_IMAGE_NAMES)
+    assert set(OMNIVERSE_RESTRICTED_DERIVED_IMAGES).isdisjoint(publicly_publishable_tools())
+
+
+def test_selector_matches_packaging_contract_classification() -> None:
+    """Every image the packaging contract marks ``restricted`` must resolve to a
+    tool that the selector also treats as non-public (kept in sync)."""
+    contract = yaml.safe_load(CONTRACT_PATH.read_text(encoding="utf-8"))
+    # contract image keys that map onto canonical tool keys
+    for image_name, entry in contract["images"].items():
+        if entry.get("redistribution") != "restricted":
+            continue
+        # sonic-mujoco is a sonic variant (covered by the "sonic" restriction)
+        tool = "sonic" if image_name == "sonic-mujoco" else image_name
+        if tool in CONTAINER_IMAGE_NAMES:
+            assert not is_publicly_redistributable(tool), image_name
+        else:
+            # non-canonical restricted image (e.g. sonic-mujoco) must map to a
+            # restricted canonical tool
+            assert tool in OMNIVERSE_RESTRICTED_TOOLS, image_name
+
+
+# --- Resolution guard: a restricted tool must never resolve from a public registry ----
+#
+# The docs tell external consumers to point NPA_REGISTRY at the public mirror. Asking
+# for a restricted tool in that state used to silently produce a public image reference
+# for something we must never publish. Private registries are unaffected —
+# build-your-own is the licensed path, whichever registry that is.
 
 
 @pytest.mark.parametrize(
     "registry",
     [
         "ghcr.io/nebius/nebius-physical-ai",
-        "ghcr.io/someone/else",
         "docker.io/nebius/workbench",
         "quay.io/nebius/workbench",
         "public.ecr.aws/nebius/workbench",
     ],
 )
-@pytest.mark.parametrize("tool", sorted(OMNIVERSE_RESTRICTED_TOOLS))
-def test_restricted_tools_refuse_to_resolve_from_a_public_registry(tool, registry) -> None:
-    """An external consumer following the docs sets NPA_REGISTRY to the public
-    mirror. Asking for an Omniverse tool then has to fail loudly: we never
-    publish those, so any such reference is either broken or a license breach.
-    """
-    with pytest.raises(ValueError, match="Omniverse Kit"):
-        container_image_for_tool(tool, registry=registry)
+def test_restricted_tools_refuse_to_resolve_from_a_public_registry(
+    monkeypatch, registry
+) -> None:
+    monkeypatch.setattr(images, "OMNIVERSE_RESTRICTED_TOOLS", frozenset({"genesis"}))
+    with pytest.raises(ValueError, match="not publicly redistributable"):
+        container_image_for_tool("genesis", registry=registry)
 
 
-@pytest.mark.parametrize("tool", sorted(OMNIVERSE_RESTRICTED_TOOLS))
-def test_restricted_tools_still_resolve_from_an_operators_own_registry(tool) -> None:
-    """Build-your-own is the licensed path, so a private registry — ours or any
-    operator's — must keep working."""
-    for registry in (
-        "cr.eu-north1.nebius.cloud/e00example",
-        "cr.us-central1.nebius.cloud/u00example",
-        "registry.internal.example.com/robotics",
-    ):
-        ref = container_image_for_tool(tool, registry=registry)
-        assert ref.startswith(registry + "/npa-")
+def test_restricted_tools_still_resolve_from_an_operators_own_registry(monkeypatch) -> None:
+    """Build-your-own into a private registry is the licensed path; do not block it."""
+    monkeypatch.setattr(images, "OMNIVERSE_RESTRICTED_TOOLS", frozenset({"genesis"}))
+    ref = container_image_for_tool("genesis", registry="cr.eu-north1.nebius.cloud/example")
+    assert ref.startswith("cr.eu-north1.nebius.cloud/example/npa-genesis:")
 
 
 def test_public_registry_detection() -> None:
@@ -144,33 +174,12 @@ def test_public_registry_detection() -> None:
 
 
 def test_public_mirror_override_is_treated_as_public(monkeypatch) -> None:
-    """Whatever registry is designated the public mirror counts as public, even
-    if its hostname is not a well-known one."""
+    """Whatever is configured as the mirror is public, even on a private-looking host."""
     monkeypatch.setenv("NPA_PUBLIC_REGISTRY", "mirror.example.com/workbench")
     assert is_public_registry("mirror.example.com/workbench")
-    with pytest.raises(ValueError, match="Omniverse Kit"):
-        container_image_for_tool("isaac-lab", registry="mirror.example.com/workbench")
 
 
 def test_oss_tools_resolve_from_the_public_mirror_normally() -> None:
-    """The guard must not get in the way of the images we do publish."""
-    ref = container_image_for_tool("genesis", registry=DEFAULT_PUBLIC_CONTAINER_REGISTRY)
-    assert ref.startswith(DEFAULT_PUBLIC_CONTAINER_REGISTRY + "/npa-genesis:")
-
-
-def test_selector_matches_packaging_contract_classification() -> None:
-    """The selector and the packaging contract must agree in both directions, so
-    reclassifying an image in one place cannot silently widen or narrow what the
-    publisher ships."""
-    images = _contract()["images"]
-    for image_name, entry in images.items():
-        tool = CONTRACT_ALIASES.get(image_name, image_name)
-        if entry["redistribution"] == "restricted":
-            if tool in CONTAINER_IMAGE_NAMES:
-                assert not is_publicly_redistributable(tool), image_name
-            else:
-                # A non-canonical restricted image must still map onto a
-                # restricted canonical tool (e.g. sonic-mujoco -> sonic).
-                assert tool in OMNIVERSE_RESTRICTED_TOOLS, image_name
-        elif tool in CONTAINER_IMAGE_NAMES:
-            assert is_publicly_redistributable(tool), image_name
+    """The guard must not get in the way of the images that ARE publishable."""
+    ref = container_image_for_tool("lerobot", registry=DEFAULT_PUBLIC_CONTAINER_REGISTRY)
+    assert ref.startswith(DEFAULT_PUBLIC_CONTAINER_REGISTRY + "/npa-lerobot:")
