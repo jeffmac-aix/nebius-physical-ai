@@ -96,7 +96,7 @@ describe("Lichtblick MCAP viewer (live system)", () => {
         // GPU-reconstructed 3D point cloud for the 3D panel.
         expect(mcapHasPointCloud(body), "has foxglove.PointCloud on /heldout/points").to.be.true;
         // ...with the full RGBA field set the layout's rgba-fields mode requires
-        // (a missing alpha reads as 0, i.e. an invisible cloud).
+        // (without alpha the panel re-colours the cloud with a fallback colormap).
         expect(mcapPointCloudHasRgbaFields(body), "point cloud has red/green/blue/alpha").to.be
           .true;
         // A coordinate transform so the 3D panel can place the point cloud.

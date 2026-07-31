@@ -317,9 +317,9 @@ def test_emit_mcap_primary_camera_prefers_heldout_over_rollout_mirror(tmp_path: 
 def test_pointcloud_message_packs_xyz_and_rgba() -> None:
     """The cloud must carry an opaque ``alpha`` channel alongside red/green/blue.
 
-    The viewer only offers its ``rgba-fields`` color mode when all four color
-    fields are present, and it reads a missing field as 0 — so an RGB-only cloud
-    is drawn fully transparent (an empty 3D panel).
+    The viewer only offers its ``rgba-fields`` colour mode when all four colour
+    fields are declared. Without alpha that mode is unavailable and the 3D panel
+    re-colours the cloud with a fallback colormap, losing the captured RGB.
     """
 
     import base64

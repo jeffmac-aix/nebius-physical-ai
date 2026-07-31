@@ -39,9 +39,9 @@ describe("Lichtblick MCAP viewer (mocked smoke)", () => {
     cy.request({ url: MCAP_RECORDING_PATH, encoding: "binary" }).then((resp) => {
       const body = resp.body || "";
       expect(mcapHasPointCloud(body), "has foxglove.PointCloud on /heldout/points").to.be.true;
-      // The default layout colors the cloud with "rgba-fields", which the viewer
-      // only enables when all four color fields exist; a missing alpha reads as 0
-      // and draws every point fully transparent.
+      // The default layout colours the cloud with "rgba-fields", which the viewer
+      // only offers when all four colour fields exist; without alpha it falls back
+      // to a synthetic colormap and the captured RGB is lost.
       expect(
         mcapPointCloudColorFields(body),
         "point cloud declares red/green/blue/alpha",

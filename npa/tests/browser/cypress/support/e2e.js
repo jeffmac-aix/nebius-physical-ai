@@ -796,10 +796,10 @@ function mcapHasFrameTransform(binaryBody) {
   return text.indexOf("foxglove.FrameTransform") >= 0 && text.indexOf("/tf") >= 0;
 }
 
-// The 3D panel only enables its "rgba-fields" color mode when the cloud declares
-// ALL of red/green/blue/alpha, and it reads a declared-but-absent field as 0 — so a
-// cloud without alpha is drawn fully transparent (an empty-looking 3D panel). Assert
-// the served cloud declares the full set the injected default layout asks for.
+// The 3D panel only offers its "rgba-fields" colour mode when the cloud declares
+// ALL of red/green/blue/alpha; without alpha it re-colours the cloud with a fallback
+// colormap instead of the captured RGB. Assert the served cloud declares the full
+// set the injected default layout asks for.
 function mcapPointCloudColorFields(binaryBody) {
   const text = String(binaryBody || "");
   const start = text.indexOf('"point_stride"');

@@ -170,10 +170,12 @@ _FOXGLOVE_UINT8 = 1
 _FOXGLOVE_FLOAT32 = 7
 # Packed layout: x,y,z float32 (12 bytes) + red,green,blue,alpha uint8 (4 bytes).
 #
-# ``alpha`` is mandatory, not decorative: the viewer only enables its
-# ``rgba-fields`` color mode when ALL FOUR of red/green/blue/alpha are present,
-# and a missing field falls back to a reader that returns 0 — so an RGB-only
-# cloud would be drawn with alpha 0, i.e. fully transparent (an empty 3D panel).
+# ``alpha`` is required for the cloud to keep its own colours: the viewer only
+# offers its ``rgba-fields`` colour mode when ALL FOUR of red/green/blue/alpha are
+# declared. Without it that mode is unavailable, and the 3D panel silently falls
+# back to a synthetic colormap (turbo) — verified on a deployed agent: the same
+# reconstruction rendered in yellow/red/blue ramp colours instead of the captured
+# RGB. The cloud is still drawn, so this is fidelity, not visibility.
 _POINTCLOUD_ALPHA_OPAQUE = 255
 _POINTCLOUD_POINT_STRIDE = 16
 _POINTCLOUD_FIELDS = [
@@ -191,7 +193,8 @@ def pack_pointcloud_bytes(points: Any, colors: Any) -> bytes:
     """Pack ``(N,3)`` float xyz + ``(N,3)`` uint8 rgb into foxglove point bytes.
 
     Emits a fully-opaque ``alpha`` channel per point so the viewer's
-    ``rgba-fields`` color mode is available and the points are visible.
+    ``rgba-fields`` colour mode is available and the points keep their captured
+    RGB instead of being re-coloured by a fallback colormap.
     """
 
     import numpy as np

@@ -1741,9 +1741,10 @@ def _lichtblick_default_layout_json() -> str:
 
     ``rgba-fields`` requires the cloud to carry all four of red/green/blue/alpha;
     ``npa.workbench.lichtblick.pack_pointcloud_bytes`` emits the opaque alpha
-    channel that makes this mode valid (without it the points read alpha 0 and are
-    invisible). ``/camera`` is always emitted by the sim2real MCAP writer — from
-    the held-out episode when there is one, else mirrored from the first rollout.
+    channel that makes this mode available (without it the panel falls back to a
+    synthetic colormap and the cloud loses its captured colours). ``/camera`` is
+    always emitted by the sim2real MCAP writer — from the held-out episode when
+    there is one, else mirrored from the first rollout.
     """
 
     layout = {
