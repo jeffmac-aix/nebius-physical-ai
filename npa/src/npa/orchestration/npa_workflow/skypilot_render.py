@@ -238,7 +238,118 @@ def resolve_task_image(
     return container_image_for_tool(tool, **kwargs)
 
 
-def render_task_run_script(command: Sequence[str]) -> str:
+#: How long to wait for a self-hosted model server to answer /health. A 7B VLM has to
+#: download weights and load them onto the GPU first; the retired SkyPilot template
+#: allowed 120 x 5 s for exactly this.
+VLM_SERVER_READY_ATTEMPTS = 120
+VLM_SERVER_READY_INTERVAL_SECONDS = 5
+DEFAULT_VLM_SERVE_PORT = 8000
+
+
+def render_self_hosted_vlm_preamble(config: Mapping[str, Any]) -> str:
+    """Start and health-check a local vLLM server before the stage's command runs.
+
+    ``vlm_backend: self-hosted`` tells the tool to POST to an OpenAI-compatible endpoint
+    on localhost, but **nothing in a spec starts that server** — so the stage failed live
+    with ``VLM backend request failed: [Errno 111] Connection refused`` (EVIDENCE §5.2b).
+    The retired ``vlm-eval.yaml`` template did the serve/wait/teardown in its ``run:``
+    block; that is exactly the kind of bash a ``toolRef`` cannot carry, so it moves here.
+
+    The defaults deliberately match the tool's own (``DEFAULT_MODEL`` on port 8000, which
+    ``DEFAULT_ENDPOINT_URL`` points at), so a spec needs no extra config to work;
+    ``config.vlm_model`` / ``config.vlm_serve_port`` override them.
+
+    Unbraced ``$var`` throughout: a ``${var}`` would trip
+    :func:`assert_no_unresolved_placeholders`.
+    """
+
+    from npa.workbench.vlm_eval import DEFAULT_MODEL
+
+    model = str(config.get("vlm_model") or DEFAULT_MODEL).strip() or DEFAULT_MODEL
+    port = str(config.get("vlm_serve_port") or DEFAULT_VLM_SERVE_PORT).strip()
+    trust_remote_code = str(config.get("vlm_trust_remote_code") or "1").strip() not in {
+        "0",
+        "false",
+        "False",
+    }
+    trust_flag = " --trust-remote-code" if trust_remote_code else ""
+    return (
+        "# Self-hosted VLM backend: serve the model this stage is about to call.\n"
+        f"npa_vlm_model={shlex.quote(model)}\n"
+        f"npa_vlm_port={shlex.quote(port)}\n"
+        "npa_vlm_log=/tmp/npa-vlm-server.log\n"
+        "echo \"starting vLLM for $npa_vlm_model on port $npa_vlm_port\" >&2\n"
+        "python3 -m vllm.entrypoints.openai.api_server --host 0.0.0.0 "
+        "--port \"$npa_vlm_port\" --model \"$npa_vlm_model\" "
+        f"--served-model-name \"$npa_vlm_model\"{trust_flag} "
+        "> \"$npa_vlm_log\" 2>&1 &\n"
+        "npa_vlm_pid=$!\n"
+        # Never leave a server (and its GPU memory) behind, on success or failure.
+        "trap 'kill \"$npa_vlm_pid\" 2>/dev/null || true' EXIT\n"
+        # Health-wait in python3, not curl: curl is not guaranteed in every task image,
+        # and python3 is (setup records an interpreter and the shim puts it on PATH).
+        "python3 - \"$npa_vlm_pid\" \"$npa_vlm_port\" \"$npa_vlm_log\" <<'PY'\n"
+        "import os\n"
+        "import sys\n"
+        "import time\n"
+        "import urllib.error\n"
+        "import urllib.request\n"
+        "\n"
+        "pid, port, log_path = int(sys.argv[1]), sys.argv[2], sys.argv[3]\n"
+        f"attempts, interval = {VLM_SERVER_READY_ATTEMPTS}, {VLM_SERVER_READY_INTERVAL_SECONDS}\n"
+        "\n"
+        "def alive() -> bool:\n"
+        "    try:\n"
+        "        os.kill(pid, 0)\n"
+        "    except OSError:\n"
+        "        return False\n"
+        "    return True\n"
+        "\n"
+        "def tail() -> str:\n"
+        "    try:\n"
+        "        with open(log_path, encoding='utf-8', errors='replace') as handle:\n"
+        "            return ''.join(handle.readlines()[-200:])\n"
+        "    except OSError:\n"
+        "        return '(no server log)'\n"
+        "\n"
+        "for attempt in range(attempts):\n"
+        "    try:\n"
+        "        with urllib.request.urlopen(f'http://127.0.0.1:{port}/health', timeout=5):\n"
+        "            print(f'vLLM server ready after {attempt * interval}s', file=sys.stderr)\n"
+        "            raise SystemExit(0)\n"
+        "    except SystemExit:\n"
+        "        raise\n"
+        "    except Exception:\n"
+        "        pass\n"
+        "    if not alive():\n"
+        "        print('vLLM server exited before becoming ready:', file=sys.stderr)\n"
+        "        print(tail(), file=sys.stderr)\n"
+        "        raise SystemExit(1)\n"
+        "    time.sleep(interval)\n"
+        "print(f'vLLM server not ready after {attempts * interval}s:', file=sys.stderr)\n"
+        "print(tail(), file=sys.stderr)\n"
+        "raise SystemExit(1)\n"
+        "PY\n"
+    )
+
+
+def render_run_preamble_for_tool(tool_ref: str, *, config: Mapping[str, Any]) -> str:
+    """Return shell that must run *inside the stage* before its command.
+
+    The per-toolRef sibling of :func:`render_setup_for_tool`. A background service has to
+    start here rather than in ``setup:``, because SkyPilot runs setup and run as separate
+    shells — a server started in setup is gone by the time the command runs.
+    """
+
+    if not tool_ref.startswith("workbench.vlm_eval"):
+        return ""
+    backend = str(config.get("vlm_backend") or "").strip().lower()
+    if backend not in {"self-hosted", "self_hosted"}:
+        return ""
+    return render_self_hosted_vlm_preamble(config)
+
+
+def render_task_run_script(command: Sequence[str], preamble: str = "") -> str:
     """Turn an argv list into a SkyPilot ``run:`` shell script."""
 
     if not command:
@@ -290,6 +401,9 @@ def render_task_run_script(command: Sequence[str]) -> str:
         "python3 -c 'import npa' >/dev/null 2>&1 || "
         "echo 'warning: python3 in this shell cannot import npa' >&2\n"
         "set -u\n"
+        # Per-toolRef preamble (e.g. start a self-hosted model server) runs AFTER the
+        # interpreter shim, so it uses the same python3 the command will.
+        f"{preamble}"
         f"{quoted}\n"
     )
 
@@ -568,7 +682,12 @@ def build_skypilot_task_doc(
         "name": scheduler_task["name"],
         "resources": resources,
         "envs": envs,
-        "run": render_task_run_script(command),
+        "run": render_task_run_script(
+            command,
+            preamble=render_run_preamble_for_tool(
+                str(scheduler_task.get("tool_ref") or ""), config=spec.config
+            ),
+        ),
     }
     # Multi-node stages: SkyPilot gang-schedules `num_nodes` identical pods for one task
     # and exports SKYPILOT_NODE_RANK / SKYPILOT_NODE_IPS into each. Emitted only when the
