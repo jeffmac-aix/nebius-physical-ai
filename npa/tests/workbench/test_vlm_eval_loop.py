@@ -177,16 +177,20 @@ def test_loop_scores_every_rollout_and_writes_both_artifact_levels(tmp_path: Pat
     assert "latency_s" in report
 
 
-def test_loop_records_a_distinct_score_per_rollout(tmp_path: Path) -> None:
+def test_loop_scores_each_rollout_against_its_own_input(tmp_path: Path) -> None:
     """Scoring the prefix as one rollout would produce a single blended score."""
 
     root = tmp_path / "rollouts"
     _write_rollout(root, "episode_000", frames=1)
     _write_rollout(root, "episode_001", frames=4)
+    scores = tmp_path / "scores"
 
-    report = evaluate_rollout_set(
-        input_path=str(root), output_path=str(tmp_path / "scores"), backend="stub"
-    )
+    evaluate_rollout_set(input_path=str(root), output_path=str(scores), backend="stub")
 
-    frame_counts = {item["rollout_id"]: item["frame_count"] for item in report["rollouts"]}
-    assert frame_counts["episode_000"] != frame_counts["episode_001"]
+    scored_inputs = {
+        json.loads(path.read_text(encoding="utf-8"))["input_path"]
+        for path in (scores / "rollouts").rglob("*.json")
+    }
+    assert scored_inputs == {str(root / "episode_000"), str(root / "episode_001")}
+    # The prefix itself was never handed to the scorer.
+    assert str(root) not in scored_inputs
