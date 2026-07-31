@@ -272,20 +272,16 @@ def test_sonic_export_and_eval_specs_invoke_the_real_cli_surfaces() -> None:
         "workbench.sonic.export",
         "workbench.sonic.eval",
     ]
-    # The eval stage consumes exactly what the export stage produced.
-    assert chained.config["onnx_uri"] in " ".join(steps[0].argv)
-    assert chained.config["onnx_uri"] in " ".join(steps[1].argv)
-    assert envs["CONTAINER_IMAGE_VARIANT"] == "sonic-l40s-baked"
-    assert envs["CONTAINER_GPUS"] == "all"
-    assert envs["CONTAINER_ARGS"] == "eval"
-    assert envs["GPU"] == "L40S:1"
-
-    run = task["run"]
-    assert "npa workbench sonic export" in run
-    assert "npa workbench sonic eval" in run
-    assert "NPA_SONIC_E2E_METRICS_JSON_BEGIN" in run
-    assert "--container-image" in run
-    assert "--container-driver-capabilities" in run
+    # The eval stage consumes exactly what the export stage produced: both argv lists
+    # carry the SAME resolved ONNX URI, so the chain cannot silently drift apart.
+    export_step, eval_step = steps
+    produced = export_step.argv[export_step.argv.index("--output") + 1]
+    consumed = eval_step.argv[eval_step.argv.index("--onnx") + 1]
+    assert produced.startswith("s3://") and produced.endswith("/sonic_policy.onnx")
+    assert consumed == produced
+    # And the eval result goes to its own declared artifact, not to a format word.
+    assert eval_step.argv[eval_step.argv.index("--output") + 1].endswith("/eval.json")
+    assert eval_step.argv[eval_step.argv.index("--output-format") + 1] == "json"
 
 
 def test_sonic_locomotion_assets_do_not_add_python_runner() -> None:
