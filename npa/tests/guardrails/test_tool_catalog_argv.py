@@ -46,8 +46,40 @@ NON_CLI_ARGV = frozenset(
         "workbench.scenario_gen.write_hardening_decision",
         "workbench.sim2real.write_decision",
         "workbench.sim2real_envgen.raw_shard",
+        "workbench.sim2real_envgen.split",
     }
 )
+
+#: The `bash -c` and `python -m` members of NON_CLI_ARGV are no longer unchecked: the
+#: former have their embedded `npa …` calls audited here (see
+#: test_bash_wrapped_tool_refs_are_audited_too), and the latter are parsed against their
+#: module's own argparse parser by tests/guardrails/test_module_toolref_argv.py. What
+#: remains genuinely exempt is inline `python -c` source.
+AUDITED_ELSEWHERE = frozenset(
+    {
+        "workbench.lancedb.backfill_cpu_bundle",
+        "workbench.lancedb.create_failure_views",
+        "workbench.sim2real_envgen.raw_shard",
+        "workbench.sim2real_envgen.split",
+    }
+)
+
+
+def test_the_exemption_list_shrinks_as_coverage_grows() -> None:
+    """Every entry claimed as audited elsewhere must still be exempt here."""
+
+    assert AUDITED_ELSEWHERE <= NON_CLI_ARGV
+    # And each really is covered: bash wrappers by the embedded extractor, module
+    # entries by the argparse guardrail.
+    from npa.guardrails.tool_catalog_argv import embedded_npa_commands
+
+    for tool_ref in sorted(AUDITED_ELSEWHERE):
+        argv = TOOL_CATALOG[tool_ref].argv_template
+        head = str(argv[0])
+        if head == "bash":
+            assert embedded_npa_commands(argv), tool_ref
+        else:
+            assert head in {"python", "python3"} and str(argv[1]) == "-m", tool_ref
 
 
 def _cli_backed_tool_refs() -> list[str]:
