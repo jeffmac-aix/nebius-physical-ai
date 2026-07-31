@@ -196,6 +196,7 @@ def test_wrapper_submits_the_rendered_spec_and_forwards_tokens(
             str(sky_bin),
             "--poll-interval",
             "0",
+            "--default-image",
         ]
     )
 
@@ -219,7 +220,14 @@ def test_wrapper_yaml_flag_is_still_accepted(monkeypatch, capsys) -> None:
     monkeypatch.setenv("NPA_SRC_S3_URI", "s3://example-bucket/prefix/npa")
 
     rc = wrapper.main(
-        ["--yaml", str(SPEC_PATH), "--run-id", "bdd100k-alias-run", "--render-only"]
+        [
+            "--yaml",
+            str(SPEC_PATH),
+            "--run-id",
+            "bdd100k-alias-run",
+            "--render-only",
+            "--default-image",
+        ]
     )
 
     assert rc == 0

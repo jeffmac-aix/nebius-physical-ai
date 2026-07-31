@@ -35,6 +35,7 @@ from npa.orchestration.skypilot._bin import (
     SkyPilotVersionError,
     resolve_sky_bin,
 )
+from npa.orchestration.npa_workflow.skypilot_render import SkypilotRenderOptions
 from npa.orchestration.npa_workflow.submit import prepare_npa_workflow_for_submit
 
 #: The npa.workflow spec is the workflow surface; the raw SkyPilot template it replaced is
@@ -135,15 +136,25 @@ def prepare_pipeline(
     detection_endpoint: str = DEFAULT_DETECTION_ENDPOINT,
     train_poll_seconds: int | None = None,
     local_eval_root: Path | None = None,
+    resolve_images: bool = True,
 ):
     """Render the npa.workflow spec into a SkyPilot YAML plus its execution plan.
 
     The caller owns `prepared.temp_dir.cleanup()`.
+
+    ``resolve_images=False`` forces SkyPilot's default image instead of resolving the pinned
+    workbench images, which would need registry credentials. `--mock-endpoints` uses it: that
+    mode never launches a pod, and a no-infrastructure validation must not require a registry
+    login to run.
     """
 
+    render_options = (
+        SkypilotRenderOptions() if resolve_images else SkypilotRenderOptions(image_overrides={"*": ""})
+    )
     return prepare_npa_workflow_for_submit(
         spec_path,
         run_id=run_id,
+        render_options=render_options,
         config_overrides=config_overrides(
             bucket=bucket,
             source_uri=source_uri,
@@ -205,6 +216,8 @@ def _submit_and_wait(args: argparse.Namespace) -> int:
         synthetic_rows=args.synthetic_rows,
         lancedb_endpoint=args.lancedb_endpoint,
         detection_endpoint=args.detection_endpoint,
+        # --render-only is a preview; --default-image keeps it usable without a registry login.
+        resolve_images=not args.default_image,
     )
 
     try:
@@ -316,6 +329,7 @@ def _run_mock_endpoint_validation(args: argparse.Namespace) -> int:
                 # the mock reports `completed` on the first `/status`.
                 train_poll_seconds=0,
                 local_eval_root=cwd,
+                resolve_images=False,
             )
             # Execute each PLAN STEP's argv. The retired template's mock mode ran each raw
             # document's `run:` bash with that document's `envs`; a spec has no such bash, so
@@ -621,6 +635,11 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--poll-interval", type=int, default=60)
     parser.add_argument("--cleanup", action="store_true")
     parser.add_argument("--render-only", action="store_true")
+    parser.add_argument(
+        "--default-image",
+        action="store_true",
+        help="Render with SkyPilot's default image instead of resolving pinned workbench images.",
+    )
     parser.add_argument("--mock-endpoints", action="store_true")
     parser.add_argument("--mock-task-timeout", type=int, default=120)
     parser.add_argument("--output-json", type=Path, default=None)
