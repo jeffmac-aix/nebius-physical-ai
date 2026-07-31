@@ -155,6 +155,105 @@ def deploy_cmd(
     )
 
 
+#: Statuses `/status` reports when a run is over.
+TRAINING_DONE = "completed"
+TRAINING_FAILED = "failed"
+
+
+def parse_label_map(raw: str) -> dict[str, int] | None:
+    """Parse ``--label-map`` from JSON or ``name=index`` pairs.
+
+    The BDD100K pipeline template passed a full category map in its request body
+    (``BDD100K_LABEL_MAP``), but ``label_map`` had no CLI flag and is not an accepted
+    ``--override`` key, so the field was unreachable from the CLI — and therefore from any
+    npa.workflow spec. Both spellings are accepted because the template's value is JSON
+    while ``a=0,b=1`` is friendlier to type.
+    """
+
+    text = raw.strip()
+    if not text:
+        return None
+    if text.startswith("{"):
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError as exc:
+            fail(f"--label-map is not valid JSON: {exc}")
+            return None  # pragma: no cover - fail() raises
+        if not isinstance(parsed, dict):
+            fail("--label-map JSON must be an object of category -> index")
+        pairs = list(parsed.items())
+    else:
+        pairs = []
+        for chunk in text.split(","):
+            name, sep, index = chunk.partition("=")
+            if not sep or not name.strip():
+                fail(f"--label-map entry must be name=index, got {chunk!r}")
+            pairs.append((name.strip(), index.strip()))
+
+    label_map: dict[str, int] = {}
+    for name, index in pairs:
+        try:
+            label_map[str(name)] = int(index)
+        except (TypeError, ValueError):
+            fail(f"--label-map index for {name!r} must be an integer, got {index!r}")
+    return label_map
+
+
+def wait_for_training_run(
+    run_id: str,
+    *,
+    endpoint: str,
+    token_env: str,
+    poll_seconds: float,
+    timeout_seconds: float,
+) -> dict[str, Any]:
+    """Poll ``/status`` until the run completes, mirroring the retired template's loop.
+
+    The BDD100K pipeline's train task POSTed ``/train`` and then polled ``/status`` in bash
+    until ``completed``, failing on ``failed`` or timeout and finally asserting that every
+    epoch ran and a checkpoint pattern was produced. Without that wait, ``train`` returns
+    while training is still running and the next stage evaluates a checkpoint that does not
+    exist yet — so the wait has to live in the tool, where a spec can reach it.
+    """
+
+    import time
+
+    if not run_id:
+        fail("service did not return a run_id to wait for")
+    deadline = time.monotonic() + max(timeout_seconds, 0.0)
+    while True:
+        status_payload = request_json(
+            "GET",
+            endpoint,
+            "/status",
+            params={"run_id": run_id},
+            token_env=token_env,
+            timeout=30.0,
+        )
+        status = str(status_payload.get("status") or "").strip().lower()
+        if status == TRAINING_DONE:
+            _assert_training_run_is_complete(status_payload)
+            return status_payload
+        if status == TRAINING_FAILED:
+            typer.echo(json.dumps(status_payload, indent=2, sort_keys=True), err=True)
+            fail(f"detection-training run {run_id} failed")
+        if time.monotonic() >= deadline:
+            typer.echo(json.dumps(status_payload, indent=2, sort_keys=True), err=True)
+            fail(f"detection-training run {run_id} did not complete within {timeout_seconds:g}s")
+        time.sleep(max(poll_seconds, 0.0))
+
+
+def _assert_training_run_is_complete(payload: dict[str, Any]) -> None:
+    """The template's closing `jq -e` assertion: all epochs ran and a checkpoint exists."""
+
+    completed = payload.get("epochs_completed")
+    total = payload.get("total_epochs")
+    if completed != total:
+        fail(f"training reported completed after {completed}/{total} epochs")
+    if not str(payload.get("checkpoint_uri_pattern") or "").strip():
+        fail("training completed without a checkpoint_uri_pattern")
+
+
 def train_cmd(
     view: str = typer.Option(..., "--view", help="Lance materialized view name."),
     output_uri: str = typer.Option("", "--output-uri", "--output-path", help="S3/local output URI."),
@@ -174,6 +273,11 @@ def train_cmd(
     checkpoint_s3_access_key_id: str = typer.Option("", "--checkpoint-s3-access-key-id", help="S3 access key ID."),
     checkpoint_s3_secret_access_key: str = typer.Option("", "--checkpoint-s3-secret-access-key", help="S3 secret access key."),
     num_classes: int = typer.Option(10, "--num-classes", help="Detector class count."),
+    label_map: str = typer.Option(
+        "",
+        "--label-map",
+        help='Category-to-index map as JSON ({"person":0,...}) or "person=0,rider=1".',
+    ),
     epochs: int = typer.Option(10, "--epochs", help="Training epochs."),
     batch_size: int = typer.Option(8, "--batch-size", help="Training batch size."),
     learning_rate: float = typer.Option(0.005, "--learning-rate", help="SGD learning rate."),
@@ -181,6 +285,15 @@ def train_cmd(
     service: bool = typer.Option(False, "--service", help="Call a deployed service endpoint."),
     endpoint: str = typer.Option("", "--endpoint", help="Detection-training service endpoint."),
     token_env: str = typer.Option(DEFAULT_TOKEN_ENV, "--token-env", help="Environment variable containing service token."),
+    wait: bool = typer.Option(
+        False,
+        "--wait/--no-wait",
+        help="Poll /status until the run completes, and fail if it does not.",
+    ),
+    poll_seconds: float = typer.Option(30.0, "--poll-seconds", help="Interval between --wait polls."),
+    timeout_seconds: float = typer.Option(
+        21600.0, "--timeout-seconds", help="Give up waiting after this many seconds."
+    ),
     output: OutputFormat = typer.Option(OutputFormat.json, "--output", help="Output format."),
 ) -> None:
     """Start a detection-training run."""
@@ -207,13 +320,23 @@ def train_cmd(
         ),
         checkpoint_s3=checkpoint_s3,
         num_classes=num_classes,
+        label_map=parse_label_map(label_map),
         epochs=epochs,
         batch_size=batch_size,
         learning_rate=learning_rate,
         validation_filter_sql=validation_filter_sql or None,
     ).model_dump(mode="json")
     if service:
-        result = request_json("POST", resolve_endpoint(endpoint), "/train", payload=payload, token_env=token_env, timeout=60.0)
+        resolved_endpoint = resolve_endpoint(endpoint)
+        result = request_json("POST", resolved_endpoint, "/train", payload=payload, token_env=token_env, timeout=60.0)
+        if wait:
+            result = wait_for_training_run(
+                str(result.get("run_id") or ""),
+                endpoint=resolved_endpoint,
+                token_env=token_env,
+                poll_seconds=poll_seconds,
+                timeout_seconds=timeout_seconds,
+            )
     else:
         from npa.sdk.workbench.detection_training import train
 

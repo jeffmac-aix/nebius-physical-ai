@@ -704,9 +704,19 @@ TOOL_CATALOG: dict[str, ToolEntry] = {
             "{{config.train_batch_size}}",
             "--learning-rate",
             "{{config.train_learning_rate}}",
+            "--label-map",
+            "{{config.detection_label_map}}",
             "--service",
             "--endpoint",
             "{{config.detection_endpoint}}",
+            # The retired template polled /status in bash until the run finished;
+            # without the wait, eval would run against a checkpoint that does not
+            # exist yet.
+            "--wait",
+            "--poll-seconds",
+            "{{config.train_poll_seconds}}",
+            "--timeout-seconds",
+            "{{config.train_timeout_seconds}}",
         ],
     ),
     "workbench.detection_training.train_nighttime": ToolEntry(
@@ -729,9 +739,19 @@ TOOL_CATALOG: dict[str, ToolEntry] = {
             "{{config.train_batch_size}}",
             "--learning-rate",
             "{{config.train_learning_rate}}",
+            "--label-map",
+            "{{config.detection_label_map}}",
             "--service",
             "--endpoint",
             "{{config.detection_endpoint}}",
+            # The retired template polled /status in bash until the run finished;
+            # without the wait, eval would run against a checkpoint that does not
+            # exist yet.
+            "--wait",
+            "--poll-seconds",
+            "{{config.train_poll_seconds}}",
+            "--timeout-seconds",
+            "{{config.train_timeout_seconds}}",
         ],
     ),
     "workbench.detection_training.train_distant": ToolEntry(
@@ -754,9 +774,19 @@ TOOL_CATALOG: dict[str, ToolEntry] = {
             "{{config.train_batch_size}}",
             "--learning-rate",
             "{{config.train_learning_rate}}",
+            "--label-map",
+            "{{config.detection_label_map}}",
             "--service",
             "--endpoint",
             "{{config.detection_endpoint}}",
+            # The retired template polled /status in bash until the run finished;
+            # without the wait, eval would run against a checkpoint that does not
+            # exist yet.
+            "--wait",
+            "--poll-seconds",
+            "{{config.train_poll_seconds}}",
+            "--timeout-seconds",
+            "{{config.train_timeout_seconds}}",
         ],
     ),
     "workbench.detection_training.eval_rider": ToolEntry(
