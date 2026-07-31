@@ -7,7 +7,7 @@ a versioned heading when a release is cut.
 
 ## Unreleased
 
-### Retiring the raw SkyPilot task catalog (36 → 17 templates)
+### Retiring the raw SkyPilot task catalog (36 → 16 templates)
 
 `npa.workflow/v0.0.1` specs are becoming the only workflow authoring surface.
 SkyPilot remains the execution engine, and `npa workbench workflow submit` still
@@ -20,7 +20,8 @@ under `npa/src/npa/workflows/skypilot/`.
   `sonic-export-eval.yaml`, `token-factory-caption.yaml`,
   `token-factory-generate.yaml`, `token-factory-cosmos-reason.yaml`,
   `vlm-eval-token-factory.yaml`, `mjlab-eval.yaml`, `retargeting.yaml`,
-  `vlm-eval.yaml`, `vlm-eval-benchmark.yaml`, `sim-to-real-loop.yaml`.
+  `vlm-eval.yaml`, `vlm-eval-benchmark.yaml`, `sim-to-real-loop.yaml`,
+  `scenario-gen-adversarial.yaml`.
   `test_skypilot_catalog_retirement.py` pins the remaining set, so the tally is
   machine-checked and a new raw template needs a deliberate edit.
 - **Multi-node stages.** A resource profile can declare `num_nodes`, so a spec can ask
@@ -109,6 +110,20 @@ under `npa/src/npa/workflows/skypilot/`.
   by `test_spec_paths_are_not_repo_relative.py`, which immediately found five `byof-*`
   specs doing the same thing. `resolve_byof_profile_path()` accepts a packaged profile
   **name**, so an installed wheel resolves what a checkout does.
+- **`detection-training eval` gained `--discover-checkpoint` and
+  `--write-canonical-metrics`**, and now fails on a non-numeric `mAP`. All three were bash
+  and `jq` inside `bdd100k-pipeline.yaml`, so no spec could reach them: without discovery the
+  eval stage scored the training *directory* instead of the checkpoint training wrote, and
+  without the canonical write the BDD100K spec declared a `metrics.json` nothing produced.
+- **`run_bdd100k_pipeline.py` renders the spec** (`--spec`, with `--yaml` kept as an alias)
+  instead of injecting env vars into raw SkyPilot documents, and its `--mock-endpoints`
+  validation now executes **each plan step's resolved argv** against stand-in services and
+  checks the call *order* — every `POST /train` followed by `GET /status`, every `POST /eval`
+  preceded by `GET /runs`. That drive immediately found two real defects: the
+  `create_failure_views` toolRef passed `--table` to a command whose option is
+  `--source-table` (so `curate-views` could never have run), and the eval prefixes lacked a
+  trailing slash, so the declared artifact URI was
+  `…/eval/bdd100k_rider_train` + `metrics.json` concatenated.
 - **New guardrails** (none weakened): a catalog-wide check that every `toolRef` argv
   names real CLI options and passes values its options can mean; the three-tier
   contract's third tier moved from SkyPilot `envs` onto the spec + toolRef argv, with
