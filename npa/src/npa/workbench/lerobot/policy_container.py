@@ -22,6 +22,10 @@ from npa.workbench.training_config import (
     upload_checkpoint_path,
     wandb_overrides,
 )
+from npa.workflows.lerobot_dataset import (
+    DEFAULT_PUBLIC_LEROBOT_REPO,
+    DEFAULT_PUBLIC_LEROBOT_REVISION,
+)
 from npa.workbench.lerobot.version_compat import (
     eval_checkpoint_arg,
     train_env_eval_arg,
@@ -1045,6 +1049,39 @@ def create_app() -> Any:
     return app
 
 
+def _materialize_train_dataset(args: argparse.Namespace) -> Path:
+    """Fetch the training dataset into this stage's own filesystem.
+
+    A workflow stage is its own pod, so "download the dataset first" cannot be a separate
+    stage — there is no shared disk. `lerobot-train` resolves a repo id itself; this makes the
+    same thing reachable when training is driven through this module, reusing the already-tested
+    `materialize_lerobot_dataset` (local path / `s3://` / `hf://datasets/<id>` / bare repo id).
+    """
+
+    from npa.workflows.lerobot_dataset import LeRobotDatasetError, materialize_lerobot_dataset
+
+    source = (args.dataset_source or "").strip() or (args.dataset_repo_id or "").strip()
+    if not source or source == "local/lerobot-dataset":
+        raise PolicyContainerError(
+            "--data-path, --dataset-path or a real --dataset-source/--dataset-repo-id is required"
+        )
+    try:
+        dataset = materialize_lerobot_dataset(
+            source,
+            Path(args.dataset_cache_dir),
+            repo_id=(args.dataset_repo_id or DEFAULT_PUBLIC_LEROBOT_REPO),
+            revision=args.dataset_revision,
+        )
+    except LeRobotDatasetError as exc:
+        raise PolicyContainerError(f"could not materialize dataset {source!r}: {exc}") from exc
+    if not (dataset / "meta" / "info.json").exists():
+        raise PolicyContainerError(
+            f"materialized dataset is missing meta/info.json: {dataset} (source {source!r})"
+        )
+    print(f"NPA_LEROBOT_DATASET_READY {dataset}", flush=True)
+    return dataset
+
+
 def upload_run_artifacts(output_dir: str | Path, artifacts_uri: str) -> str:
     """Upload a training run's whole output tree, not just its checkpoint.
 
@@ -1077,6 +1114,13 @@ def build_parser() -> argparse.ArgumentParser:
     train_cmd = subparsers.add_parser("train", help="Run real LeRobot policy training.")
     train_cmd.add_argument("--dataset-path", type=Path, default=None)
     train_cmd.add_argument("--dataset-repo-id", default="local/lerobot-dataset")
+    # run_lerobot_training needs a LOCAL dataset root (it asserts meta/info.json), and
+    # workflow stages do not share a filesystem, so a stage has to materialise its own
+    # dataset. --dataset-source accepts a local path, an s3:// prefix, `hf://datasets/<id>`
+    # or a bare Hugging Face repo id; empty falls back to --dataset-repo-id.
+    train_cmd.add_argument("--dataset-source", default="")
+    train_cmd.add_argument("--dataset-revision", default=DEFAULT_PUBLIC_LEROBOT_REVISION)
+    train_cmd.add_argument("--dataset-cache-dir", type=Path, default=Path("/tmp/npa-lerobot-dataset"))
     train_cmd.add_argument("--output-dir", type=Path, required=True)
     train_cmd.add_argument("--steps", type=int, required=True)
     train_cmd.add_argument("--policy-type", default=DEFAULT_POLICY_TYPE)
@@ -1151,7 +1195,7 @@ def main(argv: list[str] | None = None) -> int:
             raise PolicyContainerError(str(exc)) from exc
         dataset_path = training_config.data_path or args.dataset_path
         if not dataset_path:
-            raise PolicyContainerError("--data-path or --dataset-path is required")
+            dataset_path = _materialize_train_dataset(args)
         result = run_lerobot_training(
             dataset_path=dataset_path,
             dataset_repo_id=args.dataset_repo_id,
