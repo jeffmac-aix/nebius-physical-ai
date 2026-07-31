@@ -108,7 +108,6 @@ All examples assume SkyPilot 0.12.2.
 | `sim-to-real-pipeline.yaml` | Runs the full Sim2Real pipeline: dataset input, env generation, split, policy training, VLM eval hooks, checkpointing, and reporting. | Kubernetes failover across `H100:1`, `H200:1`, and `L40S:1`. | Reads `INPUT_DATA_URI`/`LEROBOT_DATASET_URI`; writes `PIPELINE_ROOT_URI`, env splits, checkpoints, and visualization artifacts under the configured S3 prefix. | Optional for public `lerobot/pusht`; required for private/gated dataset or model overrides. | Required for any selected Cosmos, SONIC, Isaac, or other NGC-derived image in the pipeline. |
 | `sim-to-real-trigger.yaml` | Polls an S3-compatible trigger prefix and submits the Sim2Real pipeline when new input arrives. | Kubernetes CPU. | Reads trigger bucket/prefix and watermark URI; submits pipeline with the configured pipeline S3 bucket, prefix, and input URI. | None. | None. |
 | `sim2real-actions.yaml` | Generates action-conditioned rollouts from train environments with a policy image. | Kubernetes `RTXPRO6000:1`. | Reads `NPA_TRAIN_ENVS_URI`; writes `NPA_ACTIONS_URI` and `NPA_OUTPUT_URI`. | None. | Image-specific only; required if `POLICY_IMAGE` depends on NGC content. |
-| `sim2real-envgen-split.yaml` | Splits generated Sim2Real environments into train and held-out shards. | Kubernetes `RTXPRO6000:1`. | Reads `NPA_AUGMENTED_FRAMES_URI`; writes `NPA_OUTPUT_URI`. | None. | Image-specific only; required if `ENVGEN_IMAGE` depends on NGC content. |
 | `sonic-locomotion-finetuning.yaml` | Retargets motion, fine-tunes SONIC, and runs MJLab evaluation. | Kubernetes CPU, `L40S:1` fine-tune, and `H100:1` eval stages. | Reads motion input and optional checkpoint URI; writes retargeted motion, `SONIC_TRAIN_OUTPUT_URI`, and `MJLAB_OUTPUT_URI`. | Required for the default `nvidia/GEAR-SONIC:sonic_release` checkpoint. | Required for SONIC/Isaac image entitlement when pulling or rebuilding NGC-derived images. |
 | `sonic-train-standalone.yaml` | Runs a standalone SONIC training smoke using docker-run payload mode. | Nebius `L40S:1`. | Requires `S3_ENDPOINT_URL` and `S3_BUCKET`; writes to `s3://<bucket>/<SONIC_OUTPUT_PREFIX>/`. | Required for the default `nvidia/GEAR-SONIC:sonic_release/last.pt` checkpoint. | Required for SONIC/Isaac image entitlement when pulling or rebuilding NGC-derived images. |
 | `token-factory-caption.yaml` | Batch-captions images with a hosted Token Factory vision model. | CPU only (zero-GPU). | Reads `INPUT_URI`; writes `OUTPUT_URI` with `generations.jsonl`. | None. | None. |
@@ -138,7 +137,6 @@ sky launch -y --infra kubernetes/<context-name> -c sim-to-real-loop /tmp/sim-to-
 sky launch -y --infra kubernetes/<context-name> -c sim-to-real-pipeline /tmp/sim-to-real-pipeline.yaml
 sky launch -y --infra kubernetes/<context-name> -c sim-to-real-trigger /tmp/sim-to-real-trigger.yaml
 sky launch -y --infra kubernetes/<context-name> -c sim2real-actions /tmp/sim2real-actions.yaml
-sky launch -y --infra kubernetes/<context-name> -c sim2real-envgen-split /tmp/sim2real-envgen-split.yaml
 sky launch -y --infra kubernetes/<context-name> -c sonic-locomotion-finetuning /tmp/sonic-locomotion-finetuning.yaml
 sky launch -y --infra nebius -c sonic-train-standalone /tmp/sonic-train-standalone.yaml
 sky launch -y --infra kubernetes/<context-name> -c vlm-eval-benchmark /tmp/vlm-eval-benchmark.yaml
@@ -168,7 +166,7 @@ can fetch weights. Gated repos are marked **(gated — accept license)**.
 | `sim-to-real-trigger.yaml` | `lerobot/pusht` (public dataset) | Watches/retriggers `sim-to-real-pipeline.yaml`; same public dataset. |
 | `bdd100k-pipeline.yaml` | None | CLIP embeddings run inside the first-party LanceDB image; BDD100K dataset access is separate from HF. |
 | `mjlab-eval.yaml`, `retargeting.yaml` | None | Consume S3 artifacts; no HF download. |
-| `sim2real-actions.yaml`, `sim2real-envgen-split.yaml` | None | Env generation / action conditioning use BYO container images, not HF repos. |
+| `sim2real-actions.yaml` | None | Env generation / action conditioning use BYO container images, not HF repos. |
 
 The self-contained Sim2Real runbook (`../sim2real/runbook.yaml`) defaults to
 dual self-hosted VLM eval: `nvidia/Cosmos-Reason2-8B` and

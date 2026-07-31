@@ -41,7 +41,6 @@ templates retire.
 - `isaac-franka-capture-reason.yaml`: Franka capture plus Cosmos reasoning.
 - `isaac-lab-cosmos-sdg-burst-smoke.yaml`: Isaac Lab plus Cosmos SDG burst smoke.
 - `sim2real-actions.yaml`: sim2real action-contract stage.
-- `sim2real-envgen-split.yaml`: sim2real environment-generation split.
 - `sim-to-real-pipeline.yaml`: full sim-to-real pipeline.
 - `sim-to-real-trigger.yaml`: trigger wrapper for sim-to-real work.
 - `sonic-train-standalone.yaml`: standalone SONIC training.
@@ -69,6 +68,9 @@ These raw templates were retired once their `npa.workflow` spec had a live run
 - `vlm-eval.yaml`, `vlm-eval-benchmark.yaml` — self-hosted VLM scoring and the labeled
   sweep. The renderer now starts and health-checks the vLLM server the spec asks for, so
   no prebuilt serving image is needed.
+- `sim2real-envgen-split.yaml` — raw env generation + 80/20 split. Its twin
+  `npa-workflows/sim2real-envgen-shards.yaml` declares the shard fan-out as a `parallel:`
+  group instead of relying on a Kubernetes Job completion index, and runs on CPU.
 - `scenario-gen-adversarial.yaml` — adversarial scenario mining. Its twin
   `npa-workflows/scenario-gen-smoke.yaml` runs the same two CLI commands; the template's GPU
   image advertised an RL adversary the CLI cannot select.

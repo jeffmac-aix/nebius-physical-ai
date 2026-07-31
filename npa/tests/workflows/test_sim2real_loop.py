@@ -2110,20 +2110,51 @@ def test_vlm_signal_update_result_from_dict_defaults_and_required() -> None:
         )
 
 
-def test_sim2real_component_workflows_target_rtx_pro_6000() -> None:
+def test_sim2real_actions_workflow_targets_rtx_pro_6000() -> None:
     actions = [
         doc
         for doc in yaml.safe_load_all(SIM2REAL_ACTIONS.read_text(encoding="utf-8"))
         if doc is not None
     ]
-    envgen = [
-        doc
-        for doc in yaml.safe_load_all(SIM2REAL_ENVGEN_SPLIT.read_text(encoding="utf-8"))
-        if doc is not None
-    ]
 
     assert actions[0]["resources"]["accelerators"] == "RTXPRO6000:1"
-    assert envgen[0]["resources"]["accelerators"] == "RTXPRO6000:1"
+
+
+def test_envgen_shard_fan_out_is_cpu_and_declares_its_shards() -> None:
+    """`sim2real-envgen-split.yaml` retired; its twin is a CPU parallel group.
+
+    The template asked for `RTXPRO6000:1`, but shard generation writes a catalog of
+    environment descriptors — it never renders — so the twin is CPU. Live proof: jobs 223/224
+    (EVIDENCE.md §R27) with `max_concurrent_observed: 2` and a barrier whose split manifest
+    saw all 64 envs, 32 from each shard.
+    """
+
+    from npa.orchestration.npa_workflow.interpreter import build_plan
+    from npa.orchestration.npa_workflow.spec import load_spec
+
+    spec = load_spec(
+        ROOT / "npa" / "workflows" / "workbench" / "npa-workflows" / "sim2real-envgen-shards.yaml"
+    )
+    plan = build_plan(spec, run_id="envgen-shards-test")
+
+    for profile in spec.resources.values():
+        assert "accelerators" not in profile, profile
+    shard_steps = [step for step in plan.steps if step.state.startswith("shard-")]
+    assert [step.state for step in shard_steps] == ["shard-0", "shard-1"]
+    # Each member differs only in its shard index, and every one names --run-id, which the
+    # module requires and the toolRef used to omit.
+    indices = [step.argv[step.argv.index("--shard-index") + 1] for step in shard_steps]
+    assert indices == ["0", "1"]
+    for step in shard_steps:
+        assert "--run-id" in step.argv
+        assert step.argv[step.argv.index("--shard-count") + 1] == "2"
+    split = next(step for step in plan.steps if step.state == "split")
+    assert split.tool_ref == "workbench.sim2real_envgen.split"
+    assert split.outputs[0]["uri"].endswith("/envs/manifest/split-manifest.json")
+
+
+def test_the_retired_envgen_template_is_gone() -> None:
+    assert not SIM2REAL_ENVGEN_SPLIT.exists(), "sim2real-envgen-split.yaml came back"
 
 
 def test_cosmos_split_sdk_and_raw_yaml_contracts() -> None:

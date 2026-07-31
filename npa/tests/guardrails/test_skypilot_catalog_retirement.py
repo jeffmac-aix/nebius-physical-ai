@@ -44,7 +44,6 @@ REMAINING: dict[str, str] = {
     "isaac-franka-capture-reason.yaml": "no twin",
     "isaac-lab-cosmos-sdg-burst-smoke.yaml": "no twin; single-task burst reference",
     "sim2real-actions.yaml": "no twin",
-    "sim2real-envgen-split.yaml": "no twin",
     "tokenfactory-rollout-judge.yaml": (
         "the same-named spec is NOT an equivalent twin: the template's first stage is a "
         "LeRobot eval rollout on a GPU that PRODUCES the rollouts its judge stage scores, "
@@ -91,6 +90,12 @@ REMAINING: dict[str, str] = {
     #   twin = scenario-gen-smoke.yaml, which runs the SAME two CLI commands. The template's
     #   Isaac Lab image + 200000 adversary steps selected no different code path: the RL
     #   adversary is a Python-API seam with no CLI flag. See EVIDENCE.md §R25.
+    #
+    # sim2real-envgen-split.yaml  jobs 223/224  npa-wf-multi-sim2real-envgen-shards-79c2cb1c
+    #   twin = sim2real-envgen-shards.yaml. The template read its shard index from a
+    #   Kubernetes Job completion index; the spec declares the fan-out as a parallel group.
+    #   max_concurrent_observed: 2, and the barrier's split-manifest saw all 64 envs.
+    #   See EVIDENCE.md \u00a7R27.
     #
     # Phase 2c: RELOCATED (not deleted) to npa/src/npa/workflows/byof/profiles/ —
     # they are BYOF resource profiles reached through byof.yaml's toolRef, not
