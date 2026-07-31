@@ -39,8 +39,13 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 console = Console(stderr=True)
-WORKFLOW_PATH = Path("npa/src/npa/workflows/skypilot/vlm-eval.yaml")
-BENCHMARK_WORKFLOW_PATH = Path("npa/src/npa/workflows/skypilot/vlm-eval-benchmark.yaml")
+# The `npa.workflow` specs this tool is driven by. Paths only: `vlm-eval workflow` /
+# `status` print them; `npa workbench workflow submit <path>` runs them.
+NPA_WORKFLOWS = Path("npa/workflows/workbench/npa-workflows")
+WORKFLOW_PATH = NPA_WORKFLOWS / "vlm-eval-single.yaml"
+BENCHMARK_WORKFLOW_PATH = NPA_WORKFLOWS / "vlm-eval-benchmark.yaml"
+# Zero-GPU hosted alternative: the `api` backend needs no vLLM server.
+TOKEN_FACTORY_WORKFLOW_PATH = NPA_WORKFLOWS / "vlm-eval-token-factory.yaml"
 
 
 class OutputFormat(str, Enum):
@@ -250,11 +255,14 @@ def workflow_cmd(
     ),
     output: OutputFormat = typer.Option(OutputFormat.text, "--output", help="Output format."),
 ) -> None:
-    """Show the SkyPilot YAML template for VLM evaluation."""
+    """Show the npa.workflow specs for VLM evaluation."""
 
     _emit(
         {
             "workflow": str(WORKFLOW_PATH),
+            "benchmark_workflow": str(BENCHMARK_WORKFLOW_PATH),
+            # Zero-GPU alternative; `self-hosted` needs a vLLM server, `api` does not.
+            "token_factory_workflow": str(TOKEN_FACTORY_WORKFLOW_PATH),
             "image_env": DEFAULT_VLM_IMAGE_ENV,
             "image": image.strip() or default_vlm_image(),
         },
@@ -277,6 +285,7 @@ def status_cmd(
             "default_frame_selection": DEFAULT_FRAME_SELECTION,
             "workflow": str(WORKFLOW_PATH),
             "benchmark_workflow": str(BENCHMARK_WORKFLOW_PATH),
+            "token_factory_workflow": str(TOKEN_FACTORY_WORKFLOW_PATH),
             "sample_benchmark_dataset": str(DEFAULT_SAMPLE_BENCHMARK_PATH),
         },
         output,
