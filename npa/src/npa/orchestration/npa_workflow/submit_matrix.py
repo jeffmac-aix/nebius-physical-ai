@@ -182,6 +182,7 @@ SUBMIT_LIVE_MATRIX: tuple[SubmitLiveCase, ...] = (
         "multi",
         secret_envs=("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"),
         runtime=True,
+        expected_parallel_tasks=2,
         notes=(
             "Shard fan-out: two raw env shards as one JobGroup, then a barrier that splits "
             "the combined catalog 80/20. Replaces a template that read its shard index from "
