@@ -66,7 +66,9 @@ def test_the_real_normalizer_accepts_the_fixture() -> None:
     from npa.workbench.dataset.ingestion import compute_quality_stats, normalize_records
 
     records = build_records(count=10)
-    normalized, corrupt = normalize_records(records, SensorSchema(name="fixture"))
+    # An empty declared schema means "canonical required fields, any modality" —
+    # the default the ingest CLI uses when a spec declares no sensor schema.
+    normalized, corrupt = normalize_records(records, SensorSchema())
     stats = compute_quality_stats(normalized, corrupt)
 
     assert len(normalized) == 10
@@ -171,3 +173,16 @@ def test_fixture_satisfies_both_shipped_specs_gates() -> None:
             f"{name} filters location {wanted_location!r}; the fixture tags "
             f"{DEFAULT_LOCATION!r}"
         )
+
+
+def test_the_real_normalizer_honours_a_declared_modality_list() -> None:
+    """A declared schema must also accept the fixture, not just the permissive default."""
+
+    from npa.workbench.dataset.ingestion import normalize_records
+
+    records = build_records(count=6, modalities=("camera", "lidar"))
+    schema = SensorSchema(modalities=["camera", "lidar"])
+
+    normalized, corrupt = normalize_records(records, schema)
+
+    assert len(normalized) == 6 and corrupt == 0
