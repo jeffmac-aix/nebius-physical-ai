@@ -7,6 +7,56 @@ a versioned heading when a release is cut.
 
 ## Unreleased
 
+### Retiring the raw SkyPilot task catalog (36 → 31 templates)
+
+`npa.workflow/v0.0.1` specs are becoming the only workflow authoring surface.
+SkyPilot remains the execution engine, and `npa workbench workflow submit` still
+accepts a customer's own SkyPilot YAML — what is going away is the shipped catalog
+under `npa/src/npa/workflows/skypilot/`.
+
+- **Retired 5 templates**, each only after its spec reached a terminal `SUCCEEDED` on
+  real infrastructure (run ids in `EVIDENCE.md` §R2–R6): `cosmos3-reason.yaml`,
+  `isaac-lab-rl-sweep.yaml`, `sonic-export.yaml`, `sonic-eval.yaml`,
+  `sonic-export-eval.yaml`. `test_skypilot_catalog_retirement.py` pins the remaining
+  set, so the tally is machine-checked and a new raw template needs a deliberate edit.
+- **User-facing behaviour changes:**
+  - `npa workbench sonic export` and `npa workbench sonic eval` now accept `s3://`
+    URIs for `--checkpoint`, `--onnx`, `--obs-spec`, `--action-spec`, `--config` and
+    `--output`, downloading and uploading as needed (including an ONNX's
+    `<name>.onnx.data` external weights). Local paths behave exactly as before.
+    `sonic eval` adds an `onnx_uri` field to its result when the input was an object
+    URI.
+  - `npa workbench isaac-lab train` is now invoked correctly by
+    `workbench.rl.policy_train`: the toolRef passed `--learning-rate`, `--batch-size`
+    and `--input-path`, none of which exist on that command. Trainer hyper-parameters
+    go through Isaac Lab's repeatable Hydra `--override KEY=VALUE`, `batch_size`
+    becomes the real `--num-envs`, and `--input-path` becomes `--data-path`. The three
+    specs that use it rename their `batch_size` config key to `num_envs`.
+  - `workbench.rl.evaluate_policy` passed `--episodes`; the CLI option is
+    `--num-episodes`.
+  - `workbench.sonic.eval` passed `--output json`, conflating the **result path** with
+    the output format, so the eval result was written to a relative `json/` directory
+    inside the pod and the artifact the spec declared never appeared. It now passes
+    `--output <eval_uri> --output-format json`; `sonic-eval.yaml` and
+    `sonic-export-eval.yaml` gain an `eval_uri` config key.
+  - `solutions.toml`'s `sonic-locomotion-finetuning` solution now submits the
+    npa.workflow spec instead of the raw template.
+- **New guardrails** (none weakened): a catalog-wide check that every `toolRef` argv
+  names real CLI options and passes values its options can mean; the three-tier
+  contract's third tier moved from SkyPilot `envs` onto the spec + toolRef argv, with
+  each contract pinning and *classifying* the parameters a spec cannot set yet; a
+  live-matrix check that each case declares the secrets its plan hints at; and a
+  `solutions.toml` check that every advertised `workflow submit <path>` exists.
+- **Engine:** a `toolRef` can declare an npa extra (`TOOL_REF_PIP_EXTRAS`), installed
+  from the same source tree npa came from, so a SONIC stage runs on SkyPilot's default
+  image without a vendor image.
+- **Images:** the SONIC Dockerfile gains the four SkyPilot-on-Kubernetes prerequisites
+  the Isaac Lab image needed, plus a `Dockerfile.k8s-prereqs` for repairing a
+  published tag in-cluster. The image guardrail now covers `sonic`.
+- **Test fixtures:** `npa.workflows.sonic_fixture` + `scripts/stage-sonic-export-fixture.sh`
+  build a real, tiny SONIC policy checkpoint **in-cluster**, so the SONIC twins are
+  live-testable without NVIDIA's gated `GEAR-SONIC` weights.
+
 ### npa.workflow: real parallel execution and a runtime orchestrator
 
 - **Parallel fan-out.** `npa.workflow/v0.0.1` specs can declare a `parallel:`
