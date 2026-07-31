@@ -7,19 +7,20 @@ a versioned heading when a release is cut.
 
 ## Unreleased
 
-### Retiring the raw SkyPilot task catalog (36 → 20 templates)
+### Retiring the raw SkyPilot task catalog (36 → 17 templates)
 
 `npa.workflow/v0.0.1` specs are becoming the only workflow authoring surface.
 SkyPilot remains the execution engine, and `npa workbench workflow submit` still
 accepts a customer's own SkyPilot YAML — what is going away is the shipped catalog
 under `npa/src/npa/workflows/skypilot/`.
 
-- **Retired 10 templates**, each only after its spec reached a terminal `SUCCEEDED` on
-  real infrastructure (run ids in `EVIDENCE.md` §R2–R6, §R10): `cosmos3-reason.yaml`,
+- **Retired 14 templates**, each only after its spec reached a terminal `SUCCEEDED` on
+  real infrastructure (run ids in `EVIDENCE.md` §R2–R6, §R10, §R22): `cosmos3-reason.yaml`,
   `isaac-lab-rl-sweep.yaml`, `sonic-export.yaml`, `sonic-eval.yaml`,
   `sonic-export-eval.yaml`, `token-factory-caption.yaml`,
   `token-factory-generate.yaml`, `token-factory-cosmos-reason.yaml`,
-  `vlm-eval-token-factory.yaml`, `mjlab-eval.yaml`, `retargeting.yaml`.
+  `vlm-eval-token-factory.yaml`, `mjlab-eval.yaml`, `retargeting.yaml`,
+  `vlm-eval.yaml`, `vlm-eval-benchmark.yaml`, `sim-to-real-loop.yaml`.
   `test_skypilot_catalog_retirement.py` pins the remaining set, so the tally is
   machine-checked and a new raw template needs a deliberate edit.
 - **Multi-node stages.** A resource profile can declare `num_nodes`, so a spec can ask
