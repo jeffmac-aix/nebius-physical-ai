@@ -1,0 +1,69 @@
+# OSS dependency closure for NVIDIA Isaac Sim / Isaac Lab, BAKED at build time.
+#
+# Everything here is freely redistributable and comes from PyPI. It is baked precisely so
+# the run-time NVIDIA fetch can use `pip install --no-deps --require-hashes`: with the
+# closure already present, pip resolves nothing at run time, so every byte it downloads
+# is pinned to a sha256 this repo reviewed (see isaac-nvidia-wheels.txt).
+#
+# Contents:
+#   1. isaaclab 2.3.2.post1's own Requires-Dist, minus torch/torchvision/torchaudio
+#      (installed separately from the CUDA-matched PyTorch index by
+#      install_isaac_runtime_base.sh), plus its `all` extra.
+#   2. Packages Isaac Sim's own extensions import but do not declare. Found empirically
+#      on an RTX PRO 6000 pod, not guessed: a real
+#      `scripts/reinforcement_learning/rsl_rl/train.py` run died on
+#      `isaacsim.core.utils.numpy.rotations -> from scipy.spatial.transform import
+#      Rotation`, which took isaaclab_tasks's extension startup down with it. These
+#      previously came for free from the nvcr.io Isaac base image.
+#
+# Deliberately NOT here:
+#   usd-core  - Kit bundles its own pxr; a second USD on sys.path is asking for trouble.
+#   opencv, pandas, matplotlib, imageio-ffmpeg - nothing on the exercised paths needs
+#             them, and they are avoidable image weight.
+#
+# numpy is pinned <2 because isaaclab declares `numpy<2` and gear_sonic pins
+# numpy==1.26.4; torch 2.9 is compatible with either, so the stricter pin wins.
+
+# --- isaaclab 2.3.2.post1 Requires-Dist -------------------------------------------
+numpy==1.26.4
+onnx>=1.18.0
+prettytable==3.3.0
+toml
+hidapi==0.14.0.post2
+gymnasium==1.2.0
+trimesh
+pyglet<2
+transformers
+einops
+warp-lang
+pillow==11.3.0
+starlette==0.45.3
+pytest
+pytest-mock
+junitparser
+flatdict==4.0.0
+flaky
+protobuf!=5.26.0,>=4.25.8
+hydra-core
+h5py
+tensorboard
+moviepy
+packaging<24
+numba
+
+# --- isaaclab[all] ----------------------------------------------------------------
+stable-baselines3>=2.6
+tqdm
+rich
+skrl>=1.4.3
+rsl-rl-lib==3.0.1
+onnxscript>=0.5
+
+# --- undeclared imports inside Isaac Sim's extensions -----------------------------
+# isaacsim.core.utils.numpy.rotations -> scipy.spatial.transform.Rotation
+scipy==1.15.3
+# Kit tooling and rsl_rl's run logging
+PyYAML>=6.0
+GitPython>=3.1.50
+psutil
+requests
