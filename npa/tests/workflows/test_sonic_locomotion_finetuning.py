@@ -20,7 +20,6 @@ PIPELINE_YAML = (
 RETARGETING_YAML = (
     ROOT / "npa" / "src" / "npa" / "workflows" / "skypilot" / "retargeting.yaml"
 )
-MJLAB_YAML = ROOT / "npa" / "src" / "npa" / "workflows" / "skypilot" / "mjlab-eval.yaml"
 # The raw sonic-export / sonic-eval / sonic-export-eval templates are retired; their
 # npa.workflow specs are the surface now (each live-verified — see EVIDENCE §R4/§R5).
 NPA_WORKFLOWS = ROOT / "npa" / "workflows" / "workbench" / "npa-workflows"
@@ -219,7 +218,6 @@ def test_sonic_workflow_materializer_supports_docker_payload_mode() -> None:
 
 def test_tool_yamls_match_registered_cli_surfaces() -> None:
     retarget_docs = _docs(RETARGETING_YAML)
-    mjlab_docs = _docs(MJLAB_YAML)
 
     assert retarget_docs[0] == {"name": "retargeting", "execution": "serial"}
     assert retarget_docs[1]["name"] == "retarget-motion"
@@ -229,12 +227,24 @@ def test_tool_yamls_match_registered_cli_surfaces() -> None:
     assert retarget_docs[1]["envs"]["NPA_RETARGETING_IMAGE"] == EXPECTED_RETARGETING_IMAGE
     assert retarget_docs[1]["envs"]["RETARGET_SOURCE_FRAME_RATE"] == "120"
 
-    assert mjlab_docs[0] == {"name": "mjlab-eval", "execution": "serial"}
-    assert mjlab_docs[1]["name"] == "mjlab-locomotion-eval"
-    assert "npa workbench mjlab eval" in mjlab_docs[1]["run"]
-    assert mjlab_docs[1]["resources"]["accelerators"] == "H100:1"
-    assert mjlab_docs[1]["resources"]["image_id"] == "docker:${NPA_WORKBENCH_IMAGE}"
-    assert mjlab_docs[1]["envs"]["NPA_WORKBENCH_IMAGE"] == EXPECTED_WORKBENCH_IMAGE
+
+
+def test_mjlab_eval_spec_invokes_the_real_cli_surface() -> None:
+    """Replaces the retired mjlab-eval template's raw-YAML assertions."""
+
+    from npa.orchestration.npa_workflow.interpreter import build_plan
+    from npa.orchestration.npa_workflow.spec import load_spec
+
+    spec = load_spec(NPA_WORKFLOWS / "mjlab-eval.yaml")
+    step = build_plan(spec, run_id="probe").steps[0]
+    argv = " ".join(step.argv)
+
+    assert step.tool_ref == "workbench.mjlab.eval"
+    assert "npa workbench mjlab eval" in argv
+    assert spec.resources[step.resources]["accelerators"] == "H100:1"
+    for flag in ("--input-path", "--checkpoint", "--output-path", "--suite",
+                 "--embodiment", "--episodes"):
+        assert flag in argv
 
 
 def test_sonic_export_and_eval_specs_invoke_the_real_cli_surfaces() -> None:
