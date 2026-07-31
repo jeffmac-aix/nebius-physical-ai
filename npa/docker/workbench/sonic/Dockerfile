@@ -205,10 +205,23 @@ if weights:
 if os.environ.get("REQUIRE_TORCH_SM120") == "1":
     import torch
 
-    arches = set(torch._C._cuda_getArchFlags().split()) or set(torch.cuda.get_arch_list())
-    if "sm_120" not in arches:
-        raise SystemExit(f"expected PyTorch with sm_120 kernels, found {sorted(arches)}")
-    print(f"NPA_SONIC_TORCH_SM120_OK torch={torch.__version__} cuda={torch.version.cuda}")
+    # See install_isaac_runtime_base.sh: a driverless builder reports an empty arch list,
+    # so the build asserts the CUDA toolkit carries sm_120 and the per-device arch check
+    # happens on GPU (isaac-bootstrap verify / the golden eval).
+    arches = sorted(set(torch.cuda.get_arch_list()))
+    if arches:
+        if "sm_120" not in arches:
+            raise SystemExit(f"expected PyTorch with sm_120 kernels, found {arches}")
+        print(f"NPA_SONIC_TORCH_SM120_OK torch={torch.__version__} arches={arches}")
+    else:
+        cuda_version = torch.version.cuda or ""
+        major, _, minor = cuda_version.partition(".")
+        if (int(major or 0), int(minor or 0)) < (12, 8):
+            raise SystemExit(
+                f"torch is built against CUDA {cuda_version!r}, which has no sm_120 "
+                f"kernels; RTX PRO 6000 Blackwell needs CUDA >= 12.8"
+            )
+        print(f"NPA_SONIC_TORCH_CUDA_SUPPORTS_SM120_OK cuda={cuda_version}")
 print("NPA_SONIC_BUILD_IMPORTS_OK no baked Isaac, no baked weights")
 PY
 

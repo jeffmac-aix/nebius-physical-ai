@@ -197,11 +197,41 @@ from importlib import metadata
 
 import torch
 
-print(f"torch {torch.__version__} arch_list={torch.cuda.get_arch_list()}")
-if os.environ.get("NPA_REQUIRE_TORCH_SM120") == "1" and "sm_120" not in torch.cuda.get_arch_list():
-    raise SystemExit(
-        f"expected sm_120 kernels for RTX PRO 6000 Blackwell, got {torch.cuda.get_arch_list()}"
-    )
+# torch.cuda.get_arch_list() returns [] on a host with no NVIDIA driver, which is the
+# normal case for a build machine (the dev VM has no GPU). So the build checks the thing
+# it CAN check - that this is a CUDA wheel whose toolkit carries sm_120 kernels - and the
+# actual per-device arch assertion happens where a device exists: `isaac-bootstrap verify`
+# and the GPU golden evals. Asserting arch_list here would have meant a build that only
+# passes on GPU builders, which is a worse contract, not a stronger one.
+arch_list = torch.cuda.get_arch_list()
+cuda_version = torch.version.cuda or ""
+print(f"torch {torch.__version__} cuda={cuda_version or 'cpu'} arch_list={arch_list}")
+
+if os.environ.get("NPA_REQUIRE_TORCH_SM120") == "1":
+    if arch_list:
+        if "sm_120" not in arch_list:
+            raise SystemExit(
+                f"expected sm_120 kernels for RTX PRO 6000 Blackwell, got {arch_list}"
+            )
+        print("NPA_TORCH_SM120_OK (arch list observed on a GPU-capable builder)")
+    else:
+        # CUDA >= 12.8 is where sm_120 (Blackwell, compute capability 12.0) appears.
+        try:
+            major, _, minor = cuda_version.partition(".")
+            toolkit = (int(major), int(minor or 0))
+        except ValueError as exc:
+            raise SystemExit(
+                f"cannot parse torch CUDA version {cuda_version!r}; expected a CUDA build"
+            ) from exc
+        if toolkit < (12, 8):
+            raise SystemExit(
+                f"torch is built against CUDA {cuda_version}, which has no sm_120 "
+                f"kernels; RTX PRO 6000 Blackwell needs CUDA >= 12.8"
+            )
+        print(
+            f"NPA_TORCH_CUDA_SUPPORTS_SM120_OK cuda={cuda_version} "
+            f"(no driver on this builder, so the arch list is verified on GPU instead)"
+        )
 
 # The whole point of this image: no NVIDIA Isaac bytes ship in it.
 leaked = sorted(
