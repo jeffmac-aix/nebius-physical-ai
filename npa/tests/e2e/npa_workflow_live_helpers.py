@@ -210,9 +210,23 @@ def seed_live_workflow_inputs(
                 "and point this at its sonic_policy.onnx"
             )
         _seed_object_from_source(src, bucket, f"{marker}/sonic_policy.onnx", client)
+        # torch.onnx.export splits large tensors into <name>.onnx.data, which
+        # onnxruntime resolves relative to the model file. Copy it when present.
+        from npa.workbench.sonic.staging import (
+            external_data_uri_candidates,
+            sidecar_uri_candidates,
+        )
+
+        for extra in external_data_uri_candidates(src):
+            try:
+                _seed_object_from_source(
+                    extra, bucket, f"{marker}/{extra.rsplit('/', 1)[-1]}", client
+                )
+            except Exception:  # noqa: BLE001 - absent for small graphs
+                continue
+
         # The exporter's sidecar is `<stem>.metadata.json`; the tool REQUIRES it
         # (load_export_metadata validates its format), so a missing sidecar is fatal.
-        from npa.workbench.sonic.staging import sidecar_uri_candidates
 
         for candidate in sidecar_uri_candidates(src):
             try:

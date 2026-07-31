@@ -15,6 +15,7 @@ import pytest
 from npa.workbench.sonic.staging import (
     DEFAULT_ONNX_NAME,
     ExportStaging,
+    external_data_uri_candidates,
     is_object_uri,
     plan_export_staging,
     publish_outputs,
@@ -178,6 +179,37 @@ def test_sidecar_uri_candidates_match_the_local_resolver(
     onnx_uri: str, expected: tuple[str, str]
 ) -> None:
     assert sidecar_uri_candidates(onnx_uri) == expected
+
+
+def test_external_data_uri_candidates() -> None:
+    assert external_data_uri_candidates("s3://b/p/sonic_policy.onnx") == (
+        "s3://b/p/sonic_policy.onnx.data",
+    )
+
+
+def test_stage_eval_inputs_downloads_external_weights_next_to_the_model(
+    tmp_path: Path,
+) -> None:
+    """A large ONNX is a PAIR of files; onnxruntime resolves .data relative to it."""
+
+    client = FakeStorageClient(
+        {
+            "s3://bucket/run/sonic_policy.onnx": b"onnx",
+            "s3://bucket/run/sonic_policy.onnx.data": b"weights",
+            "s3://bucket/run/sonic_policy.metadata.json": b"{}",
+        }
+    )
+
+    local_onnx, _ = stage_eval_inputs(
+        onnx="s3://bucket/run/sonic_policy.onnx",
+        metadata=None,
+        workdir=tmp_path,
+        storage_client=client,
+    )
+
+    sibling = Path(local_onnx).parent / "sonic_policy.onnx.data"
+    assert sibling.is_file()
+    assert sibling.read_bytes() == b"weights"
 
 
 def test_stage_eval_inputs_downloads_the_onnx_and_its_sidecar(tmp_path: Path) -> None:

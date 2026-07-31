@@ -145,6 +145,19 @@ def sidecar_uri_candidates(onnx_uri: str) -> tuple[str, ...]:
     return (f"{stem}.metadata.json", f"{text}.metadata.json")
 
 
+def external_data_uri_candidates(onnx_uri: str) -> tuple[str, ...]:
+    """Return sibling URIs that may hold the ONNX's external weights.
+
+    ``torch.onnx.export`` writes tensors larger than the protobuf limit to a separate
+    ``<name>.onnx.data`` file, and onnxruntime resolves it *relative to the model
+    file*. Staging the ``.onnx`` alone therefore produces a model that loads and then
+    fails on a missing initializer — the live ``sonic-export`` run published
+    ``sonic_policy.onnx`` (1.6 KB) plus ``sonic_policy.onnx.data`` (11.5 KB).
+    """
+
+    return (onnx_uri.strip() + ".data",)
+
+
 def stage_eval_inputs(
     *,
     onnx: str,
@@ -170,6 +183,15 @@ def stage_eval_inputs(
     workdir.mkdir(parents=True, exist_ok=True)
     local_onnx = workdir / (onnx.rstrip("/").rsplit("/", 1)[-1] or DEFAULT_ONNX_NAME)
     client.download_path(onnx, str(local_onnx))
+
+    # External weights must land NEXT TO the model file, under the exact name the
+    # model references. Absent for small graphs, required for large ones.
+    for candidate in external_data_uri_candidates(onnx):
+        target = local_onnx.parent / candidate.rsplit("/", 1)[-1]
+        try:
+            client.download_path(candidate, str(target))
+        except Exception:  # noqa: BLE001 - no external data is the common case
+            continue
 
     if metadata and is_object_uri(metadata):
         # An explicit sidecar URI must exist; failing loudly beats a confusing
@@ -219,6 +241,7 @@ def plan_export_staging(
 __all__ = [
     "DEFAULT_ONNX_NAME",
     "ExportStaging",
+    "external_data_uri_candidates",
     "is_object_uri",
     "plan_export_staging",
     "publish_outputs",
