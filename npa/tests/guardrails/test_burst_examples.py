@@ -43,7 +43,8 @@ def test_example_set_is_pinned() -> None:
 
 
 def test_the_directory_documents_the_boundary() -> None:
-    readme = (EXAMPLES_DIR / "README.md").read_text(encoding="utf-8")
+    # Normalised, because the prose is hard-wrapped and a phrase may span a line break.
+    readme = " ".join((EXAMPLES_DIR / "README.md").read_text(encoding="utf-8").split())
 
     assert "not workflow templates" in readme
     assert "One task per file" in readme
