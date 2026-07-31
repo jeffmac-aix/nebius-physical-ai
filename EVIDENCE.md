@@ -1889,3 +1889,52 @@ npa/src/npa/workflows/skypilot/  20 -> 17 templates
   - vlm-eval-benchmark.yaml  (twin vlm-eval-benchmark.yaml, job 220)
   - sim-to-real-loop.yaml    (twin vlm-eval-loop.yaml,      job 218)
 ```
+
+## R23. `tokenfactory-rollout-judge` — the `outputs:` fix, confirmed live
+
+§R10 recorded that `test_spec_declared_outputs.py` caught this spec declaring artifacts that
+never appear: `plan/plan.json` (the reasoner writes `scene_reasoning.json`) and
+`scores/report.json` (`vlm-eval run` writes `vlm_eval_stub.json`). §5.2b had already called
+this spec a **PASSED** live run — a stage can succeed while writing somewhere else entirely,
+which is the whole reason that guardrail exists. Re-running it after the fix closes the loop:
+
+| Job | Run id | Wall | Result |
+| --- | --- | --- | --- |
+| 221 | — | 1m43s | **CANCELLED** — environment, not code (below) |
+| 222 | `npa-wf-gpu-tokenfactory-rollout-judge-b2afbc62` | 3m42s | **SUCCEEDED** |
+
+```
+      1655  plan/scene_reasoning.json      <- declared, and present
+       818  rollouts/episode_000/frame_00{0..3}.png
+       834  scene/frame_000.png
+      1025  scores/vlm_eval_stub.json      <- declared, and present
+```
+
+Both corrected declarations now name files that exist. Before the fix the same run would have
+reported SUCCEEDED with `plan/plan.json` and `scores/report.json` promised and absent.
+
+Job 221 is worth recording rather than hiding: it failed **prechecks** with
+
+```
+No resource satisfying Kubernetes({'RTXPRO6000': 1}) on Kubernetes.
+Kubernetes cluster does not contain any instances satisfying the request
+```
+
+because this spec hardcodes `accelerators: RTXPRO6000:1` and my harness remap only rewrote
+`H100:1`. That is a live-environment naming mismatch, not a defect in the change — adding
+`RTXPRO6000:1=RTXPRO-6000-BLACKWELL-SERVER-EDITION:1` to `NPA_E2E_ACCELERATOR_REMAP` was the
+whole fix. It does show that a spec naming a *specific* accelerator model is only portable to
+clusters that spell it the same way.
+
+**This template is still not retired.** Reading it against the same-named spec shows they are
+different workflows that share a name:
+
+| | template | spec |
+| --- | --- | --- |
+| stage 1 | LeRobot eval rollout on a GPU, **producing** the rollouts | Cosmos scene reasoner (unrelated) |
+| stage 2 | hosted VLM judge over stage 1's output | VLM judge over rollouts seeded from outside |
+
+The template's point is that a GPU stage produces exactly what the zero-GPU hosted judge
+scores — the data dependency the cookbook advertises. A real twin needs
+`workbench.lerobot.eval` → `workbench.vlm_eval.run`; the retirement tally now says so instead
+of claiming the twin was verified.
