@@ -7,7 +7,7 @@ a versioned heading when a release is cut.
 
 ## Unreleased
 
-### Retiring the raw SkyPilot task catalog (36 → 15 templates)
+### Retiring the raw SkyPilot task catalog (36 → 14 templates)
 
 `npa.workflow/v0.0.1` specs are becoming the only workflow authoring surface.
 SkyPilot remains the execution engine, and `npa workbench workflow submit` still
@@ -21,7 +21,7 @@ under `npa/src/npa/workflows/skypilot/`.
   `token-factory-generate.yaml`, `token-factory-cosmos-reason.yaml`,
   `vlm-eval-token-factory.yaml`, `mjlab-eval.yaml`, `retargeting.yaml`,
   `vlm-eval.yaml`, `vlm-eval-benchmark.yaml`, `sim-to-real-loop.yaml`,
-  `scenario-gen-adversarial.yaml`, `sim2real-envgen-split.yaml`.
+  `scenario-gen-adversarial.yaml`, `sim2real-envgen-split.yaml`, `cosmos3-ea-fetch.yaml`.
   `test_skypilot_catalog_retirement.py` pins the remaining set, so the tally is
   machine-checked and a new raw template needs a deliberate edit.
 - **Multi-node stages.** A resource profile can declare `num_nodes`, so a spec can ask
@@ -134,6 +134,12 @@ under `npa/src/npa/workflows/skypilot/`.
   drove from a Kubernetes Job completion index: a `parallel:` group whose members differ only
   through `params.shard_index`, with the split as a barrier. Live proof records
   `max_concurrent_observed: 2` and a split manifest that saw all 64 envs, 32 from each shard.
+- **A `toolRef` can declare third-party CLIs it shells out to**
+  (`TOOL_REF_PIP_REQUIREMENTS`), installed only when `command -v` cannot find them.
+  `cosmos fetch` runs `huggingface-cli`, which the retired template pip-installed in its
+  setup — the one load-bearing line of a ~35-line preamble. New spec `cosmos-fetch.yaml` plus
+  `workbench.cosmos.{check,fetch}` toolRefs; the template's hand-rolled `test -n` token checks
+  are dropped because `cosmos check` reports which access is missing and continues.
 - **New guardrails** (none weakened): a catalog-wide check that every `toolRef` argv
   names real CLI options and passes values its options can mean — including the `npa …`
   commands **inside** a `bash -c` toolRef, a blind spot where a real defect had shipped;

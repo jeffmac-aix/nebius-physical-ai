@@ -2162,3 +2162,55 @@ environment descriptors and never renders, so the twin is CPU and that GPU went 
 assertion moved onto the spec as its opposite (no resource profile declares an accelerator).
 This is the third template in this change whose accelerator request did not match its work
 (see also §R25).
+
+---
+
+## R28. `cosmos3-ea-fetch.yaml` retired (15 → 14), and the one load-bearing line in 60 lines of setup
+
+The template's `setup:` was ~35 lines — `apt-get git curl`, install `uv`, build a 3.11 venv,
+`pip install huggingface_hub[cli]` — and its `run:` opened with three hand-rolled token checks
+(`test -n "${!NPA_COSMOS3_HF_TOKEN_ENV-}"`) before the two commands that do the work. The token
+checks are the tool's job: `cosmos check` reports precisely which of source, checkpoint and NGC
+access is missing. So the twin is those two commands and nothing else.
+
+Exactly one line of that preamble was load-bearing, and dropping it cost a live run:
+
+| Job | Outcome | Cause |
+| --- | --- | --- |
+| 225 | FAILED_SETUP in 57 s | `botocore.exceptions.NoCredentialsError` — the matrix case declared only `HF_TOKEN`, but **every** stage's setup syncs the npa source from `NPA_SRC_S3_URI` with boto3 |
+| 226 | `check-access` SUCCEEDED, `fetch-artifacts` FAILED | `checkpoint download failed: [Errno 2] No such file or directory: 'huggingface-cli'` — `cosmos fetch` shells out to it |
+| 227 | **SUCCEEDED** (12m44s) | — |
+
+Both produced a guardrail rather than just a fix:
+
+* **job 225** → `test_every_live_case_declares_the_object_store_credentials_setup_needs`. The
+  existing secret check derives hints from the *plan*, so it structurally cannot see a need that
+  comes from `setup:`. Now every non-`plan_only` case must declare the object-store keys.
+* **job 226** → `TOOL_REF_PIP_REQUIREMENTS`, the sibling of `TOOL_REF_PIP_EXTRAS` for
+  third-party packages. Each entry pairs an executable with a pip requirement and installs only
+  when `command -v` cannot find it, so a purpose-built image that already ships it is untouched.
+
+### Live: job 227 — `npa-wf-cpu-cosmos-fetch-ebbcc897`
+
+```
+(setup) installing huggingface_hub[cli]>=0.23,<1.0 for huggingface-cli      <- both stages
+
+check-access:                          fetch-artifacts:
+{ "status": "ok",                      { "status": "ok",
+  "source_repo": "reachable",            "cache_dir": "/tmp/npa-cosmos3-cache",
+  "hf_auth": "configured",               "source_checkout": ".../source",
+  "hf_model": "reachable",               "checkpoint_dir": ".../checkpoint",
+  "github_auth": "missing",              "checkpoint": "downloaded",
+  "ngc_auth": "skipped",                 "errors": [] }
+  "errors": [] }
+```
+
+`github_auth: missing` is the tool doing its job — the template would have `test -n`'d it into a
+hard failure; `cosmos check` reports it and continues, because a public clone needs no token.
+
+**On the substituted assets.** The spec's defaults still name `nvidia/Cosmos3-Nano` and the
+Cosmos framework repo, both gated behind early access plus a licence acceptance. The live case
+overrides them with a public repo and a tiny public checkpoint via `config_vars`. That is a real
+`git clone` and a real Hugging Face download through the same commands, flags and cache layout —
+the code path is identical, and asset identity is the one thing a live run here cannot prove.
+Same approach as the SONIC and SOMA-CSV fixtures (§R4.1, §R11).
