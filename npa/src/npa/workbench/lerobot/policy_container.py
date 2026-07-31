@@ -1045,7 +1045,15 @@ def create_app() -> Any:
     return app
 
 
-def main(argv: list[str] | None = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
+    """Return this module's CLI parser.
+
+    Exposed separately from :func:`main` so a catalog ``toolRef`` argv that runs this
+    module can be checked against the real parser offline — see
+    ``npa/tests/guardrails/test_module_toolref_argv.py``, which was added after a
+    ``python -m`` toolRef shipped without a required option.
+    """
+
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
     import_cmd = subparsers.add_parser("check-import", help="Import LeRobot and LeRobotDataset.")
@@ -1096,7 +1104,11 @@ def main(argv: list[str] | None = None) -> int:
     serve_cmd = subparsers.add_parser("serve", help="Run the FastAPI policy container.")
     serve_cmd.add_argument("--host", default=os.environ.get("NPA_POLICY_HOST", "0.0.0.0"))
     serve_cmd.add_argument("--port", type=int, default=int(os.environ.get("NPA_POLICY_PORT", "8080")))
-    args = parser.parse_args(argv)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
 
     if args.command == "check-import":
         print(json.dumps(assert_lerobot_importable().to_dict(), indent=2, sort_keys=True))
