@@ -12,7 +12,7 @@ Options
 Commands
 run  Score a rollout artifact with a VLM backend.
 benchmark  Sweep VLM-eval configs over a labeled rollout benchmark set.
-workflow  Show the SkyPilot YAML template for VLM evaluation.
+workflow  Show the npa.workflow specs for VLM evaluation.
 status  Show VLM eval backend status.
 list  List available VLM eval backends.
 ```
@@ -29,7 +29,7 @@ list  List available VLM eval backends.
 | --- | --- |
 | `run` | Score a rollout artifact with a VLM backend. |
 | `benchmark` | Sweep VLM-eval configs over a labeled rollout benchmark set. |
-| `workflow` | Show the SkyPilot YAML template for VLM evaluation. |
+| `workflow` | Show the npa.workflow specs for VLM evaluation. |
 | `status` | Show VLM eval backend status. |
 | `list` | List available VLM eval backends. |
 
