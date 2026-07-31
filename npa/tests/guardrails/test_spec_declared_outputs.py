@@ -32,6 +32,18 @@ RESULT_URI_TOOLS: dict[str, tuple[str, str]] = {
     "workbench.vlm_eval.run": ("--output-path", "npa.workbench.vlm_eval:result_uri_for"),
     "workbench.mjlab.eval": ("--output-path", "npa.workbench.mjlab:result_uri_for"),
     "workbench.sonic.eval": ("--output", "npa.workbench.sonic.eval:result_uri_for"),
+    "workbench.token_factory.caption": (
+        "--output-path",
+        "npa.workbench.token_factory:caption_result_uri_for",
+    ),
+    "workbench.token_factory.generate": (
+        "--output-path",
+        "npa.workbench.token_factory:generate_result_uri_for",
+    ),
+    "workbench.token_factory.reason": (
+        "--output-path",
+        "npa.workbench.token_factory:reason_result_uri_for",
+    ),
 }
 
 

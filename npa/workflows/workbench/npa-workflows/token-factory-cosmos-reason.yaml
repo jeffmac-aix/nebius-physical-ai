@@ -26,6 +26,6 @@ states:
     toolRef: workbench.token_factory.reason
     resources: cpu
     outputs:
-      - uri: "{{config.plan_uri}}plan.json"
+      - uri: "{{config.plan_uri}}scene_reasoning.json"
         schema: npa.token_factory.plan.v1
     terminal: true
