@@ -1582,3 +1582,45 @@ into LanceDB.
 
 Live-matrix coverage: **17 uncovered specs → 13**; matrix cases 24 → 30 (four newly
 covered pre-existing specs plus the two new specs).
+
+## R17. Phase 4 (continued) — `scenario-gen-smoke.yaml` needed no fixture at all
+
+Reading the tool settled this one before any cloud time was spent:
+`scenario_gen/generation.py::generate_scenarios` never opens `--policy-uri` or
+`--input-path`. The default `simulate_adversary` backend is deterministic and GPU-free, and
+those URIs are only recorded in the manifest's `lineage`. The `rank` stage then consumes the
+manifest the `generate` stage wrote. So the spec was self-contained and simply had no matrix
+entry.
+
+**Run id** `npa-wf-cpu-scenario-gen-smoke-bc5ed74b` · **SkyPilot job 213** ·
+**SUCCEEDED** · `1 passed in 224.64s`
+
+```
+    6223  adversarial/manifest.json          npa.scenario_gen.adversarial_set.v1, 8 scenarios
+     ~489 adversarial/scenarios/adv-000{0..7}.json   one config per mined scenario
+     ....  ranked/ranked.json                npa.scenario_gen.ranked_set.v1, top 3
+```
+
+Real mining output, ranked by severity and diversity rather than a placeholder:
+
+```json
+manifest top: {"scenario_id": "adv-0002", "failure_score": 0.6462,
+               "severity": 0.6462, "diversity": 0.4627}
+ranked  top: {"scenario_id": "adv-0002", "severity": 0.6462, "diversity": 0.4627}
+```
+
+Live-matrix coverage: **17 uncovered specs → 12**; matrix cases 24 → 31.
+
+### Why the remaining 12 are still uncovered
+
+| Spec(s) | Blocker |
+| --- | --- |
+| `adversarial-scenario-hardening`, `hardening-with-insights` | the **launcher** problem — both call `workbench.rl.policy_train`, which provisions its own infrastructure from inside the pod |
+| `byof-maniskill`, `byof-mujoco-playground`, `byof-robocasa`, `byof-openpi`, `byof-droid-policy-learning` | each delegates to `run_byof_repo.py`, which builds and pushes a multi-GB image; covered by `test_byof_onboarding_live_e2e.py`, and the shared `byof.yaml` case is already `plan_only` for the same reason |
+| `av-night-scene-hardening` | needs the LanceDB workbench service (same wall as `dataset-ingest-curate`, §R16) |
+| `cosmos-synth-fanout-curation` | `workbench.fiftyone.launch_app` is `stub=True`, and a real Cosmos Transfer 2.5 run is a gated-weight diffusion job |
+| `sim2real-two-step`, `sim2real-two-step-agent`, `sim2real-gpu-cross-region-agent` | the last of these has three `stub=True` toolRefs; the first two need a real Cosmos Transfer run |
+
+None of these is "not attempted" — each has a named, specific blocker, and two of them
+(`av-night-scene-hardening`, the LanceDB dependency) would be unblocked by deploying one
+service.
