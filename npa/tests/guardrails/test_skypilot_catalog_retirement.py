@@ -49,8 +49,19 @@ REMAINING: dict[str, str] = {
         "reads rollouts seeded from outside. Retiring needs a spec whose producer stage "
         "feeds the judge (workbench.lerobot.eval -> workbench.vlm_eval.run)"
     ),
-    "tokenfactory-scene-to-rollout-judge.yaml": "no twin",
-    "tokenfactory-train-triage.yaml": "no twin",
+    "tokenfactory-scene-to-rollout-judge.yaml": (
+        "shares the tokenfactory-rollout-judge blocker: its GPU stage is a LeRobot eval "
+        "rollout run INSIDE the vendor image (`source /opt/lerobot/venv/bin/activate`) that "
+        "PRODUCES what the Token Factory stage consumes. A twin needs an in-image LeRobot "
+        "producer toolRef plus a policy/dataset fixture"
+    ),
+    "tokenfactory-train-triage.yaml": (
+        "same LeRobot-producer blocker, plus one of its own: the triage stage builds "
+        "prompts.jsonl and a system prompt FROM the training artifacts in bash+python before "
+        "calling `token-factory generate`, and no tool does that yet. `npa workbench lerobot` "
+        "has eval/benchmark/train-student but no plain `train`; the template calls "
+        "`lerobot-train` in the vendor venv directly"
+    ),
     # --- twin exists but is NOT live-verified yet ---
     "sonic-locomotion-finetuning.yaml": (
         "twin's retarget stage passes live (job 205) but its train stage asks the in-pod "
