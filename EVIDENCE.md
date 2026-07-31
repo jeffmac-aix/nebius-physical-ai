@@ -1629,3 +1629,150 @@ Live-matrix coverage: **17 uncovered specs → 12**; matrix cases 24 → 31.
 None of these is "not attempted" — each has a named, specific blocker, and two of them
 (`av-night-scene-hardening`, the LanceDB dependency) would be unblocked by deploying one
 service.
+
+---
+
+## R18. Phase 3b — `sim-to-real-loop.yaml` owns a capability nothing else has
+
+D3 in the plan said this template could simply retire in favour of the staged 14-stage
+sim2real engine. Reading it closed that option: the YAML is not a thin wrapper around
+`vlm-eval run`. Its `run:` block
+
+1. lists the immediate child directories of the rollout prefix (falling back to the prefix
+   itself when there are none),
+2. calls `npa workbench vlm-eval run` **per rollout**, asserting each result's shape with
+   `jq -e`,
+3. aggregates the per-rollout records into `task_success_report.json` —
+   `total_rollouts`, `passed_rollouts`, `success_rate`, `mean_score`, and a coarse
+   `task_success` gate — and uploads it.
+
+`vlm-eval run` scores **one** rollout: it discovers frames *recursively*, so pointing it at a
+prefix holding many rollouts blends them into a single score. Nothing else in the repo
+produces `task_success_report.json`:
+
+```
+$ grep -rn 'task_success_report' --include=*.py --include=*.yaml .
+npa/src/npa/workflows/skypilot/sim-to-real-loop.yaml   (the bash above)
+npa/tests/workbench/test_vlm_eval_loop_e2e.py          (the same loop, re-implemented in a test)
+docs/workbench/cookbooks/vlm-eval-loop-runbook.md      (documents the artifact)
+```
+
+So the capability existed twice — once in bash inside a template, once in Python inside a
+gated GPU test — and was reachable from neither the CLI nor a spec. Retiring the template
+without moving it would have deleted a shipped capability.
+
+**Fix:** `npa workbench vlm-eval loop` (`evaluate_rollout_set`, `discover_rollouts`,
+`aggregate_loop_report`), byte-compatible with the template's report: same field names, and
+the gate is still the **mean** score rather than the pass rate. That distinction is now
+asserted — a set where every rollout passes its own threshold can still fail the mean:
+
+```
+test_aggregate_gate_is_the_mean_not_the_pass_rate
+  two rollouts, both passed=True, score 0.5, threshold 0.8
+  -> success_rate 1.0, task_success False
+```
+
+Object-store discovery uses a `Delimiter="/"` listing, which is the S3 equivalent of
+`find -mindepth 1 -maxdepth 1 -type d`, with the same fall-back branch.
+
+New spec `npa/workflows/workbench/npa-workflows/vlm-eval-loop.yaml` (twin of
+`sim-to-real-loop.yaml`), registered as a `gpu` matrix case whose seeder plants **three**
+rollout directories so the aggregate has something to aggregate.
+
+## R19. The self-hosted VLM backend never worked from a spec, and why
+
+`vlm-eval-single.yaml` asks for `vlm_backend: self-hosted`, which makes the tool POST to an
+OpenAI-compatible endpoint on localhost. **Nothing in a spec started that server.** §5.2b
+recorded the symptom without the cause: `VLM backend request failed: [Errno 111] Connection
+refused`. The retired `vlm-eval.yaml` did the serve/wait/teardown in its `run:` block — 30
+lines of bash that a `toolRef` argv cannot carry.
+
+The renderer now has a **per-toolRef run preamble**, the sibling of its existing setup hook.
+It has to be `run:` rather than `setup:` because SkyPilot runs those as separate shells: a
+server started in setup is gone by the time the command runs.
+
+Three live runs were needed to make it actually work, and each failure was a real property of
+the environment rather than a flake:
+
+| Run | Outcome | Root cause |
+| --- | --- | --- |
+| jobs 214 / 215 | FAILED after ~10 min | `FileNotFoundError: 'ninja'` — vLLM's FlashInfer sampler JIT-compiles a CUDA extension on first use and shells out to `ninja`, which the default image does not ship |
+| jobs 216 / 217 | FAILED after ~10 min | `/bin/sh: 1: /usr/local/cuda/bin/nvcc: not found` — ninja ran, and the image has no CUDA **compiler** either |
+
+Both are now handled without requiring anything of the task image: `ninja` comes from pip,
+`CUDA_HOME` falls back to the `nvidia-cuda-nvcc` wheel vLLM already depends on, and
+`VLLM_USE_FLASHINFER_SAMPLER=0` makes the sampler that wants the JIT use its pure-PyTorch
+equivalent, so a compiler-less image cannot break startup at all.
+
+The failures are also the fail-fast path working as designed: each died in ~4 minutes with
+the server log tailed into the stage's stderr, instead of waiting out the full readiness
+window and reporting a bare timeout.
+
+```
+starting vLLM for Qwen/Qwen2-VL-7B-Instruct on port 8000
+...
+vLLM server exited before becoming ready:
+  RuntimeError: Engine core initialization failed.
+  /bin/sh: 1: /usr/local/cuda/bin/nvcc: not found
+```
+
+The readiness window is 900 s by default (the template allowed 600 s; a cold HF download of a
+7B checkpoint plus GPU load routinely exceeds that) and is overridable per spec with
+`config.vlm_serve_ready_seconds`.
+
+## R20. `vlm-eval-benchmark.yaml`'s twin diverged from the template twice
+
+Reviewing the twin before trusting it found two defects that would each have made the
+retirement a downgrade:
+
+1. `--dataset` was **a path inside the repo**
+   (`npa/src/npa/workbench/vlm_eval/fixtures/sample_benchmark/benchmark.json`). That resolves
+   on a developer's laptop and never in the pod the stage runs in, where the checkout does
+   not exist. The template used an S3 URI. The spec now does too, and the harness seeds a
+   real **labeled** set — one rollout that reaches the target, one that stalls short, plus
+   both rubrics the spec sweeps — because a benchmark that reports accuracy over one
+   unlabeled rollout is meaningless.
+2. `vlm_backend: stub`, so the twin never touched a VLM at all and could not stand in for a
+   template whose entire purpose is self-hosted serving. It is now `self-hosted`, which works
+   because of R19.
+
+Defect 1 is a *class* of bug, so it is now machine-checked:
+`npa/tests/guardrails/test_spec_paths_are_not_repo_relative.py` fires when any resolved argv
+value is a relative path that also exists in this repo. It is deliberately that narrow — such
+a value is always a mistake, and the check cannot produce false positives. It immediately
+found a second instance: five `byof-*.yaml` specs passed
+`--yaml npa/src/npa/workflows/byof/profiles/byof-solution-smoke-rtxpro-gpu.yaml` to a stage
+that runs in a pod. `resolve_byof_profile_path()` now accepts a packaged profile **name**
+(and falls back to a packaged profile matching a path's basename), so an installed wheel
+resolves what a checkout does, and the five specs name the profile.
+
+## R21. `detection-training`: the two gaps that blocked the BDD100K port
+
+`run_bdd100k_pipeline.py` still loads the raw template, and porting it onto the twin spec
+turned out to need tool features, not just plumbing. Two are now done, and the remaining ones
+are named honestly below.
+
+Done:
+
+* **The train stage did not wait.** The template POSTed `/train` and then polled `/status` in
+  bash until `completed`, failing on `failed` or timeout and closing with a `jq -e` assertion
+  that every epoch ran and a checkpoint pattern exists. The twin's `toolRef` POSTed and
+  returned, so the eval stage would evaluate a checkpoint that does not exist yet. That loop
+  now lives in the tool: `--wait/--poll-seconds/--timeout-seconds`, opt-in so existing
+  fire-and-forget behaviour is unchanged.
+* **`label_map` was unreachable.** The template sent a full BDD100K category map in the
+  request body. `TrainRequest.label_map` is a real field, but it had no CLI flag and is not an
+  accepted `--override` key — so no spec could set it. `--label-map` accepts the template's
+  JSON spelling and `name=index` pairs.
+
+Still missing, and therefore why `bdd100k-pipeline.yaml` is **not** retired in this change
+(beyond the LanceDB service wall of §R16):
+
+* the template's eval task first GETs `/runs` and **discovers** the completed training run's
+  `checkpoint_uri_pattern` for its view, then evaluates that resolved checkpoint. The twin
+  passes the training *output directory* instead.
+* it asserts the returned `mAP`/`mAP_50`/`mAP_75` are numbers.
+* with `WRITE_CANONICAL_EVAL_METRICS=1` it writes a canonical metrics object to S3.
+
+Shipping the runner port without those would have silently degraded a shipped pipeline, which
+is worse than leaving the template in place for one more change.
