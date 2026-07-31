@@ -576,3 +576,68 @@ column 1`, and the real failure downstream stayed invisible for two runs. Both
 parsers now slice the JSON document out of the stream, and a matrix guardrail
 asserts every case declares the secrets its plan hints at so the advisory line is
 not emitted at all.
+
+## R9. `num_nodes`: multi-node stages on the resource profile
+
+A spec could not ask for a multi-node block at all — that capability lived only in
+`npa burst submit --nodes` (`burst.core.BurstSpec.num_nodes`), i.e. outside the workflow
+surface. Closing it needed one decision: **where does the field go?**
+
+SkyPilot places `num_nodes` at the **task** level, a sibling of `resources`
+(`sky/utils/schemas.py`; `burst.core.build_task_spec` does the same). A spec has no
+task-level surface — per-stage shape lives on the resource profile a state selects — so
+the field is declared there and the renderer lifts it back out:
+
+```yaml
+resources:
+  gang:
+    cloud: kubernetes
+    cpus: 2
+    memory: 4Gi
+    num_nodes: 2          # -> task-level `num_nodes: 2`, NOT inside `resources`
+```
+
+`normalize_resources()` deliberately does not pass it through; inside a `resources` block
+it would be invalid. `build_scheduler_task` carries it so the portable seam stays
+complete for a non-SkyPilot backend.
+
+**Additive by construction.** A profile without `num_nodes` (or with `1`) emits no key,
+so every previously rendered document is byte-identical — asserted, not assumed.
+`validate_spec` rejects a non-integer, a bool, `< 1`, and `> MAX_PROFILE_NODES` (32): a
+gang block that large would sit `PENDING` on a shared cluster rather than fail fast, which
+is the worst failure mode to debug.
+
+Rejected: a `gang:` state field (DESIGN §7 lists `gang` as out of scope, and a state that
+selects a 2-node profile already *is* the gang); and a submit-time `--num-nodes` flag
+(node count is a property of the stage, not of one invocation — unlike
+`--max-concurrency`, which is a cost cap).
+
+The live proof is `npa-workflows/multi-node-probe.yaml`: the gang stage writes one
+`rank-<n>.json` per node and a single-node stage fails unless it finds one report per
+expected rank **from distinct hostnames** — so a gang that collapsed onto one node cannot
+pass. See `EVIDENCE.md` §R14.
+
+## R10. BYOF resource profiles are not workflow templates
+
+`isaac-lab-rl-train*.yaml` and `byof-*-smoke.yaml` describe a pod shape (accelerator,
+cpu/memory floors, image placeholder, smoke command) that the BYOF runner substitutes
+into — one task, no orchestration. The workflow surface for them is already the spec
+`byof.yaml`, whose `workbench.byof.repo` toolRef passes one through
+`--yaml {{config.resource_profile_yaml}}`.
+
+So they were **relocated** to `npa/src/npa/workflows/byof/profiles/` rather than ported or
+deleted, joining `byof-solution-smoke-rtxpro-gpu.yaml` and
+`skypilot-kubernetes-rtxpro.yaml` which were already there — a move `byof/live.py`'s own
+comment had anticipated ("so the SkyPilot reference catalog can be deprecated/removed
+without breaking BYOF live runs").
+
+Rejected: rewriting `run_isaac_lab_rl.py` / `run_byof_datagen.py` /
+`run_byof_container_verify.py` onto `prepare_npa_workflow_for_submit`. They carry
+render-only modes, output-root rewriting and BYOF image plumbing the engine does not
+model, so the port would risk the BYOF onboarding live path for no gain in the *workflow*
+surface.
+
+`test_byof_profiles.py` keeps the boundary honest: the file set is pinned, each profile
+must be a **single** task (chaining stages means it belongs in a spec), `live.py`'s
+constants must resolve inside `profiles/`, and no runner may resolve a path under the
+retiring catalog.
