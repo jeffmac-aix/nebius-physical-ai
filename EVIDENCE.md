@@ -1776,3 +1776,116 @@ Still missing, and therefore why `bdd100k-pipeline.yaml` is **not** retired in t
 
 Shipping the runner port without those would have silently degraded a shipped pipeline, which
 is worse than leaving the template in place for one more change.
+
+## R22. Phase 3b live results — three GPU twins PASSED (20 → 17 templates)
+
+Third attempt on the vLLM path, after the ninja and nvcc fixes of §R19. All three launched
+concurrently on `npa-rtxpro-mk8s`.
+
+| Spec | Job | Run id | Wall | Result |
+| --- | --- | --- | --- | --- |
+| `vlm-eval-loop.yaml` | 218 | `npa-wf-gpu-vlm-eval-loop-88da76ad` | 11m49s | **SUCCEEDED** |
+| `vlm-eval-single.yaml` | 219 | `npa-wf-gpu-vlm-eval-single-25906482` | 11m14s | **SUCCEEDED** |
+| `vlm-eval-benchmark.yaml` | 220 | `npa-wf-gpu-vlm-eval-benchmark-e47bc877` | 11m25s | **SUCCEEDED** |
+
+Accelerator: `RTXPRO-6000-BLACKWELL-SERVER-EDITION:1` (remapped from the specs' `H100:1`).
+Image: SkyPilot's default — no vendor serving image. The renderer installed vLLM 0.26.0,
+`ninja` 1.13.0 and the npa source, then started and health-checked the server:
+
+```
+using npa interpreter /home/sky/miniconda3/bin/python3 for this stage
+starting vLLM for Qwen/Qwen2-VL-7B-Instruct on port 8000
+vLLM server ready after 355s          (job 220)
+vLLM server ready after 375s          (job 218)
+```
+
+355–375 s to ready, with three concurrent 7B checkpoint downloads. The retired template
+allowed 600 s; the 900 s default of §R19 was the right call.
+
+### The loop: a rollout SET, not one blended score
+
+`npa-wf-gpu-vlm-eval-loop-88da76ad/vlm-eval-loop/`:
+
+```
+   818..821  rollouts/episode_00{0,1,2}/frame_00{0..3}.png   (12 seeded frames)
+        837  scores/rollouts/episode_000/vlm_eval_stub.json
+        837  scores/rollouts/episode_001/vlm_eval_stub.json
+        837  scores/rollouts/episode_002/vlm_eval_stub.json
+       1704  scores/task_success_report.json
+```
+
+The aggregate report — the artifact that previously existed only as `jq` output inside a
+SkyPilot template:
+
+```json
+{
+  "status": "completed",
+  "model": "Qwen/Qwen2-VL-7B-Instruct",
+  "frame_selection": "keyframes",
+  "success_threshold": 0.8,
+  "total_rollouts": 3,
+  "passed_rollouts": 3,
+  "success_rate": 1.0,
+  "mean_score": 1.0,
+  "task_success": true,
+  "latency_s": 13.701
+}
+```
+
+Each per-rollout result records **its own** input, which is the property that distinguishes
+the loop from pointing `run` at the prefix:
+
+```json
+{
+  "backend": "self-hosted",
+  "input_path": ".../vlm-eval-loop/rollouts/episode_001/",
+  "frame_count": 4,
+  "model": "Qwen/Qwen2-VL-7B-Instruct",
+  "score": 1.0,
+  "passed": true,
+  "status": "passed",
+  "rationale": "The robot successfully moved from the left to the right side of the image, completing the requested physical task."
+}
+```
+
+A real VLM rationale, not a stub: `backend: self-hosted`, four keyframes per rollout, and
+13.7 s of GPU inference across the three rollouts.
+
+### The single-rollout twin
+
+`npa-wf-gpu-vlm-eval-single-25906482/vlm-eval-single/scores/vlm_eval_stub.json`, the exact
+artifact the spec declares, with `score: 1.0`, `passed: true` and a real rationale. This is
+the case §5.2b recorded as **FAILED — pre-existing spec gap** (`Connection refused`); it now
+passes because a spec can serve the model it calls.
+
+### The benchmark twin
+
+`.../vlm-eval-benchmark/results.json` (13,775 B) over the seeded labeled set:
+
+```
+item_count: 2
+sweep: {"backend": "self-hosted", "models": ["Qwen/Qwen2-VL-7B-Instruct"],
+        "rubrics": ["default", "strict"], "thresholds": [0.5, 0.8, 0.9],
+        "frame_selection": "keyframes", "max_frames": 4, "fixture_scores": false}
+ranked_configs: 6            (1 model x 2 rubrics x 3 thresholds)
+best_config metrics: {"accuracy": 0.5, "precision": 0.5, "recall": 1.0, "f1": 0.6667,
+                      "true_positives": 1, "false_positives": 1, "total": 2}
+```
+
+`fixture_scores: false` — every case was scored by the served model, not read from the
+manifest. Worth stating plainly: **the model scored both episodes as successes**, including
+the one seeded to stall short of the target, so accuracy is 0.5 and there is one false
+positive. That is a correct report of a real disagreement between the VLM and my synthetic
+32-frame fixture, not a broken benchmark: the sweep, the ranking and the metrics all
+computed from live inference. Discriminating on a 320x240 four-frame synthetic clip is a
+weak task for a 7B VLM; the point verified here is that the twin exercises the same
+labeled-sweep path the template did.
+
+### Retired
+
+```
+npa/src/npa/workflows/skypilot/  20 -> 17 templates
+  - vlm-eval.yaml            (twin vlm-eval-single.yaml,    job 219)
+  - vlm-eval-benchmark.yaml  (twin vlm-eval-benchmark.yaml, job 220)
+  - sim-to-real-loop.yaml    (twin vlm-eval-loop.yaml,      job 218)
+```
