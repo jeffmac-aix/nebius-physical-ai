@@ -38,8 +38,11 @@ config:
   # Overridden per shard by the `params:` block of each parallel member.
   shard_index: "0"
 
-  raw_envs_uri: "s3://{{config.bucket}}/{{config.prefix}}/raw-envs/"
-  splits_uri: "s3://{{config.bucket}}/{{config.prefix}}/splits/"
+  # The tool takes the run ROOT and derives envs/raw, envs/train, envs/heldout and
+  # envs/manifest beneath it; these mirror what it will write.
+  envgen_root_uri: "s3://{{config.bucket}}/{{config.prefix}}/"
+  raw_envs_uri: "s3://{{config.bucket}}/{{config.prefix}}/envs/raw/"
+  manifest_uri: "s3://{{config.bucket}}/{{config.prefix}}/envs/manifest/"
 
 resources:
   cpu:
@@ -65,8 +68,8 @@ states:
       shard_index: "0"
     toolRef: workbench.sim2real_envgen.raw_shard
     outputs:
-      - uri: "{{config.raw_envs_uri}}"
-        schema: npa.sim2real.raw_envs.v1
+      - uri: "{{config.raw_envs_uri}}raw-shard-00-summary.json"
+        schema: npa.sim2real.raw_env_shard_summary.v1
 
   shard-1:
     description: Raw env shard 1.
@@ -75,8 +78,8 @@ states:
       shard_index: "1"
     toolRef: workbench.sim2real_envgen.raw_shard
     outputs:
-      - uri: "{{config.raw_envs_uri}}"
-        schema: npa.sim2real.raw_envs.v1
+      - uri: "{{config.raw_envs_uri}}raw-shard-01-summary.json"
+        schema: npa.sim2real.raw_env_shard_summary.v1
 
   split:
     description: 80/20 train/held-out split over the combined shard catalog.
@@ -84,6 +87,6 @@ states:
     resources: cpu
     toolRef: workbench.sim2real_envgen.split
     outputs:
-      - uri: "{{config.splits_uri}}split.json"
+      - uri: "{{config.manifest_uri}}split-manifest.json"
         schema: npa.sim2real.split_manifest.v1
     terminal: true
