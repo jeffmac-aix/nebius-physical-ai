@@ -124,6 +124,17 @@ SUBMIT_LIVE_MATRIX: tuple[SubmitLiveCase, ...] = (
         ),
     ),
     SubmitLiveCase(
+        "scenario-gen-smoke.yaml",
+        "cpu",
+        secret_envs=("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"),
+        notes=(
+            "Adversarial scenario mining + ranking on the default heuristic adversary "
+            "backend, which is GPU-free and needs no seeded inputs: the policy/base-config "
+            "URIs are recorded in lineage, not read. The rank stage consumes the manifest "
+            "the generate stage wrote."
+        ),
+    ),
+    SubmitLiveCase(
         "dataset-of-record-smoke.yaml",
         "cpu",
         secret_envs=("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"),
