@@ -17,6 +17,7 @@ has to distinguish Kit payload from our own 40-line shell script.
 from __future__ import annotations
 
 import importlib.util
+import sys
 from pathlib import Path
 
 import pytest
@@ -26,9 +27,16 @@ SCANNER = REPO_ROOT / "npa" / "scripts" / "scan_image_omniverse_payload.py"
 
 
 def _load_scanner():
+    """Import the scanner by path (it is a script, not a package module).
+
+    It must be registered in ``sys.modules`` before ``exec_module``: ``@dataclass``
+    resolves annotations through ``sys.modules[cls.__module__]``, which is ``None``
+    for a module loaded from a spec but never registered.
+    """
     spec = importlib.util.spec_from_file_location("npa_payload_scanner", SCANNER)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
