@@ -30,6 +30,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from importlib import import_module
 import inspect
+import re
+import shlex
 from typing import Any, Sequence
 
 
@@ -262,6 +264,41 @@ def argv_literal_value_mismatches(argv: Sequence[str]) -> tuple[str, ...]:
     return tuple(problems)
 
 
+def embedded_npa_commands(argv: Sequence[str]) -> tuple[tuple[str, ...], ...]:
+    """Extract each ``npa …`` invocation from a ``bash -c`` toolRef script.
+
+    Several toolRefs wrap a loop or a sequence of CLI calls in ``["bash", "-c", "…"]``,
+    which slipped past the flag audit entirely — the check bailed out whenever
+    ``argv_template[0] != "npa"``. That hole shipped a real defect: the BDD100K
+    ``create_failure_views`` toolRef passed ``--table`` to ``lancedb create-mv``, whose option
+    is ``--source-table``, so the stage could only fail with "No such option '--table'".
+    Found by driving the pipeline's real argv against mock endpoints; it should have been
+    caught offline.
+
+    Each returned tuple is one ``npa …`` command with `{{…}}` placeholders left intact, ready
+    for :func:`argv_flag_drift`. Shell operators, loop keywords and `$var` words are dropped;
+    a command whose flags cannot be split reliably (quoted values containing `;`) still yields
+    its flag names, which is what the audit needs.
+    """
+
+    if len(argv) < 3 or str(argv[0]) != "bash":
+        return ()
+    script = str(argv[-1])
+    commands: list[tuple[str, ...]] = []
+    # Statements are separated by `;`, `&&` or newlines; `npa` may also appear after `do`.
+    for statement in re.split(r";|&&|\n", script):
+        words = shlex.split(statement, comments=False, posix=True) if statement.strip() else []
+        if "npa" not in words:
+            continue
+        command = words[words.index("npa") :]
+        # A trailing shell keyword (`done`, `fi`) is not part of the command.
+        while command and command[-1] in {"done", "fi", "esac"}:
+            command = command[:-1]
+        if len(command) > 1:
+            commands.append(tuple(command))
+    return tuple(commands)
+
+
 def catalog_argv_literal_mismatches() -> dict[str, tuple[str, ...]]:
     """Map every non-stub ``npa ...`` toolRef to its literal-value problems."""
 
@@ -296,9 +333,19 @@ def catalog_argv_drift() -> dict[str, tuple[str, ...]]:
     for tool_ref, entry in TOOL_CATALOG.items():
         if entry.stub:
             continue
-        if not entry.argv_template or str(entry.argv_template[0]) != "npa":
-            # Not an `npa ...` invocation (e.g. a bare interpreter call); out of
-            # scope for CLI-signature checking.
+        if not entry.argv_template:
+            continue
+        if str(entry.argv_template[0]) != "npa":
+            # A `bash -c` wrapper still contains real `npa …` calls; audit each of them.
+            # Anything else (a bare interpreter call) is out of scope.
+            for command in embedded_npa_commands(entry.argv_template):
+                try:
+                    unaccepted = argv_flag_drift(tool_ref, command)
+                except ArgvResolutionError as exc:
+                    drift[tool_ref] = drift.get(tool_ref, ()) + (f"<unresolvable: {exc}>",)
+                    continue
+                if unaccepted:
+                    drift[tool_ref] = drift.get(tool_ref, ()) + unaccepted
             continue
         try:
             unaccepted = argv_flag_drift(tool_ref, entry.argv_template)
@@ -326,6 +373,7 @@ __all__ = [
     "catalog_argv_literal_mismatches",
     "argv_template_flags",
     "catalog_argv_drift",
+    "embedded_npa_commands",
     "import_callback",
     "option_flags_for_callback",
     "resolve_argv_command",
