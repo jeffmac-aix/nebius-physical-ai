@@ -64,23 +64,24 @@ def test_specs_ask_for_the_self_hosted_backend_the_templates_served(spec_name: s
 
 
 def test_single_rollout_spec_scores_one_prefix() -> None:
-    spec, step = _only_step("vlm-eval-single.yaml")
+    _spec, step = _only_step("vlm-eval-single.yaml")
 
     assert step.tool_ref == "workbench.vlm_eval.run"
     assert step.argv[:4] == ["npa", "workbench", "vlm-eval", "run"]
-    assert _flag(step.argv, "--input-path") == spec.config["rollouts_uri"]
-    assert _flag(step.argv, "--output-path") == spec.config["scores_uri"]
+    # argv carries the RESOLVED uris; config still holds the templated form.
+    assert _flag(step.argv, "--input-path").endswith("/rollouts/")
+    assert _flag(step.argv, "--output-path").endswith("/scores/")
     assert step.outputs[0]["uri"].endswith(RESULT_FILENAME)
 
 
 def test_loop_spec_scores_a_set_and_declares_the_aggregate_report() -> None:
     """The property that made retiring `sim-to-real-loop.yaml` possible."""
 
-    spec, step = _only_step("vlm-eval-loop.yaml")
+    _spec, step = _only_step("vlm-eval-loop.yaml")
 
     assert step.tool_ref == "workbench.vlm_eval.loop"
     assert step.argv[:4] == ["npa", "workbench", "vlm-eval", "loop"]
-    assert _flag(step.argv, "--input-path") == spec.config["rollouts_uri"]
+    assert _flag(step.argv, "--input-path").endswith("/rollouts/")
     # The coarse gate the template computed with `jq`.
     assert _flag(step.argv, "--success-threshold") == "0.8"
     assert _flag(step.argv, "--frame-selection") == "keyframes"
@@ -89,7 +90,7 @@ def test_loop_spec_scores_a_set_and_declares_the_aggregate_report() -> None:
 
 
 def test_benchmark_spec_sweeps_the_same_grid_the_template_did() -> None:
-    spec, step = _only_step("vlm-eval-benchmark.yaml")
+    _spec, step = _only_step("vlm-eval-benchmark.yaml")
 
     assert step.tool_ref == "workbench.vlm_eval.benchmark"
     assert step.argv[:4] == ["npa", "workbench", "vlm-eval", "benchmark"]
