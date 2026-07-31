@@ -145,6 +145,16 @@ under `npa/src/npa/workflows/skypilot/`.
   setup — the one load-bearing line of a ~35-line preamble. New spec `cosmos-fetch.yaml` plus
   `workbench.cosmos.{check,fetch}` toolRefs; the template's hand-rolled `test -n` token checks
   are dropped because `cosmos check` reports which access is missing and continues.
+- **Every `toolRef` now invokes `python3`, not `python`.** Five did the latter, which some
+  images do not provide: a stage died with `bash: python: command not found` inside the LeRobot
+  vendor image, having passed on SkyPilot's default image (miniconda supplies `python` there).
+  A guardrail pins it.
+- **`lerobot policy_container train --artifacts-s3-uri`** publishes a run's whole output tree,
+  not just the checkpoint `--checkpoint-s3-uri` uploads, so a downstream stage can read the run.
+- **New `npa.workflows.token_factory_triage`** makes the triage stage executable: it digests a
+  run's textual artifacts and has a hosted text model write the report, replacing ~45 lines of
+  inline bash that ended in `token-factory generate --system-prompt "$(cat …)"`. It fails loudly
+  rather than triaging nothing when a run has no readable text.
 - **New guardrails** (none weakened): a catalog-wide check that every `toolRef` argv
   names real CLI options and passes values its options can mean — including the `npa …`
   commands **inside** a `bash -c` toolRef, a blind spot where a real defect had shipped;
