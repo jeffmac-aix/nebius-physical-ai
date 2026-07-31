@@ -37,7 +37,6 @@ REMAINING: dict[str, str] = {
     "dataset-ingest-curate.yaml": "twin exists but has no live-matrix coverage yet",
     "isaac-franka-capture-reason.yaml": "no twin",
     "isaac-lab-cosmos-sdg-burst-smoke.yaml": "no twin; single-task burst reference",
-    "scenario-gen-adversarial.yaml": "no twin with live coverage",
     "sim2real-actions.yaml": "no twin",
     "sim2real-envgen-split.yaml": "no twin",
     "tokenfactory-rollout-judge.yaml": (
@@ -80,6 +79,12 @@ REMAINING: dict[str, str] = {
     # sim-to-real-loop.yaml   job 218  npa-wf-gpu-vlm-eval-loop-88da76ad
     #   retired via the NEW `npa workbench vlm-eval loop` capability, not via the staged
     #   engine: nothing else produced task_success_report.json. See EVIDENCE.md §R18-R20.
+    #
+    # Phase 3b (continued):
+    # scenario-gen-adversarial.yaml  job 213  npa-wf-cpu-scenario-gen-smoke-bc5ed74b
+    #   twin = scenario-gen-smoke.yaml, which runs the SAME two CLI commands. The template's
+    #   Isaac Lab image + 200000 adversary steps selected no different code path: the RL
+    #   adversary is a Python-API seam with no CLI flag. See EVIDENCE.md §R25.
     #
     # Phase 2c: RELOCATED (not deleted) to npa/src/npa/workflows/byof/profiles/ —
     # they are BYOF resource profiles reached through byof.yaml's toolRef, not

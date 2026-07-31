@@ -40,7 +40,6 @@ templates retire.
 - `dataset-ingest-curate.yaml`: dataset-of-record ingest and curation.
 - `isaac-franka-capture-reason.yaml`: Franka capture plus Cosmos reasoning.
 - `isaac-lab-cosmos-sdg-burst-smoke.yaml`: Isaac Lab plus Cosmos SDG burst smoke.
-- `scenario-gen-adversarial.yaml`: adversarial scenario mining.
 - `sim2real-actions.yaml`: sim2real action-contract stage.
 - `sim2real-envgen-split.yaml`: sim2real environment-generation split.
 - `sim-to-real-pipeline.yaml`: full sim-to-real pipeline.
@@ -70,6 +69,9 @@ These raw templates were retired once their `npa.workflow` spec had a live run
 - `vlm-eval.yaml`, `vlm-eval-benchmark.yaml` — self-hosted VLM scoring and the labeled
   sweep. The renderer now starts and health-checks the vLLM server the spec asks for, so
   no prebuilt serving image is needed.
+- `scenario-gen-adversarial.yaml` — adversarial scenario mining. Its twin
+  `npa-workflows/scenario-gen-smoke.yaml` runs the same two CLI commands; the template's GPU
+  image advertised an RL adversary the CLI cannot select.
 - `sim-to-real-loop.yaml` — the rollout-SET loop. Retired via a new tool capability
   (`npa workbench vlm-eval loop`), because nothing else produced
   `task_success_report.json`; the spec is `npa-workflows/vlm-eval-loop.yaml`.
