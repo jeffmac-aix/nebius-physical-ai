@@ -17,7 +17,7 @@ scene and robot specs. Every step writes local artifacts and, when
 > spelling is the disambiguator. **`sim2real`** (this directory,
 > `npa workbench sim2real …`, `runbook.yaml`) is the canonical staged
 > VLM-to-RL loop described above. **`sim-to-real`** (hyphenated:
-> `skypilot/sim-to-real-loop.yaml`, `skypilot/sim-to-real-pipeline.yaml`, the
+> `skypilot/sim-to-real-pipeline.yaml`, the
 > H100 quickstart cookbook) is the older standalone training pipeline. If you
 > are unsure which you want, start here — this is the maintained loop.
 

@@ -43,7 +43,6 @@ templates retire.
 - `scenario-gen-adversarial.yaml`: adversarial scenario mining.
 - `sim2real-actions.yaml`: sim2real action-contract stage.
 - `sim2real-envgen-split.yaml`: sim2real environment-generation split.
-- `sim-to-real-loop.yaml`: iterative sim-to-real loop.
 - `sim-to-real-pipeline.yaml`: full sim-to-real pipeline.
 - `sim-to-real-trigger.yaml`: trigger wrapper for sim-to-real work.
 - `sonic-train-standalone.yaml`: standalone SONIC training.
@@ -51,7 +50,6 @@ templates retire.
 - `tokenfactory-rollout-judge.yaml`: Token Factory rollout judging.
 - `tokenfactory-scene-to-rollout-judge.yaml`: scene-to-rollout judging.
 - `tokenfactory-train-triage.yaml`: Token Factory training triage.
-- `vlm-eval.yaml` and `vlm-eval-benchmark.yaml`: VLM evaluation loops.
 
 ## Retired Templates
 
@@ -69,6 +67,12 @@ These raw templates were retired once their `npa.workflow` spec had a live run
 - `mjlab-eval.yaml` — MJLab locomotion evaluation.
 - `retargeting.yaml` — motion retargeting. The harness synthesizes a SOMA-CSV clip
   (`npa.workflows.motion_fixture`) when no real motion set is staged.
+- `vlm-eval.yaml`, `vlm-eval-benchmark.yaml` — self-hosted VLM scoring and the labeled
+  sweep. The renderer now starts and health-checks the vLLM server the spec asks for, so
+  no prebuilt serving image is needed.
+- `sim-to-real-loop.yaml` — the rollout-SET loop. Retired via a new tool capability
+  (`npa workbench vlm-eval loop`), because nothing else produced
+  `task_success_report.json`; the spec is `npa-workflows/vlm-eval-loop.yaml`.
 - `isaac-lab-rl-train-rtxpro.yaml`, `isaac-lab-rl-train-rtxpro-smoke.yaml`,
   `isaac-lab-rl-train.yaml`, `byof-datagen-rtxpro-smoke.yaml`,
   `byof-container-smoke-rtxpro.yaml` — **relocated**, not retired: they are BYOF

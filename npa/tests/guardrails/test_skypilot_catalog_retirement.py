@@ -28,11 +28,8 @@ REMAINING: dict[str, str] = {
     "bdd100k-pipeline.yaml": "npa/scripts/run_bdd100k_pipeline.py DEFAULT_YAML",
     "sim-to-real-pipeline.yaml": "npa/scripts/run_sim_to_real_pipeline.py DEFAULT_YAML",
     # --- referenced by a CLI/SDK path pointer or shipped data ---
-    "sim-to-real-loop.yaml": "solutions.toml sim-to-real cli_command",
     "sim-to-real-trigger.yaml": "three-tier contract (legacy YAML tier)",
     "sonic-train-standalone.yaml": "three-tier contract + standalone-policy guardrail",
-    "vlm-eval.yaml": "cli/workbench/vlm_eval.py WORKFLOW_PATH",
-    "vlm-eval-benchmark.yaml": "cli/workbench/vlm_eval.py BENCHMARK_WORKFLOW_PATH",
     # --- no npa.workflow twin authored yet ---
     "cosmos2-transfer.yaml": "no twin; cosmos2.transfer is used via other specs",
     "cosmos3-ea-fetch.yaml": "no twin; access check, overlaps `npa workbench cosmos check`",
@@ -69,6 +66,14 @@ REMAINING: dict[str, str] = {
     # Phase 2b:
     # retargeting.yaml                 job 204  npa-wf-cpu-retargeting-b8e5bc8b
     #   (was FAILING before this change for lack of motion data - EVIDENCE §6.1)
+    #
+    # Phase 3b:
+    # vlm-eval.yaml           job 219  npa-wf-gpu-vlm-eval-single-25906482
+    # vlm-eval-benchmark.yaml job 220  npa-wf-gpu-vlm-eval-benchmark-e47bc877
+    #   (both needed the renderer to START the vLLM server the spec asks for)
+    # sim-to-real-loop.yaml   job 218  npa-wf-gpu-vlm-eval-loop-88da76ad
+    #   retired via the NEW `npa workbench vlm-eval loop` capability, not via the staged
+    #   engine: nothing else produced task_success_report.json. See EVIDENCE.md §R18-R20.
     #
     # Phase 2c: RELOCATED (not deleted) to npa/src/npa/workflows/byof/profiles/ —
     # they are BYOF resource profiles reached through byof.yaml's toolRef, not

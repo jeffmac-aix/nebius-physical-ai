@@ -6,7 +6,6 @@ metadata:
   description: >
     Score a whole rollout set with a self-hosted VLM and write the aggregate
     task-success report the sim-to-real loop gates on.
-  skypilotTwin: npa/src/npa/workflows/skypilot/sim-to-real-loop.yaml
 
 config:
   bucket: example-bucket

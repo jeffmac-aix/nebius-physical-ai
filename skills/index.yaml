@@ -513,8 +513,6 @@ skills:
           - npa/src/npa/workflows/skypilot/sim-to-real-pipeline.yaml
           - npa/src/npa/workflows/skypilot/sim-to-real-trigger.yaml
           - npa/src/npa/workflows/skypilot/sonic-train-standalone.yaml
-          - npa/src/npa/workflows/skypilot/vlm-eval.yaml
-          - npa/src/npa/workflows/skypilot/vlm-eval-benchmark.yaml
       # Retired SkyPilot templates whose npa.workflow spec is now the reference.
       - type: npa_workflow_yaml
         paths:
