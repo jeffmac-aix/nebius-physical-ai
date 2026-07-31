@@ -40,7 +40,13 @@ REMAINING: dict[str, str] = {
     "scenario-gen-adversarial.yaml": "no twin with live coverage",
     "sim2real-actions.yaml": "no twin",
     "sim2real-envgen-split.yaml": "no twin",
-    "tokenfactory-rollout-judge.yaml": "twin live-verified; retire with the rest",
+    "tokenfactory-rollout-judge.yaml": (
+        "the same-named spec is NOT an equivalent twin: the template's first stage is a "
+        "LeRobot eval rollout on a GPU that PRODUCES the rollouts its judge stage scores, "
+        "while the spec's first stage is an unrelated Cosmos scene reasoner and its judge "
+        "reads rollouts seeded from outside. Retiring needs a spec whose producer stage "
+        "feeds the judge (workbench.lerobot.eval -> workbench.vlm_eval.run)"
+    ),
     "tokenfactory-scene-to-rollout-judge.yaml": "no twin",
     "tokenfactory-train-triage.yaml": "no twin",
     # --- twin exists but is NOT live-verified yet ---
