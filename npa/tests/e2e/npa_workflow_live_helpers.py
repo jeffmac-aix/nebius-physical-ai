@@ -724,11 +724,21 @@ def _json_document_from_stream(text: str) -> Any:
 
     stripped = text.lstrip()
     if stripped.startswith(("{", "[")):
-        return json.loads(stripped)
-    for opener in ("\n{", "\n["):
-        start = text.find(opener)
-        if start >= 0:
-            return json.loads(text[start + 1 :])
+        try:
+            return json.loads(stripped)
+        except json.JSONDecodeError:
+            # A progress line can start with '[' (e.g. "[runtime] wave ..."), so a
+            # leading bracket does not mean the stream *is* the document.
+            pass
+    for index, line in enumerate(text.splitlines(keepends=True)):
+        if not line.lstrip().startswith(("{", "[")):
+            continue
+        offset = sum(len(part) for part in text.splitlines(keepends=True)[:index])
+        candidate = text[offset:].lstrip()
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
     raise AssertionError(f"no JSON document in CLI output:\n{text[-4000:]}")
 
 
