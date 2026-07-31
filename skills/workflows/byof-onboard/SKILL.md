@@ -50,6 +50,12 @@ Project resolution: `npa.workflows.byof.live.resolve_byof_project()` — never h
 
 Override Ubuntu default: `NPA_BYOF_UBUNTU_BASE_IMAGE` or `--base-image ubuntu:24.04`.
 
+The `isaac-lab` profile bakes NVIDIA Omniverse Kit, so anything built on it
+inherits a `restricted` redistribution class: it may be built and run by the
+operator who owns the registry, but never published to a public registry or
+handed to a third party as a prebuilt image. Classify the result per
+`skills/atomic/solution-licensing/SKILL.md` before promoting it.
+
 ## Operator Entrypoint
 
 Preferred CLI (Tier 0 of `docs/architecture/oss-onboarding-ladder.md`):
