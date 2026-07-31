@@ -69,9 +69,7 @@ REMAINING: dict[str, str] = {
     # vlm-eval-token-factory.yaml      job 200  npa-wf-cpu-vlm-eval-token-factory-736df0b1
     # token-factory-cosmos-reason.yaml job 201  npa-wf-cpu-token-factory-cosmos-reason-d9669c7f
     # token-factory-generate.yaml      job 202  npa-wf-cpu-token-factory-generate-94815797
-    # mjlab-eval.yaml                  no template-specific live run needed: the CLI
-    #   constant is a printed path (now the spec) and the twin is a gpu-tier matrix
-    #   case; see EVIDENCE §R10 for why it is retired without its own GPU run.
+    # mjlab-eval.yaml                  job 203  npa-wf-gpu-mjlab-eval-32c1efb5
 }
 
 

@@ -1134,3 +1134,79 @@ at the registry the cluster's existing pull secret covers — not by re-minting 
    artifact path for real, but it is not a locomotion quality signal.
 6. **Only the specs listed in §R2–§R5 were submitted live**; the rest of the matrix
    was covered plan-only (24/24) in this change.
+
+## R10. Phase 2a — pointer-only CLI callers, then five more retirements (31 → 26)
+
+Four workbench CLIs held a `*_WORKFLOW_PATH` constant naming a raw template. Those
+constants are **printed** by `<tool> workflow` / `<tool> status` — nothing loads them —
+so "porting the caller" is repointing the advertised path. A new guardrail
+(`test_cli_advertised_workflow_paths_exist`) asserts every such constant is a real
+file, so a retirement cannot silently hand an operator a 404.
+
+Repointed: `token_factory.py` (×4), `mjlab.py`, `retargeting.py`, `vlm_eval.py` (×2,
+plus a new `token_factory_workflow` key). **Behaviour change:** those subcommands now
+print npa.workflow spec paths.
+
+`vlm-eval-token-factory.yaml` had no twin, so one was authored and registered as a
+`cpu` live case. It is the VLM eval case that can *always* run: `vlm-eval-single` asks
+for `self-hosted` and nothing in that spec starts a vLLM server (pre-existing, §5.2b).
+
+### Live runs
+
+```bash
+NPA_E2E_NPA_WORKFLOW_SUBMIT_TIERS=cpu NPA_E2E_NPA_WORKFLOW_SUBMIT_SPECS=<spec> \
+  pytest .../test_npa_workflow_submit_live_reaches_terminal -q -s
+# mjlab additionally: NPA_E2E_ACCELERATOR_REMAP=H100:1=RTXPRO-6000-BLACKWELL-SERVER-EDITION:1
+```
+
+| Spec | Run id | job | status | wall |
+| --- | --- | --- | --- | --- |
+| `token-factory-caption.yaml` | `npa-wf-cpu-token-factory-caption-1dbebbb4` | 199 | SUCCEEDED | 158 s |
+| `vlm-eval-token-factory.yaml` *(new)* | `npa-wf-cpu-vlm-eval-token-factory-736df0b1` | 200 | SUCCEEDED | 163 s |
+| `token-factory-cosmos-reason.yaml` | `npa-wf-cpu-token-factory-cosmos-reason-d9669c7f` | 201 | SUCCEEDED | 156 s |
+| `token-factory-generate.yaml` | `npa-wf-cpu-token-factory-generate-94815797` | 202 | SUCCEEDED | 187 s |
+| `mjlab-eval.yaml` | `npa-wf-gpu-mjlab-eval-32c1efb5` | 203 | SUCCEEDED | 148 s |
+
+All five produced **real** artifacts (`"dry_run": false` throughout):
+
+```
+caption   captions/captions.json      942 B  Qwen/Qwen2.5-VL-72B-Instruct
+          caption[0]: "The image shows a solid red square centered on a light gray
+                       background. There is no action or additional objects present..."
+vlm-eval  scores/vlm_eval_stub.json  1001 B  backend "api", 4 keyframes, score 0.0,
+          rationale: "The provided frames do not show any robot or physical task being
+          performed. The images only display two static blocks (red and green)..."
+reason    plan/scene_reasoning.json  2114 B  nvidia/Cosmos3-Super-Reasoner
+generate  generations.jsonl            86 B  hosted text generation
+mjlab     mjlab/mjlab_eval.json       727 B  score 0.1423, suite locomotion,
+          embodiment unitree-g1, episodes 8, passed false
+```
+
+### The defect these runs exposed: `outputs:` was a promise, ten times over
+
+`vlm-eval-token-factory` wrote `scores/vlm_eval_stub.json` while its `outputs:`
+declared `scores/report.json`; `mjlab-eval` wrote `mjlab/mjlab_eval.json` while
+declaring `mjlab/report.json`; `token-factory-cosmos-reason` wrote
+`plan/scene_reasoning.json` while declaring `plan/plan.json`. Every stage
+**SUCCEEDED**. This is the same class as §R5's `--output json`, and it is the third
+time a green status hid a missing artifact.
+
+Rather than fix instances, `test_spec_declared_outputs.py` now resolves each stage's
+argv, asks the tool's own `*_result_uri_for()` helper where it would write, and
+compares. It found **ten** wrong declarations across seven specs — including
+`tokenfactory-rollout-judge.yaml`, which `EVIDENCE §5.2b` already recorded as a
+**PASSED** live run (job 166) and which therefore also never wrote its declared
+artifact. All ten are corrected; the next one fails offline.
+
+### Retirement tally: 31 → 26
+
+| Retired template | Twin's live run | job |
+| --- | --- | --- |
+| `token-factory-caption.yaml` | `npa-wf-cpu-token-factory-caption-1dbebbb4` | 199 |
+| `vlm-eval-token-factory.yaml` | `npa-wf-cpu-vlm-eval-token-factory-736df0b1` | 200 |
+| `token-factory-cosmos-reason.yaml` | `npa-wf-cpu-token-factory-cosmos-reason-d9669c7f` | 201 |
+| `token-factory-generate.yaml` | `npa-wf-cpu-token-factory-generate-94815797` | 202 |
+| `mjlab-eval.yaml` | `npa-wf-gpu-mjlab-eval-32c1efb5` | 203 |
+
+Cost for this phase: five short pods (four `1x[CPU:4+]`, one RTXPRO-6000 for ~31 s)
+plus ~8 hosted Token Factory calls. Rounding error.
