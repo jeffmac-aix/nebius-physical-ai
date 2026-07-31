@@ -105,7 +105,7 @@ def test_the_prompt_carries_the_digest_and_the_default_system_prompt(tmp_path: P
         captured.update(kwargs)
         return FakeResult(result_uri=kwargs["output_path"])
 
-    run_triage(
+    payload = run_triage(
         artifacts_uri=str(source),
         triage_uri=str(tmp_path / "triage"),
         job_name="my-run",
@@ -114,7 +114,9 @@ def test_the_prompt_carries_the_digest_and_the_default_system_prompt(tmp_path: P
 
     # The system prompt the template `cat`-ed from a file is now passed directly.
     assert captured["system_prompt"] == DEFAULT_TRIAGE_SYSTEM_PROMPT
-    record = json.loads(Path(captured["input_path"]).read_text(encoding="utf-8").splitlines()[0])
+    # Read the PUBLISHED prompt, not the temp copy: that is the artifact a reviewer sees.
+    published = Path(payload["prompts_uri"]).read_text(encoding="utf-8")
+    record = json.loads(published.splitlines()[0])
     assert "my-run" in record["prompt"]
     # The digest of the real artifacts reached the prompt.
     assert "train.log" in record["prompt"] or "0.42" in record["prompt"]
