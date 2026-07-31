@@ -17,9 +17,12 @@ CONFIGURED_SOLUTIONS = [
     {
         "name": "sim-to-real",
         "description": "Generic sim-to-real pipeline tools within the Workbench solution",
+        # The staged 14-stage engine is the maintained sim-to-real path, and
+        # `workflow submit` detects the runbook and routes to direct K8s. The retiring
+        # skypilot/sim-to-real-loop.yaml was only the VLM-eval loop stage of it; that
+        # capability now lives in `npa workbench vlm-eval loop` and vlm-eval-loop.yaml.
         "cli_command": (
-            "npa workbench workflow submit "
-            "npa/src/npa/workflows/skypilot/sim-to-real-loop.yaml"
+            "npa workbench workflow submit npa/workflows/workbench/sim2real/runbook.yaml"
         ),
     },
     {
@@ -57,17 +60,28 @@ def test_configured_solution_workflow_paths_exist() -> None:
     retired workflow YAML silently turns a listed solution into a broken command.
     """
 
+    from npa.orchestration.npa_workflow.detect import detect_submit_format
+
     missing: list[str] = []
+    formats: dict[str, str] = {}
     for entry in CONFIGURED_SOLUTIONS:
         command = entry["cli_command"]
         if "workflow submit " not in command:
             continue
         path = command.split("workflow submit ", 1)[1].strip()
-        if not (REPO_ROOT / path).is_file():
+        resolved = REPO_ROOT / path
+        if not resolved.is_file():
             missing.append(f"{entry['name']}: {path}")
+            continue
+        formats[entry["name"]] = detect_submit_format(resolved)
     assert not missing, "solutions.toml points at missing workflow files: " + ", ".join(
         missing
     )
+    # Existing is not enough: submit has to recognise the file. The retiring raw catalog
+    # classified as "skypilot"; every shipped solution should now name either an
+    # npa.workflow spec or the sim2real runbook.
+    assert formats, "expected at least one solution to advertise a workflow file"
+    assert set(formats.values()) <= {"npa.workflow", "sim2real_runbook"}, formats
 
 
 @pytest.fixture(autouse=True)

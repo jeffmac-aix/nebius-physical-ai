@@ -369,7 +369,6 @@ skills:
     smoke:
       - type: workflow_yaml
         paths:
-          - npa/src/npa/workflows/skypilot/sim-to-real-loop.yaml
           - npa/src/npa/workflows/skypilot/sim-to-real-pipeline.yaml
       - type: cli_help
         args: ["workbench", "workflow", "trigger", "--help"]
@@ -511,7 +510,6 @@ skills:
           - npa/src/npa/workflows/skypilot/cosmos3-ea-fetch.yaml
           - npa/src/npa/workflows/skypilot/cosmos3-text-to-image-inference.yaml
           - npa/src/npa/workflows/byof/profiles/isaac-lab-rl-train.yaml
-          - npa/src/npa/workflows/skypilot/sim-to-real-loop.yaml
           - npa/src/npa/workflows/skypilot/sim-to-real-pipeline.yaml
           - npa/src/npa/workflows/skypilot/sim-to-real-trigger.yaml
           - npa/src/npa/workflows/skypilot/sonic-train-standalone.yaml
