@@ -64,6 +64,8 @@ apt-get install -y --no-install-recommends \
   libx11-6 \
   libxext6 \
   libxrender1 \
+  libxt6 `# MaterialX render libs dlopen libXt.so.6; without it Kit logs three
+          # "Could not load the dynamic library ... libMaterialXRender*.so" errors` \
   vulkan-tools
 
 # Isaac needs python3.11 exactly; Ubuntu 22.04 ships 3.10.
