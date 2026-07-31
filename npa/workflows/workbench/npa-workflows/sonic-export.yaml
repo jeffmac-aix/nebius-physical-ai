@@ -4,7 +4,6 @@ kind: Workflow
 metadata:
   name: sonic-export
   description: Export a SONIC locomotion checkpoint to ONNX.
-  skypilotTwin: npa/src/npa/workflows/skypilot/sonic-export.yaml
 
 config:
   bucket: example-bucket

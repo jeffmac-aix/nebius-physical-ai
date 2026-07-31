@@ -21,21 +21,9 @@ RETARGETING_YAML = (
     ROOT / "npa" / "src" / "npa" / "workflows" / "skypilot" / "retargeting.yaml"
 )
 MJLAB_YAML = ROOT / "npa" / "src" / "npa" / "workflows" / "skypilot" / "mjlab-eval.yaml"
-SONIC_EXPORT_YAML = (
-    ROOT / "npa" / "src" / "npa" / "workflows" / "skypilot" / "sonic-export.yaml"
-)
-SONIC_EVAL_YAML = (
-    ROOT / "npa" / "src" / "npa" / "workflows" / "skypilot" / "sonic-eval.yaml"
-)
-SONIC_EXPORT_EVAL_YAML = (
-    ROOT
-    / "npa"
-    / "src"
-    / "npa"
-    / "workflows"
-    / "skypilot"
-    / "sonic-export-eval.yaml"
-)
+# The raw sonic-export / sonic-eval / sonic-export-eval templates are retired; their
+# npa.workflow specs are the surface now (each live-verified — see EVIDENCE §R4/§R5).
+NPA_WORKFLOWS = ROOT / "npa" / "workflows" / "workbench" / "npa-workflows"
 SONIC_TRAIN_STANDALONE_YAML = (
     ROOT
     / "npa"
@@ -232,8 +220,6 @@ def test_sonic_workflow_materializer_supports_docker_payload_mode() -> None:
 def test_tool_yamls_match_registered_cli_surfaces() -> None:
     retarget_docs = _docs(RETARGETING_YAML)
     mjlab_docs = _docs(MJLAB_YAML)
-    sonic_export_docs = _docs(SONIC_EXPORT_YAML)
-    sonic_eval_docs = _docs(SONIC_EVAL_YAML)
 
     assert retarget_docs[0] == {"name": "retargeting", "execution": "serial"}
     assert retarget_docs[1]["name"] == "retarget-motion"
@@ -250,54 +236,45 @@ def test_tool_yamls_match_registered_cli_surfaces() -> None:
     assert mjlab_docs[1]["resources"]["image_id"] == "docker:${NPA_WORKBENCH_IMAGE}"
     assert mjlab_docs[1]["envs"]["NPA_WORKBENCH_IMAGE"] == EXPECTED_WORKBENCH_IMAGE
 
-    assert sonic_export_docs[0] == {"name": "sonic-export", "execution": "serial"}
-    assert sonic_export_docs[1]["name"] == "sonic-export-onnx"
-    assert "npa workbench sonic export" in sonic_export_docs[1]["run"]
-    assert sonic_export_docs[1]["resources"]["accelerators"] == "L40S:1"
-    assert sonic_export_docs[1]["envs"]["SONIC_GPU_TARGET"] == "L40S"
-    assert sonic_export_docs[1]["envs"]["SONIC_IMAGE_VARIANT"] == "sonic-l40s-baked"
-    assert sonic_export_docs[1]["envs"]["SONIC_OPSET"] == "17"
-    assert sonic_export_docs[1]["envs"]["SONIC_AXES"] == "dynamic"
-    assert sonic_export_docs[1]["envs"]["SONIC_NORMALIZE"] == "baked"
-    assert sonic_export_docs[1]["envs"]["SONIC_METADATA"] == "sidecar"
 
-    assert sonic_eval_docs[0] == {"name": "sonic-eval", "execution": "serial"}
-    assert sonic_eval_docs[1]["name"] == "sonic-eval-onnx"
-    assert "npa workbench sonic eval" in sonic_eval_docs[1]["run"]
-    assert sonic_eval_docs[1]["resources"]["cloud"] == "nebius"
-    assert sonic_eval_docs[1]["resources"]["accelerators"] == "L40S:1"
-    assert sonic_eval_docs[1]["resources"]["image_id"] == "docker:${NPA_WORKBENCH_IMAGE}"
-    assert sonic_eval_docs[1]["envs"]["NPA_WORKBENCH_IMAGE"] == EXPECTED_WORKBENCH_IMAGE
-    assert sonic_eval_docs[1]["envs"]["SONIC_EVAL_BACKEND"] == "reference"
-    assert sonic_eval_docs[1]["envs"]["SONIC_EVAL_ENV"] == "smoke"
-    assert sonic_eval_docs[1]["envs"]["SONIC_EVAL_CONTAINER_GPUS"] == "all"
-    assert sonic_eval_docs[1]["envs"]["SONIC_EVAL_CONTAINER_GPU_TARGET"] == "L40S"
-    assert sonic_eval_docs[1]["envs"]["SONIC_EVAL_CONTAINER_IMAGE_VARIANT"] == "sonic-l40s-baked"
-    assert sonic_eval_docs[1]["envs"]["SONIC_EVAL_CONTAINER_ARGS"] == "eval"
-    assert sonic_eval_docs[1]["envs"]["SONIC_EVAL_CONTAINER_OUTPUT_PATH"].endswith(
-        "sonic_eval_results.json"
-    )
+def test_sonic_export_and_eval_specs_invoke_the_real_cli_surfaces() -> None:
+    """Replaces the raw-YAML `envs` assertions for the three retired templates.
 
+    The equivalent contract on the npa.workflow side is: the spec declares the right
+    ``toolRef``, wires every config key the toolRef's argv references (``load_spec``
+    resolves them), and the *result path* is the declared artifact rather than a format
+    word — the bug that made both eval stages succeed while writing nothing (EVIDENCE
+    §R5).
+    """
 
-def test_sonic_export_eval_blueprint_chains_real_cli_commands() -> None:
-    docs = _docs(SONIC_EXPORT_EVAL_YAML)
+    from npa.orchestration.npa_workflow.interpreter import build_plan
+    from npa.orchestration.npa_workflow.spec import load_spec
 
-    assert docs[0] == {"name": "sonic-export-eval", "execution": "serial"}
-    assert len(docs) == 2
+    export = load_spec(NPA_WORKFLOWS / "sonic-export.yaml")
+    assert export.name == "sonic-export"
+    assert export.states["export-onnx"].tool_ref == "workbench.sonic.export"
+    export_argv = " ".join(build_plan(export, run_id="probe").steps[0].argv)
+    assert "npa workbench sonic export" in export_argv
+    assert "--checkpoint s3://" in export_argv and "--output s3://" in export_argv
 
-    task = docs[1]
-    assert task["name"] == "sonic-export-eval"
-    assert task["resources"]["cloud"] == "nebius"
-    assert task["resources"]["accelerators"] == "L40S:1"
+    evaluate = load_spec(NPA_WORKFLOWS / "sonic-eval.yaml")
+    assert evaluate.states["eval-onnx"].tool_ref == "workbench.sonic.eval"
+    eval_argv = build_plan(evaluate, run_id="probe").steps[0].argv
+    assert "npa workbench sonic eval" in " ".join(eval_argv)
+    # `--output` is the RESULT PATH; `--output-format` is the format.
+    assert eval_argv[eval_argv.index("--output") + 1].endswith("/eval.json")
+    assert eval_argv[eval_argv.index("--output-format") + 1] == "json"
+    assert eval_argv[eval_argv.index("--env") + 1] == "smoke"
 
-    envs = task["envs"]
-    assert envs["POLICY_CKPT"].startswith("s3://")
-    assert envs["OUTPUT_DIR"].startswith("s3://")
-    assert envs["EVAL_BACKEND"] == "reference"
-    assert envs["EVAL_ENV"] == "sonic-locomotion-smoke"
-    assert envs["EPISODES"] == "8"
-    assert envs["CONTAINER_IMAGE"] == ""
-    assert envs["CONTAINER_GPU_TARGET"] == "L40S"
+    chained = load_spec(NPA_WORKFLOWS / "sonic-export-eval.yaml")
+    steps = build_plan(chained, run_id="probe").steps
+    assert [step.tool_ref for step in steps] == [
+        "workbench.sonic.export",
+        "workbench.sonic.eval",
+    ]
+    # The eval stage consumes exactly what the export stage produced.
+    assert chained.config["onnx_uri"] in " ".join(steps[0].argv)
+    assert chained.config["onnx_uri"] in " ".join(steps[1].argv)
     assert envs["CONTAINER_IMAGE_VARIANT"] == "sonic-l40s-baked"
     assert envs["CONTAINER_GPUS"] == "all"
     assert envs["CONTAINER_ARGS"] == "eval"

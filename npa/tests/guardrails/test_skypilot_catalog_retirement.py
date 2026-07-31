@@ -57,13 +57,17 @@ REMAINING: dict[str, str] = {
     "tokenfactory-rollout-judge.yaml": "twin live-verified; retire with the rest",
     "tokenfactory-scene-to-rollout-judge.yaml": "no twin",
     "tokenfactory-train-triage.yaml": "no twin",
-    # --- twin exists and is live-verifiable; retiring next ---
-    "cosmos3-reason.yaml": "twin: npa-workflows/cosmos3-reason.yaml",
-    "isaac-lab-rl-sweep.yaml": "twin: npa-workflows/isaac-lab-rl-sweep.yaml",
-    "sonic-eval.yaml": "twin: npa-workflows/sonic-eval.yaml",
-    "sonic-export.yaml": "twin: npa-workflows/sonic-export.yaml",
-    "sonic-export-eval.yaml": "twin: npa-workflows/sonic-export-eval.yaml",
-    "sonic-locomotion-finetuning.yaml": "twin: npa-workflows/sonic-locomotion-finetuning.yaml",
+    # --- twin exists but is NOT live-verified yet ---
+    "sonic-locomotion-finetuning.yaml": (
+        "twin needs a real SOMA/G1 motion dataset (NPA_E2E_SONIC_MOTION_SRC) that the "
+        "repo does not vendor; not verified live yet, so not retired"
+    ),
+    # --- RETIRED here: twin live-verified, see EVIDENCE.md -----------------------
+    # cosmos3-reason.yaml     job 182            npa-wf-gpu-cosmos3-reason-af7ded35
+    # isaac-lab-rl-sweep.yaml jobs 185/186/187   npa-wf-multi-isaac-lab-rl-sweep-c4b86dc5
+    # sonic-export.yaml       job 192            npa-wf-gpu-sonic-export-cb60c5ab
+    # sonic-eval.yaml         job 198            npa-wf-gpu-sonic-eval-bb3b9c72
+    # sonic-export-eval.yaml  job 197            npa-wf-multi-sonic-export-eval-2f5e979e
 }
 
 

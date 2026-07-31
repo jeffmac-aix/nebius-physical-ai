@@ -49,8 +49,10 @@ SIM2REAL_ENVGEN_SPLIT = (
 COSMOS2_TRANSFER = (
     ROOT / "npa" / "src" / "npa" / "workflows" / "skypilot" / "cosmos2-transfer.yaml"
 )
+# The raw cosmos3-reason template is retired; its npa.workflow spec is the surface
+# (both run the same manifest builder — EVIDENCE §R2).
 COSMOS3_REASON = (
-    ROOT / "npa" / "src" / "npa" / "workflows" / "skypilot" / "cosmos3-reason.yaml"
+    ROOT / "npa" / "workflows" / "workbench" / "npa-workflows" / "cosmos3-reason.yaml"
 )
 
 

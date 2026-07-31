@@ -33,18 +33,29 @@ artifact contracts, and customer-adaptable pipeline implementations.
 - `cosmos3-ea-fetch.yaml`: Cosmos3 source/checkpoint fetch.
 - `cosmos3-text-to-image-inference.yaml`: H100 text-to-image smoke inference.
 - `isaac-lab-rl-train.yaml`: single Isaac Lab RL job.
-- `isaac-lab-rl-sweep.yaml`: Isaac Lab parameter sweep.
 - `mjlab-eval.yaml`: MJLab evaluation.
 - `retargeting.yaml`: motion retargeting.
 - `sim-to-real-loop.yaml`: iterative sim-to-real loop.
 - `sim-to-real-pipeline.yaml`: full sim-to-real pipeline.
 - `sim-to-real-trigger.yaml`: trigger wrapper for sim-to-real work.
 - `sonic-train-standalone.yaml`: standalone SONIC training.
-- `sonic-export.yaml`: SONIC export.
-- `sonic-eval.yaml`: SONIC evaluation.
-- `sonic-export-eval.yaml`: export plus evaluation.
 - `sonic-locomotion-finetuning.yaml`: retargeting, SONIC, and MJLab flow.
 - `vlm-eval.yaml` and `vlm-eval-benchmark.yaml`: VLM evaluation loops.
+
+## Retired Templates
+
+These raw templates were retired once their `npa.workflow` spec had a live run
+(run ids in `EVIDENCE.md`). Use the spec under
+`npa/workflows/workbench/npa-workflows/`:
+
+- `isaac-lab-rl-sweep.yaml` — parallel GPU sweep (`--runtime`).
+- `cosmos3-reason.yaml` — Cosmos3 reason-stage manifest.
+- `sonic-export.yaml`, `sonic-eval.yaml`, `sonic-export-eval.yaml` — SONIC
+  export/eval. The tools now accept `s3://` inputs and outputs directly, which is
+  what the templates' inline download/upload bash used to do.
+
+The remaining templates are pinned in
+`npa/tests/guardrails/test_skypilot_catalog_retirement.py`; do not add new ones.
 
 ## Three-Tier Contract
 

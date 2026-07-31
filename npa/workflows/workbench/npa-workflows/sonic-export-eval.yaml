@@ -4,7 +4,6 @@ kind: Workflow
 metadata:
   name: sonic-export-eval
   description: Export a SONIC checkpoint to ONNX, then evaluate it.
-  skypilotTwin: npa/src/npa/workflows/skypilot/sonic-export-eval.yaml
 
 config:
   bucket: example-bucket

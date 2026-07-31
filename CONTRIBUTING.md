@@ -350,7 +350,7 @@ References:
 - `docs/workbench-yaml-guide.md`
 - `npa/src/npa/workflows/skypilot/bdd100k-pipeline.yaml`
 - `npa/src/npa/workflows/skypilot/isaac-lab-rl-train.yaml`
-- `npa/src/npa/workflows/skypilot/isaac-lab-rl-sweep.yaml`
+- `npa/workflows/workbench/npa-workflows/isaac-lab-rl-sweep.yaml`
 - `npa/scripts/run_bdd100k_pipeline.py`
 - `npa/scripts/run_isaac_lab_rl.py`
 

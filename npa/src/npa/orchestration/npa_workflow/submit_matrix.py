@@ -5,10 +5,12 @@ sim-to-real monolithic, etc.) are intentionally absent — see
 ``npa/workflows/workbench/npa-workflows/README.md``.
 
 Parallel sweeps are no longer such an exception: ``isaac-lab-rl-sweep.yaml`` is an
-``npa.workflow`` spec in this matrix, verified live on four GPUs. The raw SkyPilot
-template it was ported from is retained as a reference example (and is still
-referenced by docs, a runner script and its own test); retiring it is a separate
-change.
+``npa.workflow`` spec in this matrix, verified live on four GPUs, and the raw SkyPilot
+template it was ported from has been retired.
+
+The raw SkyPilot task catalog is being retired one live-verified twin at a time; the
+remaining templates are pinned in
+``npa/tests/guardrails/test_skypilot_catalog_retirement.py``.
 """
 
 from __future__ import annotations
