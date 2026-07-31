@@ -82,6 +82,32 @@ under `npa/src/npa/workflows/skypilot/`.
     `sonic-export-eval.yaml` gain an `eval_uri` config key.
   - `solutions.toml`'s `sonic-locomotion-finetuning` solution now submits the
     npa.workflow spec instead of the raw template.
+- **`npa workbench vlm-eval loop`** — score every rollout under a prefix and write the
+  aggregate `task_success_report.json` the sim-to-real loop gates on. `vlm-eval run`
+  scores *one* rollout (it discovers frames recursively), so this capability existed only
+  as ~80 lines of bash inside `sim-to-real-loop.yaml` and, separately, as Python inside a
+  gated GPU test. The report is field-compatible with the template's, including the
+  distinction that `task_success` gates on the **mean** score rather than the pass rate.
+  New spec `npa-workflows/vlm-eval-loop.yaml`.
+- **A self-hosted VLM stage now serves the model it calls.** `vlm_backend: self-hosted`
+  makes the tool POST to localhost, and nothing in a spec started a server — the stage
+  failed with `Connection refused`. The renderer gained a per-`toolRef` **run preamble**
+  (the sibling of its setup hook; a background service cannot start in `setup:`, which
+  SkyPilot runs in a different shell) that starts vLLM, health-checks `/health`, fails
+  fast with the server log if it dies, and traps `EXIT` so no GPU-resident server leaks.
+  It requires nothing of the task image: `ninja` and a CUDA compiler both come from pip,
+  and the JIT-dependent sampler falls back to its pure-PyTorch equivalent.
+  `config.vlm_serve_ready_seconds` (default 900 s) tunes the readiness window.
+- **`detection-training train` gained `--wait` and `--label-map`** — the poll-until-done
+  loop and the category map that `bdd100k-pipeline.yaml`'s template did in bash and that
+  no spec could reach. `--wait` is opt-in; the BDD100K and AV night-scene specs use it, so
+  their eval stages no longer race a checkpoint that does not exist yet.
+- **`vlm-eval-benchmark.yaml`'s twin matched its template in name only:** it passed a
+  **repo path** as `--dataset` (unresolvable in a pod) and ran the `stub` backend, so it
+  never touched a VLM. Both fixed, and the repo-path class of bug is now machine-checked
+  by `test_spec_paths_are_not_repo_relative.py`, which immediately found five `byof-*`
+  specs doing the same thing. `resolve_byof_profile_path()` accepts a packaged profile
+  **name**, so an installed wheel resolves what a checkout does.
 - **New guardrails** (none weakened): a catalog-wide check that every `toolRef` argv
   names real CLI options and passes values its options can mean; the three-tier
   contract's third tier moved from SkyPilot `envs` onto the spec + toolRef argv, with
