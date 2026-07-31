@@ -1938,3 +1938,35 @@ The template's point is that a GPU stage produces exactly what the zero-GPU host
 scores — the data dependency the cookbook advertises. A real twin needs
 `workbench.lerobot.eval` → `workbench.vlm_eval.run`; the retirement tally now says so instead
 of claiming the twin was verified.
+
+## R24. Final state of this change
+
+```
+raw SkyPilot templates    36 -> 17
+live-matrix cases         24 -> 32        (uncovered specs 17 -> 12)
+offline suite             base aa555d73: 2 failed / 3682 passed
+                          this branch:   1 failed / 4200 passed      (+518)
+cd npa && ruff check src tests            clean
+CI on the PR                              21/21 pass
+```
+
+The single offline failure is `smoke/test_golden_eval_tmux`, whose tmux subprocess uses a bare
+`python3` without numpy; it reproduces on the base commit.
+
+### Live jobs used in this section (182–222, all terminal)
+
+```
+218  npa-wf-gpu-vlm-eval-loop-88da76ad               SUCCEEDED   9m57s
+219  npa-wf-gpu-vlm-eval-single-25906482             SUCCEEDED   9m31s
+220  npa-wf-gpu-vlm-eval-benchmark-e47bc877          SUCCEEDED   9m43s
+222  npa-wf-gpu-tokenfactory-rollout-judge-b2afbc62  SUCCEEDED   2m23s (2 stages)
+214-217  the two vLLM bootstrap failures (ninja, then nvcc)  FAILED  ~8m each
+221  RTXPRO6000:1 not a name this cluster uses       FAILED_PRECHECKS  2s
+```
+
+### Teardown
+
+`kubectl get pods` shows no pod from any of these runs. `sky jobs queue` reports every job
+182–222 in a terminal state. What remains on the cluster belongs to other sessions and predates
+this work: `npa-rerun-…` (a Rerun deployment, 39 h), `nurec-spike-…` (8 h), and the two shared
+`sky-jobs-controller-…` pods (2 d and 11 d). Nothing was created that needs manual cleanup.
