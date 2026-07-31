@@ -177,10 +177,28 @@ TOOL_CATALOG: dict[str, ToolEntry] = {
             "-m",
             "npa.workflows.sim2real_envgen",
             "raw-shard",
+            # --run-id is REQUIRED by the module's parser and was missing, so every stage
+            # using this toolRef died with "the following arguments are required: --run-id".
+            # Invisible to the flag audit, which only understands `npa …` Typer commands.
+            "--run-id",
+            "{{run.id}}",
             "--output-uri",
             "{{config.raw_envs_uri}}",
             "--env-count",
             "{{config.env_count}}",
+            # The retired sim2real-envgen-split.yaml drove sharding from a Kubernetes Job
+            # completion index; a spec expresses it as a parallel group whose members set
+            # `shard_index` in `params:`.
+            "--shard-index",
+            "{{config.shard_index}}",
+            "--shard-count",
+            "{{config.shard_count}}",
+            "--train-fraction",
+            "{{config.train_fraction}}",
+            "--seed",
+            "{{config.envgen_seed}}",
+            "--augmented-frames-uri",
+            "{{config.augmented_frames_uri}}",
         ],
     ),
     "workbench.sim2real.policy_rollouts": ToolEntry(

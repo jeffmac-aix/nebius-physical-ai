@@ -1,0 +1,129 @@
+"""Guardrail: a `python -m <module>` toolRef argv must parse against the module's own CLI.
+
+The catalog-wide flag audit (`test_tool_catalog_argv.py`) understands Typer commands invoked
+as ``npa …``, and now also the ``npa …`` calls inside a ``bash -c`` script. It cannot check a
+toolRef that runs a module directly — and one of those was broken:
+
+    "workbench.sim2real_envgen.raw_shard": python -m npa.workflows.sim2real_envgen raw-shard
+        --output-uri … --env-count …
+
+``--run-id`` is ``required=True`` on that module's parser, so every stage using this toolRef
+could only die with *"the following arguments are required: --run-id"*. Three specs reference
+it. None had live coverage, so nothing caught it.
+
+This test asks the module's real ``argparse`` parser, which is the only source of truth for a
+module CLI: placeholders are replaced with dummy values and the remainder is parsed. A missing
+required option, an unknown flag, or a value the parser's ``type=`` rejects all fail here.
+"""
+
+from __future__ import annotations
+
+import argparse
+import re
+from importlib import import_module
+from typing import Sequence
+
+import pytest
+
+from npa.orchestration.npa_workflow.catalog import TOOL_CATALOG
+
+#: `{{...}}` placeholder, replaced with something every `type=` in the catalog accepts.
+PLACEHOLDER = re.compile(r"\{\{[^}]+\}\}")
+
+#: Modules whose CLI parser is reachable. A module without one cannot be checked, and is
+#: listed here so adding a module toolRef without an entry point is a visible choice.
+PARSER_FACTORIES = {
+    "npa.workflows.sim2real_envgen": "build_parser",
+}
+
+
+def _module_tool_refs() -> list[tuple[str, tuple[str, ...]]]:
+    """Return (toolRef, argv) for every `python[3] -m <module> …` catalog entry."""
+
+    out: list[tuple[str, tuple[str, ...]]] = []
+    for tool_ref, entry in TOOL_CATALOG.items():
+        argv = tuple(str(part) for part in entry.argv_template)
+        if entry.stub or len(argv) < 4:
+            continue
+        if argv[0] not in {"python", "python3"} or argv[1] != "-m":
+            continue
+        out.append((tool_ref, argv))
+    return out
+
+
+MODULE_TOOL_REFS = _module_tool_refs()
+
+
+def _dummy(value: str, *, flag: str) -> str:
+    """Replace placeholders with a value the parser's `type=` will accept."""
+
+    if not PLACEHOLDER.search(value):
+        return value
+    # Numeric options are the common case in these CLIs; a plain string breaks `type=int`.
+    if flag in {"--env-count", "--shard-index", "--shard-count", "--seed", "--limit"}:
+        return "1"
+    if flag in {"--train-fraction"}:
+        return "0.8"
+    return "dummy"
+
+
+def _resolve(argv: Sequence[str]) -> list[str]:
+    resolved: list[str] = []
+    flag = ""
+    for token in argv:
+        if token.startswith("--"):
+            flag = token
+            resolved.append(token)
+            continue
+        resolved.append(_dummy(token, flag=flag))
+    return resolved
+
+
+def test_there_is_at_least_one_module_tool_ref_to_check() -> None:
+    assert MODULE_TOOL_REFS, "expected at least one `python -m` toolRef in the catalog"
+
+
+@pytest.mark.parametrize(
+    ("tool_ref", "argv"), MODULE_TOOL_REFS, ids=[ref for ref, _ in MODULE_TOOL_REFS]
+)
+def test_module_tool_ref_argv_parses(tool_ref: str, argv: tuple[str, ...]) -> None:
+    module_name = argv[2]
+    factory = PARSER_FACTORIES.get(module_name)
+    assert factory, (
+        f"{tool_ref} runs `python -m {module_name}`, which exposes no parser factory. Add one "
+        f"(like `build_parser`) and register it in PARSER_FACTORIES so its argv can be checked."
+    )
+    parser: argparse.ArgumentParser = getattr(import_module(module_name), factory)()
+
+    try:
+        parser.parse_args(_resolve(argv[3:]))
+    except SystemExit as exc:  # argparse exits 2 on a usage error
+        pytest.fail(f"{tool_ref} argv does not parse against {module_name}: exit {exc.code}")
+
+
+def test_raw_shard_passes_every_option_the_shard_fan_out_needs() -> None:
+    """Pin the fix: the flags the retired sim2real-envgen-split.yaml drove."""
+
+    argv = tuple(str(part) for part in TOOL_CATALOG["workbench.sim2real_envgen.raw_shard"].argv_template)
+
+    assert {
+        "--run-id",
+        "--output-uri",
+        "--env-count",
+        "--shard-index",
+        "--shard-count",
+        "--train-fraction",
+        "--seed",
+        "--augmented-frames-uri",
+    } <= set(argv), argv
+
+
+def test_the_guardrail_would_have_caught_the_missing_run_id() -> None:
+    """Negative control: the argv that shipped must be rejected."""
+
+    from npa.workflows.sim2real_envgen import build_parser
+
+    shipped = ["raw-shard", "--output-uri", "s3://bucket/envs/", "--env-count", "10"]
+
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(shipped)
