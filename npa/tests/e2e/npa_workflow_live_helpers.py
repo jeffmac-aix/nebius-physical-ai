@@ -242,6 +242,17 @@ def seed_live_workflow_inputs(
             f"(tried {list(sidecar_uri_candidates(src))})"
         )
 
+    if spec_name == "insights-smoke.yaml":
+        # This spec reads a SHARED fixture prefix (`insights-fixtures/run/`), not a
+        # run-scoped one, so seeding is idempotent and safe to repeat.
+        _seed_insights_run_prefix(client, bucket=bucket, prefix="insights-fixtures/run/")
+        return
+
+    if spec_name == "insights-aggregate.yaml":
+        # Its run_prefix_uri is `runs/{{run.id}}/`, outside the e2e marker prefix.
+        _seed_insights_run_prefix(client, bucket=bucket, prefix=f"runs/{run_id}/")
+        return
+
     if spec_name == "retargeting.yaml":
         # The retargeting tool feeds NVIDIA's upstream SOMA-CSV converter, so it needs a
         # real motion clip. Prefer a staged real dataset; otherwise synthesize one that
@@ -366,6 +377,44 @@ def write_runtime_evidence(name: str, payload: Any) -> Path:
     path = log_dir / f"runtime-{name}.json"
     path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
     return path
+
+
+def _seed_insights_run_prefix(client, *, bucket: str, prefix: str) -> None:
+    """Seed a run prefix the insights ingester recognises.
+
+    ``workbench.insights.ingest_run`` scans a prefix for known manifest/report schemas
+    and fails with "no known manifest/report schemas found" when it finds none — which is
+    exactly why the insights specs had no live coverage. Two real artifacts are enough:
+
+    * a ``npa.dataset.manifest.v1`` document, which yields record/corruption metrics and
+      a lineage edge (so the store has something to compare and chart);
+    * a bare ``{"decision": ...}`` document, the shape the gate toolRefs write, which the
+      ingester routes to its decision extractor.
+    """
+
+    import json as _json
+
+    manifest = {
+        "schema": "npa.dataset.manifest.v1",
+        "dataset_id": "insights-fixture",
+        "version": "v1",
+        "source": "insights-fixture",
+        "record_count": 24,
+        "quality_stats": {"record_count": 24, "corrupt_count": 2, "completeness": 0.92},
+        "lineage": {"input_uris": [f"s3://{bucket}/{prefix}raw/"]},
+    }
+    client.put_object(
+        Bucket=bucket,
+        Key=f"{prefix}dataset/manifest.json",
+        Body=(_json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode(),
+        ContentType="application/json",
+    )
+    client.put_object(
+        Bucket=bucket,
+        Key=f"{prefix}gate/decision.json",
+        Body=b'{"decision": "promote_checkpoint"}\n',
+        ContentType="application/json",
+    )
 
 
 def _seed_motion_clips(client, *, bucket: str, prefix: str) -> None:

@@ -124,6 +124,22 @@ SUBMIT_LIVE_MATRIX: tuple[SubmitLiveCase, ...] = (
         ),
     ),
     SubmitLiveCase(
+        "insights-smoke.yaml",
+        "cpu",
+        secret_envs=("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"),
+        notes=(
+            "Insights lineage + metrics store: ingest a run prefix, compare two runs, "
+            "render a dashboard. CPU-only. The harness seeds a real dataset manifest and "
+            "a decision artifact, the two shapes the ingester recognises."
+        ),
+    ),
+    SubmitLiveCase(
+        "insights-aggregate.yaml",
+        "cpu",
+        secret_envs=("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"),
+        notes="Insights ingest + dashboard over one run prefix. CPU-only.",
+    ),
+    SubmitLiveCase(
         "multi-node-probe.yaml",
         "cpu",
         secret_envs=("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"),
