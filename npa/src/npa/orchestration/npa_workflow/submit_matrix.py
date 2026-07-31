@@ -178,6 +178,18 @@ SUBMIT_LIVE_MATRIX: tuple[SubmitLiveCase, ...] = (
         notes="Insights ingest + dashboard over one run prefix. CPU-only.",
     ),
     SubmitLiveCase(
+        "sim2real-envgen-shards.yaml",
+        "multi",
+        secret_envs=("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"),
+        runtime=True,
+        notes=(
+            "Shard fan-out: two raw env shards as one JobGroup, then a barrier that splits "
+            "the combined catalog 80/20. Replaces a template that read its shard index from "
+            "a Kubernetes Job completion index. CPU — generation writes env descriptors, it "
+            "does not render. Needs the runtime tier so the group really is concurrent."
+        ),
+    ),
+    SubmitLiveCase(
         "multi-node-probe.yaml",
         "cpu",
         secret_envs=("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"),
