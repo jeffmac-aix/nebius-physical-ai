@@ -740,3 +740,214 @@ re-minted with the same identity (§5.2).
 | 18 | New specs registered in `SUBMIT_LIVE_MATRIX` (incl. a `multi`/parallel case) | `683a1abd`, `e747c8ef`, `800cc4e0` | `token-factory-parallel-fanout` (cpu), `token-factory-gate-loop` (cpu, also in `DYNAMIC_SPECS`), `isaac-lab-rl-sweep` (multi); guarded by `test_runtime_specs_are_registered_with_the_right_tiers`, `test_expected_parallel_tasks_matches_the_spec_fan_out`, `test_specs_with_a_parallel_group_are_registered_as_runtime_cases` |
 | 19 | Cheapest live path first; cancel on timeout; no leaked clusters | — | §3 (CPU first), §5.2 (`sky jobs cancel -y 83`), §9 |
 | 20 | Honest reporting of what was not verified live | — | §8 |
+
+---
+---
+
+# EVIDENCE — retiring the raw SkyPilot task catalog
+
+Everything below is a **live run on real Nebius infrastructure** from the operator
+dev VM (`nebius-dev-vm`) against the `npa-rtxpro-mk8s` Kubernetes cluster and real
+S3. Anything **not** verified live is in [§R9](#r9-not-verified-live).
+
+Bucket and registry identifiers are redacted (`<artifact-bucket>`, `<registry>`);
+every value comes from `~/.npa/live-e2e.env` / `~/.npa/credentials.yaml`, nothing is
+hardcoded in the repo.
+
+Isolation: a dedicated git worktree created by the repo's own
+`npa/scripts/dev_vm_isolated_session.sh` (`~/npa-worktrees/retire-sky-7411`, tmux
+session `npa-retire-sky-7411`), with `PYTHONPATH=<worktree>/npa/src` so the shared
+editable venv cannot shadow branch code — verified before the first run:
+
+```bash
+$ cd ~/npa-worktrees/retire-sky-7411 && export PYTHONPATH=$PWD/npa/src
+$ python -c "import npa; print(npa.__file__)"
+/home/ubuntu/npa-worktrees/retire-sky-7411/npa/src/npa/__init__.py
+```
+
+## R0. Environment (secrets redacted)
+
+```bash
+set -a; . ~/.npa/live-e2e.env; . ~/.npa/live-e2e-gates.env; set +a
+export NPA_INTEGRATION_E2E=1 NPA_E2E_NPA_WORKFLOW_SUBMIT=1 NPA_E2E_NPA_WORKFLOW_RUNTIME=1
+export NPA_E2E_CLEAR_WORKBENCH_IMAGES=1          # default image + staged npa source
+export NPA_E2E_NPA_WORKFLOW_SUBMIT_POLL_SECONDS=20
+export NPA_E2E_NPA_WORKFLOW_SUBMIT_MAX_WAIT_SECONDS=2700
+export NPA_E2E_NPA_WORKFLOW_SUBMIT_CANCEL_ON_TIMEOUT=1
+export NPA_SKYPILOT_BIN=$HOME/.npa/skypilot-venv/bin/sky      # SkyPilot 0.12.2
+# branch source staged so the tasks run BRANCH code:
+bash scripts/stage-npa-src.sh --bucket <artifact-bucket> --prefix npa-workflow-e2e/npa-src-retire
+export NPA_SRC_S3_URI=s3://<artifact-bucket>/npa-workflow-e2e/npa-src-retire/npa   # 555 files
+```
+
+**Operator-environment inconsistency worth recording** (it cost the first sweep
+attempt): `~/.npa/live-e2e.env` ships `NPA_REGISTRY` pointing at the
+**us-central1** registry while `SKYPILOT_DOCKER_SERVER` names **eu-north1**, and the
+dev VM's login shell exports a *third* value of `NPA_REGISTRY` (eu-north1). Only
+us-central1 holds the `-sky3` / `-k8s-runtime` tags and only it is covered by the
+cluster's `npa-nebius-registry` pull secret. The single IAM token authenticates to
+us-central1 (verified with `crane manifest`), so the runner aligns
+`SKYPILOT_DOCKER_SERVER="${NPA_REGISTRY%%/*}"` and resolves every image override from
+that value rather than the ambient shell. Without that, provisioning fails with
+`ErrImagePull ... 403 Forbidden` and the renderer's registry-mismatch guard fires for
+any pinned image.
+
+## R1. Offline suites
+
+| Run | Command | Result |
+| --- | --- | --- |
+| Guardrails | `pytest npa/tests/guardrails/ -q` | **132 passed** |
+| Engine + specs + smoke | `pytest npa/tests/orchestration/npa_workflow/ npa/tests/smoke/test_all_workflow_yamls.py npa/tests/smoke/test_npa_workflow_smoke.py -q` | **451 passed** (with guardrails) |
+| New SONIC staging / fixture / harness parsing | `pytest npa/tests/workbench/test_sonic_export_staging.py npa/tests/workflows/test_sonic_fixture.py npa/tests/e2e/test_live_helpers_parsing.py -q` | **24 passed, 2 skipped** + **6 passed, 4 skipped** (torch-gated) + **6 passed** |
+| Plan-only live matrix (no cloud spend) | `pytest .../test_npa_workflow_submit_plan_only_matrix_no_leak -q` | **24 passed in 4.58 s** |
+| Lint | `ruff check` on every changed file | clean |
+
+**Pre-existing failures, verified identical on the base commit `aa555d73`** (checked
+out in the same worktree and re-run):
+
+* `npa/tests/smoke/test_golden_eval_tmux.py::test_tmux_script_dry_run_launches_session`
+  — the tmux script shells out to a bare `python3` that has no `numpy` in this
+  isolated-fast setup. Fails the same way on `aa555d73`.
+* `npa/tests/workbench/test_vlm_eval_backend.py`, `test_vlm_eval_loop_e2e.py` — the
+  two live-GPU fixtures EVIDENCE §1 already excludes.
+* `npa/tests/orchestration/npa_workflow/test_skypilot_render.py::test_workbench_workflow_submit_plan_only_redacts_registry_password`
+  fails **only when the live env is sourced** (it depends on `NPA_REGISTRY` /
+  `SKYPILOT_DOCKER_*` being unset). Passes on the branch and on `aa555d73` in a clean
+  shell. Unit suites must therefore be run *without* `live-e2e.env`.
+
+## R2. `cosmos3-reason.yaml` twin — PASSED
+
+```bash
+NPA_E2E_NPA_WORKFLOW_SUBMIT_TIERS=gpu \
+NPA_E2E_NPA_WORKFLOW_SUBMIT_SPECS=cosmos3-reason.yaml \
+NPA_E2E_ACCELERATOR_REMAP=H100:1=RTXPRO-6000-BLACKWELL-SERVER-EDITION:1 \
+NPA_E2E_RELAX_CPU_MEM=1 \
+  pytest npa/tests/e2e/test_npa_workflow_submit_live_e2e.py::test_npa_workflow_submit_live_reaches_terminal -q -s
+# 1 passed in 182.76s
+```
+
+**Run id** `npa-wf-gpu-cosmos3-reason-af7ded35` · **SkyPilot job 182**
+
+| job | task | REQUESTED | status | submitted_at | end_at |
+| --- | --- | --- | --- | --- | --- |
+| 182 | `npa-wf-gpu-cosmos3-reason-af7ded35` | `1x[RTXPRO-6000-BLACKWELL-SERVER-EDITION:1]` | **SUCCEEDED** | 1785471666.9383 | 1785471724.2441 |
+
+Equivalence note: this twin is genuinely equivalent because **both** sides run the
+same code — the SkyPilot template's `run:` is
+`python -m npa.workflows.cosmos_split cosmos3-reason ...` and the toolRef is
+`npa workbench cosmos3 reason`, which calls the same
+`build_cosmos3_reason_manifest`. Both are manifest builders that request a GPU; that
+pre-existing stub-on-a-GPU shape is unchanged by this work and is called out in §R9.
+
+## R3. `isaac-lab-rl-sweep.yaml` twin — PASSED (4 GPU variants, 2 batches, barrier)
+
+```bash
+NPA_E2E_NPA_WORKFLOW_SUBMIT_TIERS=multi \
+NPA_E2E_NPA_WORKFLOW_SUBMIT_SPECS=isaac-lab-rl-sweep.yaml \
+NPA_E2E_ACCELERATOR_REMAP=L40S:1=RTXPRO-6000-BLACKWELL-SERVER-EDITION:1 \
+NPA_E2E_RELAX_CPUS=8+ NPA_E2E_RELAX_MEMORY=32+ \
+NPA_E2E_IMAGE_OVERRIDE_ISAAC_LAB=<registry>/npa-isaac-lab:2.3.2.post1-sky3 \
+NPA_SRC_OVERLAY=1 \
+  pytest .../test_npa_workflow_runtime_live_reaches_terminal -q -s
+# 1 passed in 586.24s (0:09:46)
+```
+
+**Run id** `npa-wf-multi-isaac-lab-rl-sweep-c4b86dc5` · jobs **185, 186, 187**
+
+Wave ledger (`s3://<artifact-bucket>/.../isaac-lab-rl-sweep/npa-workflow/runtime.json`,
+`npa.workflow.runtime.v1`), `status: succeeded`:
+
+| wave | kind | job | tasks | submitted_at | end_at | max_concurrent_observed |
+| --- | --- | --- | --- | --- | --- | --- |
+| 001 `sweep` | parallel | 185 | `variant-lr-1e-3` | 1785472779.8337 | 1785472892.9320 | 2 |
+| | | | `variant-lr-3e-4` | 1785472779.8382 | 1785472892.1463 | |
+| 002 `sweep` | parallel | 186 | `variant-entropy-0` | 1785472980.3979 | 1785473086.9207 | 2 |
+| | | | `variant-entropy-0-01` | 1785472980.4032 | 1785473087.4682 | |
+| 003 `select-best` | serial | 187 | barrier | 1785473191.0149 | 1785473270.9288 | — |
+
+Three properties, all from the timeline rather than assertion:
+
+* **Concurrency** — each batch's two GPU tasks were submitted **4.5 ms** apart and
+  their lifetimes overlap almost entirely.
+* **Bounded concurrency (`--var max_concurrency=2`)** — batch 2 was submitted
+  **87.5 s after** batch 1's last task ended, so the run never held more than two
+  GPUs. This is live coverage of the multi-batch path.
+* **Barrier** — `select-best` was submitted **103.5 s after** batch 2's last task
+  ended.
+
+Real work, not a stub — artifacts under
+`s3://<artifact-bucket>/npa-workflow-e2e/npa-wf-multi-isaac-lab-rl-sweep-c4b86dc5/isaac-lab-rl-sweep/`:
+
+```
+    45575  variants/lr-1e-3/checkpoint.pt              real RSL-RL checkpoint
+    24996  variants/lr-1e-3/train.log                  real training log
+      726  variants/lr-1e-3/npa_rl_sweep_metrics.json
+      888  variants/lr-1e-3/npa_rl_sweep_summary.json
+   ... same four files for lr-3e-4, entropy-0, entropy-0-01 ...
+     3559  report/npa_rl_sweep_best.json               the barrier's ranking
+     7845  npa-workflow/runtime.json                   wave ledger
+```
+
+A first attempt (**job 183**) was `CANCELLED` after ~12 min of `ErrImagePull ... 403
+Forbidden` retries — the registry confusion described in §R0, not a workflow fault.
+
+## R4. `sonic-export.yaml` twin — PASSED, and the three real defects it exposed
+
+This is the run that justifies most of the code in this change. The twin validated,
+planned and rendered cleanly, and then failed **three times** for three different,
+genuine reasons before passing.
+
+| # | SkyPilot job | In-pod error | Root cause | Fix |
+| --- | --- | --- | --- | --- |
+| 1 | — (submit rejected in 1.15 s) | `rendered SkyPilot YAML still contains unresolved placeholders: ${npa_src_root}` | the new per-toolRef extras snippet used a braced expansion, which `assert_no_unresolved_placeholders` rightly rejects | compose the pip target with `printf` |
+| 2 | **184** | `Error: checkpoint not found: s3://<artifact-bucket>/.../sonic-export/checkpoint.pt` | `sonic export` only ever accepted **local** paths; the SkyPilot template did the S3 download/upload in ~60 lines of inline bash+boto3, and a `toolRef` argv has no such escape hatch | `export_onnx` stages `s3://` inputs and publishes `s3://` outputs (`workbench/sonic/staging.py`) |
+| 3 | **188**, **189** | `Error: observation dimension is required. Provide --obs-spec or a policy with one of: observation_dim, obs_dim, input_dim, num_observations` | the staged fixture was a bare `nn.Sequential`, which exposes none of those; real SONIC policies do, and the toolRef does not pass `--obs-spec` (a pinned `spec_gap`) | the fixture policy carries `obs_dim` / `action_dim` |
+
+Each of these was invisible to mocked tests, and each now has offline coverage
+(`test_tool_pip_extras.py`, `test_sonic_export_staging.py`, `test_sonic_fixture.py`).
+
+**Passing run:** `npa-wf-gpu-sonic-export-cb60c5ab` · **SkyPilot job 192** ·
+`1x[RTXPRO-6000-BLACKWELL-SERVER-EDITION:1]` · **SUCCEEDED** · `1 passed in 251.15s`
+
+Pod log excerpt — note the new extras hook doing its job:
+
+```
+(setup pid=…) syncing s3://<artifact-bucket>/npa-workflow-e2e/npa-src-retire/npa -> /tmp/npa-src
+(setup pid=…) npa interpreter recorded: /home/sky/miniconda3/bin/python3
+(setup pid=…) installing npa[sonic] from /tmp/npa-src
+(npa-wf-gpu-sonic-export-cb60c5ab, pid=…) using npa interpreter /home/sky/miniconda3/bin/python3 for this stage
+```
+
+Artifacts under `.../npa-wf-gpu-sonic-export-cb60c5ab/sonic-export/`:
+
+```
+    16697  checkpoint.pt                 the staged fixture (input)
+     1672  sonic_policy.onnx             REAL ONNX graph produced by the shipped exporter
+    11776  sonic_policy.onnx.data        external weights (torch.onnx.export)
+      678  sonic_policy.metadata.json    npa_sonic_onnx_export_v1 sidecar
+```
+
+The `.onnx.data` file is why staging publishes *every* file next to the model: an
+ONNX with external weights is a **pair**, and onnxruntime resolves the data file
+relative to the model.
+
+### R4.1 The fixture, built in-cluster
+
+```bash
+scripts/stage-sonic-export-fixture.sh \
+  --image <registry>/npa-sonic:0.1.2-k8s-runtime \
+  --uri   s3://<artifact-bucket>/npa-workflow-e2e/fixtures/sonic-export/checkpoint.pt
+```
+
+```json
+{
+  "act_dim": 12, "obs_dim": 48, "hidden": 32, "seed": 0,
+  "bytes": 16697, "schema": "npa.sonic.export_fixture.v1",
+  "torch_version": "2.9.0+cu130",
+  "checkpoint_uri": "s3://<artifact-bucket>/npa-workflow-e2e/fixtures/sonic-export/checkpoint.pt"
+}
+```
+
+No torch wheel was downloaded to the dev VM (which sits at **96 % disk, 8.7 GB
+free**); the builder ran in a pod from the SONIC image with the module mounted as a
+ConfigMap.
