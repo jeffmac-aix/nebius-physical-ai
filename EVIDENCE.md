@@ -1970,3 +1970,113 @@ The single offline failure is `smoke/test_golden_eval_tmux`, whose tmux subproce
 182–222 in a terminal state. What remains on the cluster belongs to other sessions and predates
 this work: `npa-rerun-…` (a Rerun deployment, 39 h), `nurec-spike-…` (8 h), and the two shared
 `sky-jobs-controller-…` pods (2 d and 11 d). Nothing was created that needs manual cleanup.
+
+---
+
+## R25. `scenario-gen-adversarial.yaml` retired (17 → 16): the GPU it asked for was decorative
+
+The tally reason said "no twin with live coverage". `scenario-gen-smoke.yaml` acquired that
+coverage in §R17 (job 213, `npa-wf-cpu-scenario-gen-smoke-bc5ed74b`), so the question became
+whether it is a real twin. Both run the same two commands — `scenario-gen generate` then
+`scenario-gen rank`, with rank consuming exactly the manifest generate declared. The
+differences were scale (16 vs 8 scenarios, 200000 vs 1000 adversary steps, top-k 4 vs 3) and,
+apparently, a GPU:
+
+```yaml
+# scenario-gen-adversarial.yaml
+accelerators: RTXPRO-6000-BLACKWELL-SERVER-EDITION:1
+# Keep this image on an RT-core-capable Isaac Lab build (adversary RL backend).
+image_id: "docker:.../npa-isaac-lab:2.3.2.post1"
+ADVERSARY_STEPS: "200000"
+```
+
+That GPU is not reachable from the CLI. `generate_scenarios(adversary_backend=None)` falls
+back to `simulate_adversary`, and the seam has **no CLI flag**:
+
+```python
+def simulate_adversary(request, seed):
+    """Deterministic heuristic stand-in for an Isaac Lab adversarial RL rollout.
+
+    This is NOT RL. ... a real Isaac Lab RL adversary replaces it via ``adversary_backend``.
+    """
+    budget_gain = min(0.25, math.log10(max(request.adversary_steps, 10)) / 40.0)
+    for index in range(request.num_scenarios): ...
+```
+
+So `ADVERSARY_STEPS=200000` shifts one `log10` term and the loop is O(num_scenarios). A CPU
+twin runs the *same code*; the template advertised a capability the shipped CLI does not have.
+
+The claim is pinned rather than asserted in prose:
+`test_the_cli_cannot_select_an_rl_adversary_backend` fails the day `scenario-gen generate`
+grows a backend flag — which is exactly when a GPU spec should be authored. The scenario-gen
+skill no longer tells operators to route this work to RT-core GPUs, and it documents the
+template's production scale as `--var` overrides.
+
+## R26. The BDD100K runner port, and the two defects the mock drive found
+
+§R21 listed three tool features the port needed beyond `--wait` and `--label-map`. All three
+are now in the tool:
+
+| Template behaviour (bash + `jq`) | Now |
+| --- | --- |
+| GET `/runs`, take the **last completed** run for the view, substitute `{epoch}` in its `checkpoint_uri_pattern` | `eval --discover-checkpoint`, matching on the training output prefix (the same intent, and narrower: that prefix is what `/train` was handed) |
+| `jq -e '(.mAP\|type=="number") and …'` | `assert_eval_metrics` — a service can answer 200 with a null mAP, and the stage would otherwise report success on an unusable report |
+| `WRITE_CANONICAL_EVAL_METRICS=1` → `aws s3 cp` to `<output>/metrics.json` | `eval --write-canonical-metrics`, which also makes the spec's **declared** eval artifact true |
+
+`run_bdd100k_pipeline.py` now takes `--spec` (with `--yaml` kept as an alias), renders through
+`prepare_npa_workflow_for_submit` with config overrides instead of injecting envs into raw
+documents, and forwards the service tokens as `secret_envs`.
+
+### The mock drive: every stage's real argv, and what it caught
+
+`--mock-endpoints` no longer runs each raw document's bash — a spec has no bash. It executes
+**each plan step's resolved argv** against in-process LanceDB and detection-training
+stand-ins, which is a stronger check because that argv is exactly what a pod would run. Two
+real defects surfaced immediately, neither reachable by reading the diff:
+
+**1. `curate-views` could never have worked.**
+
+```
+name: curate-views  returncode: 2
+Usage: npa workbench lancedb create-mv [OPTIONS]
+Error: No such option '--table'. (Did you mean one of: '--name', '--source-table'?)
+```
+
+The `create_failure_views` toolRef passed `--table`. The catalog-wide flag audit missed it
+because it bailed out whenever `argv_template[0] != "npa"`, and this entry is
+`["bash", "-c", "…three create-mv calls…"]` — so **every `bash -c` toolRef was unaudited**.
+`embedded_npa_commands()` now extracts each `npa …` invocation from such a script and audits
+it like any other argv; negative controls pin both the fix and the original broken command.
+
+**2. The eval stages declared a URI nothing could write.**
+
+```
+declared: s3://…/eval/bdd100k_rider_trainmetrics.json
+```
+
+The eval prefixes had no trailing slash, so `{{config.rider_eval_uri}}metrics.json`
+concatenated. Fixed in `bdd100k-pipeline`, `av-night-scene-hardening` and the two
+diagram-example specs.
+
+### Result
+
+```
+$ pytest npa/tests/workflows/test_bdd100k_pipeline.py -q
+9 passed
+```
+
+The mock summary shows all eleven stages at `returncode: 0`, the exact LanceDB write sequence
+(1 import, 6 backfills, 3 create-mv), the exact detection sequence (3 train, 3 eval), and the
+two new behaviours in the **call order** rather than just the counts:
+
+* every `POST /train` is immediately followed by `GET /status` — `--wait`;
+* every `POST /eval` is immediately preceded by `GET /runs`, and its payload names a concrete
+  `…/checkpoints/epoch_10.pt` with no `{epoch}` left in it — `--discover-checkpoint`.
+
+Each `/train` payload carries the full ten-category `label_map`, with `num_classes` agreeing
+with the map's size rather than contradicting it.
+
+**The template is still not deleted.** A live run needs the LanceDB workbench service, which
+is not deployed on this cluster (the same wall as §R16), and the mock stands in for both
+services, so it cannot prove behaviour against the real ones. What changed is that the
+retirement is now one step: deploy the service, run it live, delete. The tally entry says so.

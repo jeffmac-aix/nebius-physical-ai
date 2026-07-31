@@ -25,7 +25,13 @@ SKYPILOT_DIR = REPO_ROOT / "npa" / "src" / "npa" / "workflows" / "skypilot"
 #: Retirement tally: started at 36.
 REMAINING: dict[str, str] = {
     # --- loaded and launched by a shipped runner script ---
-    "bdd100k-pipeline.yaml": "npa/scripts/run_bdd100k_pipeline.py DEFAULT_YAML",
+    "bdd100k-pipeline.yaml": (
+        "runner PORTED: run_bdd100k_pipeline.py now renders the spec, and its "
+        "--mock-endpoints mode drives every stage's real argv against stand-in "
+        "services. Survives only because a LIVE run needs the LanceDB workbench "
+        "service, which is not deployed (EVIDENCE.md \u00a7R16, \u00a7R26); docs still "
+        "cite it as the raw-YAML authoring reference"
+    ),
     "sim-to-real-pipeline.yaml": "npa/scripts/run_sim_to_real_pipeline.py DEFAULT_YAML",
     # --- referenced by a CLI/SDK path pointer or shipped data ---
     "sim-to-real-trigger.yaml": "three-tier contract (legacy YAML tier)",
