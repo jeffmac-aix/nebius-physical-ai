@@ -28,6 +28,6 @@ states:
     toolRef: workbench.vlm_eval.run
     resources: gpu
     outputs:
-      - uri: "{{config.scores_uri}}report.json"
+      - uri: "{{config.scores_uri}}vlm_eval_stub.json"
         schema: npa.workbench.vlm_eval.report.v1
     terminal: true
