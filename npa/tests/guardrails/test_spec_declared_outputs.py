@@ -44,6 +44,12 @@ RESULT_URI_TOOLS: dict[str, tuple[str, str]] = {
         "--output-path",
         "npa.workbench.token_factory:reason_result_uri_for",
     ),
+    # Retargeting's real artifact is a directory of motions; the JSON a downstream
+    # stage reads is the metadata sidecar, so that is what `outputs:` must name.
+    "workbench.retargeting.run": (
+        "--output-path",
+        "npa.workbench.retargeting:metadata_uri_for",
+    ),
 }
 
 

@@ -242,20 +242,17 @@ def seed_live_workflow_inputs(
             f"(tried {list(sidecar_uri_candidates(src))})"
         )
 
+    if spec_name == "retargeting.yaml":
+        # The retargeting tool feeds NVIDIA's upstream SOMA-CSV converter, so it needs a
+        # real motion clip. Prefer a staged real dataset; otherwise synthesize one that
+        # satisfies the upstream `load_csv_motion` contract (see
+        # npa.workflows.motion_fixture). Before this the case failed with
+        # "S3 input contains no objects" (EVIDENCE §6.1).
+        _seed_motion_clips(client, bucket=bucket, prefix=f"{marker}/source/")
+        return
+
     if spec_name == "sonic-locomotion-finetuning.yaml":
-        # SONIC retargeting needs a real G1 motion dataset (SOMA/G1 CSV clips,
-        # each a directory with joint_pos.csv/body_pos.csv/body_quat.csv). We do
-        # not vendor the dual-licensed upstream data; the operator points
-        # NPA_E2E_SONIC_MOTION_SRC at a staged real dataset (an ``s3://`` prefix
-        # or local directory, e.g. NVlabs/GR00T-WholeBodyControl
-        # gear_sonic_deploy/reference/example after ``git lfs pull``).
-        src = os.environ.get("NPA_E2E_SONIC_MOTION_SRC", "").strip()
-        if not src:
-            pytest.skip(
-                "NPA_E2E_SONIC_MOTION_SRC not set; stage a real SOMA/G1 motion "
-                "dataset (soma-csv clips) and point this at it."
-            )
-        _seed_prefix_from_source(src, bucket, f"{marker}/source/", client)
+        _seed_motion_clips(client, bucket=bucket, prefix=f"{marker}/source/")
         return
 
     # VLM-eval GPU twins score a rollout: seed a short RGB frame sequence under
@@ -369,6 +366,35 @@ def write_runtime_evidence(name: str, payload: Any) -> Path:
     path = log_dir / f"runtime-{name}.json"
     path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
     return path
+
+
+def _seed_motion_clips(client, *, bucket: str, prefix: str) -> None:
+    """Seed SOMA/G1 motion clips for the retargeting-backed specs.
+
+    Prefers a real staged dataset (``NPA_E2E_SONIC_MOTION_SRC`` — an ``s3://`` prefix or
+    a local directory, e.g. NVlabs/GR00T-WholeBodyControl's
+    ``gear_sonic_deploy/reference/example`` after ``git lfs pull``). When that is not
+    set, synthesize a clip set that satisfies the upstream ``load_csv_motion`` contract
+    with :mod:`npa.workflows.motion_fixture`, so these twins are live-testable without
+    the dual-licensed upstream data this repo does not vendor.
+    """
+
+    import tempfile
+
+    src = os.environ.get("NPA_E2E_SONIC_MOTION_SRC", "").strip()
+    if src:
+        _seed_prefix_from_source(src, bucket, prefix, client)
+        return
+
+    from npa.workflows.motion_fixture import build_dataset, upload_dataset
+
+    with tempfile.TemporaryDirectory(prefix="npa-motion-fixture-") as tmp:
+        meta = build_dataset(tmp)
+        uploaded = upload_dataset(tmp, f"s3://{bucket}/{prefix}", client=client)
+    print(
+        f"[seed] synthesized {meta['clip_count']} SOMA-CSV clip(s) "
+        f"({len(uploaded)} objects) — set NPA_E2E_SONIC_MOTION_SRC to use real data"
+    )
 
 
 def _seed_object_from_source(source: str, bucket: str, dest_key: str, client) -> None:

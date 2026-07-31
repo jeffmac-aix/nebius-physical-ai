@@ -29,6 +29,6 @@ states:
     toolRef: workbench.retargeting.run
     resources: cpu
     outputs:
-      - uri: "{{config.retargeted_uri}}manifest.json"
+      - uri: "{{config.retargeted_uri}}retargeting_result.json"
         schema: npa.workbench.retargeting.manifest.v1
     terminal: true

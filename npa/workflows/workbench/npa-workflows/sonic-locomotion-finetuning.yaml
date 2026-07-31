@@ -41,7 +41,7 @@ states:
     toolRef: workbench.retargeting.run
     resources: cpu
     outputs:
-      - uri: "{{config.retargeted_uri}}manifest.json"
+      - uri: "{{config.retargeted_uri}}retargeting_result.json"
     next: train
 
   train:
