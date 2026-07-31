@@ -248,7 +248,11 @@ TOOL_CATALOG: dict[str, ToolEntry] = {
     ),
     "workbench.rl.policy_train": ToolEntry(
         name="workbench.rl.policy_train",
-        description="Train simulator RL policy checkpoint with workbench RL backend.",
+        description=(
+            "Train simulator RL policy checkpoint with workbench RL backend. "
+            "Trainer hyper-parameters go through Isaac Lab's repeatable Hydra "
+            "`--override KEY=VALUE`, which is what the CLI actually accepts."
+        ),
         argv_template=[
             "npa",
             "workbench",
@@ -258,11 +262,15 @@ TOOL_CATALOG: dict[str, ToolEntry] = {
             "{{config.task_name}}",
             "--steps",
             "{{config.train_steps}}",
-            "--learning-rate",
-            "{{config.learning_rate}}",
-            "--batch-size",
-            "{{config.batch_size}}",
-            "--input-path",
+            # `--num-envs` is the vectorized rollout batch dimension for on-policy
+            # training; it is the real CLI flag for what the specs called
+            # `batch_size` (there is no `--batch-size` option).
+            "--num-envs",
+            "{{config.num_envs}}",
+            "--override",
+            "agent.algorithm.learning_rate={{config.learning_rate}}",
+            # The CLI names this `--data-path`, not `--input-path`.
+            "--data-path",
             "{{config.train_dataset_uri}}",
             "--output-path",
             "{{config.checkpoint_uri}}",
@@ -280,7 +288,8 @@ TOOL_CATALOG: dict[str, ToolEntry] = {
             "{{config.task_name}}",
             "--checkpoint",
             "{{config.checkpoint_uri}}",
-            "--episodes",
+            # The CLI names this `--num-episodes`, not `--episodes`.
+            "--num-episodes",
             "{{config.eval_episodes}}",
             "--output-path",
             "{{config.eval_report_uri}}",
