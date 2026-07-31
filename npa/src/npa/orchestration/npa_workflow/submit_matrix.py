@@ -180,7 +180,9 @@ SUBMIT_LIVE_MATRIX: tuple[SubmitLiveCase, ...] = (
     SubmitLiveCase(
         "cosmos-fetch.yaml",
         "cpu",
-        secret_envs=("HF_TOKEN",),
+        # setup stages the npa source from S3 with boto3, so the keys are needed even
+        # though nothing in this plan touches object storage.
+        secret_envs=("HF_TOKEN", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"),
         config_vars=(
             # The spec's defaults name Cosmos3 assets that are gated behind early access and
             # a licence acceptance. Substituting public ones exercises the identical code

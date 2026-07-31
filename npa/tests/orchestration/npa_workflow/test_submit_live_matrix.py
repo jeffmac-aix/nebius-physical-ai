@@ -156,6 +156,29 @@ def test_runtime_cases_declare_their_secrets_and_are_not_plan_only() -> None:
         assert not case.plan_only
 
 
+def test_every_live_case_declares_the_object_store_credentials_setup_needs() -> None:
+    """`setup:` syncs the npa source from S3 with boto3, so EVERY live case needs the keys.
+
+    Learned the expensive way: `cosmos-fetch` declared only `HF_TOKEN`, because nothing in its
+    *plan* touches object storage — and the run died in **setup** with
+    ``botocore.exceptions.NoCredentialsError`` before either stage started.
+    ``test_matrix_cases_declare_every_secret_the_renderer_hints_at`` cannot see this: the need
+    comes from the source-staging setup, not from a toolRef's argv.
+    """
+
+    required = {"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"}
+    missing = sorted(
+        f"{case.spec}: {sorted(required - set(case.secret_envs))}"
+        for case in SUBMIT_LIVE_MATRIX
+        if not case.plan_only and not required <= set(case.secret_envs)
+    )
+
+    assert not missing, (
+        "every live case's setup stages npa from NPA_SRC_S3_URI with boto3, so each must "
+        "declare the object-store credentials:\n  " + "\n  ".join(missing)
+    )
+
+
 def test_expected_parallel_tasks_matches_the_spec_fan_out() -> None:
     """Matrix metadata must not drift from the spec it describes.
 
