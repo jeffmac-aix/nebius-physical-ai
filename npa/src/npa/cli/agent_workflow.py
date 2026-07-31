@@ -937,7 +937,10 @@ def _workflow_specs() -> dict[str, dict[str, Any]]:
                     "task_name": "Isaac-Cartpole-v0",
                     "train_steps": 500000,
                     "learning_rate": 0.0003,
-                    "batch_size": 256,
+                    # `workbench.rl.policy_train` passes this as Isaac Lab's real
+                    # `--num-envs` (the vectorized rollout batch dimension); there
+                    # is no `--batch-size` option on that CLI.
+                    "num_envs": 256,
                     "eval_episodes": 50,
                     "success_threshold": 0.85,
                 }
