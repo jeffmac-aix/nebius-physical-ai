@@ -51,28 +51,53 @@ pytestmark = pytest.mark.skipif(
 # --------------------------------------------------------------------------------------
 
 
-class Harness:
-    """A sandbox with a fake base python whose ``pip`` records instead of downloading."""
+ISAAC_LAB_SRC_COMMIT = "37ddf626871758333d6ed89cf64ad702aef127d0"
 
-    def __init__(self, tmp_path: Path, *, pip_fails: bool = False) -> None:
+
+class Harness:
+    """A sandbox that simulates the image side of the bootstrap without any network.
+
+    The fake ``python3.11`` stands in for the image's baked interpreter. It is a real
+    simulator rather than a stub: it reports a controlled ``purelib``, emulates ``.pth``
+    processing so the script's "can the cache venv see the image's torch?" check is a
+    genuine test of the layering, and its ``pip`` materialises dist-info for whatever the
+    requirements file names, so the script's post-install verification is genuinely
+    exercised too. A fake ``git`` fabricates the Isaac Lab source layout.
+    """
+
+    def __init__(self, tmp_path: Path, *, pip_fails: bool = False, pip_delay: int = 0) -> None:
         self.root = tmp_path
         self.cache = tmp_path / "cache"
         self.bin = tmp_path / "bin"
+        self.base_site = tmp_path / "image-site-packages"
         self.calls = tmp_path / "calls.log"
-        self.cache.mkdir(parents=True, exist_ok=True)
-        self.bin.mkdir(parents=True, exist_ok=True)
+        for directory in (self.cache, self.bin, self.base_site):
+            directory.mkdir(parents=True, exist_ok=True)
 
-        # A fake "base python" that answers the four things the bootstrap asks of it:
-        # -m venv (make a tree that looks like a venv), sysconfig purelib, the ABI
-        # string, and -m pip (record the call). Also serves as the created venv's python.
+        # A stand-in for the image's baked torch, so the layering check has something
+        # real to find via the .pth the bootstrap writes.
+        (self.base_site / "torch").mkdir(exist_ok=True)
+        (self.base_site / "torch" / "__init__.py").write_text(
+            '__version__ = "2.9.0+cu128"\n', encoding="utf-8"
+        )
+
         self._write(
             self.bin / "python3.11",
             f"""#!/usr/bin/env bash
 echo "python3.11 $*" >> {self.calls}
 real={sys.executable}
-case "$1" in
+self_dir="$(cd "$(dirname "$0")" && pwd)"
+# A venv copy of this script lives at <venv>/bin/python, so its purelib is its own
+# site-packages; the harness copy on PATH reports the image's site-packages.
+if [ -d "$self_dir/../lib/python3.11/site-packages" ]; then
+  purelib="$(cd "$self_dir/../lib/python3.11/site-packages" && pwd)"
+else
+  purelib="{self.base_site}"
+fi
+
+case "${{1:-}}" in
   -m)
-    case "$2" in
+    case "${{2:-}}" in
       venv)
         target="${{@: -1}}"
         mkdir -p "$target/bin" "$target/lib/python3.11/site-packages"
@@ -82,12 +107,51 @@ case "$1" in
         ;;
       pip)
         echo "PIP $*" >> {self.calls}
-        exit {1 if pip_fails else 0}
+        {"sleep " + str(pip_delay) if pip_delay else "true"}
+        if [ "{1 if pip_fails else 0}" = "1" ]; then exit 1; fi
+        # Materialise dist-info for every pinned requirement, so the script's own
+        # post-install verification runs for real instead of being skipped.
+        reqfile=""
+        prev=""
+        for arg in "$@"; do
+          [ "$prev" = "-r" ] && reqfile="$arg"
+          prev="$arg"
+        done
+        if [ -n "$reqfile" ] && [ -f "$reqfile" ]; then
+          while IFS= read -r line; do
+            case "$line" in \\#*|"") continue ;; esac
+            case "$line" in *==*) ;; *) continue ;; esac
+            name="${{line%%==*}}"
+            rest="${{line#*==}}"
+            version="${{rest%% *}}"
+            version="${{version%%\\\\*}}"
+            module="$(echo "$name" | tr '.-' '__')"
+            mkdir -p "$purelib/${{module}}"
+            : > "$purelib/${{module}}/__init__.py"
+            dist="$purelib/${{name//-/_}}-${{version}}.dist-info"
+            mkdir -p "$dist"
+            printf 'Metadata-Version: 2.1\\nName: %s\\nVersion: %s\\n' "$name" "$version" \\
+              > "$dist/METADATA"
+            printf 'Wheel-Version: 1.0\\n' > "$dist/WHEEL"
+          done < "$reqfile"
+        fi
+        exit 0
         ;;
     esac
     ;;
+  -c)
+    # The bootstrap asks for purelib; answer from this interpreter's identity.
+    case "${{2:-}}" in
+      *purelib*) echo "$purelib"; exit 0 ;;
+    esac
+    ;;
 esac
-exec "$real" "$@"
+
+# Emulate site's .pth handling so `import torch` in the cache venv only succeeds if the
+# bootstrap actually wrote the layering file. This is the point of the check.
+extra=""
+[ -f "$purelib/_npa_image_site.pth" ] && extra="$(cat "$purelib/_npa_image_site.pth")"
+PYTHONPATH="$purelib${{extra:+:$extra}}${{PYTHONPATH:+:$PYTHONPATH}}" exec "$real" "$@"
 """,
         )
         # A fake git that fabricates the Isaac Lab source layout at the pinned commit.
@@ -95,9 +159,14 @@ exec "$real" "$@"
             self.bin / "git",
             f"""#!/usr/bin/env bash
 echo "GIT $*" >> {self.calls}
-commit=37ddf626871758333d6ed89cf64ad702aef127d0
-case "$1 $2" in
-  "clone -q"*)
+for arg in "$@"; do
+  case "$arg" in
+    clone) mode=clone ;;
+    rev-parse) mode=revparse ;;
+  esac
+done
+case "${{mode:-}}" in
+  clone)
     target="${{@: -1}}"
     mkdir -p "$target/.git" \\
              "$target/scripts/reinforcement_learning/rsl_rl" \\
@@ -105,10 +174,7 @@ case "$1 $2" in
     : > "$target/scripts/reinforcement_learning/rsl_rl/train.py"
     exit 0
     ;;
-esac
-if [ "$3" = "checkout" ] || [ "$1" = "checkout" ]; then exit 0; fi
-case "$*" in
-  *rev-parse*) echo "$commit"; exit 0 ;;
+  revparse) echo "{ISAAC_LAB_SRC_COMMIT}"; exit 0 ;;
 esac
 exit 0
 """,
@@ -367,17 +433,9 @@ def test_changing_a_pin_changes_the_cache_stamp(tmp_path: Path, override: dict) 
 
 
 def test_eight_concurrent_installs_produce_one_tree(tmp_path: Path) -> None:
-    harness = Harness(tmp_path)
-    # Make the install slow enough that the other seven genuinely contend for the lock.
-    slow_pip = tmp_path / "bin" / "python3.11"
-    slow_pip.write_text(
-        slow_pip.read_text(encoding="utf-8").replace(
-            'echo "PIP $*" >> ', 'sleep 2; echo "PIP $*" >> '
-        ),
-        encoding="utf-8",
-    )
-    slow_pip.chmod(0o755)
-
+    # A slow "install" so the other seven genuinely contend for the lock rather than
+    # each finding a warm cache and making the test vacuous.
+    harness = Harness(tmp_path, pip_delay=3)
     env = harness.env(OMNI_KIT_ACCEPT_EULA="YES", ISAACSIM_ACCEPT_EULA="YES")
     processes = [
         subprocess.Popen(  # noqa: S603 - fixed argv, test-local
@@ -433,9 +491,20 @@ def test_wheel_manifest_matches_the_repo_pins() -> None:
 
 
 def test_wheel_manifest_is_fetched_only_from_nvidias_index() -> None:
-    """--index-url, not --extra-index-url: the set must not be shadowable from PyPI."""
-    assert "--index-url" in BOOTSTRAP.read_text(encoding="utf-8")
-    assert "--extra-index-url" not in BOOTSTRAP.read_text(encoding="utf-8")
+    """--index-url, not --extra-index-url: the set must not be shadowable from PyPI.
+
+    Checked against the script's instructions, not its prose — the surrounding comment
+    explains the distinction and therefore names both spellings.
+    """
+    instructions = "\n".join(
+        line
+        for line in BOOTSTRAP.read_text(encoding="utf-8").splitlines()
+        if not line.lstrip().startswith("#")
+    )
+    assert "--index-url" in instructions
+    assert "--extra-index-url" not in instructions
+    assert "--require-hashes" in instructions
+    assert "--no-deps" in instructions
 
 
 def test_oss_deps_carry_no_nvidia_isaac_package() -> None:
