@@ -47,7 +47,7 @@ def _normalize_dockerfile(dockerfile_text: str) -> str:
     * **Line continuations are joined.** The sonic Dockerfile used to spread a single
       ``pip install`` over 27 backslash-continued lines, so a per-line matcher would
       have missed the real installer while still tripping on a comment. Inline
-      ``\`# ...\`` shell comments are dropped for the same reason.
+      backtick shell comments are dropped for the same reason.
     """
 
     lines = [
@@ -83,11 +83,7 @@ def _bake_matches(dockerfile_text: str, patterns: list[dict]) -> list[str]:
     """
 
     instructions = _normalize_dockerfile(dockerfile_text)
-    return [
-        entry["kind"]
-        for entry in patterns
-        if re.search(entry["pattern"], instructions)
-    ]
+    return [entry["kind"] for entry in patterns if re.search(entry["pattern"], instructions)]
 
 
 def _base_image_refs(dockerfile_text: str) -> list[str]:
@@ -212,7 +208,7 @@ def test_dockerfiles_that_bake_omniverse_are_restricted(image_name: str) -> None
         assert entry.get("redistribution") == "restricted", (
             f"{image_name}: Dockerfile bakes Omniverse Kit at build time "
             f"({', '.join(matched)}); it must be redistribution: restricted "
-            f"(NVIDIA proprietary — public redistribution needs an NVIDIA AI "
+            f"(NVIDIA proprietary - public redistribution needs an NVIDIA AI "
             f"Enterprise license). If the intent was to fetch Isaac at RUN time, use "
             f"npa/docker/workbench/common/isaac_bootstrap.sh instead."
         )
@@ -245,112 +241,74 @@ def test_images_derived_from_restricted_are_restricted(image_name: str) -> None:
 # The detector was redesigned from "mentions Isaac" to "bakes Isaac" precisely so the
 # runtime-fetch images could stop being restricted. That redesign is only trustworthy if
 # it still catches every way an image can bake Isaac, so both directions are pinned:
-# MUST_DETECT covers every historical baking form plus the two new ones the runtime-fetch
-# design itself introduces, and MUST_NOT_DETECT covers every legitimate reference that
-# now appears in the shipped Dockerfiles.
+# MUST_DETECT covers every historical baking form plus the two the runtime-fetch design
+# itself introduces, and MUST_NOT_DETECT covers every legitimate reference that now
+# appears in the shipped Dockerfiles.
 # --------------------------------------------------------------------------------------
 
 MUST_DETECT = {
-    "nvcr isaac-lab base": "FROM nvcr.io/nvidia/isaac-lab:2.3.2@sha256:388dbc80
-",
-    "nvcr isaac-sim base": "FROM nvcr.io/nvidia/isaac-sim:4.5.0
-",
+    "nvcr isaac-lab base": "FROM nvcr.io/nvidia/isaac-lab:2.3.2@sha256:388dbc80\n",
+    "nvcr isaac-sim base": "FROM nvcr.io/nvidia/isaac-sim:4.5.0\n",
     "nvcr base via ARG": (
-        "ARG BASE_IMAGE=nvcr.io/nvidia/isaac-lab:2.3.2
-"
-        "FROM --platform=linux/amd64 ${BASE_IMAGE}
-"
+        "ARG BASE_IMAGE=nvcr.io/nvidia/isaac-lab:2.3.2\n"
+        "FROM --platform=linux/amd64 ${BASE_IMAGE}\n"
     ),
-    "pip isaacsim": 'RUN pip install --no-cache-dir "isaacsim==5.1.0.0"
-',
-    "pip isaaclab": 'RUN pip install --no-deps "isaaclab==2.3.2.post1"
-',
-    "pip isaaclab with isaacsim extra": 'RUN pip install "isaaclab[isaacsim,all]==2.3.2.post1"
-',
-    # The real sonic install was 27 backslash-continued lines; a per-line matcher missed it.
+    "pip isaacsim": 'RUN pip install --no-cache-dir "isaacsim==5.1.0.0"\n',
+    "pip isaaclab": 'RUN pip install --no-deps "isaaclab==2.3.2.post1"\n',
+    "pip isaaclab with isaacsim extra": 'RUN pip install "isaaclab[isaacsim,all]==2.3.2.post1"\n',
+    # The real sonic install spanned 27 backslash-continued lines; a per-line matcher
+    # missed it entirely while still tripping on the comment above it.
     "pip isaacsim across line continuations": (
-        "RUN python -m pip install --no-cache-dir --no-deps \\
-"
-        '      "isaacsim-kernel==5.1.0.0" \\
-'
-        '      "isaacsim-extscache-kit==5.1.0.0" \\
-'
-        "      --extra-index-url https://pypi.nvidia.com
-"
+        "RUN python -m pip install --no-cache-dir --no-deps \\\n"
+        '      "isaacsim-kernel==5.1.0.0" \\\n'
+        '      "isaacsim-extscache-kit==5.1.0.0" \\\n'
+        "      --extra-index-url https://pypi.nvidia.com\n"
     ),
-    "baked ENV OMNI_KIT_ACCEPT_EULA": "ENV OMNI_KIT_ACCEPT_EULA=YES
-",
-    "baked ENV ISAACSIM_ACCEPT_EULA": "ENV ISAACSIM_ACCEPT_EULA=YES
-",
-    "baked ENV ACCEPT_EULA": "ENV ACCEPT_EULA=Y
-",
-    "baked ENV PRIVACY_CONSENT": "ENV PRIVACY_CONSENT=Y
-",
-    "baked ARG EULA acceptance": "ARG OMNI_KIT_ACCEPT_EULA=YES
-",
+    "baked ENV OMNI_KIT_ACCEPT_EULA": "ENV OMNI_KIT_ACCEPT_EULA=YES\n",
+    "baked ENV ISAACSIM_ACCEPT_EULA": "ENV ISAACSIM_ACCEPT_EULA=YES\n",
+    "baked ENV ACCEPT_EULA": "ENV ACCEPT_EULA=Y\n",
+    "baked ENV PRIVACY_CONSENT": "ENV PRIVACY_CONSENT=Y\n",
+    "baked ARG EULA acceptance": "ARG OMNI_KIT_ACCEPT_EULA=YES\n",
     "baked EULA in a continued ENV block": (
-        "ENV ACCEPT_EULA=Y \\
-    OMNI_KIT_ACCEPT_EULA=YES \\
-    PYTHONUNBUFFERED=1
-"
+        "ENV ACCEPT_EULA=Y \\\n    OMNI_KIT_ACCEPT_EULA=YES \\\n    PYTHONUNBUFFERED=1\n"
     ),
-    "COPY of a Kit tree": "COPY --from=vendor /isaac-sim/kit/ /opt/kit/
-",
-    # Introduced by the runtime-fetch design: both would materialise the install.
-    "bootstrap run at build time": "RUN /opt/npa/bin/isaac-bootstrap ensure
-",
-    "bootstrap warm at build time": "RUN isaac_bootstrap.sh warm
-",
-    "isaac shim invoked at build time": 'RUN /isaac-sim/python.sh -c "import isaaclab"
-',
-    "isaac-python invoked at build time": "RUN isaac-python -m pip install foo
-",
+    "COPY of a Kit tree": "COPY --from=vendor /isaac-sim/kit/ /opt/kit/\n",
+    # The two below are introduced by the runtime-fetch design itself: either would
+    # materialise the whole install into a layer, and both are easy to add by accident.
+    "bootstrap run at build time": "RUN /opt/npa/bin/isaac-bootstrap ensure\n",
+    "bootstrap warm at build time": "RUN isaac_bootstrap.sh warm\n",
+    "isaac shim invoked at build time": 'RUN /isaac-sim/python.sh -c "import isaaclab"\n',
+    "isaac-python invoked at build time": "RUN isaac-python -m pip install foo\n",
 }
 
 MUST_NOT_DETECT = {
     "prose about what is not baked": (
-        "# This image is deliberately NOT built FROM nvcr.io/nvidia/isaac-lab, and no
-"
-        "# isaacsim or isaaclab wheel is installed. ISAACSIM_ACCEPT_EULA and
-"
-        "# OMNI_KIT_ACCEPT_EULA are left unset on purpose: acceptance is the operator's.
-"
-        "FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04
-"
+        "# This image is deliberately NOT built FROM nvcr.io/nvidia/isaac-lab, and no\n"
+        "# isaacsim or isaaclab wheel is installed. ISAACSIM_ACCEPT_EULA and\n"
+        "# OMNI_KIT_ACCEPT_EULA are left unset on purpose: acceptance is the operator's.\n"
+        "FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04\n"
     ),
-    "copying the bootstrap in": "COPY docker/workbench/common /opt/npa/docker/workbench/common
-",
-    "pointing ISAAC_LAB_PYTHON at the shim": "ENV ISAAC_LAB_PYTHON=/isaac-sim/python.sh
-",
-    "declaring the cache dir": "ENV NPA_ISAAC_CACHE_DIR=/opt/isaac-cache
-",
+    "copying the bootstrap in": "COPY docker/workbench/common /opt/npa/docker/workbench/common\n",
+    "pointing ISAAC_LAB_PYTHON at the shim": "ENV ISAAC_LAB_PYTHON=/isaac-sim/python.sh\n",
+    "declaring the cache dir": "ENV NPA_ISAAC_CACHE_DIR=/opt/isaac-cache\n",
     "pinning the versions to fetch": (
-        "ENV ISAAC_SIM_VERSION=5.1.0.0 \\
-    ISAAC_LAB_VERSION=2.3.2.post1
-"
+        "ENV ISAAC_SIM_VERSION=5.1.0.0 \\\n    ISAAC_LAB_VERSION=2.3.2.post1\n"
     ),
     "naming the wheel manifest": (
-        "ENV NPA_ISAAC_WHEELS_FILE=/opt/npa/docker/workbench/common/isaac-nvidia-wheels.txt
-"
+        "ENV NPA_ISAAC_WHEELS_FILE=/opt/npa/docker/workbench/common/isaac-nvidia-wheels.txt\n"
     ),
     "running the base installer": (
-        "RUN /opt/npa/docker/workbench/common/install_isaac_runtime_base.sh
-"
+        "RUN /opt/npa/docker/workbench/common/install_isaac_runtime_base.sh\n"
     ),
-    "asking the bootstrap for status": "RUN /opt/npa/bin/isaac-bootstrap status
-",
-    "installing OSS deps": "RUN pip install -r isaac-oss-deps.txt
-",
+    "asking the bootstrap for status": "RUN /opt/npa/bin/isaac-bootstrap status\n",
+    "installing OSS deps": "RUN pip install -r isaac-oss-deps.txt\n",
     "copying an isaac-lab smoke script": (
-        "COPY docker/workbench/isaac-lab/smoke_functional.py /opt/npa/smoke_functional.py
-"
+        "COPY docker/workbench/isaac-lab/smoke_functional.py /opt/npa/smoke_functional.py\n"
     ),
     "pip install via the image python arg": (
-        'RUN "${NPA_IMAGE_PYTHON}" -m pip install --no-cache-dir "mujoco>=3.3,<3.4"
-'
+        'RUN "${NPA_IMAGE_PYTHON}" -m pip install --no-cache-dir "mujoco>=3.3,<3.4"\n'
     ),
-    "an unrelated version-named env": "ENV ISAAC_LAB_SRC_COMMIT=37ddf62687175833
-",
+    "pinning the Isaac Lab source commit": "ENV ISAAC_LAB_SRC_COMMIT=37ddf626871758333d6e\n",
 }
 
 
@@ -377,8 +335,8 @@ def test_reintroducing_a_baked_install_fails_the_guard(image_name: str) -> None:
     """Mutation test against the REAL Dockerfiles, not just synthetic snippets.
 
     Re-inserting a baked install into each shipped Dockerfile must trip the detector.
-    Without this, the detector could pass simply because the Dockerfiles happen not to
-    resemble the synthetic cases.
+    Without this the detector could pass simply because the real Dockerfiles happen not
+    to resemble the synthetic cases.
     """
     contract = _load_contract()
     patterns = contract["redistribution"]["omniverse_bake_patterns"]
@@ -410,7 +368,7 @@ def test_isaac_runtime_fetch_images_wire_the_bootstrap(image_name: str) -> None:
     """Declaring ``isaac_runtime_fetch`` must mean the bootstrap is actually reachable.
 
     Otherwise an image could claim the architecture, bake nothing, and simply fail at
-    run time — or worse, quietly resolve Isaac some other way.
+    run time - or worse, quietly resolve Isaac some other way.
     """
     contract = _load_contract()
     entry = contract["images"][image_name]
@@ -446,7 +404,8 @@ def test_no_image_bakes_eula_acceptance(image_name: str) -> None:
     )
     instructions = _normalize_dockerfile(text)
     offenders = re.findall(
-        r"(?im)^\s*(?:ENV|ARG)\s+[^\n]*\b((?:OMNI_KIT_|ISAACSIM_)?ACCEPT_EULA|PRIVACY_CONSENT)\s*=\s*\S+",
+        r"(?im)^\s*(?:ENV|ARG)\s+[^\n]*\b((?:OMNI_KIT_|ISAACSIM_)?ACCEPT_EULA"
+        r"|PRIVACY_CONSENT)\s*=\s*\S+",
         instructions,
     )
     assert not offenders, (
@@ -460,8 +419,8 @@ def test_no_image_bakes_eula_acceptance(image_name: str) -> None:
 def test_no_image_builds_from_an_nvcr_base(image_name: str) -> None:
     """No workbench image may pull from NVIDIA's credentialed registry.
 
-    Every nvcr.io base both bakes proprietary content and makes the build depend on an
-    NGC login, so build-your-own stops working for anyone without NGC credentials.
+    An nvcr.io base both bakes proprietary content and makes the build depend on an NGC
+    login, so build-your-own stops working for anyone without NGC credentials.
     """
     contract = _load_contract()
     text = (WORKBENCH_DOCKER / contract["images"][image_name]["dockerfile"]).read_text(
