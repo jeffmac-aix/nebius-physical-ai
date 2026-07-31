@@ -291,6 +291,12 @@ def seed_live_workflow_inputs(
         "vlm-eval-token-factory.yaml",
         "tokenfactory-rollout-judge.yaml",
     }:
+        if spec_name == "vlm-eval-benchmark.yaml":
+            # The benchmark sweeps a *labeled* set, so it needs two rollouts with known
+            # outcomes plus a manifest. The spec's `--dataset` is an S3 URI (a
+            # repo-relative path cannot exist in the pod), so seed the manifest too.
+            _seed_vlm_benchmark_dataset(client, bucket=bucket, marker=marker)
+            return
         _seed_rollout_frames(client, bucket=bucket, marker=marker)
         if spec_name == "tokenfactory-rollout-judge.yaml":
             # This twin also reasons over a captured scene before judging.
@@ -577,6 +583,80 @@ def _seed_rollout_frames(
                 Body=buf.getvalue(),
                 ContentType="image/png",
             )
+
+
+def _seed_vlm_benchmark_dataset(client, *, bucket: str, marker: str) -> None:
+    """Seed a labeled two-rollout benchmark set plus its manifest.
+
+    `vlm-eval benchmark` sweeps thresholds/rubrics/models over rollouts with *known*
+    outcomes and reports accuracy per config, so a single unlabeled rollout would make the
+    sweep meaningless. One rollout reaches the target (expected pass) and one stalls short
+    of it (expected fail), which is a real discrimination task for the VLM.
+
+    ``rollout_base_path`` is absolute so the manifest's relative entries resolve to the
+    seeded frames regardless of where the manifest itself is downloaded to.
+    """
+
+    import json
+    from io import BytesIO
+
+    try:
+        from PIL import Image, ImageDraw
+    except ImportError as exc:  # pragma: no cover
+        pytest.fail(f"Pillow required to seed benchmark fixtures: {exc}")
+
+    frames = 4
+    # (episode id, whether the cube reaches the target)
+    episodes = (("episode_000", True), ("episode_001", False))
+    for episode, succeeds in episodes:
+        for frame in range(frames):
+            image = Image.new("RGB", (320, 240), (30, 30, 30))
+            draw = ImageDraw.Draw(image)
+            draw.rectangle([0, 200, 320, 240], fill=(90, 70, 50))  # table
+            draw.rectangle([250, 150, 300, 200], fill=(40, 200, 40))  # target
+            # The failing episode stops moving a third of the way across.
+            travel = frame if succeeds else min(frame, 1)
+            x = 40 + travel * 70
+            draw.rectangle([x, 150, x + 40, 200], fill=(200, 40, 40))
+            buf = BytesIO()
+            image.save(buf, format="PNG")
+            client.put_object(
+                Bucket=bucket,
+                Key=f"{marker}/rollouts/{episode}/frame_{frame:03d}.png",
+                Body=buf.getvalue(),
+                ContentType="image/png",
+            )
+
+    manifest = {
+        "format": "npa_vlm_eval_benchmark_v1",
+        "rollout_base_path": f"s3://{bucket}/{marker}/rollouts/",
+        # The spec sweeps `default,strict`, so both names must exist in the manifest.
+        "rubrics": {
+            "default": (
+                "Score whether the red cube reaches the green target. Use 1.0 for clear "
+                "contact with the target and 0.0 when the cube stops short."
+            ),
+            "strict": (
+                "Score 1.0 only if the red cube fully overlaps the green target in the "
+                "final frame. Any gap scores 0.0."
+            ),
+        },
+        "items": [
+            {
+                "id": episode,
+                "rollout": episode,
+                "expected_label": "pass" if succeeds else "fail",
+                "task": "push the red cube onto the green target",
+            }
+            for episode, succeeds in episodes
+        ],
+    }
+    client.put_object(
+        Bucket=bucket,
+        Key=f"{marker}/benchmark/benchmark.json",
+        Body=(json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode("utf-8"),
+        ContentType="application/json",
+    )
 
 
 def materialize_live_spec(
