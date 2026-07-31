@@ -136,7 +136,9 @@ under `npa/src/npa/workflows/skypilot/`.
   `max_concurrent_observed: 2` and a split manifest that saw all 64 envs, 32 from each shard.
 - **New guardrails** (none weakened): a catalog-wide check that every `toolRef` argv
   names real CLI options and passes values its options can mean — including the `npa …`
-  commands **inside** a `bash -c` toolRef, a blind spot where a real defect had shipped; a
+  commands **inside** a `bash -c` toolRef, a blind spot where a real defect had shipped;
+  a check that a `python -m` toolRef argv parses against its module's own argparse parser,
+  where a second one hid (a missing required `--run-id`); a
   check that no spec hands a stage a path inside the repo checkout; a check that the
   reference-workflows skill's template list matches the directory; the three-tier
   contract's third tier moved from SkyPilot `envs` onto the spec + toolRef argv, with
