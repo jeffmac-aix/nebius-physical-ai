@@ -710,3 +710,34 @@ its judge scores; the spec's first stage is an unrelated reasoner). Equivalence 
 inferred from the file name, and the retirement tally now carries the *reason* a template
 survives rather than a status word — so "twin live-verified" cannot stand in for "I compared
 them".
+
+## R14. Executing a *plan step* is a better validation than executing a template's bash
+
+`bdd100k-pipeline.yaml` shipped with something none of the other templates had: a
+`--mock-endpoints` mode in its runner that stood up in-process LanceDB and
+detection-training servers, ran every task's `run:` bash against them, and asserted the exact
+request sequence. It was the closest thing in the repo to an end-to-end test of a pipeline
+without infrastructure.
+
+Porting the runner onto the spec forced a choice about that mode, because a spec has no bash
+to run. Executing **each plan step's resolved argv** turns out to be strictly better:
+
+* it is *exactly* what the engine will run in a pod, so a passing mock run is evidence about
+  the real execution path rather than about a parallel bash implementation;
+* it exercises the toolRef → CLI boundary, which is where this change kept finding defects;
+* it removes the drift risk of a second implementation of the pipeline.
+
+It proved itself immediately: the first spec-driven mock run failed on
+`No such option '--table'` from `lancedb create-mv` — a toolRef defect that had been
+invisible because the flag audit skipped `bash -c` entries — and then on a declared artifact
+URI missing a path separator. Neither is visible in a diff, and neither needed a GPU, a
+cluster or a credential to find.
+
+The generalisation for the remaining ports: **where a template's runner has a
+no-infrastructure validation mode, port that mode to plan steps before porting the submit
+path.** It is the cheapest place to learn that a spec is wrong, and for a pipeline whose live
+run is blocked on a missing service it is the only honest offline proof available.
+
+The check should assert *order*, not just counts. `--wait` and `--discover-checkpoint` are
+both invisible to a POST-count assertion: what distinguishes them is that a `GET /status`
+follows every `POST /train`, and a `GET /runs` precedes every `POST /eval`.
