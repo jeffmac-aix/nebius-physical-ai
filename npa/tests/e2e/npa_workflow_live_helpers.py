@@ -210,16 +210,23 @@ def seed_live_workflow_inputs(
                 "and point this at its sonic_policy.onnx"
             )
         _seed_object_from_source(src, bucket, f"{marker}/sonic_policy.onnx", client)
-        # The sidecar is optional for the tool (it defaults to <onnx>.metadata.json);
-        # copy it when the staged source has one so the eval sees real export metadata.
-        sidecar = f"{src}.metadata.json"
-        try:
-            _seed_object_from_source(
-                sidecar, bucket, f"{marker}/sonic_policy.onnx.metadata.json", client
-            )
-        except Exception:  # noqa: BLE001 - sidecar is genuinely optional
-            print(f"[seed] no export sidecar at {sidecar}; continuing without it")
-        return
+        # The exporter's sidecar is `<stem>.metadata.json`; the tool REQUIRES it
+        # (load_export_metadata validates its format), so a missing sidecar is fatal.
+        from npa.workbench.sonic.staging import sidecar_uri_candidates
+
+        for candidate in sidecar_uri_candidates(src):
+            try:
+                _seed_object_from_source(
+                    candidate, bucket, f"{marker}/sonic_policy.metadata.json", client
+                )
+            except Exception:  # noqa: BLE001 - try the next naming convention
+                continue
+            return
+        pytest.fail(
+            "no export sidecar next to NPA_E2E_SONIC_ONNX_SRC; point it at the "
+            "sonic_policy.onnx a real `sonic export` run produced "
+            f"(tried {list(sidecar_uri_candidates(src))})"
+        )
 
     if spec_name == "sonic-locomotion-finetuning.yaml":
         # SONIC retargeting needs a real G1 motion dataset (SOMA/G1 CSV clips,
@@ -705,9 +712,29 @@ def _cli_failure_detail(result: Result) -> str:
     return "\n".join(parts)
 
 
+def _json_document_from_stream(text: str) -> Any:
+    """Parse the JSON document out of a CLI stream that may carry prose first.
+
+    ``CliRunner`` merges stderr into ``result.output`` on click < 8.2, and the submit
+    path legitimately writes advisory lines there (e.g. "Hint: consider --secret-env
+    NGC_API_KEY"). A bare ``json.loads(result.output)`` then dies with
+    ``Expecting value: line 1 column 1`` and *hides the real result* — which is exactly
+    how a successful ``sonic-export`` submit (job 189) was reported as a test failure.
+    """
+
+    stripped = text.lstrip()
+    if stripped.startswith(("{", "[")):
+        return json.loads(stripped)
+    for opener in ("\n{", "\n["):
+        start = text.find(opener)
+        if start >= 0:
+            return json.loads(text[start + 1 :])
+    raise AssertionError(f"no JSON document in CLI output:\n{text[-4000:]}")
+
+
 def parse_json_output(result: Result, *, forbidden: Iterable[str] | None = None) -> Any:
     assert_cli_ok(result, forbidden=forbidden)
-    return json.loads(result.output)
+    return _json_document_from_stream(result.output or "")
 
 
 def parse_json_payload(result: Result, forbidden: Iterable[str]) -> dict[str, Any]:
@@ -725,10 +752,6 @@ def parse_runtime_json(result: Result, forbidden: Iterable[str]) -> dict[str, An
     """
 
     assert_cli_ok(result, forbidden=forbidden)
-    text = result.output or ""
-    start = text.find("\n{")
-    start = 0 if text.lstrip().startswith("{") else (start + 1 if start >= 0 else -1)
-    assert start >= 0, f"no JSON summary in runtime output:\n{text[-4000:]}"
-    payload = json.loads(text[start:])
+    payload = _json_document_from_stream(result.output or "")
     assert isinstance(payload, dict)
     return payload

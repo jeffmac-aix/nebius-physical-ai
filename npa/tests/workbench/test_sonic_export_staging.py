@@ -19,6 +19,8 @@ from npa.workbench.sonic.staging import (
     plan_export_staging,
     publish_outputs,
     resolve_object_onnx_uri,
+    sidecar_uri_candidates,
+    stage_eval_inputs,
     stage_inputs,
 )
 
@@ -135,7 +137,9 @@ def test_publish_outputs_uploads_the_onnx_and_its_sidecar(tmp_path: Path) -> Non
     export_dir.mkdir()
     onnx = export_dir / DEFAULT_ONNX_NAME
     onnx.write_bytes(b"onnx")
-    sidecar = export_dir / f"{DEFAULT_ONNX_NAME}.metadata.json"
+    # The exporter writes `<stem>.metadata.json` (Path.with_suffix), not
+    # `<name>.onnx.metadata.json`.
+    sidecar = export_dir / "sonic_policy.metadata.json"
     sidecar.write_text("{}", encoding="utf-8")
     (export_dir / "subdir").mkdir()
     client = FakeStorageClient()
@@ -148,9 +152,7 @@ def test_publish_outputs_uploads_the_onnx_and_its_sidecar(tmp_path: Path) -> Non
     published = publish_outputs(plan, storage_client=client)
 
     assert published[str(onnx)] == f"s3://bucket/run/export/{DEFAULT_ONNX_NAME}"
-    assert published[str(sidecar)] == (
-        f"s3://bucket/run/export/{DEFAULT_ONNX_NAME}.metadata.json"
-    )
+    assert published[str(sidecar)] == "s3://bucket/run/export/sonic_policy.metadata.json"
     # Directories are skipped, and every upload lands under the ONNX's prefix.
     assert len(published) == 2
     assert all(uri.startswith("s3://bucket/run/export/") for _, uri in client.uploads)
@@ -160,6 +162,86 @@ def test_publish_outputs_is_a_no_op_for_local_outputs(tmp_path: Path) -> None:
     plan = ExportStaging(workdir=tmp_path, local_output=str(tmp_path / "p.onnx"))
 
     assert publish_outputs(plan, storage_client=FakeStorageClient()) == {}
+
+
+@pytest.mark.parametrize(
+    ("onnx_uri", "expected"),
+    [
+        (
+            "s3://b/p/sonic_policy.onnx",
+            ("s3://b/p/sonic_policy.metadata.json", "s3://b/p/sonic_policy.onnx.metadata.json"),
+        ),
+        ("s3://b/p/model", ("s3://b/p/model.metadata.json", "s3://b/p/model.metadata.json")),
+    ],
+)
+def test_sidecar_uri_candidates_match_the_local_resolver(
+    onnx_uri: str, expected: tuple[str, str]
+) -> None:
+    assert sidecar_uri_candidates(onnx_uri) == expected
+
+
+def test_stage_eval_inputs_downloads_the_onnx_and_its_sidecar(tmp_path: Path) -> None:
+    client = FakeStorageClient(
+        {
+            "s3://bucket/run/sonic_policy.onnx": b"onnx",
+            "s3://bucket/run/sonic_policy.metadata.json": b"{}",
+        }
+    )
+
+    local_onnx, local_metadata = stage_eval_inputs(
+        onnx="s3://bucket/run/sonic_policy.onnx",
+        metadata=None,
+        workdir=tmp_path,
+        storage_client=client,
+    )
+
+    assert Path(local_onnx).name == "sonic_policy.onnx"
+    # Landed under the name the local resolver tries first (Path.with_suffix).
+    assert local_metadata is not None
+    assert Path(local_metadata).name == "sonic_policy.metadata.json"
+    assert client.downloads[0][0] == "s3://bucket/run/sonic_policy.onnx"
+
+
+def test_stage_eval_inputs_falls_back_to_the_appended_sidecar_name(tmp_path: Path) -> None:
+    class OnlyAppendedSidecar(FakeStorageClient):
+        def download_path(self, bucket_uri: str, local_path: str) -> str:
+            if bucket_uri.endswith("sonic_policy.metadata.json"):
+                raise FileNotFoundError(bucket_uri)
+            return super().download_path(bucket_uri, local_path)
+
+    client = OnlyAppendedSidecar()
+
+    _, local_metadata = stage_eval_inputs(
+        onnx="s3://bucket/run/sonic_policy.onnx",
+        metadata=None,
+        workdir=tmp_path,
+        storage_client=client,
+    )
+
+    assert local_metadata is not None
+    assert "s3://bucket/run/sonic_policy.onnx.metadata.json" in [
+        uri for uri, _ in client.downloads
+    ]
+
+
+def test_stage_eval_inputs_passes_local_paths_through(tmp_path: Path) -> None:
+    assert stage_eval_inputs(
+        onnx="/local/policy.onnx", metadata="/local/meta.json", workdir=tmp_path
+    ) == ("/local/policy.onnx", "/local/meta.json")
+
+
+def test_stage_eval_inputs_downloads_an_explicit_sidecar_uri(tmp_path: Path) -> None:
+    client = FakeStorageClient()
+
+    _, local_metadata = stage_eval_inputs(
+        onnx="s3://bucket/run/sonic_policy.onnx",
+        metadata="s3://bucket/run/custom.metadata.json",
+        workdir=tmp_path,
+        storage_client=client,
+    )
+
+    assert local_metadata is not None
+    assert Path(local_metadata).name == "custom.metadata.json"
 
 
 def test_export_onnx_round_trips_object_storage(tmp_path: Path) -> None:
@@ -183,9 +265,7 @@ def test_export_onnx_round_trips_object_storage(tmp_path: Path) -> None:
     assert result.status == "exported"
     # The reported paths are the object URIs the next stage can consume, not temp dirs.
     assert result.onnx_path == f"s3://bucket/run/export/{DEFAULT_ONNX_NAME}"
-    assert result.metadata_path == (
-        f"s3://bucket/run/export/{DEFAULT_ONNX_NAME}.metadata.json"
-    )
+    assert result.metadata_path == "s3://bucket/run/export/sonic_policy.metadata.json"
     assert result.checkpoint == "s3://bucket/run/checkpoint.pt"
     assert result.obs_dim == 6 and result.action_dim == 3
     assert result.parity and result.parity["passed"] is True

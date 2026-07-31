@@ -220,27 +220,42 @@ def evaluate_onnx_policy(
         except SonicRoutingError as exc:
             raise SonicEvalError(str(exc)) from exc
 
-    bundle = load_eval_bundle(onnx=onnx, metadata=metadata)
-    if backend == REFERENCE_BACKEND:
-        result = _run_reference_backend(bundle=bundle, episodes=episodes, env=env)
-    else:
-        result = _run_container_backend(
-            bundle=bundle,
-            episodes=episodes,
-            env=env,
-            container_image=container_image,
-            container_runtime=container_runtime,
-            container_gpus=container_gpus,
-            container_driver_capabilities=container_driver_capabilities,
-            container_vulkan_icd=container_vulkan_icd,
-            container_glx_vendor=container_glx_vendor,
-            container_devices=container_device or [],
-            container_render_frames=container_render_frames,
-            container_policy_path=container_policy_path,
-            container_metadata_path=container_metadata_path,
-            container_output_path=container_output_path,
-            container_args=container_args or [],
+    # `--onnx` may be an s3:// URI: an npa.workflow spec hands the toolRef the run
+    # prefix's object URI directly, and the retired SkyPilot template did this download
+    # in inline bash. Staging is a no-op for local paths.
+    from npa.workbench.sonic import staging as _staging
+
+    with tempfile.TemporaryDirectory(prefix="npa-sonic-eval-inputs-") as _stage_dir:
+        local_onnx, local_metadata = _staging.stage_eval_inputs(
+            onnx=onnx,
+            metadata=metadata,
+            workdir=Path(_stage_dir),
+            storage_client=storage_client,
         )
+        bundle = load_eval_bundle(onnx=local_onnx, metadata=local_metadata)
+        if backend == REFERENCE_BACKEND:
+            result = _run_reference_backend(bundle=bundle, episodes=episodes, env=env)
+        else:
+            result = _run_container_backend(
+                bundle=bundle,
+                episodes=episodes,
+                env=env,
+                container_image=container_image,
+                container_runtime=container_runtime,
+                container_gpus=container_gpus,
+                container_driver_capabilities=container_driver_capabilities,
+                container_vulkan_icd=container_vulkan_icd,
+                container_glx_vendor=container_glx_vendor,
+                container_devices=container_device or [],
+                container_render_frames=container_render_frames,
+                container_policy_path=container_policy_path,
+                container_metadata_path=container_metadata_path,
+                container_output_path=container_output_path,
+                container_args=container_args or [],
+            )
+    if _staging.is_object_uri(onnx):
+        # Additive: record the durable input URI, since the staged copy is gone.
+        result["onnx_uri"] = onnx
 
     if output:
         result["result_uri"] = write_eval_result(

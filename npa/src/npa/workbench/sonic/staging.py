@@ -132,6 +132,65 @@ def publish_outputs(
     return published
 
 
+def sidecar_uri_candidates(onnx_uri: str) -> tuple[str, ...]:
+    """Return the sidecar metadata URIs to try for an ONNX object URI.
+
+    Mirrors the local resolution order in ``eval._resolve_metadata_path``: the
+    exporter writes ``<stem>.metadata.json`` (``with_suffix``), and the appended
+    ``<name>.metadata.json`` form is accepted too.
+    """
+
+    text = onnx_uri.strip()
+    stem = text[: -len(".onnx")] if text.lower().endswith(".onnx") else text
+    return (f"{stem}.metadata.json", f"{text}.metadata.json")
+
+
+def stage_eval_inputs(
+    *,
+    onnx: str,
+    metadata: str | None,
+    workdir: Path,
+    storage_client: "StorageClient | None" = None,
+) -> tuple[str, str | None]:
+    """Download an ``s3://`` ONNX policy and its sidecar metadata.
+
+    Returns ``(local_onnx, local_metadata_or_None)``. Non-object inputs pass through
+    untouched, so a local evaluation never constructs a storage client.
+
+    ``sonic eval`` could already *write* its result to S3 but only ever *read* local
+    files, which is why the ``sonic-eval`` / ``sonic-export-eval`` twins could not
+    consume the ONNX their own run prefix holds.
+    """
+
+    if not is_object_uri(onnx):
+        return onnx, metadata
+
+    client = _client(storage_client)
+    workdir = Path(workdir)
+    workdir.mkdir(parents=True, exist_ok=True)
+    local_onnx = workdir / (onnx.rstrip("/").rsplit("/", 1)[-1] or DEFAULT_ONNX_NAME)
+    client.download_path(onnx, str(local_onnx))
+
+    if metadata and is_object_uri(metadata):
+        # An explicit sidecar URI must exist; failing loudly beats a confusing
+        # "metadata not found" for a path the caller never asked for.
+        local_metadata = workdir / Path(metadata.rsplit("/", 1)[-1]).name
+        client.download_path(metadata, str(local_metadata))
+        return str(local_onnx), str(local_metadata)
+    if metadata:
+        return str(local_onnx), metadata
+
+    # Land the sidecar under the name the local resolver looks for first.
+    expected = local_onnx.with_suffix(".metadata.json")
+    for candidate in sidecar_uri_candidates(onnx):
+        try:
+            client.download_path(candidate, str(expected))
+        except Exception:  # noqa: BLE001 - any miss just means "try the next name"
+            continue
+        return str(local_onnx), str(expected)
+    return str(local_onnx), None
+
+
 def plan_export_staging(
     *,
     workdir: Path,
@@ -164,5 +223,7 @@ __all__ = [
     "plan_export_staging",
     "publish_outputs",
     "resolve_object_onnx_uri",
+    "sidecar_uri_candidates",
+    "stage_eval_inputs",
     "stage_inputs",
 ]

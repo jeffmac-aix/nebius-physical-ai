@@ -137,12 +137,12 @@ SUBMIT_LIVE_MATRIX: tuple[SubmitLiveCase, ...] = (
     SubmitLiveCase(
         "sonic-export.yaml",
         "gpu",
-        secret_envs=("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "HF_TOKEN"),
+        secret_envs=("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "HF_TOKEN", "NGC_API_KEY"),
     ),
     SubmitLiveCase(
         "sonic-eval.yaml",
         "gpu",
-        secret_envs=("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "HF_TOKEN"),
+        secret_envs=("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "HF_TOKEN", "NGC_API_KEY"),
     ),
     SubmitLiveCase(
         "cosmos3-reason.yaml",
@@ -163,7 +163,7 @@ SUBMIT_LIVE_MATRIX: tuple[SubmitLiveCase, ...] = (
     SubmitLiveCase(
         "sonic-export-eval.yaml",
         "multi",
-        secret_envs=("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "HF_TOKEN"),
+        secret_envs=("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "HF_TOKEN", "NGC_API_KEY"),
     ),
     SubmitLiveCase(
         "sonic-locomotion-finetuning.yaml",
