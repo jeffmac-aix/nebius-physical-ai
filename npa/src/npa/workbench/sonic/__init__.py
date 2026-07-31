@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 import copy
 from importlib import import_module
@@ -75,13 +75,109 @@ def export_onnx(
     sample_observation: Any | None = None,
     verify: bool = False,
     parity_atol: float = 1e-4,
+    storage_client: Any | None = None,
 ) -> SonicExportResult:
     """Export a deterministic SONIC policy action path as ONNX.
 
     The ONNX graph has one float32 input named ``obs`` and one float32 output
     named ``action``. Policy loading is lazy so importing the SDK does not
     require torch, onnx, or onnxruntime.
+
+    ``checkpoint`` / ``obs_spec`` / ``action_spec`` / ``config`` / ``output`` accept
+    ``s3://`` URIs: inputs are downloaded to a temporary directory and outputs (the
+    ONNX plus its sidecar metadata) are uploaded back. That is what lets an
+    ``npa.workflow`` spec pass ``{{config.checkpoint_uri}}`` directly, instead of the
+    inline download/upload bash the retired SkyPilot template carried. Set
+    ``storage_client`` to inject a client in tests.
     """
+
+    from npa.workbench.sonic import staging as _staging
+
+    object_inputs = {
+        "checkpoint": checkpoint,
+        "obs_spec": obs_spec,
+        "action_spec": action_spec,
+        "config": config,
+    }
+    needs_staging = _staging.is_object_uri(output) or any(
+        _staging.is_object_uri(value) for value in object_inputs.values()
+    )
+    if needs_staging:
+        import tempfile
+
+        with tempfile.TemporaryDirectory(prefix="npa-sonic-export-") as tmp:
+            plan = _staging.plan_export_staging(
+                workdir=Path(tmp),
+                output=output,
+                inputs=object_inputs,
+                storage_client=storage_client,
+            )
+            result = _export_onnx_local(
+                checkpoint=plan.inputs.get("checkpoint", checkpoint),
+                output=plan.local_output,
+                opset=opset,
+                axes=axes,
+                normalize=normalize,
+                metadata=metadata,
+                obs_spec=plan.inputs.get("obs_spec", obs_spec),
+                action_spec=plan.inputs.get("action_spec", action_spec),
+                config=plan.inputs.get("config", config),
+                control_dt=control_dt,
+                policy=policy,
+                sample_observation=sample_observation,
+                verify=verify,
+                parity_atol=parity_atol,
+            )
+            published = _staging.publish_outputs(plan, storage_client=storage_client)
+            if not plan.stages_output:
+                return replace(result, checkpoint=checkpoint)
+            # Report the URIs the caller can actually consume downstream, not the
+            # temporary paths that are about to be deleted.
+            return replace(
+                result,
+                checkpoint=checkpoint,
+                onnx_path=published.get(result.onnx_path, plan.onnx_uri),
+                metadata_path=(
+                    published.get(result.metadata_path, "") if result.metadata_path else ""
+                ),
+            )
+
+    return _export_onnx_local(
+        checkpoint=checkpoint,
+        output=output,
+        opset=opset,
+        axes=axes,
+        normalize=normalize,
+        metadata=metadata,
+        obs_spec=obs_spec,
+        action_spec=action_spec,
+        config=config,
+        control_dt=control_dt,
+        policy=policy,
+        sample_observation=sample_observation,
+        verify=verify,
+        parity_atol=parity_atol,
+    )
+
+
+def _export_onnx_local(
+    *,
+    checkpoint: str,
+    output: str,
+    opset: int = DEFAULT_EXPORT_OPSET,
+    axes: str = DEFAULT_EXPORT_AXES,
+    normalize: str = DEFAULT_NORMALIZE_MODE,
+    metadata: str = DEFAULT_METADATA_MODE,
+    obs_spec: str | dict[str, Any] | None = None,
+    action_spec: str | dict[str, Any] | None = None,
+    config: str | dict[str, Any] | None = None,
+    control_dt: float | None = None,
+    policy: Any | None = None,
+    sample_observation: Any | None = None,
+    verify: bool = False,
+    parity_atol: float = 1e-4,
+) -> SonicExportResult:
+    """Export with purely local paths (the historic behaviour, unchanged)."""
 
     axes = _validate_choice("axes", axes, AXES_MODES)
     normalize = _validate_choice("normalize", normalize, NORMALIZE_MODES)
