@@ -7,7 +7,7 @@ a versioned heading when a release is cut.
 
 ## Unreleased
 
-### Retiring the raw SkyPilot task catalog (36 → 16 templates)
+### Retiring the raw SkyPilot task catalog (36 → 15 templates)
 
 `npa.workflow/v0.0.1` specs are becoming the only workflow authoring surface.
 SkyPilot remains the execution engine, and `npa workbench workflow submit` still
@@ -21,7 +21,7 @@ under `npa/src/npa/workflows/skypilot/`.
   `token-factory-generate.yaml`, `token-factory-cosmos-reason.yaml`,
   `vlm-eval-token-factory.yaml`, `mjlab-eval.yaml`, `retargeting.yaml`,
   `vlm-eval.yaml`, `vlm-eval-benchmark.yaml`, `sim-to-real-loop.yaml`,
-  `scenario-gen-adversarial.yaml`.
+  `scenario-gen-adversarial.yaml`, `sim2real-envgen-split.yaml`.
   `test_skypilot_catalog_retirement.py` pins the remaining set, so the tally is
   machine-checked and a new raw template needs a deliberate edit.
 - **Multi-node stages.** A resource profile can declare `num_nodes`, so a spec can ask
@@ -124,6 +124,16 @@ under `npa/src/npa/workflows/skypilot/`.
   `--source-table` (so `curate-views` could never have run), and the eval prefixes lacked a
   trailing slash, so the declared artifact URI was
   `…/eval/bdd100k_rider_train` + `metrics.json` concatenated.
+- **`workbench.sim2real_envgen.raw_shard` could never have run.** It omitted `--run-id`,
+  which the module's parser requires, so every stage using it died on a usage error; three
+  shipped specs referenced it. It was also handed the raw-env prefix where the module expects
+  the **run root** (from which it derives `envs/raw`, `envs/train`, `envs/heldout`,
+  `envs/manifest`), and the four specs using it declared a `manifest.json` that subcommand
+  never writes. All fixed, plus a new `workbench.sim2real_envgen.split` toolRef.
+- **New spec `sim2real-envgen-shards.yaml`** declares the shard fan-out the retired template
+  drove from a Kubernetes Job completion index: a `parallel:` group whose members differ only
+  through `params.shard_index`, with the split as a barrier. Live proof records
+  `max_concurrent_observed: 2` and a split manifest that saw all 64 envs, 32 from each shard.
 - **New guardrails** (none weakened): a catalog-wide check that every `toolRef` argv
   names real CLI options and passes values its options can mean — including the `npa …`
   commands **inside** a `bash -c` toolRef, a blind spot where a real defect had shipped; a
