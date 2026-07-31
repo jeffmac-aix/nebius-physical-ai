@@ -802,18 +802,42 @@ any pinned image.
 | Plan-only live matrix (no cloud spend) | `pytest .../test_npa_workflow_submit_plan_only_matrix_no_leak -q` | **24 passed in 4.58 s** |
 | Lint | `ruff check` on every changed file | clean |
 
-**Pre-existing failures, verified identical on the base commit `aa555d73`** (checked
-out in the same worktree and re-run):
+### Full offline suite: branch vs base, same invocation
+
+```bash
+pytest npa/tests/ --ignore=npa/tests/e2e \
+  --ignore=npa/tests/workbench/test_vlm_eval_backend.py \
+  --ignore=npa/tests/workbench/test_vlm_eval_loop_e2e.py --timeout=180 -q
+```
+
+| Tree | Result |
+| --- | --- |
+| base `aa555d73` (checked out in the same worktree) | **2 failed, 3682 passed**, 29 skipped, 1 xpassed (296.66 s) |
+| this branch | **2 failed, 3799 passed**, 34 skipped, 1 xpassed (297.59 s) |
+
+Net **+117 tests**, and the **same two failures** — both pre-existing, both reproduced
+on the base commit:
 
 * `npa/tests/smoke/test_golden_eval_tmux.py::test_tmux_script_dry_run_launches_session`
   — the tmux script shells out to a bare `python3` that has no `numpy` in this
-  isolated-fast setup. Fails the same way on `aa555d73`.
-* `npa/tests/workbench/test_vlm_eval_backend.py`, `test_vlm_eval_loop_e2e.py` — the
-  two live-GPU fixtures EVIDENCE §1 already excludes.
-* `npa/tests/orchestration/npa_workflow/test_skypilot_render.py::test_workbench_workflow_submit_plan_only_redacts_registry_password`
-  fails **only when the live env is sourced** (it depends on `NPA_REGISTRY` /
-  `SKYPILOT_DOCKER_*` being unset). Passes on the branch and on `aa555d73` in a clean
-  shell. Unit suites must therefore be run *without* `live-e2e.env`.
+  isolated-fast setup (the shared venv's deps reach the test process through
+  `PYTHONPATH`, not the subprocess).
+* `npa/tests/unit/test_byof_live.py::test_resolve_byof_kubernetes_target_from_cluster_state`
+  — **order-dependent**: it passes in isolation, and in `npa/tests/unit` +
+  `npa/tests/cli` together (1452 passed), and when paired with each of
+  `workflows`/`smoke`/`workbench`/`orchestration`/`guardrails`. It fails only in the
+  full-suite ordering, on both trees. Nothing in this change touches BYOF, cluster
+  state or config loading.
+
+Two more exclusions carried over from EVIDENCE §1:
+`npa/tests/workbench/test_vlm_eval_backend.py` and `test_vlm_eval_loop_e2e.py` are
+live-GPU fixtures that launch a SkyPilot cluster whenever `sky` is on `PATH`.
+
+One environment note worth keeping:
+`test_skypilot_render.py::test_workbench_workflow_submit_plan_only_redacts_registry_password`
+fails **only when `live-e2e.env` is sourced** (it depends on `NPA_REGISTRY` /
+`SKYPILOT_DOCKER_*` being unset). It passes on the branch and on `aa555d73` in a clean
+shell, so unit suites must be run *without* the live env.
 
 ## R2. `cosmos3-reason.yaml` twin — PASSED
 
@@ -1069,10 +1093,27 @@ $ sky jobs queue    # every npa-wf-* / manual-* job from this work
 192 SUCCEEDED  194 SUCCEEDED  195 SUCCEEDED  197 SUCCEEDED  198 SUCCEEDED
 ```
 
-All terminal. The in-cluster fixture pod, its ConfigMap and its credentials Secret are
-deleted by the staging script's `trap cleanup EXIT`. The only long-lived cluster is
-the **pre-existing, shared** SkyPilot managed-jobs controller, which was up before
-this work. Jobs belonging to other runs (`paidf-*`, `nurec-spike-*`) were left alone.
+All terminal — a filtered check confirms nothing of this work's is still alive:
+
+```bash
+$ sky jobs queue | grep -E "npa-wf|manual-" | grep -vE "SUCCEEDED|FAILED|CANCELLED"
+# (no output)
+$ kubectl -n default get pod,configmap,secret | grep npa-sonic-fixture
+# (no output — the staging script's `trap cleanup EXIT` removed the pod,
+#  its ConfigMap and its credentials Secret)
+$ sky status
+nurec-spike                   UP     # another run's cluster, untouched
+npawfrt-isaac-probe2          INIT   # left by the earlier PR #225 session, untouched
+sky-jobs-controller-64ce57a0  UP     # pre-existing shared managed-jobs controller
+```
+
+No task cluster and no managed job from this work is still alive. Resources belonging
+to other runs (`paidf-*`, `nurec-spike`, `npawfrt-*`, and the week-old `paidf-faithful4`
+job that has been `PENDING` since before this work) were deliberately left alone.
+
+One shared-infrastructure note: **no** change was made to the cluster this time. The
+`ErrImagePull ... 403` on job 183 was an *environment* problem (§R0), fixed by pointing
+at the registry the cluster's existing pull secret covers — not by re-minting anything.
 
 ## R9. Not verified live
 
