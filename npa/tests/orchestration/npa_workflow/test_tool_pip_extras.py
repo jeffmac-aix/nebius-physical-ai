@@ -102,7 +102,16 @@ def test_shipped_sonic_specs_render_with_the_extra_and_no_placeholders(
     spec = load_spec(SPECS / spec_name)
     plan = build_plan(spec, run_id="render-check")
 
-    yaml_text = render_skypilot_yaml(spec, plan, run_id="render-check")
+    # `image_overrides={"*": ""}` is the offline equivalent of the live harness's
+    # `--image none`: it keeps the renderer from resolving a registry image (which
+    # would need real Nebius credentials in a unit test) and is exactly the path where
+    # the npa extra matters, since there is no baked image to provide torch.
+    yaml_text = render_skypilot_yaml(
+        spec,
+        plan,
+        run_id="render-check",
+        options=SkypilotRenderOptions(image_overrides={"*": ""}),
+    )
 
     assert "[sonic]" in yaml_text
     assert_no_unresolved_placeholders(yaml_text)
