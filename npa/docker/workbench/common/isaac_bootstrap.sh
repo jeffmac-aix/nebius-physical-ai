@@ -77,6 +77,17 @@ LOCK_TIMEOUT="${NPA_ISAAC_BOOTSTRAP_TIMEOUT:-3600}"
 log()  { printf 'isaac-bootstrap: %s\n' "$*" >&2; }
 die()  { local code="$1"; shift; printf 'isaac-bootstrap: %s\n' "$*" >&2; exit "$code"; }
 
+# A half-written cache tree is the worst outcome here: the next pod would find it and
+# fail in a confusing place. `die` exits the shell outright, so `install_isaac ... || rm`
+# would never run - the cleanup has to be an EXIT trap. Set on entry to install_isaac
+# and cleared once the tree has been published.
+TMP_TREE=""
+cleanup_tmp_tree() {
+  [ -n "$TMP_TREE" ] && rm -rf "$TMP_TREE"
+  return 0
+}
+trap cleanup_tmp_tree EXIT
+
 # ---------------------------------------------------------------------------------
 # EULA acceptance. This is the whole legal mechanism; keep it first and keep it strict.
 # ---------------------------------------------------------------------------------
@@ -162,6 +173,8 @@ install_isaac() {
   local base_python="$1" target="$2" tmp="$3"
   local started; started="$(date +%s)"
 
+  # Any failure from here on must leave the cache exactly as it was.
+  TMP_TREE="$tmp"
   rm -rf "$tmp"
   mkdir -p "$tmp"
 
@@ -230,6 +243,7 @@ EOF
   mkdir -p "$(dirname "$target")"
   rm -rf "$target"
   mv "$tmp" "$target" || die "$EX_SOFTWARE" "could not publish the cache tree to $target"
+  TMP_TREE=""   # published; the trap must not delete it now
   : > "$target/.complete"
 
   # Swap `current` atomically: create a temp symlink then rename over the old one.
@@ -350,8 +364,7 @@ ensure() {
   if tree_is_ready "$target"; then
     log "cache was completed by another process"
   else
-    install_isaac "$base_python" "$target" "${target}.tmp.$$" \
-      || { rm -rf "${target}.tmp.$$"; exit "$?"; }
+    install_isaac "$base_python" "$target" "${target}.tmp.$$"
   fi
   flock -u 9
 

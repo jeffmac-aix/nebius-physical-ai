@@ -367,7 +367,7 @@ def test_readonly_mode_never_attempts_a_write(tmp_path: Path) -> None:
         ISAACSIM_ACCEPT_EULA="YES",
     )
     assert result.returncode == EX_UNAVAILABLE
-    assert not (harness.cache / "v").glob("*.tmp.*")
+    assert not list((harness.cache / "v").glob("*.tmp.*"))
     assert not harness.downloaded_anything()
 
 
