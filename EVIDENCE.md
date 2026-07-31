@@ -1465,3 +1465,54 @@ purpose-built spec.
 
 Cost: two RTXPRO pods (~25 s and ~24 s of job time, plus image pull) and one 2-node CPU
 gang for ~57 s.
+
+## R15. Phase 4 (partial) — the two insights specs get live coverage
+
+`insights-smoke.yaml` and `insights-aggregate.yaml` were two of the 17 specs with no
+live-matrix entry, and the reason was concrete: `workbench.insights.ingest_run` scans a
+run prefix for known manifest/report schemas and fails with
+
+```
+no known manifest/report schemas found under run prefix: s3://...
+```
+
+when it finds none — the same failure EVIDENCE §2 recorded when a caption fan-out tried to
+use the ingester as a barrier. Nothing seeded a prefix it recognised.
+
+The harness now seeds the two shapes it does recognise (read from
+`insights/store.py::_extract`): a real `npa.dataset.manifest.v1` document, which yields
+record/corruption metrics **and** a lineage edge, and a bare `{"decision": ...}` document.
+`insights-smoke` reads a *shared* fixture prefix (`insights-fixtures/run/`) so its seeding
+is idempotent; `insights-aggregate` reads `runs/<run-id>/`, outside the e2e marker prefix.
+
+| Spec | Run id | job | status | wall |
+| --- | --- | --- | --- | --- |
+| `insights-smoke.yaml` | `npa-wf-cpu-insights-smoke-f6e3c287` | 209 | SUCCEEDED | 298 s |
+| `insights-aggregate.yaml` | `npa-wf-cpu-insights-aggregate-d54426f6` | 210 | SUCCEEDED | 258 s |
+
+Real store output, not a stub:
+
+```
+insights-smoke/store/records.jsonl        6037   metric records
+insights-smoke/store/edges.jsonl           840   lineage edges
+insights-smoke/comparison/comparison.json 2684   base-vs-candidate comparison
+insights-smoke/dashboard/dashboard.html   2431
+insights-aggregate/store/records.jsonl    3827
+insights-aggregate/store/edges.jsonl       326
+insights-aggregate/dashboard/dashboard.html 1894
+```
+
+Live-matrix coverage: **17 uncovered specs → 15**, and the matrix grew from 24 to 28 cases
+(the two above plus the two new specs `vlm-eval-token-factory.yaml` and
+`multi-node-probe.yaml`). The remaining 15 are enumerated with their blockers in
+`npa/src/npa/orchestration/npa_workflow/submit_matrix.py` and
+`test_skypilot_catalog_retirement.py`; the recurring one is worth naming:
+
+**Three toolRefs are launchers.** `workbench.rl.policy_train` and
+`workbench.sonic.train` (with `--runtime serverless`) provision infrastructure of their
+own, so invoking them from inside a SkyPilot stage nests infrastructure and fails in the
+pod. Every spec that uses them — `adversarial-scenario-hardening`,
+`hardening-with-insights`, `rl-policy-training-sim-success`, `sonic-train`,
+`sonic-locomotion-finetuning` — is blocked on the same design decision: move the launcher
+out of the workflow, or train in-pod against the vendor image. That is called out rather
+than papered over with `plan_only=True`.
