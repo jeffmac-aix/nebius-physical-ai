@@ -299,9 +299,9 @@ skills:
       - type: cli_help
         args: ["workbench", "sonic", "retargeting", "run", "--help"]
         contains: "output"
-      - type: workflow_yaml
+      - type: npa_workflow_yaml
         paths:
-          - npa/src/npa/workflows/skypilot/retargeting.yaml
+          - npa/workflows/workbench/npa-workflows/retargeting.yaml
   - name: scenario-gen
     category: tools
     when_to_use: "Generate adversarial scenarios via an RL adversary that maximizes failures of a policy-under-test, rank mined hard scenarios, or wire the adversarial-scenario-hardening workflow."
@@ -511,7 +511,6 @@ skills:
           - npa/src/npa/workflows/skypilot/cosmos3-ea-fetch.yaml
           - npa/src/npa/workflows/skypilot/cosmos3-text-to-image-inference.yaml
           - npa/src/npa/workflows/skypilot/isaac-lab-rl-train.yaml
-          - npa/src/npa/workflows/skypilot/retargeting.yaml
           - npa/src/npa/workflows/skypilot/sim-to-real-loop.yaml
           - npa/src/npa/workflows/skypilot/sim-to-real-pipeline.yaml
           - npa/src/npa/workflows/skypilot/sim-to-real-trigger.yaml
@@ -528,6 +527,7 @@ skills:
           - npa/workflows/workbench/npa-workflows/token-factory-generate.yaml
           - npa/workflows/workbench/npa-workflows/token-factory-cosmos-reason.yaml
           - npa/workflows/workbench/npa-workflows/vlm-eval-token-factory.yaml
+          - npa/workflows/workbench/npa-workflows/retargeting.yaml
           - npa/workflows/workbench/npa-workflows/sonic-eval.yaml
           - npa/workflows/workbench/npa-workflows/sonic-export.yaml
           - npa/workflows/workbench/npa-workflows/sonic-export-eval.yaml

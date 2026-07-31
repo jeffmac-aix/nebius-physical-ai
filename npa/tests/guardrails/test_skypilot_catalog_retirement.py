@@ -33,7 +33,6 @@ REMAINING: dict[str, str] = {
     "isaac-lab-rl-train-rtxpro-smoke.yaml": "byof/live.py resource profile",
     "sim-to-real-pipeline.yaml": "npa/scripts/run_sim_to_real_pipeline.py DEFAULT_YAML",
     # --- referenced by a CLI/SDK path pointer or shipped data ---
-    "retargeting.yaml": "cli/workbench/retargeting.py WORKFLOW_PATH",
     "sim-to-real-loop.yaml": "solutions.toml sim-to-real cli_command",
     "sim-to-real-trigger.yaml": "three-tier contract (legacy YAML tier)",
     "sonic-train-standalone.yaml": "three-tier contract + standalone-policy guardrail",
@@ -54,8 +53,9 @@ REMAINING: dict[str, str] = {
     "tokenfactory-train-triage.yaml": "no twin",
     # --- twin exists but is NOT live-verified yet ---
     "sonic-locomotion-finetuning.yaml": (
-        "twin needs a real SOMA/G1 motion dataset (NPA_E2E_SONIC_MOTION_SRC) that the "
-        "repo does not vendor; not verified live yet, so not retired"
+        "twin's retarget stage passes live (job 205) but its train stage asks the in-pod "
+        "CLI to launch a Nebius SERVERLESS job (nested infrastructure) and fails with "
+        "'--runtime serverless requires --project-id'; see EVIDENCE.md \u00a7R11"
     ),
     # --- RETIRED here: twin live-verified, see EVIDENCE.md -----------------------
     # cosmos3-reason.yaml     job 182            npa-wf-gpu-cosmos3-reason-af7ded35
@@ -70,6 +70,10 @@ REMAINING: dict[str, str] = {
     # token-factory-cosmos-reason.yaml job 201  npa-wf-cpu-token-factory-cosmos-reason-d9669c7f
     # token-factory-generate.yaml      job 202  npa-wf-cpu-token-factory-generate-94815797
     # mjlab-eval.yaml                  job 203  npa-wf-gpu-mjlab-eval-32c1efb5
+    #
+    # Phase 2b:
+    # retargeting.yaml                 job 204  npa-wf-cpu-retargeting-b8e5bc8b
+    #   (was FAILING before this change for lack of motion data - EVIDENCE §6.1)
 }
 
 

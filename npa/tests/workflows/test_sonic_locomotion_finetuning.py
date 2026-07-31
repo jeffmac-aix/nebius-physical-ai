@@ -17,9 +17,6 @@ PIPELINE_YAML = (
     / "skypilot"
     / "sonic-locomotion-finetuning.yaml"
 )
-RETARGETING_YAML = (
-    ROOT / "npa" / "src" / "npa" / "workflows" / "skypilot" / "retargeting.yaml"
-)
 # The raw sonic-export / sonic-eval / sonic-export-eval templates are retired; their
 # npa.workflow specs are the surface now (each live-verified — see EVIDENCE §R4/§R5).
 NPA_WORKFLOWS = ROOT / "npa" / "workflows" / "workbench" / "npa-workflows"
@@ -216,16 +213,27 @@ def test_sonic_workflow_materializer_supports_docker_payload_mode() -> None:
     assert 'docker run --rm "${docker_gpu_args[@]}"' in task["run"]
 
 
-def test_tool_yamls_match_registered_cli_surfaces() -> None:
-    retarget_docs = _docs(RETARGETING_YAML)
+def test_retargeting_spec_invokes_the_real_cli_surface() -> None:
+    """Replaces the retired retargeting template's raw-YAML assertions.
 
-    assert retarget_docs[0] == {"name": "retargeting", "execution": "serial"}
-    assert retarget_docs[1]["name"] == "retarget-motion"
-    assert "npa workbench sonic retargeting run" in retarget_docs[1]["run"]
-    assert "accelerators" not in retarget_docs[1]["resources"]
-    assert retarget_docs[1]["resources"]["image_id"] == "docker:${NPA_RETARGETING_IMAGE}"
-    assert retarget_docs[1]["envs"]["NPA_RETARGETING_IMAGE"] == EXPECTED_RETARGETING_IMAGE
-    assert retarget_docs[1]["envs"]["RETARGET_SOURCE_FRAME_RATE"] == "120"
+    The template pinned an image and a source frame rate through `envs`; the spec
+    declares CPU-only resources (retargeting needs no GPU) and reaches the same CLI
+    through its toolRef. The image is chosen by the engine from the resource profile,
+    which is why `--image` is a pinned `spec_gap` (see test_three_tier_contract.py).
+    """
+
+    from npa.orchestration.npa_workflow.interpreter import build_plan
+    from npa.orchestration.npa_workflow.spec import load_spec
+
+    spec = load_spec(NPA_WORKFLOWS / "retargeting.yaml")
+    step = build_plan(spec, run_id="probe").steps[0]
+    argv = " ".join(step.argv)
+
+    assert step.tool_ref == "workbench.retargeting.run"
+    assert "npa workbench sonic retargeting run" in argv
+    assert "accelerators" not in spec.resources[step.resources]
+    for flag in ("--input-path", "--output-path", "--embodiment", "--source-format"):
+        assert flag in argv
 
 
 
