@@ -108,6 +108,9 @@ def normalize_resources(resources: Mapping[str, Any]) -> dict[str, Any]:
     accel_override = str(_os.environ.get("NPA_WORKFLOW_GPU_ACCELERATOR") or "").strip()
 
     out: dict[str, Any] = {}
+    # NOTE: `num_nodes` is deliberately absent. SkyPilot puts it at the TASK level, next
+    # to `resources`, so the renderer lifts it out of the profile in
+    # build_skypilot_task_doc. Adding it here would produce an invalid resources block.
     for key in ("cloud", "accelerators", "cpus", "memory", "use_spot", "region"):
         if key not in resources or resources[key] in (None, ""):
             continue
@@ -567,6 +570,12 @@ def build_skypilot_task_doc(
         "envs": envs,
         "run": render_task_run_script(command),
     }
+    # Multi-node stages: SkyPilot gang-schedules `num_nodes` identical pods for one task
+    # and exports SKYPILOT_NODE_RANK / SKYPILOT_NODE_IPS into each. Emitted only when the
+    # profile asks for more than one node, so every existing rendered doc is unchanged.
+    num_nodes = int(scheduler_task.get("num_nodes") or 1)
+    if num_nodes > 1:
+        doc["num_nodes"] = num_nodes
     setup = render_setup_for_tool(
         str(scheduler_task.get("tool_ref") or ""),
         config=spec.config,
