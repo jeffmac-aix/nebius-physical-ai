@@ -182,8 +182,11 @@ TOOL_CATALOG: dict[str, ToolEntry] = {
             # Invisible to the flag audit, which only understands `npa …` Typer commands.
             "--run-id",
             "{{run.id}}",
+            # The module takes the RUN ROOT and derives envs/raw, envs/train,
+            # envs/heldout and envs/manifest under it; the raw prefix would nest a
+            # second envs/raw inside itself.
             "--output-uri",
-            "{{config.raw_envs_uri}}",
+            "{{config.envgen_root_uri}}",
             "--env-count",
             "{{config.env_count}}",
             # The retired sim2real-envgen-split.yaml drove sharding from a Kubernetes Job
