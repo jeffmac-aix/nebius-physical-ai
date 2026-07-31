@@ -125,7 +125,10 @@ under `npa/src/npa/workflows/skypilot/`.
   trailing slash, so the declared artifact URI was
   `…/eval/bdd100k_rider_train` + `metrics.json` concatenated.
 - **New guardrails** (none weakened): a catalog-wide check that every `toolRef` argv
-  names real CLI options and passes values its options can mean; the three-tier
+  names real CLI options and passes values its options can mean — including the `npa …`
+  commands **inside** a `bash -c` toolRef, a blind spot where a real defect had shipped; a
+  check that no spec hands a stage a path inside the repo checkout; a check that the
+  reference-workflows skill's template list matches the directory; the three-tier
   contract's third tier moved from SkyPilot `envs` onto the spec + toolRef argv, with
   each contract pinning and *classifying* the parameters a spec cannot set yet; a
   live-matrix check that each case declares the secrets its plan hints at; and a
