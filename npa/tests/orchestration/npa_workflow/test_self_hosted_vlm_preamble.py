@@ -9,6 +9,7 @@ which is exactly the kind of bash a ``toolRef`` cannot carry.
 
 from __future__ import annotations
 
+import shlex
 from pathlib import Path
 
 import pytest
@@ -37,8 +38,8 @@ def test_preamble_serves_the_model_the_tool_will_ask_for() -> None:
 
     preamble = render_self_hosted_vlm_preamble({})
 
-    assert DEFAULT_MODEL in preamble
-    assert f"npa_vlm_port='{DEFAULT_VLM_SERVE_PORT}'" in preamble
+    assert f"\nnpa_vlm_model={shlex.quote(DEFAULT_MODEL)}\n" in preamble
+    assert f"\nnpa_vlm_port={shlex.quote(str(DEFAULT_VLM_SERVE_PORT))}\n" in preamble
     # DEFAULT_ENDPOINT_URL is what the tool posts to when --endpoint-url is empty.
     assert f":{DEFAULT_VLM_SERVE_PORT}/" in DEFAULT_ENDPOINT_URL
 
@@ -85,8 +86,8 @@ def test_config_overrides_model_port_and_trust() -> None:
         {"vlm_model": "Qwen/Qwen2.5-VL-7B-Instruct", "vlm_serve_port": "9001"}
     )
 
-    assert "Qwen/Qwen2.5-VL-7B-Instruct" in preamble
-    assert "npa_vlm_port='9001'" in preamble
+    assert "\nnpa_vlm_model=Qwen/Qwen2.5-VL-7B-Instruct\n" in preamble
+    assert "\nnpa_vlm_port=9001\n" in preamble
     assert "--trust-remote-code" in preamble
 
     without_trust = render_self_hosted_vlm_preamble({"vlm_trust_remote_code": "0"})
