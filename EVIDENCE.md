@@ -1353,3 +1353,115 @@ Templates that remain are pinned with a reason each in
 rather than unstarted* are called out explicitly: `sonic-locomotion-finetuning.yaml`
 (its twin nests infrastructure — §R11) and the trigger/sim-to-real group (engine features
 first). Nothing was deleted on plan-only evidence.
+
+## R14. Phase 2c — BYOF profiles relocated (25 → 20) and multi-node stages proven live
+
+### The 5 BYOF resource profiles were relocated, not deleted
+
+`isaac-lab-rl-train{,-rtxpro,-rtxpro-smoke}.yaml`, `byof-datagen-rtxpro-smoke.yaml` and
+`byof-container-smoke-rtxpro.yaml` describe a **pod shape** — accelerator, cpu/memory
+floors, image placeholder, smoke command — not a pipeline. The workflow surface for them
+is already the spec `byof.yaml`, whose `workbench.byof.repo` toolRef passes one through
+`--yaml {{config.resource_profile_yaml}}`. They moved to
+`npa/src/npa/workflows/byof/profiles/`, joining the two that were already there, with a
+`README.md` stating the boundary and `test_byof_profiles.py` enforcing it (pinned file
+set, one task per profile, `live.py`'s constants must resolve, no runner may resolve a
+path under the retiring catalog).
+
+Rewriting the runners onto the engine was rejected: they carry render-only modes,
+output-root rewriting and BYOF image plumbing the engine does not model, so a port would
+risk the BYOF onboarding live path for no gain in the *workflow* surface.
+
+### The relocation exposed a real gap, and the second run proves the fix
+
+**First attempt** — `byof-profile-relocation-075138`, **SkyPilot job 206**: the runner
+found the relocated profile, rendered it, submitted it, the pod pulled the ~8 GB Isaac
+image and **ran the profile's training script** — then died at the artifact upload:
+
+```
+botocore.exceptions.NoCredentialsError: Unable to locate credentials
+```
+
+All three BYOF runners called `submit_workflow` **without `secret_envs`**, while every
+profile uploads its summary and artifacts to S3. Pre-existing; the relocation surfaced
+it. Each runner now takes a repeatable `--secret-env` and defaults to forwarding the S3
+credentials when they are set (an unset name is dropped, since SkyPilot rejects a secret
+it cannot resolve).
+
+**Second attempt** — `byof-profile-reloc2-075858`, **SkyPilot job 207** ·
+`1x[RTXPRO-6000-BLACKWELL-SERVER-EDITION:1]` · **SUCCEEDED**:
+
+```bash
+python npa/scripts/run_isaac_lab_rl.py \
+  --yaml npa/src/npa/workflows/byof/profiles/isaac-lab-rl-train-rtxpro-smoke.yaml \
+  --image <registry>/npa-isaac-lab:2.3.2.post1-sky3 \
+  --task Isaac-Cartpole-v0 --iterations 1 --run-id byof-profile-reloc2-... --cleanup
+```
+
+Real Isaac Lab training through the relocated profile:
+
+```
+    45575  npa_isaac_lab_checkpoint.pt              real RSL-RL checkpoint
+      932  npa_isaac_lab_checkpoint_manifest.json   status "success", task Isaac-Cartpole-v0
+      882  npa_isaac_lab_train_summary.json         status "success"
+    14081  logs/rsl_rl/cartpole/.../params/env.yaml
+    14208  outputs/.../.hydra/config.yaml
+```
+
+`cleanup`/`teardown` reported no errors, so nothing was left behind.
+
+### Multi-node stages: `resources.<profile>.num_nodes` — PASSED
+
+The one genuine expressiveness gap the brief named. Before this, a multi-node block was
+reachable only through `npa burst submit --nodes`, i.e. outside the workflow surface.
+`num_nodes` is **task level** in SkyPilot's schema, so it lives on the resource profile
+in a spec and the renderer lifts it out; `normalize_resources` deliberately never passes
+it through, and a 1-node profile emits no key at all (so every existing rendered document
+is byte-identical).
+
+**Run id** `npa-wf-cpu-multi-node-probe-11cc2065` · **SkyPilot job 208** ·
+`1 passed in 228.05s`
+
+`sky jobs queue --all --output json` — the node count is visible in `REQUESTED`:
+
+| job | task | requested | status | submitted_at | end_at |
+| --- | --- | --- | --- | --- | --- |
+| 208 | `report-nodes` | **`2x[CPU:2+]`** | SUCCEEDED | 1785485152.8898 | 1785485209.7737 |
+| 208 | `verify-nodes` | `1x[CPU:2+]` | SUCCEEDED | 1785485231.3538 | 1785485285.5915 |
+
+And the proof is in S3 rather than in a log line — one report per rank, from **distinct
+hosts**:
+
+```json
+nodes/rank-0.json {"rank": 0, "num_nodes": 2, "node_ip_count": 2,
+                   "hostname": "report-nodes-208-64ce57a0-head"}
+nodes/rank-1.json {"rank": 1, "num_nodes": 2, "node_ip_count": 2,
+                   "hostname": "report-nodes-208-64ce57a0-worker1"}
+report/multi_node_report.json
+  {"expected_nodes": 2, "reported_nodes": 2, "ranks": [0, 1],
+   "hostnames": ["report-nodes-208-64ce57a0-head",
+                 "report-nodes-208-64ce57a0-worker1"]}
+```
+
+`verify-nodes` fails on a missing rank **and** on two ranks sharing a hostname, so a
+gang that silently collapsed onto one node would not pass. A head + worker1 pair is
+exactly what a real 2-node SkyPilot gang looks like.
+
+Note the brief's premise that `isaac-lab-cosmos-sdg-burst-smoke.yaml` needs this feature
+is wrong: that template is explicitly single-task/single-node and has zero references in
+the repo. The feature is worth having on its own terms, and its live proof is this
+purpose-built spec.
+
+### Retirement tally: 26 → 20
+
+| Template | Disposition |
+| --- | --- |
+| `retargeting.yaml` | retired, job 204 (§R11) |
+| `isaac-lab-rl-train.yaml` | **relocated** to `byof/profiles/` |
+| `isaac-lab-rl-train-rtxpro.yaml` | **relocated** |
+| `isaac-lab-rl-train-rtxpro-smoke.yaml` | **relocated**, live-verified job 207 |
+| `byof-datagen-rtxpro-smoke.yaml` | **relocated** |
+| `byof-container-smoke-rtxpro.yaml` | **relocated** |
+
+Cost: two RTXPRO pods (~25 s and ~24 s of job time, plus image pull) and one 2-node CPU
+gang for ~57 s.

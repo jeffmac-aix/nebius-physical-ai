@@ -7,7 +7,7 @@ a versioned heading when a release is cut.
 
 ## Unreleased
 
-### Retiring the raw SkyPilot task catalog (36 → 25 templates)
+### Retiring the raw SkyPilot task catalog (36 → 20 templates)
 
 `npa.workflow/v0.0.1` specs are becoming the only workflow authoring surface.
 SkyPilot remains the execution engine, and `npa workbench workflow submit` still
@@ -22,6 +22,16 @@ under `npa/src/npa/workflows/skypilot/`.
   `vlm-eval-token-factory.yaml`, `mjlab-eval.yaml`, `retargeting.yaml`.
   `test_skypilot_catalog_retirement.py` pins the remaining set, so the tally is
   machine-checked and a new raw template needs a deliberate edit.
+- **Multi-node stages.** A resource profile can declare `num_nodes`, so a spec can ask
+  for a real gang-scheduled block; previously that was only reachable through
+  `npa burst submit --nodes`, outside the workflow surface. Additive: a 1-node profile
+  renders exactly as before. Reference spec `npa-workflows/multi-node-probe.yaml`
+  verifies one report per rank from distinct hosts.
+- **BYOF resource profiles relocated** from `npa/src/npa/workflows/skypilot/` to
+  `npa/src/npa/workflows/byof/profiles/` (they are pod shapes reached through
+  `byof.yaml`, not workflow templates), and the three BYOF runner scripts gained
+  `--secret-env`, defaulting to the S3 credentials their profiles need for uploads —
+  without which a run provisioned, trained, and then died on `NoCredentialsError`.
 - **New test fixture:** `npa.workflows.motion_fixture` +
   `scripts/stage-sonic-motion-fixture.sh` synthesize a valid SOMA-CSV G1 motion clip
   using only the standard library, so the retargeting-backed specs are live-testable
