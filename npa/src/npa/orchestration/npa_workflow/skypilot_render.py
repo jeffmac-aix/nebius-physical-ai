@@ -288,6 +288,11 @@ def render_self_hosted_vlm_preamble(config: Mapping[str, Any]) -> str:
             f"config.vlm_serve_ready_seconds must be at least {interval}, got {ready_seconds}"
         )
     attempts = ready_seconds // interval
+    flashinfer_sampler = (
+        "1"
+        if str(config.get("vlm_use_flashinfer_sampler") or "0").strip() in {"1", "true", "True"}
+        else "0"
+    )
     return (
         "# Self-hosted VLM backend: serve the model this stage is about to call.\n"
         f"npa_vlm_model={shlex.quote(model)}\n"
@@ -299,6 +304,32 @@ def render_self_hosted_vlm_preamble(config: Mapping[str, Any]) -> str:
         # in a different shell.
         "npa_vlm_scripts=$(python3 -c 'import sysconfig; print(sysconfig.get_path(\"scripts\"))')\n"
         "export PATH=$npa_vlm_scripts:$PATH\n"
+        # ... and it needs nvcc, which SkyPilot's default image also lacks: the JIT then
+        # failed with "/usr/local/cuda/bin/nvcc: not found" (live job 217). vLLM's own
+        # dependencies include the nvidia-cuda-nvcc wheel, so point CUDA_HOME at it when
+        # there is no system toolkit.
+        "if [ ! -x /usr/local/cuda/bin/nvcc ]; then\n"
+        "  npa_cuda_home=$(python3 - <<'PY'\n"
+        "import pathlib\n"
+        "import sysconfig\n"
+        "\n"
+        "for root in {sysconfig.get_paths()['purelib'], sysconfig.get_paths()['platlib']}:\n"
+        "    candidate = pathlib.Path(root) / 'nvidia' / 'cuda_nvcc'\n"
+        "    if (candidate / 'bin' / 'nvcc').is_file():\n"
+        "        print(candidate)\n"
+        "        break\n"
+        "PY\n"
+        "  )\n"
+        "  if [ -n \"$npa_cuda_home\" ]; then\n"
+        "    export CUDA_HOME=$npa_cuda_home\n"
+        "    export PATH=$npa_cuda_home/bin:$PATH\n"
+        "    echo \"using pip CUDA toolkit at $npa_cuda_home\" >&2\n"
+        "  fi\n"
+        "fi\n"
+        # Belt and braces: the sampler that wants the JIT has a pure-PyTorch equivalent, so
+        # a task image without a compiler must not be able to break server startup at all.
+        # Set config.vlm_use_flashinfer_sampler=1 to opt back in.
+        f"export VLLM_USE_FLASHINFER_SAMPLER={flashinfer_sampler}\n"
         "echo \"starting vLLM for $npa_vlm_model on port $npa_vlm_port\" >&2\n"
         "python3 -m vllm.entrypoints.openai.api_server --host 0.0.0.0 "
         "--port \"$npa_vlm_port\" --model \"$npa_vlm_model\" "

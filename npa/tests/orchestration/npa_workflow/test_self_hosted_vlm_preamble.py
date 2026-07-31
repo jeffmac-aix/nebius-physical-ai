@@ -92,6 +92,27 @@ def test_preamble_puts_the_interpreters_script_dir_on_path() -> None:
     assert preamble.index("export PATH=") < preamble.index("api_server")
 
 
+def test_preamble_survives_an_image_with_no_cuda_toolchain() -> None:
+    """Job 217: ninja ran, then failed with '/usr/local/cuda/bin/nvcc: not found'."""
+
+    preamble = render_self_hosted_vlm_preamble({})
+
+    # Falls back to the nvcc wheel vLLM already depends on ...
+    assert "if [ ! -x /usr/local/cuda/bin/nvcc ]; then" in preamble
+    assert "'nvidia' / 'cuda_nvcc'" in preamble
+    assert "export CUDA_HOME=$npa_cuda_home" in preamble
+    # ... and disables the sampler that wants the JIT, so a compiler-less image cannot
+    # break startup at all.
+    assert "export VLLM_USE_FLASHINFER_SAMPLER=0" in preamble
+    assert preamble.index("VLLM_USE_FLASHINFER_SAMPLER") < preamble.index("api_server")
+
+
+def test_flashinfer_sampler_can_be_opted_back_in() -> None:
+    preamble = render_self_hosted_vlm_preamble({"vlm_use_flashinfer_sampler": "1"})
+
+    assert "export VLLM_USE_FLASHINFER_SAMPLER=1" in preamble
+
+
 def test_setup_installs_ninja_for_the_jit_compiler(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("NPA_SRC_S3_URI", "s3://example-bucket/prefix/npa")
     spec = load_spec(SPECS / "vlm-eval-single.yaml")
