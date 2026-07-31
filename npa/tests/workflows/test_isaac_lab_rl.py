@@ -11,7 +11,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[3]
 SINGLE_YAML = (
-    ROOT / "npa" / "src" / "npa" / "workflows" / "skypilot" / "isaac-lab-rl-train.yaml"
+    ROOT / "npa" / "src" / "npa" / "workflows" / "byof" / "profiles" / "isaac-lab-rl-train.yaml"
 )
 # The raw isaac-lab-rl-sweep template is retired; its npa.workflow spec is the surface
 # (live-verified on four GPUs in two batches plus a barrier — EVIDENCE §R3).
@@ -61,10 +61,10 @@ def test_isaac_lab_single_job_yaml_uses_rt_core_gpu_and_rsl_rl_entrypoint() -> N
 def test_isaac_lab_yaml_files_have_no_literal_aws_endpoint_placeholders() -> None:
     yaml_paths = [
         SINGLE_YAML,
-        ROOT / "npa" / "src" / "npa" / "workflows" / "skypilot" / "isaac-lab-rl-train-rtxpro.yaml",
-        ROOT / "npa" / "src" / "npa" / "workflows" / "skypilot" / "isaac-lab-rl-train-rtxpro-smoke.yaml",
-        ROOT / "npa" / "src" / "npa" / "workflows" / "skypilot" / "byof-datagen-rtxpro-smoke.yaml",
-        ROOT / "npa" / "src" / "npa" / "workflows" / "skypilot" / "byof-container-smoke-rtxpro.yaml",
+        ROOT / "npa" / "src" / "npa" / "workflows" / "byof" / "profiles" / "isaac-lab-rl-train-rtxpro.yaml",
+        ROOT / "npa" / "src" / "npa" / "workflows" / "byof" / "profiles" / "isaac-lab-rl-train-rtxpro-smoke.yaml",
+        ROOT / "npa" / "src" / "npa" / "workflows" / "byof" / "profiles" / "byof-datagen-rtxpro-smoke.yaml",
+        ROOT / "npa" / "src" / "npa" / "workflows" / "byof" / "profiles" / "byof-container-smoke-rtxpro.yaml",
     ]
     for path in yaml_paths:
         text = path.read_text(encoding="utf-8")

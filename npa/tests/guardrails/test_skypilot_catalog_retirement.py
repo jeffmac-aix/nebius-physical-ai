@@ -26,11 +26,6 @@ SKYPILOT_DIR = REPO_ROOT / "npa" / "src" / "npa" / "workflows" / "skypilot"
 REMAINING: dict[str, str] = {
     # --- loaded and launched by a shipped runner script ---
     "bdd100k-pipeline.yaml": "npa/scripts/run_bdd100k_pipeline.py DEFAULT_YAML",
-    "byof-container-smoke-rtxpro.yaml": "npa/scripts/run_byof_container_verify.py",
-    "byof-datagen-rtxpro-smoke.yaml": "npa/scripts/run_byof_datagen.py",
-    "isaac-lab-rl-train.yaml": "npa/scripts/run_isaac_lab_rl.py DEFAULT_YAML",
-    "isaac-lab-rl-train-rtxpro.yaml": "byof/live.py resource profile",
-    "isaac-lab-rl-train-rtxpro-smoke.yaml": "byof/live.py resource profile",
     "sim-to-real-pipeline.yaml": "npa/scripts/run_sim_to_real_pipeline.py DEFAULT_YAML",
     # --- referenced by a CLI/SDK path pointer or shipped data ---
     "sim-to-real-loop.yaml": "solutions.toml sim-to-real cli_command",
@@ -74,6 +69,14 @@ REMAINING: dict[str, str] = {
     # Phase 2b:
     # retargeting.yaml                 job 204  npa-wf-cpu-retargeting-b8e5bc8b
     #   (was FAILING before this change for lack of motion data - EVIDENCE §6.1)
+    #
+    # Phase 2c: RELOCATED (not deleted) to npa/src/npa/workflows/byof/profiles/ —
+    # they are BYOF resource profiles reached through byof.yaml's toolRef, not
+    # workflow templates. See that directory's README.md and
+    # npa/tests/guardrails/test_byof_profiles.py.
+    # byof-container-smoke-rtxpro.yaml, byof-datagen-rtxpro-smoke.yaml,
+    # isaac-lab-rl-train.yaml, isaac-lab-rl-train-rtxpro.yaml,
+    # isaac-lab-rl-train-rtxpro-smoke.yaml
 }
 
 

@@ -349,7 +349,7 @@ References:
 
 - `docs/workbench-yaml-guide.md`
 - `npa/src/npa/workflows/skypilot/bdd100k-pipeline.yaml`
-- `npa/src/npa/workflows/skypilot/isaac-lab-rl-train.yaml`
+- `npa/src/npa/workflows/byof/profiles/isaac-lab-rl-train.yaml`
 - `npa/workflows/workbench/npa-workflows/isaac-lab-rl-sweep.yaml`
 - `npa/scripts/run_bdd100k_pipeline.py`
 - `npa/scripts/run_isaac_lab_rl.py`
@@ -371,7 +371,7 @@ SkyPilot 0.12.2 does not support self-referencing interpolation inside the same
 `npa/src/npa/workflows/skypilot/bdd100k-pipeline.yaml` is the current pattern.
 
 Training workflows must run headless. Isaac Lab shows the required `--headless`
-flag in `npa/src/npa/workflows/skypilot/isaac-lab-rl-train.yaml`.
+flag in `npa/src/npa/workflows/byof/profiles/isaac-lab-rl-train.yaml`.
 
 Use `image_id` overrides for customer containers when the tool contract is
 preserved. Isaac Lab documents this pattern in `docs/workbench-yaml-guide.md`
@@ -652,7 +652,7 @@ For the clean HTTP service, CLI, and SDK pattern, read
 
 For workflow composition, read `docs/workbench-yaml-guide.md`,
 `npa/src/npa/workflows/skypilot/bdd100k-pipeline.yaml`,
-`npa/src/npa/workflows/skypilot/isaac-lab-rl-train.yaml`,
+`npa/src/npa/workflows/byof/profiles/isaac-lab-rl-train.yaml`,
 `npa/tests/workflows/test_bdd100k_pipeline.py`, and
 `npa/tests/workflows/test_isaac_lab_rl.py`. For deeper rationale, read
 `docs/architecture/contributor-context.md` and

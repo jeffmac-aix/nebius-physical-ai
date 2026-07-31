@@ -95,7 +95,7 @@ the operator passes `--replace` and confirms with `--yes` for automation.
 
 ## Workflows
 
-- Single RL job: `npa/src/npa/workflows/skypilot/isaac-lab-rl-train.yaml`.
+- Single RL job: `npa/src/npa/workflows/byof/profiles/isaac-lab-rl-train.yaml`.
 - Parameter sweep: `npa/workflows/workbench/npa-workflows/isaac-lab-rl-sweep.yaml`.
 - Runner: `npa/scripts/run_isaac_lab_rl.py`.
 

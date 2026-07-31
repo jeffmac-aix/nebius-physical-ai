@@ -33,7 +33,8 @@ DEFAULT_YAML = (
     / "src"
     / "npa"
     / "workflows"
-    / "skypilot"
+    / "byof"
+    / "profiles"
     / "byof-datagen-rtxpro-smoke.yaml"
 )
 DEFAULT_BUCKET = os.environ.get("NPA_S3_BUCKET", "your-bucket-name")

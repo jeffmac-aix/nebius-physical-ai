@@ -12,20 +12,22 @@ from npa.cluster.state import kubeconfig_file, load_cluster_state
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 WORKSPACE_ROOT = Path(__file__).resolve().parents[5]
-# Internal SkyPilot task templates, relocated out of the shown workbench catalog.
-# Resolved package-relative (byof/ -> workflows/ -> skypilot/) so it works from a
-# repo checkout and an installed wheel alike.
-SKYPILOT_DIR = Path(__file__).resolve().parents[1] / "skypilot"
-# BYOF-owned resource profiles that the declarative npa-workflows specs and the
-# BYOF runner depend on. Kept beside this runner (not in the SkyPilot catalog
-# tree) so the npa-workflows tree is self-sufficient and the SkyPilot reference
-# catalog can be deprecated/removed without breaking BYOF live runs.
+# BYOF-owned SkyPilot **resource profiles**: the pod shape a BYOF workload runs in
+# (accelerator, cpu/memory floors, image placeholder, smoke command). They are not
+# workflow templates — the workflow surface is the npa.workflow spec `byof.yaml`, whose
+# `workbench.byof.repo` toolRef passes one of these through
+# `--yaml {{config.resource_profile_yaml}}`.
+#
+# They live beside this runner rather than in the retiring SkyPilot catalog
+# (npa/src/npa/workflows/skypilot/) so that catalog can go away without breaking BYOF
+# live runs. Resolved package-relative so a repo checkout and an installed wheel behave
+# the same. See profiles/README.md.
 BYOF_PROFILES_DIR = Path(__file__).resolve().parent / "profiles"
-DEFAULT_TRAIN_YAML = SKYPILOT_DIR / "isaac-lab-rl-train.yaml"
-RTXPRO_TRAIN_YAML = SKYPILOT_DIR / "isaac-lab-rl-train-rtxpro.yaml"
-RTXPRO_SMOKE_TRAIN_YAML = SKYPILOT_DIR / "isaac-lab-rl-train-rtxpro-smoke.yaml"
-BYOF_DATAGEN_SMOKE_YAML = SKYPILOT_DIR / "byof-datagen-rtxpro-smoke.yaml"
-BYOF_CONTAINER_SMOKE_YAML = SKYPILOT_DIR / "byof-container-smoke-rtxpro.yaml"
+DEFAULT_TRAIN_YAML = BYOF_PROFILES_DIR / "isaac-lab-rl-train.yaml"
+RTXPRO_TRAIN_YAML = BYOF_PROFILES_DIR / "isaac-lab-rl-train-rtxpro.yaml"
+RTXPRO_SMOKE_TRAIN_YAML = BYOF_PROFILES_DIR / "isaac-lab-rl-train-rtxpro-smoke.yaml"
+BYOF_DATAGEN_SMOKE_YAML = BYOF_PROFILES_DIR / "byof-datagen-rtxpro-smoke.yaml"
+BYOF_CONTAINER_SMOKE_YAML = BYOF_PROFILES_DIR / "byof-container-smoke-rtxpro.yaml"
 RTXPRO_SKYPILOT_CONFIG = BYOF_PROFILES_DIR / "skypilot-kubernetes-rtxpro.yaml"
 BYOF_ONBOARD_SKILL = WORKSPACE_ROOT / "skills" / "workflows" / "byof-onboard" / "SKILL.md"
 

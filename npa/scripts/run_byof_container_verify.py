@@ -36,7 +36,8 @@ DEFAULT_YAML = (
     / "src"
     / "npa"
     / "workflows"
-    / "skypilot"
+    / "byof"
+    / "profiles"
     / "byof-container-smoke-rtxpro.yaml"
 )
 DEFAULT_IMAGE_PULL_SECRETS = ("agent-sa",)

@@ -289,7 +289,7 @@ Related docs:
 Isaac Lab RL jobs are batch training workloads, not persistent service calls.
 Use the committed SkyPilot consumers:
 
-- `npa/src/npa/workflows/skypilot/isaac-lab-rl-train.yaml` for one RSL-RL training
+- `npa/src/npa/workflows/byof/profiles/isaac-lab-rl-train.yaml` for one RSL-RL training
   job, submitted by `npa/scripts/run_isaac_lab_rl.py` (which renders per-run values).
 - `npa/workflows/workbench/npa-workflows/isaac-lab-rl-sweep.yaml` for a parallel
   sweep. This is an **`npa.workflow` spec**, not a SkyPilot task YAML: it replaced the
@@ -302,7 +302,7 @@ Single run:
 ```bash
 export NPA_S3_BUCKET=your-bucket-name
 python npa/scripts/run_isaac_lab_rl.py \
-  --yaml npa/src/npa/workflows/skypilot/isaac-lab-rl-train.yaml \
+  --yaml npa/src/npa/workflows/byof/profiles/isaac-lab-rl-train.yaml \
   --task Isaac-Cartpole-v0 \
   --iterations 10 \
   --run-id isaac-cartpole-smoke
