@@ -2278,3 +2278,69 @@ a zero-GPU hosted judge — so a twin cannot drop it. What is missing:
 So the remaining work is one coherent piece rather than three unknowns: an in-image LeRobot
 producer toolRef plus a policy/dataset fixture, and a prompt-builder for triage. The tally now
 carries that instead of "no twin".
+
+---
+
+## R31. The LeRobot producer: three defects down, one named gap left
+
+§R30 established that all three Token Factory templates share one blocker — a GPU stage that
+runs LeRobot **inside the vendor image** and produces exactly what the hosted stage consumes.
+Building that producer surfaced three more latent defects and left one gap, all recorded here
+rather than papered over.
+
+### What now exists
+
+* `npa.workbench.lerobot.policy_container` already had a real in-image `train`/`eval` module
+  CLI. It now exposes `build_parser()`, so the module-argv guardrail (§R27) checks any toolRef
+  pointing at it.
+* **`train --artifacts-s3-uri`** is new. `--checkpoint-s3-uri` uploads only the *checkpoint*
+  (`upload_checkpoint_path(checkpoint, config)`), while a stage that reads the **run** needs the
+  configs, logs and metrics beside it. The retired template did that with a trailing
+  inline-python `rglob` upload — glue a `toolRef` cannot carry.
+* **`npa/src/npa/workflows/token_factory_triage.py`** makes the triage stage executable. The
+  template spent ~45 lines downloading textual artifacts, digesting them with the pure helpers,
+  and calling `token-factory generate --system-prompt "$(cat …)"` — a shell substitution no argv
+  can express. The pure helpers stay pure: `token_factory_combos` documents that it holds no
+  network, storage or Token Factory calls. The new module also **refuses to write a silent empty
+  report**: a run whose artifacts contain no readable text fails loudly instead of triaging
+  nothing.
+* Two catalog toolRefs (`workbench.lerobot.policy_train`, `workbench.token_factory.triage`) and
+  the twin spec `npa-workflows/tokenfactory-train-triage.yaml`.
+
+### Defect: five toolRefs invoked bare `python`
+
+Live job 242 died before training started:
+
+```
+(train-gpu) using npa interpreter /home/sky/miniconda3/bin/python3 for this stage
+(train-gpu) bash: python: command not found
+```
+
+The interesting part is that **the same argv shape had passed two runs earlier**: jobs 223/224
+ran `python -m npa.workflows.sim2real_envgen` successfully on SkyPilot's default image, where
+miniconda provides `python`. The LeRobot vendor image does not. So five toolRefs
+(`raw_shard`, `split`, `write_decision` and the two new ones) carried image-dependent breakage
+that only one image exposes — the definition of something a rule should catch rather than a live
+run. All five now use `python3`, which is also what the renderer's interpreter shim records and
+therefore the interpreter that can import `npa`, and
+`test_no_tool_ref_invokes_bare_python` pins it.
+
+### The remaining gap, named
+
+Job 243 got one step further — the module ran and reported its own precondition:
+
+```
+PolicyContainerError: --data-path or --dataset-path is required
+```
+
+`run_lerobot_training` asserts a **local** dataset root containing `meta/info.json`.
+`--dataset-repo-id` is only the label passed through to `lerobot-train`. Stages do not share a
+filesystem, so a separate "fetch the dataset" stage cannot help: the dataset has to be
+materialised **inside** the train stage from its repo id (what `lerobot-train` does natively).
+
+That is one bounded tool feature, and it is the last thing between this twin and a live run.
+Until it lands the matrix case is `plan_only` with exactly that reason, so nothing claims a
+passing live case — the same discipline as `dataset-ingest-curate` (§R16).
+
+The three templates therefore remain, but their blocker has gone from "no twin" (§R30) to a
+single named feature with two of the three producer pieces already shipped and unit-tested.
