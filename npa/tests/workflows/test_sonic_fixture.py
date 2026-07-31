@@ -73,6 +73,11 @@ def test_build_and_publish_writes_a_loadable_policy_checkpoint(tmp_path: Path) -
     # The same shape contract `npa workbench sonic export` will trace.
     action = policy(torch.zeros(1, 6))
     assert tuple(action.shape) == (1, 3)
+    # The exporter needs these to resolve dims without an --obs-spec, and they must
+    # survive the save/load round trip (live regression: SkyPilot job 188 failed with
+    # "observation dimension is required" because the first fixture had neither).
+    assert policy.obs_dim == 6
+    assert policy.action_dim == 3
 
 
 def test_build_and_publish_is_deterministic(tmp_path: Path) -> None:
@@ -90,6 +95,19 @@ def test_build_and_publish_is_deterministic(tmp_path: Path) -> None:
         ]
 
     assert _weights(first["checkpoint_path"]) == _weights(second["checkpoint_path"])
+
+
+def test_fixture_policy_exposes_the_dims_the_exporter_looks_for() -> None:
+    """Pin the attribute names `_resolve_dim` / `_resolve_action_dim` search for."""
+
+    pytest.importorskip("torch", reason="torch ships in the npa[sonic] extra")
+    from npa.workflows.sonic_fixture import build_policy_module
+
+    policy = build_policy_module(obs_dim=7, act_dim=4, hidden=5)
+
+    # `obs_dim` and `action_dim` are the names the exporter tries first in each list.
+    assert getattr(policy, "obs_dim", None) == 7
+    assert getattr(policy, "action_dim", None) == 4
 
 
 def test_default_dims_match_the_locomotion_specs() -> None:

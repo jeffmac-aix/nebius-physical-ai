@@ -72,13 +72,26 @@ def build_policy_module(
         raise SonicFixtureError("obs_dim, act_dim and hidden must all be >= 1")
     torch = _import_torch()
     torch.manual_seed(seed)
-    return torch.nn.Sequential(
+    policy = torch.nn.Sequential(
         torch.nn.Linear(obs_dim, hidden),
         torch.nn.ELU(),
         torch.nn.Linear(hidden, hidden),
         torch.nn.ELU(),
         torch.nn.Linear(hidden, act_dim),
     )
+    # The exporter resolves shapes from the policy when no --obs-spec is given, trying
+    # `observation_dim` / `obs_dim` / `input_dim` / `num_observations` (and the action
+    # equivalents). A bare Sequential exposes none of them, which is exactly how the
+    # first staged fixture failed live: "observation dimension is required. Provide
+    # --obs-spec or a policy with one of: ..." (SkyPilot job 188). Real SONIC policies
+    # carry these, so the fixture must too.
+    #
+    # Plain ints land in the module's __dict__ (not _parameters/_modules), so they
+    # survive torch.save/torch.load without making the checkpoint depend on any npa
+    # class being importable at load time.
+    policy.obs_dim = obs_dim
+    policy.action_dim = act_dim
+    return policy
 
 
 def build_checkpoint(
