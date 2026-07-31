@@ -17,6 +17,13 @@ import typer
 from npa.clients.config import resolve_container_registry
 from npa.clients.credentials import load_credentials
 from npa.deploy.images import DEFAULT_CONTAINER_REGISTRY, container_image_for_tool
+from npa.workbench.detection_training.artifacts import (
+    EVAL_METRICS_FILENAME,
+    DetectionTrainingArtifactError,
+    assert_eval_metrics,
+    discover_checkpoint_uri,
+    eval_result_uri_for,
+)
 from npa.workbench.detection_training.schemas import (
     DEFAULT_LANCE_URI,
     DEFAULT_PORT,
@@ -345,16 +352,45 @@ def train_cmd(
 
 
 def eval_cmd(
-    checkpoint_uri: str = typer.Option(..., "--checkpoint-uri", help="Checkpoint S3/local URI."),
+    checkpoint_uri: str = typer.Option(
+        "",
+        "--checkpoint-uri",
+        help=(
+            "Checkpoint S3/local URI. With --discover-checkpoint this is the training "
+            "OUTPUT prefix to search instead."
+        ),
+    ),
     eval_view: str = typer.Option(..., "--eval-view", help="Lance materialized view to evaluate."),
     output_uri: str = typer.Option(..., "--output-uri", "--output-path", help="S3/local output URI."),
     lance_uri: str = typer.Option(DEFAULT_LANCE_URI, "--lance-uri", "--input-path", help="LanceDB URI."),
+    discover_checkpoint: bool = typer.Option(
+        False,
+        "--discover-checkpoint/--no-discover-checkpoint",
+        help=(
+            "Resolve the checkpoint from the last completed /runs entry under "
+            "--checkpoint-uri, substituting the trained epoch count."
+        ),
+    ),
+    write_canonical_metrics: bool = typer.Option(
+        False,
+        "--write-canonical-metrics/--no-write-canonical-metrics",
+        help="Publish the eval response to <output-uri>/metrics.json.",
+    ),
     service: bool = typer.Option(False, "--service", help="Call a deployed service endpoint."),
     endpoint: str = typer.Option("", "--endpoint", help="Detection-training service endpoint."),
     token_env: str = typer.Option(DEFAULT_TOKEN_ENV, "--token-env", help="Environment variable containing service token."),
     output: OutputFormat = typer.Option(OutputFormat.json, "--output", help="Output format."),
 ) -> None:
     """Evaluate a detection-training checkpoint."""
+    if not checkpoint_uri.strip():
+        fail("--checkpoint-uri is required (with --discover-checkpoint it is the search prefix)")
+    resolved_endpoint = resolve_endpoint(endpoint) if service else ""
+    if discover_checkpoint:
+        if not service:
+            fail("--discover-checkpoint queries /runs, so it requires --service")
+        checkpoint_uri = resolve_checkpoint_from_runs(
+            checkpoint_uri, endpoint=resolved_endpoint, token_env=token_env
+        )
     payload = EvalRequest(
         checkpoint_uri=checkpoint_uri,
         eval_view=eval_view,
@@ -362,12 +398,56 @@ def eval_cmd(
         output_uri=output_uri,
     ).model_dump(mode="json")
     if service:
-        result = request_json("POST", resolve_endpoint(endpoint), "/eval", payload=payload, token_env=token_env, timeout=900.0)
+        result = request_json("POST", resolved_endpoint, "/eval", payload=payload, token_env=token_env, timeout=900.0)
+        # The template closed with a `jq -e` numeric check: a service can answer 200 with a
+        # null mAP and the stage would otherwise report success on an unusable report.
+        try:
+            assert_eval_metrics(result)
+        except DetectionTrainingArtifactError as exc:
+            typer.echo(json.dumps(result, indent=2, sort_keys=True), err=True)
+            fail(str(exc))
     else:
         from npa.sdk.workbench.detection_training import eval as sdk_eval
 
         result = sdk_eval(**payload).model_dump(mode="json")
+    if write_canonical_metrics:
+        result["metrics_uri"] = write_eval_metrics(result, output_uri=output_uri)
     emit(result, output=output, text=f"mAP: {result.get('mAP')}\neval_run_id: {result.get('eval_run_id')}")
+
+
+def resolve_checkpoint_from_runs(output_uri: str, *, endpoint: str, token_env: str) -> str:
+    """Ask ``/runs`` for the checkpoint the last completed run under ``output_uri`` wrote."""
+
+    runs_payload = request_json("GET", endpoint, "/runs", token_env=token_env, timeout=60.0)
+    runs = runs_payload.get("runs")
+    if not isinstance(runs, list):
+        fail(f"/runs did not return a runs list: {runs_payload!r}")
+    try:
+        return discover_checkpoint_uri(runs, output_uri=output_uri)
+    except DetectionTrainingArtifactError as exc:
+        typer.echo(json.dumps(runs_payload, indent=2, sort_keys=True), err=True)
+        fail(str(exc))
+        raise  # pragma: no cover - fail() raises
+
+
+def write_eval_metrics(payload: dict[str, Any], *, output_uri: str) -> str:
+    """Publish the eval response as the canonical ``metrics.json`` for this output prefix."""
+
+    import tempfile
+
+    target = eval_result_uri_for(output_uri)
+    body = json.dumps(payload, indent=2, sort_keys=True) + "\n"
+    if target.startswith("s3://"):
+        from npa.clients.storage import StorageClient
+
+        with tempfile.TemporaryDirectory(prefix="npa-detection-eval-") as tmp:
+            local = Path(tmp) / EVAL_METRICS_FILENAME
+            local.write_text(body, encoding="utf-8")
+            return StorageClient.from_environment().upload_file(str(local), target)
+    path = Path(target)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body, encoding="utf-8")
+    return str(path)
 
 
 def status_cmd(

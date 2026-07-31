@@ -834,6 +834,11 @@ TOOL_CATALOG: dict[str, ToolEntry] = {
             "--service",
             "--endpoint",
             "{{config.detection_endpoint}}",
+            # The retired template resolved the checkpoint from /runs and published
+            # <output-uri>/metrics.json itself; --checkpoint-uri above is the
+            # training output prefix to search.
+            "--discover-checkpoint",
+            "--write-canonical-metrics",
         ],
     ),
     "workbench.detection_training.eval_nighttime": ToolEntry(
@@ -855,6 +860,11 @@ TOOL_CATALOG: dict[str, ToolEntry] = {
             "--service",
             "--endpoint",
             "{{config.detection_endpoint}}",
+            # The retired template resolved the checkpoint from /runs and published
+            # <output-uri>/metrics.json itself; --checkpoint-uri above is the
+            # training output prefix to search.
+            "--discover-checkpoint",
+            "--write-canonical-metrics",
         ],
     ),
     "workbench.detection_training.eval_distant": ToolEntry(
@@ -876,6 +886,11 @@ TOOL_CATALOG: dict[str, ToolEntry] = {
             "--service",
             "--endpoint",
             "{{config.detection_endpoint}}",
+            # The retired template resolved the checkpoint from /runs and published
+            # <output-uri>/metrics.json itself; --checkpoint-uri above is the
+            # training output prefix to search.
+            "--discover-checkpoint",
+            "--write-canonical-metrics",
         ],
     ),
     "workbench.fiftyone.launch_app": ToolEntry(

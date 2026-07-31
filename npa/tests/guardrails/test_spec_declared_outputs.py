@@ -52,6 +52,16 @@ RESULT_URI_TOOLS: dict[str, tuple[str, str]] = {
         "--output-path",
         "npa.workbench.token_factory:reason_result_uri_for",
     ),
+    # All three eval stages publish the same canonical metrics object under their own
+    # output prefix. Before `--write-canonical-metrics` existed, nothing wrote it and the
+    # BDD100K spec declared it anyway.
+    **{
+        f"workbench.detection_training.eval_{view}": (
+            "--output-uri",
+            "npa.workbench.detection_training.artifacts:eval_result_uri_for",
+        )
+        for view in ("rider", "nighttime", "distant")
+    },
     # Retargeting's real artifact is a directory of motions; the JSON a downstream
     # stage reads is the metadata sidecar, so that is what `outputs:` must name.
     "workbench.retargeting.run": (
