@@ -2080,3 +2080,85 @@ with the map's size rather than contradicting it.
 is not deployed on this cluster (the same wall as §R16), and the mock stands in for both
 services, so it cannot prove behaviour against the real ones. What changed is that the
 retirement is now one step: deploy the service, run it live, delete. The tally entry says so.
+
+---
+
+## R27. `sim2real-envgen-split.yaml` retired (16 → 15), and the toolRef that could never run
+
+The tally said "no twin". Authoring one first required fixing the toolRef, because
+`workbench.sim2real_envgen.raw_shard` was **broken in a way nothing could see**:
+
+```
+python -m npa.workflows.sim2real_envgen raw-shard --output-uri … --env-count …
+```
+
+`--run-id` is `required=True` on that module's parser, so every stage using this toolRef could
+only die with *"the following arguments are required: --run-id"*. Three shipped specs
+reference it. The catalog flag audit could not catch it — it understands Typer commands
+invoked as `npa …` (and, since §R26, the `npa …` calls inside a `bash -c` script), but not a
+module CLI.
+
+New guardrail `test_module_toolref_argv.py` asks the module's **real argparse parser**, which
+is the only source of truth for a module CLI: placeholders are substituted with values each
+`type=` accepts and the remainder is parsed, so a missing required option, an unknown flag or a
+bad value all fail offline. A module toolRef whose module exposes no parser factory fails with
+instructions rather than being silently skipped, and a negative control pins the argv that
+shipped. `sim2real_envgen` gained `build_parser()` for this.
+
+A second defect in the same toolRef: `--output-uri` is the **run root**, from which the module
+derives `envs/raw/`, `envs/train/`, `envs/heldout/` and `envs/manifest/`. It was handed the raw
+prefix, which would have nested a second `envs/raw` inside it. And all four specs using it
+declared `<raw>/manifest.json`, a file `raw-shard` never writes — it writes
+`raw-shard-<ii>-of-<nn>.jsonl` plus `raw-shard-<ii>-summary.json`, while `split-manifest.json`
+comes from the `split` subcommand under `envs/manifest/`. Declarations corrected in all four.
+
+### The fan-out, declared instead of implied
+
+The template drove sharding from Kubernetes' Job completion index
+(`--shard-index "${JOB_COMPLETION_INDEX:-0}"`), so producing N shards meant N submissions, or
+an indexed Job the workflow surface never modelled. `sim2real-envgen-shards.yaml` declares it:
+a `parallel:` group whose members differ only through `params.shard_index`, with `split` as the
+barrier. New `workbench.sim2real_envgen.split` toolRef.
+
+### Live: jobs 223 / 224 — `npa-wf-multi-sim2real-envgen-shards-79c2cb1c`, 5m38s, SUCCEEDED
+
+The runtime ledger records concurrency directly, rather than being asserted:
+
+```json
+{"group": "generate-shards", "kind": "parallel", "job_id": "223",
+ "max_concurrent_observed": 2,
+ "observations": [
+   {"observed_at": "13:33:55Z", "statuses": {"shard-0": "STARTING",  "shard-1": "STARTING"}},
+   {"observed_at": "13:34:25Z", "running": ["shard-0", "shard-1"], "running_count": 2},
+   {"observed_at": "13:34:55Z", "statuses": {"shard-0": "RUNNING",  "shard-1": "SUCCEEDED"}},
+   {"observed_at": "13:35:25Z", "statuses": {"shard-0": "SUCCEEDED","shard-1": "SUCCEEDED"}}],
+ "started_at": "13:32:27Z", "ended_at": "13:35:30Z"}
+{"states": ["split"], "kind": "serial", "job_id": "224", "started_at": "13:35:31Z"}
+```
+
+The two shards were submitted **4.2 ms apart** (`1785504825.3996` / `.4037`) and the barrier
+started **1 s after** the group ended.
+
+The artifacts prove the shards were genuinely disjoint halves that the barrier recombined —
+the property a single-task template could not demonstrate:
+
+```
+   42291  envs/raw/raw-shard-00-of-02.jsonl
+     378  envs/raw/raw-shard-00-summary.json     shard_index 0, raw_count 32 of env_count 64
+   42277  envs/raw/raw-shard-01-of-02.jsonl
+     378  envs/raw/raw-shard-01-summary.json     shard_index 1, raw_count 32
+   67388  envs/train/envs.jsonl
+   17180  envs/heldout/envs.jsonl
+     642  envs/manifest/split-manifest.json      raw_count 64, train 51, heldout 13,
+                                                 train_fraction 0.8, disjoint: true
+```
+
+`51 + 13 = 64` — the split saw both shards, and reports the sets disjoint.
+
+### CPU, not the GPU the template asked for
+
+The template pinned `RTXPRO6000:1` and a test asserted it. Shard generation writes a catalog of
+environment descriptors and never renders, so the twin is CPU and that GPU went unused; the
+assertion moved onto the spec as its opposite (no resource profile declares an accelerator).
+This is the third template in this change whose accelerator request did not match its work
+(see also §R25).
