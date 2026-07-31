@@ -641,3 +641,72 @@ surface.
 must be a **single** task (chaining stages means it belongs in a spec), `live.py`'s
 constants must resolve inside `profiles/`, and no runner may resolve a path under the
 retiring catalog.
+
+## R11. A per-`toolRef` **run** preamble, not just a setup hook
+
+R4 added a per-`toolRef` `setup:` hook so a stage could install an npa extra. The
+self-hosted VLM backend needed something the setup hook structurally cannot do: **start a
+process that must still be alive while the stage's command runs.** SkyPilot executes `setup:`
+and `run:` as separate shells, so anything backgrounded in setup is gone by the time the
+command starts.
+
+So `render_run_preamble_for_tool(tool_ref, config)` mirrors `render_setup_for_tool` and is
+prepended to the `run:` script — after the interpreter shim, so the server uses the same
+`python3` the command will.
+
+Why this belongs in the renderer rather than in the tool: the tool's job is to *call* an
+OpenAI-compatible endpoint, and it should not care whether that endpoint is hosted, remote or
+in-pod. Where the endpoint comes from is a property of the **execution environment**, which is
+exactly what the renderer owns. Rejected alternatives:
+
+* *Bake vLLM serving into `vlm-eval run`.* Couples a scoring tool to a serving stack, and
+  would start a server per invocation — the loop would pay it three times.
+* *Require a prebuilt serving image.* That is what the template did (`NPA_VLM_IMAGE`), and it
+  is precisely the operator lore R5 argues against: the live proof runs on SkyPilot's default
+  image.
+* *A generic `sidecar:` field in the spec schema.* Real, but much larger, and it would put
+  serving mechanics into the authoring surface. Revisit if a second tool needs a companion
+  process.
+
+The preamble also fixes the environment's shape rather than demanding a shape: `ninja` and a
+CUDA compiler both come from pip wheels vLLM already depends on, and the JIT-dependent sampler
+falls back to pure PyTorch. A workflow engine must not require a build toolchain in a task
+image.
+
+## R12. Retiring a template may require *adding* a capability
+
+The plan (D3) assumed `sim-to-real-loop.yaml` could retire because the staged sim2real engine
+covers sim-to-real. Reading the template disproved that. It owns two things nothing else has:
+per-rollout scoring of a rollout **set** (`vlm-eval run` scores one rollout — it discovers
+frames recursively, so a prefix of many rollouts blends into a single score), and the
+`task_success_report.json` aggregate that the cookbook documents as the gate.
+
+The capability existed twice and was reachable from neither the CLI nor a spec: as `jq` inside
+the template, and as Python inside a gated GPU test. That is the signature of a missing tool
+feature, and it generalises: **a template's bash is either accidental glue or an unimplemented
+capability, and only reading it tells you which.** The same reading is what produced the sonic
+S3 staging work (R1) and the two `detection-training` gaps.
+
+Consequence for the remaining work: a retirement is not a delete plus a reference sweep. The
+honest order is (1) read the template, (2) name every behaviour it owns, (3) put the ones the
+tool lacks into the tool, (4) verify live, (5) delete. Where step 3 is not finished, the
+template stays and the tally records what is missing — which is why `bdd100k-pipeline.yaml`
+survives with three named gaps rather than a half-ported runner.
+
+## R13. Two failure classes worth encoding as guardrails, not fixes
+
+Both were found by reading twins rather than by a test, and both are *classes*:
+
+**A spec may not name a path inside the repo checkout.** `vlm-eval-benchmark.yaml` passed
+`--dataset npa/src/npa/workbench/vlm_eval/fixtures/.../benchmark.json`. It resolves on a
+laptop and never in a pod. The guardrail fires only when a resolved argv value is a *relative*
+path that also *exists in this repo* — deliberately narrow, because such a value is always a
+mistake and the check then cannot produce false positives. It immediately found five more
+specs, which is the argument for a guardrail over five fixes.
+
+**A same-named spec is not automatically a twin.** `tokenfactory-rollout-judge` has a spec and
+a template that share a name and do different things (the template's GPU stage *produces* what
+its judge scores; the spec's first stage is an unrelated reasoner). Equivalence cannot be
+inferred from the file name, and the retirement tally now carries the *reason* a template
+survives rather than a status word — so "twin live-verified" cannot stand in for "I compared
+them".
