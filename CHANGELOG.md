@@ -35,7 +35,12 @@ under `npa/src/npa/workflows/skypilot/`.
 - **Live-matrix coverage:** the two insights specs (`insights-smoke`,
   `insights-aggregate`) gained entries and now run live — the harness seeds the two
   artifact shapes `workbench.insights.ingest_run` recognises, which is what was
-  missing. Uncovered specs: 17 -> 15; matrix cases: 24 -> 28.
+  missing; and the two dataset-of-record specs, for which
+  `npa.workflows.dataset_fixture` generates raw sensor records satisfying both specs'
+  quality gates. Uncovered specs: 17 -> 13; matrix cases: 24 -> 30.
+  `dataset-ingest-curate` is `plan_only` for a stated infrastructure reason (its
+  `register` stage needs the LanceDB workbench service, which is not deployed); its
+  other four stages did pass live.
 - **New test fixture:** `npa.workflows.motion_fixture` +
   `scripts/stage-sonic-motion-fixture.sh` synthesize a valid SOMA-CSV G1 motion clip
   using only the standard library, so the retargeting-backed specs are live-testable
