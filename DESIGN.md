@@ -429,4 +429,150 @@ Live results, run ids, job timelines and decision artifacts are in
 * `gang` scheduling and `foreach` templating.
 * A detached/daemonized runtime driver and a unified `workflow status` view for
   runtime runs (the ledger JSON is the source of truth today).
-* Fixing unrelated catalog/CLI drift (e.g. `workbench.rl.policy_train`).
+
+---
+
+# DESIGN — retiring the raw SkyPilot task catalog
+
+`npa/src/npa/workflows/skypilot/` shipped 36 raw SkyPilot task templates alongside
+the `npa.workflow/v0.0.1` catalog. They are being retired so that a spec is the
+**only** workflow authoring surface. This section records the decisions that work
+depends on; the live runs backing each one are in [`EVIDENCE.md`](EVIDENCE.md).
+
+SkyPilot itself is **not** being retired: it remains the execution engine, and
+`detect_submit_format()` still accepts a customer's own SkyPilot YAML. What goes
+away is the shipped *catalog* of templates.
+
+## R1. What "equivalent twin" actually means (the finding that shaped everything)
+
+13 specs declared `skypilotTwin:`, which reads as "this spec replaces that
+template". Two of those twins turned out **not** to be equivalent, and only a live
+run could show it:
+
+| Twin | Looked fine | Failed live because |
+| --- | --- | --- |
+| `sonic-export` | validates, plans, renders | the tool only accepted **local** paths; the template did the S3 download/upload in ~60 lines of inline bash. `toolRef` argv has no such escape hatch, so the spec handed `s3://.../checkpoint.pt` to `Path.exists()` |
+| `sonic-eval` / `sonic-export-eval` | same | `sonic eval` could *write* its result to S3 but only ever *read* local files |
+
+The general rule this exposes: **a template that does I/O staging in bash cannot be
+replaced by a `toolRef` unless the tool itself speaks object storage.** The fix is
+therefore in the tool, not the spec: `export_onnx` and `evaluate_onnx_policy` now
+stage `s3://` inputs and publish `s3://` outputs through the same `StorageClient`
+the eval result path already used. Local behaviour is unchanged — the historic
+export body moved to `_export_onnx_local` and is called directly when nothing is an
+object URI, so a local run never constructs a storage client.
+
+Two smaller traps fell out of the same run, both now covered offline:
+
+* An ONNX is a **pair** of files when `torch.onnx.export` spills tensors to
+  `<name>.onnx.data`, and onnxruntime resolves that path *relative to the model*.
+  Staging must move the sibling too.
+* The exporter resolves shapes from the policy when no `--obs-spec` is given, so a
+  fixture policy must expose `obs_dim` / `action_dim`.
+
+## R2. Three-tier contract: the third tier moves onto npa.workflow
+
+`test_three_tier_contract.py` bound 11 CLI/SDK capabilities to a **SkyPilot YAML
+`envs` block**. Deleting those YAMLs would delete the guardrail, which is not
+allowed, so the tier was migrated rather than dropped:
+
+| Tier | Before | After |
+| --- | --- | --- |
+| 1 | Typer callback parameter + flag | unchanged |
+| 2 | SDK signature parameter | unchanged |
+| 3 | `envs:` key declared **and referenced** in the YAML | the shipped spec loads, declares the `toolRef`, and the toolRef's `argv_template` passes the parameter's **real CLI flag** |
+
+*Sharper*, because the old check could not tell whether the flag existed: a YAML
+could declare `TRAIN_LEARNING_RATE` while the tool was invoked with a nonexistent
+`--learning-rate`. *Narrower*, because a catalog argv exposes fewer knobs than a
+YAML `envs` block did. Rather than hide that, every contract pins
+`spec_gap` — the CLI parameters a spec author cannot set today — and
+`SPEC_GAP_REASONS` classifies each one:
+
+* `boolean` — the option is a paired/flag-only boolean (`--headless/--no-headless`).
+  A v0.0.1 argv template is a fixed list with no conditional rendering, so it cannot
+  express one. Closing these needs a spec-level conditional-argv feature.
+* `infra` — the option selects infrastructure (`--image`, `--gpu-type`). The engine
+  already owns image/accelerator selection via `resources.<profile>`; passing it
+  again inside the pod would nest infrastructure choices.
+* `knob` — a plain value the argv simply does not pass yet. These are the ones worth
+  closing, tool by tool, with a live run each.
+
+The test asserts the computed gap equals the declared gap **exactly**, so the gap is
+visible in review, cannot grow silently, and shrinks only by a deliberate edit.
+`workflow/trigger/{run,watch}` keep the legacy YAML tier until the sim-to-real port
+gives them a spec twin; `LEGACY_YAML_TIER` pins that set so it can only shrink.
+
+## R3. A catalog-wide argv guardrail replaces what the YAML tier used to imply
+
+Nothing checked that a `toolRef`'s argv flags exist on the command they are handed
+to, so a template could validate, plan and render and still die with `No such
+option` in the pod. `guardrails/tool_catalog_argv.py` walks the `npa` Typer tree
+along an argv template and reports flags the resolved command rejects;
+`test_no_tool_ref_argv_passes_a_flag_its_cli_rejects` asserts **zero** drift across
+the whole catalog.
+
+It immediately found two: `workbench.rl.policy_train` (`--learning-rate`,
+`--batch-size`, `--input-path` — the half `DESIGN §7` already knew about) and
+`workbench.rl.evaluate_policy` (`--episodes`, previously unknown). Both are fixed
+rather than allowlisted, so three specs that could never have run now can. Trainer
+hyper-parameters go through Isaac Lab's repeatable Hydra `--override KEY=VALUE`,
+which is what its CLI documents for exactly this.
+
+## R4. Per-toolRef npa extras, instead of requiring a vendor image
+
+A stage on SkyPilot's default image gets only the base `npa` install, so
+`npa workbench sonic export` failed with its own advice: *"requires torch ... or use
+the npa[sonic] extra"*. `TOOL_REF_PIP_EXTRAS` maps a toolRef prefix to an npa extra
+and `render_setup_for_tool` installs it **from the same source tree it installed npa
+from** (recorded in `/tmp/npa-src-root`). This is the pattern the renderer already
+used to install vLLM for self-hosted `vlm_eval`.
+
+Consequence: the SONIC specs need no vendor image at all. The alternative —
+requiring every workbench image to be SkyPilot-hostable before its spec can run —
+is still worth having (see R5) but is no longer a *blocker* for a spec to be live.
+
+Rendering constraint worth knowing: the setup script must not contain `${var}`.
+`assert_no_unresolved_placeholders` rejects any braced expansion, because SkyPilot
+would leave it literal — the first live submit failed in 1.15 s on exactly that.
+Compose paths with `printf` instead.
+
+## R5. Image hostability is a repo deliverable, not operator lore
+
+`EVIDENCE §8.5` listed "make the shipped Isaac image SkyPilot-hostable" as a
+follow-up, and the SONIC image had the same defect. `SKYPILOT_HOSTED_IMAGES` in the
+image guardrail now covers `sonic` as well as `isaac-lab`, the SONIC Dockerfile
+carries the same four ingredients, and each has a `Dockerfile.k8s-prereqs` so an
+operator can repair an already-published tag in-cluster. The list grows as the
+catalog shrinks: **once a tool's only workflow surface is a spec, its image must be
+able to host a SkyPilot task.**
+
+## R6. Live fixtures that do not depend on gated weights
+
+`sonic export` needs a loadable torch policy checkpoint, and the repo deliberately
+does not vendor NVIDIA's gated `nvidia/GEAR-SONIC` weights, so those twins could
+only ever be covered plan-only. `npa.workflows.sonic_fixture` builds a small
+deterministic MLP policy the shipped exporter can trace, and
+`scripts/stage-sonic-export-fixture.sh` runs it **in-cluster** through a ConfigMap —
+no torch download touches the dev VM, which routinely sits above 90 % disk. The
+harness seeds from `NPA_E2E_SONIC_CHECKPOINT_SRC` / `NPA_E2E_SONIC_ONNX_SRC`,
+mirroring the existing `NPA_E2E_SONIC_MOTION_SRC` hook.
+
+## R7. A machine-checked retirement tally
+
+`test_skypilot_catalog_retirement.py` pins the exact remaining templates with a
+reason each. A new raw template cannot appear without a deliberate edit, and each
+retirement shows the count dropping in a one-line diff instead of a prose claim in a
+PR body. Deleting an entry is the **last** step: the twin must already have a live
+run id in `EVIDENCE.md`.
+
+## R8. Harness parsing must not hide a live result
+
+`json.loads(result.output)` in the live harness assumed the CLI writes nothing but
+JSON. `CliRunner` merges stderr into `output` on this click version, and the submit
+path legitimately writes `Hint: consider --secret-env NGC_API_KEY` first — so a
+**successful** submit was reported as `JSONDecodeError: Expecting value: line 1
+column 1`, and the real failure downstream stayed invisible for two runs. Both
+parsers now slice the JSON document out of the stream, and a matrix guardrail
+asserts every case declares the secrets its plan hints at so the advisory line is
+not emitted at all.
