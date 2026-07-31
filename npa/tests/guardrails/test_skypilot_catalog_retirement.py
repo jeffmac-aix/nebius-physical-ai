@@ -139,6 +139,31 @@ def test_cli_advertised_workflow_paths_exist() -> None:
     )
 
 
+#: The skill that lists the reference templates for an operator to start from. Its list
+#: went stale the moment Phase 2 deleted six templates, which is exactly the drift a
+#: reader would trust and be misled by.
+REFERENCE_SKILL = (
+    REPO_ROOT / "skills" / "workflows" / "workbench-reference-workflows" / "SKILL.md"
+)
+
+
+def test_reference_skill_lists_exactly_the_remaining_templates() -> None:
+    """The skill's "Current Reference YAMLs" section must match the directory."""
+
+    import re
+
+    text = REFERENCE_SKILL.read_text(encoding="utf-8")
+    start = text.index("## Current Reference YAMLs")
+    section = text[start : text.index("## Retired Templates", start)]
+    listed = set(re.findall(r"`([a-z0-9][a-z0-9.-]*\.yaml)`", section))
+
+    assert listed == set(REMAINING), (
+        "skills/workflows/workbench-reference-workflows/SKILL.md advertises a different set "
+        f"of templates than the catalog holds. Only in the skill: {sorted(listed - set(REMAINING))}. "
+        f"Only on disk: {sorted(set(REMAINING) - listed)}."
+    )
+
+
 def test_retirement_tally_is_monotonic() -> None:
     """The catalog started at 36 templates; it may only get smaller."""
 

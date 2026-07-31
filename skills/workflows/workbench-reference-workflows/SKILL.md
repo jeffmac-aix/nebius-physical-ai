@@ -28,18 +28,29 @@ artifact contracts, and customer-adaptable pipeline implementations.
 
 ## Current Reference YAMLs
 
+This list is machine-checked against the directory by
+`npa/tests/guardrails/test_skypilot_catalog_retirement.py`, so it cannot drift as
+templates retire.
+
 - `bdd100k-pipeline.yaml`: BDD100K ingest, backfill, CLIP embedding,
   materialized views, training, and evaluation.
+- `cosmos2-transfer.yaml`: Cosmos Transfer augmentation.
 - `cosmos3-ea-fetch.yaml`: Cosmos3 source/checkpoint fetch.
 - `cosmos3-text-to-image-inference.yaml`: H100 text-to-image smoke inference.
-- `isaac-lab-rl-train.yaml`: single Isaac Lab RL job.
-- `mjlab-eval.yaml`: MJLab evaluation.
-- `retargeting.yaml`: motion retargeting.
+- `dataset-ingest-curate.yaml`: dataset-of-record ingest and curation.
+- `isaac-franka-capture-reason.yaml`: Franka capture plus Cosmos reasoning.
+- `isaac-lab-cosmos-sdg-burst-smoke.yaml`: Isaac Lab plus Cosmos SDG burst smoke.
+- `scenario-gen-adversarial.yaml`: adversarial scenario mining.
+- `sim2real-actions.yaml`: sim2real action-contract stage.
+- `sim2real-envgen-split.yaml`: sim2real environment-generation split.
 - `sim-to-real-loop.yaml`: iterative sim-to-real loop.
 - `sim-to-real-pipeline.yaml`: full sim-to-real pipeline.
 - `sim-to-real-trigger.yaml`: trigger wrapper for sim-to-real work.
 - `sonic-train-standalone.yaml`: standalone SONIC training.
 - `sonic-locomotion-finetuning.yaml`: retargeting, SONIC, and MJLab flow.
+- `tokenfactory-rollout-judge.yaml`: Token Factory rollout judging.
+- `tokenfactory-scene-to-rollout-judge.yaml`: scene-to-rollout judging.
+- `tokenfactory-train-triage.yaml`: Token Factory training triage.
 - `vlm-eval.yaml` and `vlm-eval-benchmark.yaml`: VLM evaluation loops.
 
 ## Retired Templates
@@ -53,6 +64,16 @@ These raw templates were retired once their `npa.workflow` spec had a live run
 - `sonic-export.yaml`, `sonic-eval.yaml`, `sonic-export-eval.yaml` — SONIC
   export/eval. The tools now accept `s3://` inputs and outputs directly, which is
   what the templates' inline download/upload bash used to do.
+- `token-factory-caption.yaml`, `token-factory-generate.yaml`,
+  `token-factory-cosmos-reason.yaml` — hosted Token Factory stages.
+- `mjlab-eval.yaml` — MJLab locomotion evaluation.
+- `retargeting.yaml` — motion retargeting. The harness synthesizes a SOMA-CSV clip
+  (`npa.workflows.motion_fixture`) when no real motion set is staged.
+- `isaac-lab-rl-train-rtxpro.yaml`, `isaac-lab-rl-train-rtxpro-smoke.yaml`,
+  `isaac-lab-rl-train.yaml`, `byof-datagen-rtxpro-smoke.yaml`,
+  `byof-container-smoke-rtxpro.yaml` — **relocated**, not retired: they are BYOF
+  *resource profiles* (a pod shape), not workflows, and now live beside their
+  runner at `npa/src/npa/workflows/byof/profiles/`.
 
 The remaining templates are pinned in
 `npa/tests/guardrails/test_skypilot_catalog_retirement.py`; do not add new ones.
