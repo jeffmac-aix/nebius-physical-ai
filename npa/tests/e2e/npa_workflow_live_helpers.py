@@ -44,6 +44,8 @@ ALL_GOLDEN_SPECS = sorted(
 
 DYNAMIC_SPECS = frozenset(
     {
+        "dataset-of-record-smoke.yaml",
+        "dataset-ingest-curate.yaml",
         "sim2real-vlm-rl.yaml",
         "tokenfactory-cosmos-gate.yaml",
         "rl-policy-training-sim-success.yaml",
@@ -241,6 +243,21 @@ def seed_live_workflow_inputs(
             "sonic_policy.onnx a real `sonic export` run produced "
             f"(tried {list(sidecar_uri_candidates(src))})"
         )
+
+    if spec_name in {"dataset-of-record-smoke.yaml", "dataset-ingest-curate.yaml"}:
+        # `config.raw_sensor_uri` points at a SHARED fixture path outside the run prefix
+        # (materialize_live_spec only rewrites `prefix:`), so seeding is idempotent. The
+        # generated set satisfies the stricter of the two specs' gates — see
+        # npa.workflows.dataset_fixture.
+        from npa.orchestration.npa_workflow.spec import load_spec
+
+        raw_uri = str(load_spec(resolve_spec_path(spec_name)).config["raw_sensor_uri"])
+        raw_uri = raw_uri.replace("{{config.bucket}}", bucket)
+        from npa.workflows.dataset_fixture import publish as publish_records
+
+        published = publish_records(raw_uri, client=client)
+        print(f"[seed] {published['record_count']} raw sensor records -> {raw_uri}")
+        return
 
     if spec_name == "insights-smoke.yaml":
         # This spec reads a SHARED fixture prefix (`insights-fixtures/run/`), not a

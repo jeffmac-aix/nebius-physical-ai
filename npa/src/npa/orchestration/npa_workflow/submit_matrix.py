@@ -124,6 +124,25 @@ SUBMIT_LIVE_MATRIX: tuple[SubmitLiveCase, ...] = (
         ),
     ),
     SubmitLiveCase(
+        "dataset-of-record-smoke.yaml",
+        "cpu",
+        secret_envs=("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"),
+        notes=(
+            "Dataset-of-record smoke: ingest -> validate -> quality gate -> curate -> "
+            "query. CPU-only; the harness seeds real raw sensor records. Dynamic gate, "
+            "so it is also in DYNAMIC_SPECS."
+        ),
+    ),
+    SubmitLiveCase(
+        "dataset-ingest-curate.yaml",
+        "cpu",
+        secret_envs=("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"),
+        notes=(
+            "Stricter dataset-of-record variant (completeness_min 0.5, "
+            "max_corruption_rate 0.1, location filter). Dynamic gate."
+        ),
+    ),
+    SubmitLiveCase(
         "insights-smoke.yaml",
         "cpu",
         secret_envs=("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"),
