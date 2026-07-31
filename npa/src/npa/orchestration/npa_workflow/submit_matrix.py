@@ -188,11 +188,17 @@ SUBMIT_LIVE_MATRIX: tuple[SubmitLiveCase, ...] = (
         ),
         requires_token_factory=True,
         image_tool="lerobot",
+        plan_only=True,
         notes=(
             "The producer/consumer combo: LeRobot trains in the stage's own pod (the vendor "
             "image's LeRobot, one step) and publishes the run's checkpoint AND textual "
-            "artifacts, then a hosted text model triages that run with no GPU. Both stages "
-            "need the lerobot image; the triage stage only reads text, so it stays cheap."
+            "artifacts, then a hosted text model triages that run with no GPU. "
+            "Plan-only for ONE named gap: `policy_container train` needs a LeRobot dataset "
+            "already on local disk (it asserts `meta/info.json`), and stages do not share a "
+            "filesystem, so the dataset has to be materialised INSIDE the train stage from "
+            "`--dataset-repo-id`. Live jobs 242/243 got progressively further - 242 died on "
+            "`bash: python: command not found` (fixed: every toolRef now uses python3), 243 on "
+            "`--data-path or --dataset-path is required`. See EVIDENCE.md \u00a7R31."
         ),
     ),
     SubmitLiveCase(
