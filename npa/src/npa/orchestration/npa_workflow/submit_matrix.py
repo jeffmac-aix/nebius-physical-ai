@@ -204,6 +204,20 @@ SUBMIT_LIVE_MATRIX: tuple[SubmitLiveCase, ...] = (
         "vlm-eval-benchmark.yaml",
         "gpu",
         secret_envs=("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"),
+        notes=(
+            "Labeled sweep on the self-hosted backend, like the template it replaces. The "
+            "harness seeds two rollouts with known outcomes plus an S3 benchmark manifest."
+        ),
+    ),
+    SubmitLiveCase(
+        "vlm-eval-loop.yaml",
+        "gpu",
+        secret_envs=("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"),
+        notes=(
+            "Rollout-SET scoring plus the aggregate task_success report. `run` scores one "
+            "rollout, so this is the capability that let sim-to-real-loop.yaml retire: the "
+            "harness seeds several rollout directories and the report must count them all."
+        ),
     ),
     SubmitLiveCase(
         "mjlab-eval.yaml",

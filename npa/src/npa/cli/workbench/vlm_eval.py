@@ -28,6 +28,7 @@ from npa.workbench.vlm_eval import (
     VlmEvalError,
     benchmark_result_uri_for,
     benchmark_vlm_eval,
+    evaluate_rollout_set,
     evaluate_vlm,
     write_benchmark_report,
     write_result,
@@ -152,6 +153,83 @@ def run_cmd(
         _fail(str(exc))
         return
     _emit(payload, output)
+
+
+@app.command("loop")
+def loop_cmd(
+    input_path: str = typer.Option(
+        ..., "--input-path", help="S3 or local prefix containing one directory per rollout."
+    ),
+    output_path: str = typer.Option(
+        ..., "--output-path", help="S3 or local prefix for per-rollout results and the report."
+    ),
+    task: str = typer.Option("sim-to-real", "--task", help="Evaluation task label."),
+    backend: BackendName = typer.Option(
+        BackendName.self_hosted,
+        "--backend",
+        help="VLM backend: self-hosted, api, or stub.",
+    ),
+    model: str = typer.Option(DEFAULT_MODEL, "--model", help="VLM model name."),
+    endpoint_url: str = typer.Option(
+        "",
+        "--endpoint-url",
+        help="OpenAI-compatible base URL or /chat/completions URL.",
+    ),
+    api_key_env: str = typer.Option(
+        DEFAULT_API_KEY_ENV,
+        "--api-key-env",
+        help="Environment variable containing the API key for --backend api.",
+    ),
+    frame_selection: FrameSelection = typer.Option(
+        FrameSelection.keyframes,
+        "--frame-selection",
+        help="Rollout frame selection: final, keyframes, or sequence.",
+    ),
+    max_frames: int = typer.Option(
+        DEFAULT_MAX_FRAMES, "--max-frames", help="Maximum frames sent to the VLM per rollout."
+    ),
+    rubric: str = typer.Option(DEFAULT_RUBRIC, "--rubric", help="Scoring rubric text."),
+    rubric_path: str = typer.Option(
+        "", "--rubric-path", help="Path to a scoring rubric text file."
+    ),
+    success_threshold: float = typer.Option(
+        0.8,
+        "--success-threshold",
+        help="Mean-score threshold for the coarse task_success gate.",
+    ),
+    timeout_s: float = typer.Option(
+        DEFAULT_TIMEOUT_S, "--timeout-s", help="VLM request timeout in seconds."
+    ),
+    output: OutputFormat = typer.Option(OutputFormat.text, "--output", help="Output format."),
+) -> None:
+    """Score every rollout under a prefix and write an aggregate task-success report.
+
+    ``run`` scores one rollout: it discovers frames recursively, so a prefix holding many
+    rollouts would blend into a single score. The retired ``sim-to-real-loop.yaml`` did the
+    enumeration and aggregation in bash and `jq`; this is the same behaviour in the tool,
+    where an npa.workflow spec can reach it.
+    """
+
+    try:
+        report = evaluate_rollout_set(
+            input_path=input_path,
+            output_path=output_path,
+            task=task,
+            backend=_enum_value(backend),
+            model=model,
+            endpoint_url=endpoint_url,
+            api_key_env=api_key_env,
+            frame_selection=_enum_value(frame_selection),
+            max_frames=max_frames,
+            rubric=rubric,
+            rubric_path=rubric_path,
+            success_threshold=success_threshold,
+            timeout_s=timeout_s,
+        )
+    except VlmEvalError as exc:
+        _fail(str(exc))
+        return
+    _emit(report, output)
 
 
 @app.command("benchmark")

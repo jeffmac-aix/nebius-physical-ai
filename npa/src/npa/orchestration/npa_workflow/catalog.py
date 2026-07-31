@@ -94,6 +94,32 @@ TOOL_CATALOG: dict[str, ToolEntry] = {
             "{{config.vlm_backend}}",
         ],
     ),
+    "workbench.vlm_eval.loop": ToolEntry(
+        name="workbench.vlm_eval.loop",
+        description=(
+            "Score every rollout under a prefix and write an aggregate task-success report."
+        ),
+        argv_template=[
+            "npa",
+            "workbench",
+            "vlm-eval",
+            "loop",
+            "--input-path",
+            "{{config.rollouts_uri}}",
+            "--output-path",
+            "{{config.scores_uri}}",
+            "--task",
+            "{{config.vlm_task}}",
+            "--backend",
+            "{{config.vlm_backend}}",
+            "--frame-selection",
+            "{{config.vlm_frame_selection}}",
+            "--max-frames",
+            "{{config.vlm_max_frames}}",
+            "--success-threshold",
+            "{{config.vlm_success_threshold}}",
+        ],
+    ),
     "workbench.token_factory.reason": ToolEntry(
         name="workbench.token_factory.reason",
         description="Run Cosmos reasoner over scene inputs.",

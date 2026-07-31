@@ -288,6 +288,7 @@ def seed_live_workflow_inputs(
     if spec_name in {
         "vlm-eval-single.yaml",
         "vlm-eval-benchmark.yaml",
+        "vlm-eval-loop.yaml",
         "vlm-eval-token-factory.yaml",
         "tokenfactory-rollout-judge.yaml",
     }:
@@ -296,6 +297,11 @@ def seed_live_workflow_inputs(
             # outcomes plus a manifest. The spec's `--dataset` is an S3 URI (a
             # repo-relative path cannot exist in the pod), so seed the manifest too.
             _seed_vlm_benchmark_dataset(client, bucket=bucket, marker=marker)
+            return
+        if spec_name == "vlm-eval-loop.yaml":
+            # The loop's whole point is a SET: seed three rollout directories so the
+            # aggregate report has something to aggregate (total_rollouts == 3).
+            _seed_rollout_frames(client, bucket=bucket, marker=marker, episodes=3)
             return
         _seed_rollout_frames(client, bucket=bucket, marker=marker)
         if spec_name == "tokenfactory-rollout-judge.yaml":

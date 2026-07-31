@@ -30,6 +30,10 @@ from npa.orchestration.npa_workflow.spec import load_spec
 #: toolRef prefix -> (argv flag naming the output prefix, dotted `result_uri_for`).
 RESULT_URI_TOOLS: dict[str, tuple[str, str]] = {
     "workbench.vlm_eval.run": ("--output-path", "npa.workbench.vlm_eval:result_uri_for"),
+    "workbench.vlm_eval.loop": (
+        "--output-path",
+        "npa.workbench.vlm_eval:loop_report_uri_for",
+    ),
     "workbench.vlm_eval.benchmark": (
         "--output",
         "npa.workbench.vlm_eval:benchmark_result_uri_for",
