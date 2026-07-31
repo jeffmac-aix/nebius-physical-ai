@@ -44,6 +44,10 @@ RUNTIME_USER="${NPA_RUNTIME_USER:-ubuntu}"
 CACHE_DIR="${NPA_ISAAC_CACHE_DIR:-/opt/isaac-cache}"
 COMMON_DIR="${NPA_ISAAC_COMMON_DIR:-/opt/npa/docker/workbench/common}"
 INSTALL_SKYPILOT_PREREQS="${NPA_INSTALL_SKYPILOT_PREREQS:-1}"
+# Set to 1 when the base image already provides a python3.11 venv with PyTorch (npa-base
+# does, at /opt/npa/venv, with cu130 for Blackwell). Reinstalling torch over it would
+# waste ~3 GB of layer and risk contradicting the base's own CUDA pairing.
+SKIP_TORCH="${NPA_ISAAC_SKIP_TORCH:-0}"
 export DEBIAN_FRONTEND=noninteractive
 
 log() { printf '\n=== install_isaac_runtime_base: %s ===\n' "$*"; }
@@ -93,19 +97,53 @@ apt-get purge -y --auto-remove \
   dirmngr gnupg gnupg-utils gnupg2 gpg gpg-agent software-properties-common || true
 rm -rf /var/lib/apt/lists/*
 
-log "python3.11 venv at ${ISAAC_VENV}"
-python3.11 -m venv "$ISAAC_VENV"
+if [ -x "$ISAAC_VENV/bin/python" ]; then
+  log "reusing the base image's python venv at ${ISAAC_VENV}"
+else
+  log "python3.11 venv at ${ISAAC_VENV}"
+  python3.11 -m venv "$ISAAC_VENV"
+fi
 "$ISAAC_VENV/bin/python" -m pip install --no-cache-dir --upgrade pip setuptools wheel
 
-log "PyTorch ${TORCH_VERSION} from ${TORCH_INDEX_URL}"
-"$ISAAC_VENV/bin/python" -m pip install --no-cache-dir --index-url "$TORCH_INDEX_URL" \
-  "torch==${TORCH_VERSION}" \
-  "torchvision==${TORCHVISION_VERSION}" \
-  "torchaudio==${TORCHAUDIO_VERSION}"
+# Isaac requires exactly python3.11; fail here rather than at first run.
+"$ISAAC_VENV/bin/python" - <<'PY'
+import sys
+
+if sys.version_info[:2] != (3, 11):
+    raise SystemExit(
+        f"Isaac requires python 3.11 (isaacsim/isaaclab declare Requires-Python: ==3.11.*), "
+        f"but {sys.executable} is {sys.version_info.major}.{sys.version_info.minor}"
+    )
+print(f"python {sys.version.split()[0]} at {sys.executable}")
+PY
+
+if [ "$SKIP_TORCH" = "1" ]; then
+  log "skipping PyTorch install (NPA_ISAAC_SKIP_TORCH=1; the base image provides it)"
+  "$ISAAC_VENV/bin/python" -c 'import torch; print(f"base torch {torch.__version__}")'
+else
+  log "PyTorch ${TORCH_VERSION} from ${TORCH_INDEX_URL}"
+  "$ISAAC_VENV/bin/python" -m pip install --no-cache-dir --index-url "$TORCH_INDEX_URL" \
+    "torch==${TORCH_VERSION}" \
+    "torchvision==${TORCHVISION_VERSION}" \
+    "torchaudio==${TORCHAUDIO_VERSION}"
+fi
 
 log "OSS dependency closure for Isaac Sim / Isaac Lab"
+# Constrain torch/torchvision/torchaudio/triton/nvidia-* to whatever is already installed,
+# so a transitive requirement (rsl-rl-lib wants torch>=2.6) can never quietly replace the
+# base image's CUDA-matched PyTorch with a generic PyPI build.
+"$ISAAC_VENV/bin/python" - > /tmp/npa-torch-constraints.txt <<'PY'
+from importlib import metadata
+
+for dist in metadata.distributions():
+    name = (dist.metadata["Name"] or "").lower().replace("_", "-")
+    if name in {"torch", "torchvision", "torchaudio", "triton"} or name.startswith("nvidia-"):
+        print(f"{name}==={dist.version}")
+PY
 "$ISAAC_VENV/bin/python" -m pip install --no-cache-dir \
+  -c /tmp/npa-torch-constraints.txt \
   -r "${COMMON_DIR}/isaac-oss-deps.txt"
+rm -f /tmp/npa-torch-constraints.txt
 
 log "runtime-fetch bootstrap, wheel manifest, and the /isaac-sim/python.sh shim"
 install -d -m 0755 /opt/npa/bin
@@ -151,16 +189,19 @@ rm -f /tmp/eula-refusal.txt
 echo "NPA_ISAAC_BOOTSTRAP_REFUSES_WITHOUT_EULA_OK"
 
 log "verifying torch and that NO Isaac wheel is present in the image"
-"$ISAAC_VENV/bin/python" - <<'PY'
+NPA_REQUIRE_TORCH_SM120="${REQUIRE_TORCH_SM120:-1}" "$ISAAC_VENV/bin/python" - <<'PY'
 import importlib.util
+import os
 import sys
 from importlib import metadata
 
 import torch
 
 print(f"torch {torch.__version__} arch_list={torch.cuda.get_arch_list()}")
-if "sm_120" not in torch.cuda.get_arch_list():
-    raise SystemExit(f"expected sm_120 kernels for Blackwell, got {torch.cuda.get_arch_list()}")
+if os.environ.get("NPA_REQUIRE_TORCH_SM120") == "1" and "sm_120" not in torch.cuda.get_arch_list():
+    raise SystemExit(
+        f"expected sm_120 kernels for RTX PRO 6000 Blackwell, got {torch.cuda.get_arch_list()}"
+    )
 
 # The whole point of this image: no NVIDIA Isaac bytes ship in it.
 leaked = sorted(

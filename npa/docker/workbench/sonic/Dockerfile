@@ -1,23 +1,46 @@
-# Self-contained SONIC image. The default L40S build starts from NVIDIA's
-# Isaac Lab image. The k8s/Blackwell build overrides BASE_IMAGE to the CUDA 13
-# sm_120 base and installs the Isaac Sim/Lab Python layer on top.
-ARG BASE_IMAGE=nvcr.io/nvidia/isaac-lab:2.3.2@sha256:388dbc806f48359a964cb9f807feb226da95d0a107f470fdcad9780ea10fe6f2
+# npa-sonic: SONIC whole-body humanoid locomotion, with NVIDIA Isaac fetched at FIRST RUN.
+#
+# This image contains NO NVIDIA Isaac Sim or Isaac Lab code. It used to be built FROM
+# nvcr.io/nvidia/isaac-lab (baked variant) or to pip-install 26 isaacsim wheels at build
+# time (k8s variant); either way Omniverse Kit ended up in the layers, which made the
+# image non-redistributable. Isaac is now downloaded from https://pypi.nvidia.com on first
+# run, into a cache volume, under the OPERATOR's own EULA acceptance. See
+# npa/docker/workbench/common/isaac_bootstrap.sh and
+# docs/workbench/container-packaging.md.
+#
+# What IS baked, and is fine to redistribute:
+#   * Docker Hub's CUDA base (baked variant) or npa-base (k8s variant)
+#   * PyTorch and the OSS dependency closure Isaac needs
+#   * gear_sonic from NVlabs/GR00T-WholeBodyControl at a pinned commit. Its source is
+#     Apache-2.0 (the repo is dual-licensed: source Apache-2.0, model weights under the
+#     NVIDIA Open Model License, and the weights are downloaded at run time by
+#     download_from_hf.py with the operator's own HF token - never baked).
+#   * gear_sonic installs cleanly WITHOUT Isaac Lab; its own pyproject says
+#     "Training: full RL training stack (Isaac Lab must be installed separately)".
+#
+# Variants (npa/docker/workbench/sonic/build.sh):
+#   baked  BASE_IMAGE = digest-pinned Docker Hub CUDA; this Dockerfile builds the
+#          python3.11 + torch cu128 layer itself.
+#   k8s    BASE_IMAGE = ${REGISTRY}/npa-base:cuda13-b300-...; reuses that image's
+#          python3.11 venv and its cu130 torch (NPA_ISAAC_SKIP_TORCH=1).
+#
+ARG BASE_IMAGE=nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04@sha256:ad6d59a3bbf3e82c1c849c9ac09cfc2a3e0bbb8655042fd899be6681b3fe2a85
 FROM --platform=linux/amd64 ${BASE_IMAGE}
 
-ARG BASE_IMAGE=nvcr.io/nvidia/isaac-lab:2.3.2@sha256:388dbc806f48359a964cb9f807feb226da95d0a107f470fdcad9780ea10fe6f2
+ARG BASE_IMAGE=nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04@sha256:ad6d59a3bbf3e82c1c849c9ac09cfc2a3e0bbb8655042fd899be6681b3fe2a85
 ARG ISAAC_LAB_VERSION=2.3.2.post1
 ARG ISAAC_SIM_VERSION=5.1.0.0
+ARG ISAAC_LAB_SRC_COMMIT=37ddf626871758333d6ed89cf64ad702aef127d0
 ARG SONIC_REPO_URL=https://github.com/NVlabs/GR00T-WholeBodyControl.git
 ARG SONIC_REPO_REF=0a87181c9106d0e49293400714b157676e0ec664
 ARG SONIC_VERSION=0.1.2
-ARG NVIDIA_DRIVER_PACKAGE_VERSION=580.126.09-1ubuntu1
+# The Isaac interpreter is always the bootstrap shim; the baked venv is separate.
 ARG ISAAC_LAB_PYTHON=/isaac-sim/python.sh
-ARG INSTALL_NVIDIA_DRIVER_USERSPACE=1
-ARG INSTALL_ISAACSIM_EXTRA=0
-ARG REQUIRE_TORCH_SM120=0
-ARG NPA_DRIVER_PROVISIONING=baked
-ARG NPA_CUDA_ARCHITECTURES=sm80,sm90
-ARG NPA_ISAAC_LAB_INSTALL_MODE=base
+ARG NPA_ISAAC_VENV=/opt/npa/isaac/venv
+ARG NPA_ISAAC_SKIP_TORCH=0
+ARG REQUIRE_TORCH_SM120=1
+ARG NPA_DRIVER_PROVISIONING=host-mounted
+ARG NPA_CUDA_ARCHITECTURES=sm80,sm90,sm120
 ARG NPA_RUNTIME_USER=ubuntu
 ARG BUILD_SONIC_DEPLOY=0
 
@@ -27,34 +50,37 @@ LABEL npa.tool="sonic" \
       npa.driver_provisioning="${NPA_DRIVER_PROVISIONING}" \
       npa.runtime_user="${NPA_RUNTIME_USER}" \
       npa.cuda_architectures="${NPA_CUDA_ARCHITECTURES}" \
-      npa.isaac_lab_install="${NPA_ISAAC_LAB_INSTALL_MODE}" \
-      npa.architecture="self-contained-isaac-lab"
+      npa.isaac_provisioning="runtime-fetch" \
+      npa.architecture="no-baked-omniverse-kit"
 
-ENV ACCEPT_EULA=Y \
-    ISAACSIM_ACCEPT_EULA=YES \
-    OMNI_KIT_ACCEPT_EULA=YES \
-    PRIVACY_CONSENT=Y \
+# NOTE the absence of ACCEPT_EULA / ISAACSIM_ACCEPT_EULA / OMNI_KIT_ACCEPT_EULA /
+# PRIVACY_CONSENT, and of PIP_EXTRA_INDEX_URL=https://pypi.nvidia.com. All of those used
+# to be baked here. Acceptance is now the operator's to give at run time (the whole legal
+# mechanism), and leaving NVIDIA's index out of the image's pip config means a stray
+# `pip install` can never quietly re-introduce a proprietary wheel.
+ENV DEBIAN_FRONTEND=noninteractive \
     ISAAC_LAB_VERSION=${ISAAC_LAB_VERSION} \
+    ISAAC_SIM_VERSION=${ISAAC_SIM_VERSION} \
+    NPA_ISAAC_LAB_SRC_COMMIT=${ISAAC_LAB_SRC_COMMIT} \
+    NPA_ISAAC_CACHE_DIR=/opt/isaac-cache \
+    NPA_ISAAC_BASE_PYTHON=${NPA_ISAAC_VENV}/bin/python \
+    NPA_IMAGE_PYTHON=${NPA_ISAAC_VENV}/bin/python \
+    NPA_ISAAC_WHEELS_FILE=/opt/npa/docker/workbench/common/isaac-nvidia-wheels.txt \
+    ISAAC_LAB_PYTHON=${ISAAC_LAB_PYTHON} \
     SONIC_HOME=/opt/sonic \
     SONIC_REPO_REF=${SONIC_REPO_REF} \
     NPA_CUDA_ARCHITECTURES=${NPA_CUDA_ARCHITECTURES} \
     NVIDIA_DRIVER_CAPABILITIES=all \
-    VK_ICD_FILENAMES=/etc/vulkan/icd.d/nvidia_icd.json \
-    VK_DRIVER_FILES=/etc/vulkan/icd.d/nvidia_icd.json \
     __GLX_VENDOR_LIBRARY_NAME=nvidia \
     OMNI_USER_DIR=/tmp/isaac-sim-cache \
     OMNI_LOG_DIR=/tmp/isaac-sim-cache/logs \
     XDG_RUNTIME_DIR=/tmp/xdg-runtime \
-    PYTHONUNBUFFERED=1 \
-    PIP_EXTRA_INDEX_URL=https://pypi.nvidia.com
-
-ENV ISAAC_LAB_PYTHON=${ISAAC_LAB_PYTHON} \
-    REQUIRE_TORCH_SM120=${REQUIRE_TORCH_SM120}
+    PYTHONUNBUFFERED=1
 
 SHELL ["/bin/bash", "-lc"]
 USER root
 
-RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential \
       ca-certificates \
       clang \
@@ -62,103 +88,44 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
       curl \
       git \
       git-lfs \
-      libegl1 \
       libgtest-dev \
-      libgl1 \
-      libglvnd0 \
-      libglu1-mesa \
       nlohmann-json3-dev \
       pkg-config \
-      python3 \
-      python3-pip \
       wget \
     && rm -rf /var/lib/apt/lists/* \
     && git lfs install --system
 
-RUN if [ "${INSTALL_NVIDIA_DRIVER_USERSPACE}" = "1" ]; then \
-      wget -qO /tmp/cuda-keyring.deb \
-        https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb \
-      && dpkg -i /tmp/cuda-keyring.deb \
-      && rm /tmp/cuda-keyring.deb \
-      && apt-get update \
-      && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        "libnvidia-cfg1-580=${NVIDIA_DRIVER_PACKAGE_VERSION}" \
-        "libnvidia-common-580=${NVIDIA_DRIVER_PACKAGE_VERSION}" \
-        "libnvidia-compute-580=${NVIDIA_DRIVER_PACKAGE_VERSION}" \
-        "libnvidia-decode-580=${NVIDIA_DRIVER_PACKAGE_VERSION}" \
-        "libnvidia-gl-580=${NVIDIA_DRIVER_PACKAGE_VERSION}" \
-        "libnvidia-gpucomp-580=${NVIDIA_DRIVER_PACKAGE_VERSION}" \
-        vulkan-tools \
-      && apt-mark hold \
-        libnvidia-cfg1-580 \
-        libnvidia-common-580 \
-        libnvidia-compute-580 \
-        libnvidia-decode-580 \
-        libnvidia-gl-580 \
-        libnvidia-gpucomp-580; \
-    else \
-      DEBIAN_FRONTEND=noninteractive apt-get update \
-      && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends vulkan-tools; \
-    fi \
-    && rm -rf /var/lib/apt/lists/*
+COPY docker/workbench/common /opt/npa/docker/workbench/common
+
+# python3.11 + (optionally) torch + the OSS closure Isaac needs + the bootstrap and the
+# /isaac-sim/python.sh shim. The k8s variant passes NPA_ISAAC_SKIP_TORCH=1 so the base
+# image's CUDA-matched torch is reused rather than replaced.
+#
+# NOTE: no NVIDIA driver userspace is installed. Verified on an RTX PRO 6000 pod: with
+# NVIDIA_DRIVER_CAPABILITIES=all the container runtime injects libEGL_nvidia,
+# libGLX_nvidia, libnvidia-glcore and the Vulkan ICD, and `vulkaninfo --summary` reports
+# the discrete GPU at driver 580.95.05. The baked variant used to pin and hold
+# libnvidia-*-580 packages; that was both unnecessary and a separate redistribution
+# question from Omniverse Kit.
+RUN chmod +x /opt/npa/docker/workbench/common/*.sh \
+    && NPA_RUNTIME_USER="${NPA_RUNTIME_USER}" \
+       NPA_ISAAC_VENV="${NPA_ISAAC_VENV}" \
+       NPA_ISAAC_SKIP_TORCH="${NPA_ISAAC_SKIP_TORCH}" \
+       REQUIRE_TORCH_SM120="${REQUIRE_TORCH_SM120}" \
+       NPA_INSTALL_SKYPILOT_PREREQS=1 \
+       /opt/npa/docker/workbench/common/install_isaac_runtime_base.sh
 
 RUN mkdir -p /opt/npa/docker/workbench/sonic /tmp/npa-sonic-output
 COPY docker/workbench/sonic/requirements.txt /opt/npa/docker/workbench/sonic/requirements.txt
-
-RUN "${ISAAC_LAB_PYTHON}" - <<'PY' > /tmp/npa-torch-constraints.txt
-from importlib import metadata
-
-for dist in metadata.distributions():
-    name = dist.metadata.get("Name", "")
-    canonical = name.lower().replace("_", "-")
-    if canonical in {"torch", "torchvision", "torchaudio", "triton"} or canonical.startswith("nvidia-"):
-        print(f"{canonical}==={dist.version}")
-PY
-
-RUN if [ "${INSTALL_ISAACSIM_EXTRA}" = "1" ]; then \
-      "${ISAAC_LAB_PYTHON}" -m pip install --no-cache-dir \
-        -c /tmp/npa-torch-constraints.txt \
-        "isaaclab[all]==${ISAAC_LAB_VERSION}" \
-        --extra-index-url https://pypi.nvidia.com \
-      && "${ISAAC_LAB_PYTHON}" -m pip install --no-cache-dir --no-deps --ignore-installed \
-        "isaacsim==${ISAAC_SIM_VERSION}" \
-        "isaacsim-kernel==${ISAAC_SIM_VERSION}" \
-        "isaacsim-extscache-kit==${ISAAC_SIM_VERSION}" \
-        "isaacsim-extscache-kit-sdk==${ISAAC_SIM_VERSION}" \
-        "isaacsim-extscache-physics==${ISAAC_SIM_VERSION}" \
-        "isaacsim-app==${ISAAC_SIM_VERSION}" \
-        "isaacsim-asset==${ISAAC_SIM_VERSION}" \
-        "isaacsim-benchmark==${ISAAC_SIM_VERSION}" \
-        "isaacsim-code-editor==${ISAAC_SIM_VERSION}" \
-        "isaacsim-core==${ISAAC_SIM_VERSION}" \
-        "isaacsim-cortex==${ISAAC_SIM_VERSION}" \
-        "isaacsim-example==${ISAAC_SIM_VERSION}" \
-        "isaacsim-gui==${ISAAC_SIM_VERSION}" \
-        "isaacsim-replicator==${ISAAC_SIM_VERSION}" \
-        "isaacsim-rl==${ISAAC_SIM_VERSION}" \
-        "isaacsim-robot==${ISAAC_SIM_VERSION}" \
-        "isaacsim-robot-motion==${ISAAC_SIM_VERSION}" \
-        "isaacsim-robot-setup==${ISAAC_SIM_VERSION}" \
-        "isaacsim-ros1==${ISAAC_SIM_VERSION}" \
-        "isaacsim-ros2==${ISAAC_SIM_VERSION}" \
-        "isaacsim-sensor==${ISAAC_SIM_VERSION}" \
-        "isaacsim-storage==${ISAAC_SIM_VERSION}" \
-        "isaacsim-template==${ISAAC_SIM_VERSION}" \
-        "isaacsim-test==${ISAAC_SIM_VERSION}" \
-        "isaacsim-utils==${ISAAC_SIM_VERSION}" \
-        --extra-index-url https://pypi.nvidia.com; \
-    else \
-      "${ISAAC_LAB_PYTHON}" -m pip install --no-cache-dir --no-deps --ignore-installed \
-        "isaaclab==${ISAAC_LAB_VERSION}" \
-        --extra-index-url https://pypi.nvidia.com; \
-    fi
-
-RUN "${ISAAC_LAB_PYTHON}" -m pip install --no-cache-dir \
+RUN "${NPA_ISAAC_VENV}/bin/python" -m pip install --no-cache-dir \
       -r /opt/npa/docker/workbench/sonic/requirements.txt
 
-RUN python3 -m pip install --break-system-packages --no-cache-dir uv \
+RUN "${NPA_ISAAC_VENV}/bin/python" -m pip install --no-cache-dir uv \
     && curl -fsSL https://just.systems/install.sh | bash -s -- --to /usr/local/bin
 
+# gear_sonic source is Apache-2.0. The sparse checkout excludes motionbricks/out, and the
+# build asserts below that no model weights came along with the LFS pull - the weights are
+# under the NVIDIA Open Model License and must be fetched at run time by the operator.
 RUN git clone --filter=blob:none --no-checkout "${SONIC_REPO_URL}" "${SONIC_HOME}" \
     && cd "${SONIC_HOME}" \
     && git sparse-checkout init --no-cone \
@@ -167,24 +134,30 @@ RUN git clone --filter=blob:none --no-checkout "${SONIC_REPO_URL}" "${SONIC_HOME
       "/gear_sonic/**" \
       "/gear_sonic_deploy/**" \
       "/decoupled_wbc/**" \
+      "/LICENSE" \
     && git checkout "${SONIC_REPO_REF}" \
+    && test "$(git rev-parse HEAD)" = "${SONIC_REPO_REF}" \
     && (git lfs pull --include="download_from_hf.py,gear_sonic/**,gear_sonic_deploy/**,decoupled_wbc/**" --exclude="motionbricks/out/**" || true) \
     && rm -rf "${SONIC_HOME}/.git"
 
-RUN "${ISAAC_LAB_PYTHON}" - <<'PY' > /tmp/npa-torch-constraints.txt
+# Constrain torch and friends so gear_sonic's transitive requirements cannot replace the
+# CUDA-matched build with a generic PyPI one.
+RUN "${NPA_ISAAC_VENV}/bin/python" - > /tmp/npa-torch-constraints.txt <<'PY'
 from importlib import metadata
 
 for dist in metadata.distributions():
-    name = dist.metadata.get("Name", "")
-    canonical = name.lower().replace("_", "-")
-    if canonical in {"torch", "torchvision", "torchaudio", "triton"} or canonical.startswith("nvidia-"):
-        print(f"{canonical}==={dist.version}")
+    name = (dist.metadata["Name"] or "").lower().replace("_", "-")
+    if name in {"torch", "torchvision", "torchaudio", "triton"} or name.startswith("nvidia-"):
+        print(f"{name}==={dist.version}")
 PY
 
-RUN "${ISAAC_LAB_PYTHON}" -m pip install --no-cache-dir \
+RUN "${NPA_ISAAC_VENV}/bin/python" -m pip install --no-cache-dir \
       -c /tmp/npa-torch-constraints.txt \
       -e "${SONIC_HOME}/gear_sonic[training,teleop,sim]" \
-    && "${ISAAC_LAB_PYTHON}" - <<'PY'
+    && rm -f /tmp/npa-torch-constraints.txt
+
+# `import sonic` is an alias the workbench CLI and smokes rely on.
+RUN "${NPA_ISAAC_VENV}/bin/python" - <<'PY'
 import pathlib
 import site
 
@@ -194,31 +167,54 @@ for site_dir in site.getsitepackages():
     path.write_text("from gear_sonic import *\n", encoding="utf-8")
 PY
 
-RUN "${ISAAC_LAB_PYTHON}" - <<'PY'
+COPY docker/workbench/sonic/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+# Build-time verification. Note what is NOT checked here any more: `import isaaclab` and
+# `import isaaclab.app` used to be asserted at build time, which is exactly the assertion
+# a runtime-fetch image must not be able to make. The bootstrap verifies them after it
+# installs (isaac_bootstrap.sh verify_tree), and the golden eval exercises them on a GPU.
+RUN "${NPA_ISAAC_VENV}/bin/python" - <<'PY'
 import importlib
 import os
 from importlib import metadata
+from pathlib import Path
 
-expected = "2.3.2.post1"
-actual = metadata.version("isaaclab")
-if actual != expected:
-    raise RuntimeError(f"expected isaaclab {expected}, found {actual}")
-for module in ("gear_sonic", "sonic", "isaaclab", "isaaclab.app"):
+for module in ("gear_sonic", "sonic", "torch", "numpy", "scipy"):
     importlib.import_module(module)
+
+# No NVIDIA Isaac bytes may ship in this image; that is the whole point.
+leaked = sorted(
+    dist.metadata["Name"]
+    for dist in metadata.distributions()
+    if (dist.metadata["Name"] or "").lower().replace("_", "-").startswith(("isaacsim", "isaaclab"))
+)
+if leaked:
+    raise SystemExit(f"FATAL: Isaac packages baked into the image: {leaked}")
+
+# No gated model weights either: those are the operator's to download at run time with
+# their own HF token (download_from_hf.py), under the NVIDIA Open Model License.
+weights = [
+    str(path)
+    for path in Path(os.environ["SONIC_HOME"]).rglob("*")
+    if path.is_file() and path.suffix in {".pt", ".pth", ".safetensors", ".ckpt", ".onnx"}
+]
+if weights:
+    raise SystemExit(f"FATAL: model weights baked into the image: {weights[:10]}")
+
 if os.environ.get("REQUIRE_TORCH_SM120") == "1":
     import torch
 
-    arch_flags = getattr(torch._C, "_cuda_getArchFlags", lambda: "")()
-    arches = set(arch_flags.split()) or set(torch.cuda.get_arch_list())
+    arches = set(torch._C._cuda_getArchFlags().split()) or set(torch.cuda.get_arch_list())
     if "sm_120" not in arches:
-        raise RuntimeError(f"expected PyTorch with sm_120 kernels, found {sorted(arches)}")
+        raise SystemExit(f"expected PyTorch with sm_120 kernels, found {sorted(arches)}")
     print(f"NPA_SONIC_TORCH_SM120_OK torch={torch.__version__} cuda={torch.version.cuda}")
-print("NPA_SONIC_BUILD_IMPORTS_OK")
+print("NPA_SONIC_BUILD_IMPORTS_OK no baked Isaac, no baked weights")
 PY
 
-# The C++ deploy stack is included for VM/container deployment paths, but
-# TensorRT and ONNX Runtime discovery are environment-sensitive. Keep the default
-# train/smoke image build focused; deploy images can opt into this compile step.
+# The C++ deploy stack is included for VM/container deployment paths, but TensorRT and
+# ONNX Runtime discovery are environment-sensitive. Keep the default train/smoke image
+# focused; deploy images can opt into this compile step.
 RUN if [ "${BUILD_SONIC_DEPLOY}" = "1" ]; then \
       cd "${SONIC_HOME}/gear_sonic_deploy" \
       && cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
@@ -227,32 +223,16 @@ RUN if [ "${BUILD_SONIC_DEPLOY}" = "1" ]; then \
       echo "Skipping optional SONIC C++ deploy build (BUILD_SONIC_DEPLOY=0)"; \
     fi
 
-COPY docker/workbench/sonic/entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
-
-RUN id -u ubuntu >/dev/null 2>&1 || useradd -m -s /bin/bash -u 1000 ubuntu \
-    && (getent group isaac-sim >/dev/null 2>&1 || groupadd -r isaac-sim) \
-    && usermod -aG isaac-sim ubuntu \
-    && install -d -m 775 -o root -g isaac-sim \
-      /isaac-sim/kit/logs \
-      /isaac-sim/kit/cache \
-      /isaac-sim/kit/data \
+# Kit writes caches, logs and shader compilations at run time. These used to live under
+# /isaac-sim/kit/{logs,cache,data}, which existed because the NVIDIA base put Isaac Sim
+# there. /isaac-sim now holds only our python.sh shim, so they go to container scratch.
+RUN id -u "${NPA_RUNTIME_USER}" >/dev/null 2>&1 || useradd -m -s /bin/bash -u 1000 "${NPA_RUNTIME_USER}" \
+    && install -d -m 0775 -o root -g isaac-sim \
       /tmp/isaac-sim-cache \
       /tmp/isaac-sim-cache/logs \
-      /tmp/npa-sonic-output \
-    && install -d -m 700 -o ubuntu -g ubuntu /tmp/xdg-runtime \
-    && chown ubuntu:ubuntu /opt/sonic \
-    && chown -R ubuntu:ubuntu /tmp/npa-sonic-output \
-    && chgrp -R isaac-sim \
-      /isaac-sim/kit/logs \
-      /isaac-sim/kit/cache \
-      /isaac-sim/kit/data \
-      /tmp/isaac-sim-cache \
-    && chmod -R g+rwX \
-      /isaac-sim/kit/logs \
-      /isaac-sim/kit/cache \
-      /isaac-sim/kit/data \
-      /tmp/isaac-sim-cache
+    && install -d -m 0700 -o "${NPA_RUNTIME_USER}" -g "${NPA_RUNTIME_USER}" /tmp/xdg-runtime \
+    && chown "${NPA_RUNTIME_USER}:${NPA_RUNTIME_USER}" /opt/sonic \
+    && chown -R "${NPA_RUNTIME_USER}:${NPA_RUNTIME_USER}" /tmp/npa-sonic-output
 
 WORKDIR /opt/sonic
 USER ${NPA_RUNTIME_USER}
