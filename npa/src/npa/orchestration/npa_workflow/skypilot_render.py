@@ -173,7 +173,11 @@ def render_pip_extra_setup(extra: str) -> str:
         "fi\n"
         "if [ -n \"$npa_src_root\" ]; then\n"
         f"  echo \"installing npa[{extra}] from $npa_src_root\" >&2\n"
-        f"  npa_pip_install -e \"${{npa_src_root}}[{extra}]\"\n"
+        # Compose with printf, never "${var}[extra]": braced expansions are what the
+        # rendered-YAML placeholder guard (assert_no_unresolved_placeholders) rejects,
+        # because SkyPilot would leave a literal ${NAME} in the document.
+        f"  npa_extra_target=\"$(printf '%s[{extra}]' \"$npa_src_root\")\"\n"
+        "  npa_pip_install -e \"$npa_extra_target\"\n"
         "else\n"
         f"  echo 'cannot locate the npa source tree to install npa[{extra}]' >&2\n"
         "  exit 1\n"
