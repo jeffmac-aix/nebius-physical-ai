@@ -7,7 +7,7 @@ a versioned heading when a release is cut.
 
 ## Unreleased
 
-### Retiring the raw SkyPilot task catalog (36 → 26 templates)
+### Retiring the raw SkyPilot task catalog (36 → 25 templates)
 
 `npa.workflow/v0.0.1` specs are becoming the only workflow authoring surface.
 SkyPilot remains the execution engine, and `npa workbench workflow submit` still
@@ -19,13 +19,18 @@ under `npa/src/npa/workflows/skypilot/`.
   `isaac-lab-rl-sweep.yaml`, `sonic-export.yaml`, `sonic-eval.yaml`,
   `sonic-export-eval.yaml`, `token-factory-caption.yaml`,
   `token-factory-generate.yaml`, `token-factory-cosmos-reason.yaml`,
-  `vlm-eval-token-factory.yaml`, `mjlab-eval.yaml`.
+  `vlm-eval-token-factory.yaml`, `mjlab-eval.yaml`, `retargeting.yaml`.
   `test_skypilot_catalog_retirement.py` pins the remaining set, so the tally is
   machine-checked and a new raw template needs a deliberate edit.
+- **New test fixture:** `npa.workflows.motion_fixture` +
+  `scripts/stage-sonic-motion-fixture.sh` synthesize a valid SOMA-CSV G1 motion clip
+  using only the standard library, so the retargeting-backed specs are live-testable
+  without NVIDIA's dual-licensed motion dataset. `retargeting.yaml`'s live case was
+  previously **failing** for lack of input data.
 - **New spec:** `npa-workflows/vlm-eval-token-factory.yaml` — zero-GPU VLM scoring
   through the hosted `api` backend. This is the VLM eval path that needs no vLLM
   server, and it is registered in the live matrix as a `cpu` case.
-- **`outputs:` declarations corrected in seven specs (ten stages).** A stage can
+- **`outputs:` declarations corrected in eight specs (eleven stages).** A stage can
   succeed while writing its result somewhere other than the URI the spec declares —
   `vlm-eval` writes `vlm_eval_stub.json`, `mjlab eval` writes `mjlab_eval.json`, the
   Cosmos reasoner writes `scene_reasoning.json`, and several specs declared

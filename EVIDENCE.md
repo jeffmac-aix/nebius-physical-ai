@@ -1210,3 +1210,102 @@ artifact. All ten are corrected; the next one fails offline.
 
 Cost for this phase: five short pods (four `1x[CPU:4+]`, one RTXPRO-6000 for ~31 s)
 plus ~8 hosted Token Factory calls. Rounding error.
+
+## R11. Phase 2b — a synthesized SOMA-CSV clip makes `retargeting` live-testable (26 → 25)
+
+`retargeting.yaml`'s twin was the one live-matrix case that **failed** before this work:
+
+```
+Error: S3 input contains no objects: s3://<artifact-bucket>/.../retargeting/source/
+```
+
+(EVIDENCE §6.1). It needed a real SOMA/G1 motion clip, because the tool feeds NVIDIA's
+upstream `gear_sonic/data_process/convert_soma_csv_to_motion_lib.py`, and this repo does
+not vendor that dual-licensed dataset. `sonic-locomotion-finetuning.yaml` was blocked by
+the same thing.
+
+The upstream loader's contract is small and public, so a clip can be **synthesized**. It
+was read from the pinned upstream ref with a blobless sparse clone (1.2 MB, nothing
+kept):
+
+```bash
+git clone --filter=blob:none --no-checkout --depth 1 \
+  https://github.com/NVlabs/GR00T-WholeBodyControl.git && \
+  git sparse-checkout set gear_sonic/data_process
+# load_csv_motion(): joint_pos.csv -> (T, 29) IsaacLab order, radians
+#                    body_pos.csv  -> (T, B*3), body 0 = pelvis -> root_trans_offset
+#                    body_quat.csv -> (T, B*4) wxyz, body 0 -> root rotation
+```
+
+`npa.workflows.motion_fixture` writes exactly that — forward pelvis translation at
+constant height, a gentle yaw, bounded joint angles — using **only the standard
+library**, so the fixture needs no container, no numpy and no torch. The conversion
+still happens in the pod, where the upstream script's joblib/pandas/scipy live. The live
+harness synthesizes clips automatically when `NPA_E2E_SONIC_MOTION_SRC` is unset (the
+env var remains the real-data override), and
+`scripts/stage-sonic-motion-fixture.sh` stages a set to share across runs.
+
+### `retargeting.yaml` — PASSED
+
+```
+npa/tests/e2e/test_npa_workflow_submit_live_e2e.py
+[seed] synthesized 2 SOMA-CSV clip(s) (6 objects) — set NPA_E2E_SONIC_MOTION_SRC to use real data
+1 passed in 167.54s (0:02:47)
+```
+
+**Run id** `npa-wf-cpu-retargeting-b8e5bc8b` · **SkyPilot job 204** · `1x[CPU:4+]` ·
+**SUCCEEDED**
+
+Artifacts — the **real upstream converter** ran at the pinned ref:
+
+```
+    16975  retargeted/motion_lib.pkl            real motion_lib PKL
+     1385  retargeted/retargeting_result.json   status "retargeted", source_format
+                                                "soma-csv", embodiment "unitree-g1",
+                                                frame_rate 30, motion_count 2,
+                                                upstream_ref a9d20b2ac0949244d94461a1a3263f38c5027c4a,
+                                                dry_run false
+    ~13 KB x2  source/{walk-forward,stand-sway}/body_pos.csv
+    ~15 KB x2  source/{walk-forward,stand-sway}/body_quat.csv
+    ~11 KB x2  source/{walk-forward,stand-sway}/joint_pos.csv
+```
+
+`command` in that JSON is the upstream script invocation, so there is no doubt about
+what did the work:
+
+```
+['/opt/conda/bin/python3',
+ '/tmp/npa-retargeting-.../upstream-sonic/gear_sonic/data_process/convert_soma_csv_to_motion_lib.py',
+ '--input', '.../input', '--output', '.../output/motion_lib.pkl', '--fps', '30']
+```
+
+### `sonic-locomotion-finetuning.yaml` — still NOT retired, and now for a *known* reason
+
+**Run id** `npa-wf-multi-sonic-locomotion-finetuning-ff468526` · **SkyPilot job 205** ·
+**FAILED** at the second of three stages.
+
+| stage | result |
+| --- | --- |
+| `retarget` | **SUCCEEDED** — same fixture, `motion_count: 2`, `retargeting_result.json` written |
+| `train` | **FAILED**: `Error: SONIC --runtime serverless requires --project-id or a configured project.` |
+| `mjlab` | not reached |
+
+This is **not** a missing fixture. The spec sets `sonic_runtime: serverless`, so the
+toolRef asks the **in-pod** CLI to launch a Nebius *serverless job* — nested
+infrastructure, and the pod has no project config. It is the same trap `DESIGN §7`
+records for `workbench.rl.policy_train` ("that CLI is a launcher; calling it inside a
+SkyPilot task would nest infrastructure"), and fixing it is a spec-design decision:
+either train in-pod against the SONIC image, or keep the launcher outside the workflow.
+Recorded as the reason the template survives in
+`test_skypilot_catalog_retirement.py`; the fixture blocker is gone.
+
+### Retirement tally: 26 → 25
+
+| Retired template | Twin's live run | job |
+| --- | --- | --- |
+| `retargeting.yaml` | `npa-wf-cpu-retargeting-b8e5bc8b` | 204 |
+
+One more `outputs:` correction fell out of it (the eleventh): both retargeting-backed
+specs declared `retargeted/manifest.json` while the tool writes
+`retargeting_result.json`. The declared-output guardrail now covers
+`workbench.retargeting.run` too.
