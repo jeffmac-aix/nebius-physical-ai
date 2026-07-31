@@ -1056,6 +1056,56 @@ TOOL_CATALOG: dict[str, ToolEntry] = {
             "json",
         ],
     ),
+    "workbench.lerobot.policy_train": ToolEntry(
+        name="workbench.lerobot.policy_train",
+        description=(
+            "Train a LeRobot policy IN the stage's own pod, using the vendor image's LeRobot."
+        ),
+        argv_template=[
+            "python",
+            "-m",
+            "npa.workbench.lerobot.policy_container",
+            "train",
+            "--dataset-repo-id",
+            "{{config.lerobot_dataset}}",
+            "--output-dir",
+            "{{config.lerobot_output_dir}}",
+            "--steps",
+            "{{config.train_steps}}",
+            "--policy-type",
+            "{{config.policy_type}}",
+            "--batch-size",
+            "{{config.train_batch_size}}",
+            "--device",
+            "{{config.policy_device}}",
+            # Uploading from the training process keeps the artifacts the next stage reads in
+            # one place; the retired template did this in a trailing python block.
+            "--checkpoint-s3-uri",
+            "{{config.artifacts_uri}}",
+        ],
+    ),
+    "workbench.token_factory.triage": ToolEntry(
+        name="workbench.token_factory.triage",
+        description=(
+            "Digest a run's textual artifacts and have a hosted text model write a triage report."
+        ),
+        argv_template=[
+            "python",
+            "-m",
+            "npa.workflows.token_factory_triage",
+            "run",
+            "--artifacts-uri",
+            "{{config.artifacts_uri}}",
+            "--triage-uri",
+            "{{config.triage_uri}}",
+            "--job-name",
+            "{{config.triage_job_name}}",
+            "--model",
+            "{{config.triage_model}}",
+            "--max-tokens",
+            "{{config.triage_max_tokens}}",
+        ],
+    ),
     "workbench.lerobot.eval": ToolEntry(
         name="workbench.lerobot.eval",
         description="Evaluate a LeRobot policy checkpoint.",

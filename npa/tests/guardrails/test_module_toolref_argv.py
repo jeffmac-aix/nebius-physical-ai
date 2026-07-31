@@ -34,6 +34,8 @@ PLACEHOLDER = re.compile(r"\{\{[^}]+\}\}")
 #: listed here so adding a module toolRef without an entry point is a visible choice.
 PARSER_FACTORIES = {
     "npa.workflows.sim2real_envgen": "build_parser",
+    "npa.workflows.token_factory_triage": "build_parser",
+    "npa.workbench.lerobot.policy_container": "build_parser",
 }
 
 
@@ -60,7 +62,16 @@ def _dummy(value: str, *, flag: str) -> str:
     if not PLACEHOLDER.search(value):
         return value
     # Numeric options are the common case in these CLIs; a plain string breaks `type=int`.
-    if flag in {"--env-count", "--shard-index", "--shard-count", "--seed", "--limit"}:
+    if flag in {
+        "--env-count",
+        "--shard-index",
+        "--shard-count",
+        "--seed",
+        "--limit",
+        "--steps",
+        "--batch-size",
+        "--max-tokens",
+    }:
         return "1"
     if flag in {"--train-fraction"}:
         return "0.8"
