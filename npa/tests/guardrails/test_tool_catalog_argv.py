@@ -137,6 +137,7 @@ def test_format_style_str_options_are_still_str_typed() -> None:
         _cli_parameters,
         _is_enum_annotation,
         _parameter_for_flag,
+        _resolved_annotations,
         resolve_argv_command,
     )
 
@@ -144,7 +145,8 @@ def test_format_style_str_options_are_still_str_typed() -> None:
         command = resolve_argv_command(TOOL_CATALOG[ref].argv_template)
         param = _parameter_for_flag(_cli_parameters(command.callback_ref), "--output")
         assert param is not None, ref
-        assert not _is_enum_annotation(param), (
+        resolved = _resolved_annotations(command.callback_ref).get(param.name)
+        assert not _is_enum_annotation(param, resolved), (
             f"{ref}: --output is now an Enum, so it no longer needs an exemption"
         )
 

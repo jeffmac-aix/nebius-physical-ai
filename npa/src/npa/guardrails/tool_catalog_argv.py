@@ -171,6 +171,26 @@ def _cli_parameters(callback_ref: str) -> dict[str, inspect.Parameter]:
     return dict(inspect.signature(callback).parameters)
 
 
+def _resolved_annotations(callback_ref: str) -> dict[str, Any]:
+    """Resolve string annotations (``from __future__ import annotations``) to types.
+
+    Without this, an option annotated ``OutputFormat`` is only ever the *string*
+    ``"OutputFormat"``, so its members cannot be checked.
+    """
+
+    module_name, _, callback_name = callback_ref.partition(":")
+    callback = import_callback(module_name, callback_name)
+    try:
+        from typing import get_type_hints
+
+        return dict(get_type_hints(callback))
+    except Exception:  # noqa: BLE001 - unresolvable hints fall back to the raw ones
+        return {
+            name: param.annotation
+            for name, param in inspect.signature(callback).parameters.items()
+        }
+
+
 def _parameter_for_flag(
     parameters: dict[str, inspect.Parameter], flag: str
 ) -> inspect.Parameter | None:
@@ -182,17 +202,18 @@ def _parameter_for_flag(
     return None
 
 
-def _is_enum_annotation(param: inspect.Parameter) -> bool:
-    annotation = param.annotation
-    if isinstance(annotation, type):
-        import enum
+def _enum_class(annotation: Any) -> Any | None:
+    """Return the Enum class an annotation names, or ``None``."""
 
-        return issubclass(annotation, enum.Enum)
-    # Typer callbacks in this repo annotate with the Enum class directly; a string
-    # annotation (from `from __future__ import annotations`) is matched by name.
-    return isinstance(annotation, str) and annotation.endswith(
-        ("OutputFormat", "Format", "Mode", "Backend", "Profile", "Workload")
-    )
+    import enum
+
+    if isinstance(annotation, type) and issubclass(annotation, enum.Enum):
+        return annotation
+    return None
+
+
+def _is_enum_annotation(param: inspect.Parameter, resolved: Any = None) -> bool:
+    return _enum_class(resolved if resolved is not None else param.annotation) is not None
 
 
 def argv_literal_value_mismatches(argv: Sequence[str]) -> tuple[str, ...]:
@@ -213,6 +234,7 @@ def argv_literal_value_mismatches(argv: Sequence[str]) -> tuple[str, ...]:
     tokens = [str(token) for token in argv]
     command = resolve_argv_command(tokens)
     parameters = _cli_parameters(command.callback_ref)
+    hints = _resolved_annotations(command.callback_ref)
     problems: list[str] = []
     for index, token in enumerate(tokens[:-1]):
         if not token.startswith("--"):
@@ -223,14 +245,11 @@ def argv_literal_value_mismatches(argv: Sequence[str]) -> tuple[str, ...]:
         param = _parameter_for_flag(parameters, token)
         if param is None:
             continue
-        if _is_enum_annotation(param):
-            annotation = param.annotation
-            if isinstance(annotation, type):
-                allowed = {str(member.value) for member in annotation}
-                if value not in allowed:
-                    problems.append(
-                        f"{token} {value!r} is not one of {sorted(allowed)}"
-                    )
+        enum_class = _enum_class(hints.get(param.name, param.annotation))
+        if enum_class is not None:
+            allowed = {str(member.value) for member in enum_class}
+            if value not in allowed:
+                problems.append(f"{token} {value!r} is not one of {sorted(allowed)}")
             continue
         if value.lower() in FORMAT_WORDS and any(
             hint in token for hint in PATH_LIKE_FLAG_HINTS
