@@ -94,6 +94,42 @@ def test_every_remaining_template_states_why_it_survives() -> None:
     assert not unexplained, f"REMAINING entries need a reason: {unexplained}"
 
 
+#: Workbench CLI modules that advertise a workflow file through a module constant.
+#: These are printed by `<tool> workflow` / `<tool> status`, so a retired template
+#: silently turns the advertised path into a 404 for the operator who copies it.
+CLI_WORKFLOW_PATH_MODULES = (
+    "npa.cli.workbench.mjlab",
+    "npa.cli.workbench.retargeting",
+    "npa.cli.workbench.token_factory",
+    "npa.cli.workbench.vlm_eval",
+)
+
+
+def test_cli_advertised_workflow_paths_exist() -> None:
+    """Every `*_WORKFLOW_PATH` a CLI prints must be a real file."""
+
+    from importlib import import_module
+    from pathlib import Path as _Path
+
+    missing: list[str] = []
+    checked = 0
+    for module_name in CLI_WORKFLOW_PATH_MODULES:
+        module = import_module(module_name)
+        for attr in dir(module):
+            if not attr.endswith("WORKFLOW_PATH"):
+                continue
+            value = getattr(module, attr)
+            if not isinstance(value, _Path):
+                continue
+            checked += 1
+            if not (REPO_ROOT / value).is_file():
+                missing.append(f"{module_name}.{attr} -> {value}")
+    assert checked >= 8, f"expected to check several CLI workflow paths, saw {checked}"
+    assert not missing, "CLI modules advertise workflow files that do not exist: " + ", ".join(
+        missing
+    )
+
+
 def test_retirement_tally_is_monotonic() -> None:
     """The catalog started at 36 templates; it may only get smaller."""
 

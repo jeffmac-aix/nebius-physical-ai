@@ -263,6 +263,7 @@ def seed_live_workflow_inputs(
     if spec_name in {
         "vlm-eval-single.yaml",
         "vlm-eval-benchmark.yaml",
+        "vlm-eval-token-factory.yaml",
         "tokenfactory-rollout-judge.yaml",
     }:
         _seed_rollout_frames(client, bucket=bucket, marker=marker)

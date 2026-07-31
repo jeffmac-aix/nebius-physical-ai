@@ -109,6 +109,21 @@ SUBMIT_LIVE_MATRIX: tuple[SubmitLiveCase, ...] = (
         ),
     ),
     SubmitLiveCase(
+        "vlm-eval-token-factory.yaml",
+        "cpu",
+        secret_envs=(
+            "NEBIUS_TOKEN_FACTORY_KEY",
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+        ),
+        requires_token_factory=True,
+        notes=(
+            "Zero-GPU VLM eval through the hosted `api` backend. This is the VLM eval "
+            "case that can always run: vlm-eval-single asks for `self-hosted`, and "
+            "nothing in that spec starts a vLLM server (pre-existing gap)."
+        ),
+    ),
+    SubmitLiveCase(
         "retargeting.yaml",
         "cpu",
         secret_envs=("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"),
