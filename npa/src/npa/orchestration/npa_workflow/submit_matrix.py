@@ -124,6 +124,16 @@ SUBMIT_LIVE_MATRIX: tuple[SubmitLiveCase, ...] = (
         ),
     ),
     SubmitLiveCase(
+        "multi-node-probe.yaml",
+        "cpu",
+        secret_envs=("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"),
+        notes=(
+            "Multi-node reference: `resources.gang.num_nodes` gang-schedules a real "
+            "2-node stage, then a single-node stage verifies one report per rank landed "
+            "on a distinct host. CPU on purpose — the property is the node count."
+        ),
+    ),
+    SubmitLiveCase(
         "retargeting.yaml",
         "cpu",
         secret_envs=("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"),
