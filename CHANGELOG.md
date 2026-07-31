@@ -7,18 +7,34 @@ a versioned heading when a release is cut.
 
 ## Unreleased
 
-### Retiring the raw SkyPilot task catalog (36 → 31 templates)
+### Retiring the raw SkyPilot task catalog (36 → 26 templates)
 
 `npa.workflow/v0.0.1` specs are becoming the only workflow authoring surface.
 SkyPilot remains the execution engine, and `npa workbench workflow submit` still
 accepts a customer's own SkyPilot YAML — what is going away is the shipped catalog
 under `npa/src/npa/workflows/skypilot/`.
 
-- **Retired 5 templates**, each only after its spec reached a terminal `SUCCEEDED` on
-  real infrastructure (run ids in `EVIDENCE.md` §R2–R6): `cosmos3-reason.yaml`,
+- **Retired 10 templates**, each only after its spec reached a terminal `SUCCEEDED` on
+  real infrastructure (run ids in `EVIDENCE.md` §R2–R6, §R10): `cosmos3-reason.yaml`,
   `isaac-lab-rl-sweep.yaml`, `sonic-export.yaml`, `sonic-eval.yaml`,
-  `sonic-export-eval.yaml`. `test_skypilot_catalog_retirement.py` pins the remaining
-  set, so the tally is machine-checked and a new raw template needs a deliberate edit.
+  `sonic-export-eval.yaml`, `token-factory-caption.yaml`,
+  `token-factory-generate.yaml`, `token-factory-cosmos-reason.yaml`,
+  `vlm-eval-token-factory.yaml`, `mjlab-eval.yaml`.
+  `test_skypilot_catalog_retirement.py` pins the remaining set, so the tally is
+  machine-checked and a new raw template needs a deliberate edit.
+- **New spec:** `npa-workflows/vlm-eval-token-factory.yaml` — zero-GPU VLM scoring
+  through the hosted `api` backend. This is the VLM eval path that needs no vLLM
+  server, and it is registered in the live matrix as a `cpu` case.
+- **`outputs:` declarations corrected in seven specs (ten stages).** A stage can
+  succeed while writing its result somewhere other than the URI the spec declares —
+  `vlm-eval` writes `vlm_eval_stub.json`, `mjlab eval` writes `mjlab_eval.json`, the
+  Cosmos reasoner writes `scene_reasoning.json`, and several specs declared
+  `report.json` / `plan.json`. `test_spec_declared_outputs.py` now compares every
+  stage's declared artifact against the tool's own `*_result_uri_for()` helper.
+- `npa workbench {mjlab,retargeting,token-factory,vlm-eval} workflow|status` print
+  npa.workflow spec paths instead of raw SkyPilot template paths, and
+  `vlm-eval workflow|status` gain a `token_factory_workflow` key. A guardrail asserts
+  every advertised path is a real file.
 - **User-facing behaviour changes:**
   - `npa workbench sonic export` and `npa workbench sonic eval` now accept `s3://`
     URIs for `--checkpoint`, `--onnx`, `--obs-spec`, `--action-spec`, `--config` and
