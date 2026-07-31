@@ -44,8 +44,41 @@ def test_entries_map_to_known_images_or_foundation() -> None:
     for name, spec in specs.items():
         if spec.foundation:
             continue
+        if spec.variant_of is not None:
+            # A build variant of another tool (e.g. sonic-mujoco is built FROM npa-sonic
+            # and resolves through sonic's image manifest). It is separately built and
+            # published with its own capability, so it carries its own golden eval, but
+            # it is deliberately not a CONTAINER_IMAGE_NAMES key.
+            assert spec.variant_of in CONTAINER_IMAGE_NAMES, (
+                f"{name}: variant_of={spec.variant_of!r} is not a known tool"
+            )
+            assert spec.image not in known_images, (
+                f"{name}: {spec.image} is a canonical tool image, so it should be a tool "
+                f"entry rather than a variant"
+            )
+            continue
         assert name in CONTAINER_IMAGE_NAMES, f"{name} is not a known tool"
         assert spec.image in known_images, f"{name} image {spec.image} is unknown"
+
+
+def test_every_separately_built_image_has_a_golden_eval() -> None:
+    """The packaging contract lists every image we build and publish; each needs a
+    tested rerun, whether it is a canonical tool or a build variant of one.
+
+    sonic-mujoco is why this exists: it is built and published separately, but because
+    it is a sonic variant it slipped through the CONTAINER_IMAGE_NAMES-based
+    completeness check and had no golden eval at all.
+    """
+    import yaml
+
+    contract = yaml.safe_load(
+        (REPO_ROOT / "npa" / "docker" / "workbench" / "packaging-contract.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    specs = load_manifest()
+    missing = sorted(set(contract["images"]) - set(specs))
+    assert not missing, f"packaging-contract images with no golden-eval entry: {missing}"
 
 
 @pytest.mark.parametrize("name", sorted(load_manifest()))
