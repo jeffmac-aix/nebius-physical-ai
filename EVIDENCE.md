@@ -1309,3 +1309,47 @@ One more `outputs:` correction fell out of it (the eleventh): both retargeting-b
 specs declared `retargeted/manifest.json` while the tool writes
 `retargeting_result.json`. The declared-output guardrail now covers
 `workbench.retargeting.run` too.
+
+## R12. CI on the pull request — 21/21 green
+
+```
+docs-drift pass   gitleaks pass   guardrails pass   mypy pass
+ruff pass         scan pass       test (3.10) pass  test (3.12) pass  test (3.14) pass
+Two-tag strategy pass             Static Dockerfile scan pass        4x base-image CVE scan pass
+```
+
+One check needed a fix. **docs-drift** — a *blocking* gate that regenerates `docs/cli/`
+from `npa --help` — failed because four `workflow` subcommands' short help changed when
+they started advertising npa.workflow specs:
+
+```
+-workflow  Show the SkyPilot YAML template for MJLab evaluation.
++workflow  Show the npa.workflow spec for MJLab evaluation.
+```
+
+The exact diff CI computed was applied to
+`docs/cli/{mjlab,retargeting,token-factory,vlm-eval}.md` rather than re-running the
+generator on the dev VM, because there the generator also rewrites typer metavars
+(`<str>` vs `TEXT`) — unrelated churn already documented in §1.
+
+**gitleaks passed on the commit range**, which is the authoritative version of the local
+scan reported in §R1.
+
+## R13. Final state of this change
+
+| | |
+| --- | --- |
+| SkyPilot templates | **36 → 25** (`ls npa/src/npa/workflows/skypilot/*.yaml \| wc -l` = 25) |
+| Templates retired | 11, each with a live run id (§R2–R6, §R10, §R11) |
+| `skypilotTwin:` fields | 13 → 3 |
+| Offline suite | 3850 passed (base: 3682) — **+168**, same 2 pre-existing failures |
+| New guardrails | 5, plus the migrated three-tier third tier |
+| Specs whose `outputs:` was wrong | 8 specs / 11 stages, all corrected and now guarded |
+| Live jobs | 182–205; all terminal; no leaked clusters or pods |
+| Approx. spend | ~22 GPU-minutes + a handful of short CPU pods |
+
+Templates that remain are pinned with a reason each in
+`npa/tests/guardrails/test_skypilot_catalog_retirement.py`. The two that are *blocked
+rather than unstarted* are called out explicitly: `sonic-locomotion-finetuning.yaml`
+(its twin nests infrastructure — §R11) and the trigger/sim-to-real group (engine features
+first). Nothing was deleted on plan-only evidence.
