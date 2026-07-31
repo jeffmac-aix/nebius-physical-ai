@@ -22,7 +22,17 @@
 #   pandas, imageio-ffmpeg - nothing on the exercised paths imports them.
 #
 # numpy is pinned <2 because isaaclab declares `numpy<2` and gear_sonic pins
-# numpy==1.26.4; torch 2.9 is compatible with either, so the stricter pin wins.
+# numpy==1.26.4; torch 2.9 is compatible with either, so the stricter pin wins. (torch
+# pulls numpy 2.x in first, so expect pip to uninstall it and install 1.26.4 - that is
+# the intended outcome, not a mistake.)
+#
+# EXPECTED, BENIGN pip output: "wheel 0.47.0 requires packaging>=24.0, but you have
+# packaging 23.2 which is incompatible." `packaging<24` is isaaclab's own declared
+# constraint and `wheel` is only a build-time tool, so nothing at run time is affected.
+# Do not "fix" it by relaxing the pin: that would put us out of step with what isaaclab
+# says it supports, to silence a warning about a package Isaac never imports. Verified on
+# an RTX PRO 6000 pod: a real rsl_rl training run completes with this exact warning
+# present.
 
 # --- isaaclab 2.3.2.post1 Requires-Dist -------------------------------------------
 numpy==1.26.4
