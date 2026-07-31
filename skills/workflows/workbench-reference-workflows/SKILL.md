@@ -35,7 +35,6 @@ templates retire.
 - `bdd100k-pipeline.yaml`: BDD100K ingest, backfill, CLIP embedding,
   materialized views, training, and evaluation.
 - `cosmos2-transfer.yaml`: Cosmos Transfer augmentation.
-- `cosmos3-ea-fetch.yaml`: Cosmos3 source/checkpoint fetch.
 - `cosmos3-text-to-image-inference.yaml`: H100 text-to-image smoke inference.
 - `dataset-ingest-curate.yaml`: dataset-of-record ingest and curation.
 - `isaac-franka-capture-reason.yaml`: Franka capture plus Cosmos reasoning.
@@ -68,6 +67,10 @@ These raw templates were retired once their `npa.workflow` spec had a live run
 - `vlm-eval.yaml`, `vlm-eval-benchmark.yaml` — self-hosted VLM scoring and the labeled
   sweep. The renderer now starts and health-checks the vLLM server the spec asks for, so
   no prebuilt serving image is needed.
+- `cosmos3-ea-fetch.yaml` — Cosmos source/checkpoint fetch. Its twin
+  `npa-workflows/cosmos-fetch.yaml` is the two CLI commands the template wrapped in ~60 lines
+  of setup bash; the renderer installs `huggingface_hub[cli]`, which was the only load-bearing
+  line of that preamble.
 - `sim2real-envgen-split.yaml` — raw env generation + 80/20 split. Its twin
   `npa-workflows/sim2real-envgen-shards.yaml` declares the shard fan-out as a `parallel:`
   group instead of relying on a Kubernetes Job completion index, and runs on CPU.

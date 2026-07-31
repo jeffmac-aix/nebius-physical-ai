@@ -38,7 +38,6 @@ REMAINING: dict[str, str] = {
     "sonic-train-standalone.yaml": "three-tier contract + standalone-policy guardrail",
     # --- no npa.workflow twin authored yet ---
     "cosmos2-transfer.yaml": "no twin; cosmos2.transfer is used via other specs",
-    "cosmos3-ea-fetch.yaml": "no twin; access check, overlaps `npa workbench cosmos check`",
     "cosmos3-text-to-image-inference.yaml": "no twin; raw-sky e2e test targets it",
     "dataset-ingest-curate.yaml": "twin exists but has no live-matrix coverage yet",
     "isaac-franka-capture-reason.yaml": "no twin",
@@ -96,6 +95,12 @@ REMAINING: dict[str, str] = {
     #   Kubernetes Job completion index; the spec declares the fan-out as a parallel group.
     #   max_concurrent_observed: 2, and the barrier's split-manifest saw all 64 envs.
     #   See EVIDENCE.md \u00a7R27.
+    #
+    # cosmos3-ea-fetch.yaml  job 227  npa-wf-cpu-cosmos-fetch-ebbcc897
+    #   twin = cosmos-fetch.yaml. check-access reported source_repo reachable / hf_model
+    #   reachable, fetch-artifacts reported checkpoint downloaded. Run with public
+    #   substitutes for the gated Cosmos3 assets; identical code path. See EVIDENCE.md
+    #   \u00a7R28.
     #
     # Phase 2c: RELOCATED (not deleted) to npa/src/npa/workflows/byof/profiles/ —
     # they are BYOF resource profiles reached through byof.yaml's toolRef, not

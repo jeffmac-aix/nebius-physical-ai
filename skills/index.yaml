@@ -106,7 +106,7 @@ skills:
         contains: "json"
       - type: workflow_yaml
         paths:
-          - npa/src/npa/workflows/skypilot/cosmos3-ea-fetch.yaml
+          - npa/workflows/workbench/npa-workflows/cosmos-fetch.yaml
   - name: gpu-selection
     category: atomic
     when_to_use: "Choose or review GPU targets for training, rendering, inference, and workflow YAML resources."
@@ -507,7 +507,7 @@ skills:
       - type: workflow_yaml
         paths:
           - npa/src/npa/workflows/skypilot/bdd100k-pipeline.yaml
-          - npa/src/npa/workflows/skypilot/cosmos3-ea-fetch.yaml
+          - npa/workflows/workbench/npa-workflows/cosmos-fetch.yaml
           - npa/src/npa/workflows/skypilot/cosmos3-text-to-image-inference.yaml
           - npa/src/npa/workflows/byof/profiles/isaac-lab-rl-train.yaml
           - npa/src/npa/workflows/skypilot/sim-to-real-pipeline.yaml

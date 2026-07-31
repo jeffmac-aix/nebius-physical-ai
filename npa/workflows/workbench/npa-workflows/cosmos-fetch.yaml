@@ -19,7 +19,6 @@ metadata:
   name: cosmos-fetch
   description: >
     Check Cosmos source and checkpoint access, then materialize both into a local cache.
-  skypilotTwin: npa/src/npa/workflows/skypilot/cosmos3-ea-fetch.yaml
 
 config:
   cosmos_source_repo: "https://github.com/NVIDIA/cosmos-framework.git"
