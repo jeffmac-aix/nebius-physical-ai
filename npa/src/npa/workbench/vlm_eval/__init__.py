@@ -185,7 +185,6 @@ __all__ = [
     "VlmStructuredResponse",
     "benchmark_result_uri_for",
     "benchmark_vlm_eval",
-    "LOOP_REPORT_FILENAME",
     "VlmLoopRollout",
     "aggregate_loop_report",
     "discover_rollouts",
