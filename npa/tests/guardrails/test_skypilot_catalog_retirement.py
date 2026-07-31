@@ -41,7 +41,6 @@ REMAINING: dict[str, str] = {
     "cosmos3-text-to-image-inference.yaml": "no twin; raw-sky e2e test targets it",
     "dataset-ingest-curate.yaml": "twin exists but has no live-matrix coverage yet",
     "isaac-franka-capture-reason.yaml": "no twin",
-    "isaac-lab-cosmos-sdg-burst-smoke.yaml": "no twin; single-task burst reference",
     "sim2real-actions.yaml": "no twin",
     "tokenfactory-rollout-judge.yaml": (
         "the same-named spec is NOT an equivalent twin: the template's first stage is a "
@@ -101,6 +100,11 @@ REMAINING: dict[str, str] = {
     #   reachable, fetch-artifacts reported checkpoint downloaded. Run with public
     #   substitutes for the gated Cosmos3 assets; identical code path. See EVIDENCE.md
     #   \u00a7R28.
+    #
+    # RELOCATED (not retired) to npa/src/npa/burst/examples/: a single-task input to
+    # `npa burst submit-yaml`, not a workflow. Same reasoning as the BYOF profiles
+    # (DESIGN.md \u00a7R10). See npa/tests/guardrails/test_burst_examples.py.
+    # isaac-lab-cosmos-sdg-burst-smoke.yaml
     #
     # Phase 2c: RELOCATED (not deleted) to npa/src/npa/workflows/byof/profiles/ —
     # they are BYOF resource profiles reached through byof.yaml's toolRef, not

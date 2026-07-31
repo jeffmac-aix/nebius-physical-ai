@@ -38,7 +38,6 @@ templates retire.
 - `cosmos3-text-to-image-inference.yaml`: H100 text-to-image smoke inference.
 - `dataset-ingest-curate.yaml`: dataset-of-record ingest and curation.
 - `isaac-franka-capture-reason.yaml`: Franka capture plus Cosmos reasoning.
-- `isaac-lab-cosmos-sdg-burst-smoke.yaml`: Isaac Lab plus Cosmos SDG burst smoke.
 - `sim2real-actions.yaml`: sim2real action-contract stage.
 - `sim-to-real-pipeline.yaml`: full sim-to-real pipeline.
 - `sim-to-real-trigger.yaml`: trigger wrapper for sim-to-real work.
@@ -80,6 +79,9 @@ These raw templates were retired once their `npa.workflow` spec had a live run
 - `sim-to-real-loop.yaml` — the rollout-SET loop. Retired via a new tool capability
   (`npa workbench vlm-eval loop`), because nothing else produced
   `task_success_report.json`; the spec is `npa-workflows/vlm-eval-loop.yaml`.
+- `isaac-lab-cosmos-sdg-burst-smoke.yaml` — **relocated**, not retired: a single-task input to
+  `npa burst submit-yaml`, now at `npa/src/npa/burst/examples/`. Burst is scoped to one
+  executable task, so there is no plan or stage graph for a spec to describe.
 - `isaac-lab-rl-train-rtxpro.yaml`, `isaac-lab-rl-train-rtxpro-smoke.yaml`,
   `isaac-lab-rl-train.yaml`, `byof-datagen-rtxpro-smoke.yaml`,
   `byof-container-smoke-rtxpro.yaml` — **relocated**, not retired: they are BYOF
