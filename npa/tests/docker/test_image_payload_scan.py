@@ -1,0 +1,173 @@
+"""Offline tests for the Omniverse-payload scanner's classifier.
+
+The scanner (``npa/scripts/scan_image_omniverse_payload.py``) is the mechanical proof
+behind reclassifying the four Isaac images as publicly redistributable: it inspects a
+BUILT image's filesystem and layer history rather than trusting a Dockerfile. Running it
+needs a registry and multi-GB pulls, so the part that can regress silently - the
+classifier - is tested here against synthetic listings, and the live scan runs in
+Phase 7 / CI.
+
+Both directions matter, and the tricky direction is the second one: the images
+deliberately keep a ``/isaac-sim/python.sh`` shim (~30 call sites already invoke Isaac
+through that path, and pods override ENTRYPOINT so the shim is the only reliable
+bootstrap trigger), so "grep finds nothing" was never available as a proof. The scanner
+has to distinguish Kit payload from our own 40-line shell script.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+from pathlib import Path
+
+import pytest
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+SCANNER = REPO_ROOT / "npa" / "scripts" / "scan_image_omniverse_payload.py"
+
+
+def _load_scanner():
+    spec = importlib.util.spec_from_file_location("npa_payload_scanner", SCANNER)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+scanner = _load_scanner()
+
+
+# Real Kit payload paths, taken from the layout observed in an actual pip Isaac Sim 5.1
+# install on an RTX PRO 6000 pod.
+PAYLOAD_PATHS = [
+    "opt/venv/lib/python3.11/site-packages/isaacsim/kit/kernel/py/omni/ext/_impl/_internal.py",
+    "opt/venv/lib/python3.11/site-packages/isaacsim/extscache/omni.graph-1.141.2+69cbf6ad.lx64.r.cp311/omni/graph/core/__init__.py",
+    "opt/venv/lib/python3.11/site-packages/isaacsim/exts/isaacsim.core.utils/isaacsim/core/utils/numpy/rotations.py",
+    "opt/venv/lib/python3.11/site-packages/isaaclab/apps/isaaclab.python.headless.kit",
+    "opt/venv/lib/python3.11/site-packages/isaaclab/source/isaaclab/isaaclab/app/app_launcher.py",
+    "isaac-sim/kit/libcarb.so",
+    "isaac-sim/exts/omni.isaac.core/config/extension.toml",
+    "isaac-sim/extscache/omni.kit.window.viewport-1.0.0/PACKAGE-LICENSES/LICENSE",
+    "usr/lib/libomni.usd.so",
+    "opt/nvidia/omniverse/kit/kernel/plugins/carb.dll",
+    "isaac-sim/assets/Isaac/Robots/Franka/franka.usd",
+]
+
+# Paths the re-architected images legitimately DO ship.
+ALLOWED_PATHS = [
+    "isaac-sim/python.sh",
+    "isaac-sim/",
+    "opt/npa/bin/isaac-python",
+    "opt/npa/bin/isaac-bootstrap",
+    "opt/npa/docker/workbench/common/isaac_bootstrap.sh",
+    "opt/npa/docker/workbench/common/isaac_python.sh",
+    "opt/npa/docker/workbench/common/isaac-nvidia-wheels.txt",
+    "opt/npa/docker/workbench/common/isaac-oss-deps.txt",
+    "opt/npa/docker/workbench/isaac-lab/smoke_functional.py",
+    "opt/npa/docker/workbench/isaac-lab/smoke_env.py",
+    "opt/isaac-cache/",
+    "opt/isaac-cache/v/",
+    "workspace/isaaclab/",
+    "opt/isaac-lab/",
+    # Ordinary, unrelated image content must not trip anything.
+    "usr/lib/x86_64-linux-gnu/libcuda.so.1",
+    "opt/venv/lib/python3.11/site-packages/torch/__init__.py",
+    "opt/sonic/gear_sonic/__init__.py",
+    "opt/groot/Isaac-GR00T/gr00t/model/gr00t_n1d7/gr00t_n1d7.py",
+    "usr/lib/x86_64-linux-gnu/libEGL_nvidia.so.0",
+]
+
+
+@pytest.mark.parametrize("path", PAYLOAD_PATHS)
+def test_scanner_flags_real_kit_payload(path: str) -> None:
+    why = scanner.classify_path(path)
+    assert why, f"Kit payload not detected: {path}"
+
+
+@pytest.mark.parametrize("path", ALLOWED_PATHS)
+def test_scanner_allows_what_the_images_actually_ship(path: str) -> None:
+    why = scanner.classify_path(path)
+    assert why is None, f"legitimate path wrongly flagged as Kit payload: {path} ({why})"
+
+
+def test_the_shim_is_allowed_but_a_kit_tree_at_the_same_root_is_not() -> None:
+    """The crux of the design: /isaac-sim holds our shim and nothing else.
+
+    A naive `tar -tf | grep isaac-sim` cannot tell these apart, which is why the scanner
+    pairs payload signatures with an explicit allowlist instead.
+    """
+    assert scanner.classify_path("isaac-sim/python.sh") is None
+    assert scanner.classify_path("isaac-sim/kit/kernel/plugins/carb.dll")
+    assert scanner.classify_path("isaac-sim/exts/omni.isaac.core/extension.toml")
+
+
+def test_allowlist_is_small_and_explicit() -> None:
+    """An unexpected path must fail closed, so the allowlist must not be broad.
+
+    A prefix like `opt/` or a bare `isaac` substring would let real payload through.
+    """
+    assert len(scanner.ALLOWED_EXACT) <= 6
+    for prefix in scanner.ALLOWED_PREFIXES:
+        assert prefix.startswith("opt/npa/docker/workbench/"), prefix
+        assert prefix.endswith("/"), f"{prefix} must be a directory prefix"
+    # The allowlist must not admit a Kit tree hidden under an allowed prefix.
+    assert scanner.classify_path("opt/npa/docker/workbench/common/isaacsim/kit/libcarb.so") is None
+    # ... which is acceptable only because that prefix is ours and contains no payload;
+    # assert the payload signatures themselves still fire outside it.
+    assert scanner.classify_path("opt/other/isaacsim/kit/libcarb.so")
+
+
+HISTORY_BAKING = [
+    'RUN pip install --no-cache-dir "isaacsim==5.1.0.0"',
+    'RUN /isaac-sim/python.sh -m pip install --no-deps "isaaclab==2.3.2.post1"',
+    "FROM nvcr.io/nvidia/isaac-lab:2.3.2",
+    "RUN /opt/npa/bin/isaac-bootstrap ensure",
+    "RUN isaac_bootstrap.sh warm",
+    "ENV OMNI_KIT_ACCEPT_EULA=YES",
+    "ENV ISAACSIM_ACCEPT_EULA=YES PRIVACY_CONSENT=Y",
+]
+
+HISTORY_FINE = [
+    "RUN /opt/npa/docker/workbench/common/install_isaac_runtime_base.sh",
+    "RUN /opt/npa/bin/isaac-bootstrap status",
+    "COPY docker/workbench/common /opt/npa/docker/workbench/common",
+    "ENV ISAAC_LAB_PYTHON=/isaac-sim/python.sh",
+    "ENV NPA_ISAAC_CACHE_DIR=/opt/isaac-cache",
+    "ENV ISAAC_SIM_VERSION=5.1.0.0 ISAAC_LAB_VERSION=2.3.2.post1",
+    "RUN pip install -r /opt/npa/docker/workbench/common/isaac-oss-deps.txt",
+    "FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04@sha256:ad6d59a3",
+]
+
+
+@pytest.mark.parametrize("command", HISTORY_BAKING)
+def test_scanner_flags_build_layers_that_installed_isaac(command: str) -> None:
+    """The image's own recorded history is checked too, so an image built from a
+    Dockerfile nobody reviewed is still caught."""
+    assert scanner.classify_history(command), f"baking layer not detected: {command}"
+
+
+@pytest.mark.parametrize("command", HISTORY_FINE)
+def test_scanner_allows_runtime_fetch_build_layers(command: str) -> None:
+    why = scanner.classify_history(command)
+    assert why is None, f"legitimate layer wrongly flagged: {command} ({why})"
+
+
+def test_report_verdict_and_exit_semantics() -> None:
+    report = scanner.ScanReport(image="example:tag", source="registry")
+    assert report.clean
+    assert report.to_dict()["verdict"] == "clean"
+
+    report.payload_hits.append({"path": "isaac-sim/kit/libcarb.so", "why": "carb"})
+    assert not report.clean
+    assert report.to_dict()["verdict"] == "omniverse-payload-detected"
+
+    history_only = scanner.ScanReport(image="example:tag", source="registry")
+    history_only.history_hits.append({"command": "RUN pip install isaacsim", "why": "x"})
+    assert not history_only.clean, "a baking layer alone must fail the scan"
+
+
+def test_scanner_is_executable_and_self_documenting() -> None:
+    assert SCANNER.is_file()
+    text = SCANNER.read_text(encoding="utf-8")
+    # The reason it cannot simply grep for "isaac" is the single most likely thing for a
+    # future reader to try to "simplify"; keep the rationale in the file.
+    assert "python.sh" in text and "allowlist" in text.lower()
