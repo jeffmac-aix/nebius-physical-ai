@@ -10,8 +10,16 @@ from typing import Any
 
 
 def mint_nebius_registry_token(*, nebius_cli: str = "nebius") -> str:
-    """Return a short-lived IAM token for ``cr.*.nebius.cloud`` pulls."""
+    """Return a short-lived IAM token for ``cr.*.nebius.cloud`` pulls.
 
+    Prefers a ``NEBIUS_IAM_TOKEN`` from the environment (in-pod contexts often
+    have the token injected but not the ``nebius`` CLI), falling back to
+    ``nebius iam get-access-token`` when the env var is unset.
+    """
+
+    env_token = os.environ.get("NEBIUS_IAM_TOKEN", "").strip()
+    if env_token:
+        return env_token
     try:
         result = subprocess.run(
             [nebius_cli, "iam", "get-access-token"],
@@ -94,15 +102,24 @@ def ensure_nebius_registry_pull_secret(
     env = dict(os.environ)
     if kubeconfig:
         env["KUBECONFIG"] = kubeconfig
-    proc = subprocess.run(
-        cmd,
-        input=json.dumps(payload),
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        env=env,
-        check=False,
-    )
+    try:
+        proc = subprocess.run(
+            cmd,
+            input=json.dumps(payload),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        # In-pod orchestrators frequently have no kubectl on PATH, which raises
+        # FileNotFoundError. Callers treat this refresh as best-effort and catch
+        # RuntimeError, so keep every expected failure inside that contract
+        # instead of letting an OSError escape and kill the run.
+        raise RuntimeError(
+            f"failed to apply registry pull secret {secret_name}: {exc}"
+        ) from exc
     if proc.returncode != 0:
         detail = proc.stderr.strip() or proc.stdout.strip() or f"exit {proc.returncode}"
         raise RuntimeError(f"failed to apply registry pull secret {secret_name}: {detail}")
