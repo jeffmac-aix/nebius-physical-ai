@@ -45,7 +45,9 @@ CONFIGURED_SOLUTIONS = [
 ]
 
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
+# npa/tests/unit/solutions/test_registry.py -> repo root is four levels up plus one
+# for the `npa/` package directory.
+REPO_ROOT = Path(__file__).resolve().parents[4]
 
 
 def test_configured_solution_workflow_paths_exist() -> None:
