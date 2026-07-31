@@ -1045,6 +1045,22 @@ def create_app() -> Any:
     return app
 
 
+def upload_run_artifacts(output_dir: str | Path, artifacts_uri: str) -> str:
+    """Upload a training run's whole output tree, not just its checkpoint.
+
+    `--checkpoint-s3-uri` publishes the weights; a stage that *reads the run* — a triage
+    report, a sweep ranking — needs the configs, logs and metrics beside them. The retired
+    `tokenfactory-train-triage.yaml` did this with a trailing inline-python `rglob` upload,
+    which is exactly the kind of glue a `toolRef` argv cannot carry.
+    """
+
+    if not artifacts_uri.strip():
+        return ""
+    from npa.clients.storage import StorageClient
+
+    return StorageClient.from_environment().upload_directory(str(output_dir), artifacts_uri)
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Return this module's CLI parser.
 
@@ -1077,6 +1093,10 @@ def build_parser() -> argparse.ArgumentParser:
     train_cmd.add_argument("--wandb-run-name", default="")
     train_cmd.add_argument("--wandb-mode", default="offline")
     train_cmd.add_argument("--checkpoint-s3-uri", default="")
+    # --checkpoint-s3-uri uploads only the checkpoint. A downstream stage that reads the
+    # RUN (configs, logs, metrics) needs the whole output tree, which the retired
+    # tokenfactory-train-triage template uploaded with a trailing inline-python block.
+    train_cmd.add_argument("--artifacts-s3-uri", default="")
     train_cmd.add_argument("--checkpoint-s3-endpoint-url", default="")
     train_cmd.add_argument("--checkpoint-s3-access-key-id", default="")
     train_cmd.add_argument("--checkpoint-s3-secret-access-key", default="")
@@ -1146,7 +1166,12 @@ def main(argv: list[str] | None = None) -> int:
             timeout_seconds=args.timeout_seconds,
             training_config=training_config,
         )
-        print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+        payload = result.to_dict()
+        if args.artifacts_s3_uri.strip():
+            payload["artifacts_uri"] = upload_run_artifacts(
+                result.output_dir, args.artifacts_s3_uri
+            )
+        print(json.dumps(payload, indent=2, sort_keys=True))
         return 0
     if args.command == "eval":
         result = run_lerobot_eval(

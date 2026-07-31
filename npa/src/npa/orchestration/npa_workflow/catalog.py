@@ -1078,9 +1078,12 @@ TOOL_CATALOG: dict[str, ToolEntry] = {
             "{{config.train_batch_size}}",
             "--device",
             "{{config.policy_device}}",
-            # Uploading from the training process keeps the artifacts the next stage reads in
-            # one place; the retired template did this in a trailing python block.
+            # The checkpoint AND the run's textual artifacts (configs, logs, metrics) go to
+            # the same prefix, so a downstream stage can read the run. The retired template
+            # did the second half in a trailing inline-python block.
             "--checkpoint-s3-uri",
+            "{{config.artifacts_uri}}",
+            "--artifacts-s3-uri",
             "{{config.artifacts_uri}}",
         ],
     ),
