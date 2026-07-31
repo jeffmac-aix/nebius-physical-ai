@@ -178,6 +178,24 @@ SUBMIT_LIVE_MATRIX: tuple[SubmitLiveCase, ...] = (
         notes="Insights ingest + dashboard over one run prefix. CPU-only.",
     ),
     SubmitLiveCase(
+        "cosmos-fetch.yaml",
+        "cpu",
+        secret_envs=("HF_TOKEN",),
+        config_vars=(
+            # The spec's defaults name Cosmos3 assets that are gated behind early access and
+            # a licence acceptance. Substituting public ones exercises the identical code
+            # path — a real git clone and a real Hugging Face download into the cache — which
+            # is what a live run of this twin is meant to prove.
+            ("cosmos_source_repo", "https://github.com/githubtraining/hellogitworld.git"),
+            ("cosmos_model_id", "hf-internal-testing/tiny-random-gpt2"),
+        ),
+        notes=(
+            "Cosmos access check then fetch. CPU. Run with public substitutes for the gated "
+            "Cosmos3 source repo and checkpoint; the commands, flags and cache layout are "
+            "the same ones the retired template invoked."
+        ),
+    ),
+    SubmitLiveCase(
         "sim2real-envgen-shards.yaml",
         "multi",
         secret_envs=("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"),
