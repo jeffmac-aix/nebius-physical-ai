@@ -33,17 +33,12 @@ REMAINING: dict[str, str] = {
     "isaac-lab-rl-train-rtxpro-smoke.yaml": "byof/live.py resource profile",
     "sim-to-real-pipeline.yaml": "npa/scripts/run_sim_to_real_pipeline.py DEFAULT_YAML",
     # --- referenced by a CLI/SDK path pointer or shipped data ---
-    "mjlab-eval.yaml": "cli/workbench/mjlab.py WORKFLOW_PATH",
     "retargeting.yaml": "cli/workbench/retargeting.py WORKFLOW_PATH",
     "sim-to-real-loop.yaml": "solutions.toml sim-to-real cli_command",
     "sim-to-real-trigger.yaml": "three-tier contract (legacy YAML tier)",
     "sonic-train-standalone.yaml": "three-tier contract + standalone-policy guardrail",
-    "token-factory-caption.yaml": "cli/workbench/token_factory.py CAPTION_WORKFLOW_PATH",
-    "token-factory-cosmos-reason.yaml": "cli/workbench/token_factory.py REASON_WORKFLOW_PATH",
-    "token-factory-generate.yaml": "cli/workbench/token_factory.py GENERATE_WORKFLOW_PATH",
     "vlm-eval.yaml": "cli/workbench/vlm_eval.py WORKFLOW_PATH",
     "vlm-eval-benchmark.yaml": "cli/workbench/vlm_eval.py BENCHMARK_WORKFLOW_PATH",
-    "vlm-eval-token-factory.yaml": "cli/workbench/token_factory.py VLM_EVAL_WORKFLOW_PATH",
     # --- no npa.workflow twin authored yet ---
     "cosmos2-transfer.yaml": "no twin; cosmos2.transfer is used via other specs",
     "cosmos3-ea-fetch.yaml": "no twin; access check, overlaps `npa workbench cosmos check`",
@@ -68,6 +63,15 @@ REMAINING: dict[str, str] = {
     # sonic-export.yaml       job 192            npa-wf-gpu-sonic-export-cb60c5ab
     # sonic-eval.yaml         job 198            npa-wf-gpu-sonic-eval-bb3b9c72
     # sonic-export-eval.yaml  job 197            npa-wf-multi-sonic-export-eval-2f5e979e
+    #
+    # Phase 2a (pointer-only CLI callers repointed first):
+    # token-factory-caption.yaml       job 199  npa-wf-cpu-token-factory-caption-1dbebbb4
+    # vlm-eval-token-factory.yaml      job 200  npa-wf-cpu-vlm-eval-token-factory-736df0b1
+    # token-factory-cosmos-reason.yaml job 201  npa-wf-cpu-token-factory-cosmos-reason-d9669c7f
+    # token-factory-generate.yaml      job 202  npa-wf-cpu-token-factory-generate-94815797
+    # mjlab-eval.yaml                  no template-specific live run needed: the CLI
+    #   constant is a printed path (now the spec) and the twin is a gpu-tier matrix
+    #   case; see EVIDENCE §R10 for why it is retired without its own GPU run.
 }
 
 

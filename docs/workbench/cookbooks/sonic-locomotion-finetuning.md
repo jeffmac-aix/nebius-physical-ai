@@ -52,7 +52,7 @@ npa workbench mjlab workflow
 Those commands point to:
 
 - `npa/src/npa/workflows/skypilot/retargeting.yaml`
-- `npa/src/npa/workflows/skypilot/mjlab-eval.yaml`
+- `npa/workflows/workbench/npa-workflows/mjlab-eval.yaml`
 
 ## Raw SkyPilot
 
