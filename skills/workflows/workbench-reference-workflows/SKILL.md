@@ -45,7 +45,6 @@ templates retire.
 - `sonic-locomotion-finetuning.yaml`: retargeting, SONIC, and MJLab flow.
 - `tokenfactory-rollout-judge.yaml`: Token Factory rollout judging.
 - `tokenfactory-scene-to-rollout-judge.yaml`: scene-to-rollout judging.
-- `tokenfactory-train-triage.yaml`: Token Factory training triage.
 
 ## Retired Templates
 
@@ -66,6 +65,11 @@ These raw templates were retired once their `npa.workflow` spec had a live run
 - `vlm-eval.yaml`, `vlm-eval-benchmark.yaml` — self-hosted VLM scoring and the labeled
   sweep. The renderer now starts and health-checks the vLLM server the spec asks for, so
   no prebuilt serving image is needed.
+- `tokenfactory-train-triage.yaml` — GPU LeRobot training then a hosted triage report. Its twin
+  `npa-workflows/tokenfactory-train-triage.yaml` trains in the stage's own pod (the renderer
+  switches to the vendor image's interpreter) and triages with
+  `npa.workflows.token_factory_triage`. Needs a SkyPilot-hostable LeRobot image; 0.5.1 ships a
+  torch/torchcodec ABI mismatch, 0.6.0 does not.
 - `cosmos3-ea-fetch.yaml` — Cosmos source/checkpoint fetch. Its twin
   `npa-workflows/cosmos-fetch.yaml` is the two CLI commands the template wrapped in ~60 lines
   of setup bash; the renderer installs `huggingface_hub[cli]`, which was the only load-bearing

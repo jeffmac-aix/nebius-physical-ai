@@ -411,30 +411,38 @@ def test_scene_judge_has_no_hardcoded_infra_ids() -> None:
 # --- train-triage SkyPilot YAML (k8s GPU train -> hosted Token Factory triage) -
 
 
-def test_train_triage_yaml_is_two_stage_gpu_then_hosted_triage() -> None:
-    docs = _docs(TRAIN_TRIAGE_YAML)
-    assert docs[0] == {"name": "tokenfactory-train-triage", "execution": "serial"}
-    gpu_stage, triage_stage = docs[1], docs[2]
+def test_train_triage_spec_is_two_stage_gpu_then_hosted_triage() -> None:
+    """The retired template's contract, asserted on the spec that replaced it.
 
-    # Stage 1: a genuine Nebius k8s GPU training run.
-    assert gpu_stage["name"] == "train-gpu"
-    assert gpu_stage["resources"]["cloud"] == "kubernetes"
-    assert "accelerators" in gpu_stage["resources"]
-    assert "lerobot-train" in gpu_stage["run"]
-    assert gpu_stage["envs"]["ARTIFACTS_URI"].startswith("s3://")
+    Live proof: job 256 (`npa-wf-multi-tokenfactory-train-triage-6732d78a`) — train-gpu
+    SUCCEEDED on the LeRobot image and produced a real 206 MB checkpoint, then the CPU triage
+    stage wrote a 2,529-character report from that run's artifacts. See EVIDENCE.md §R32–R33.
+    """
 
-    # Stage 2: zero-GPU hosted Token Factory triage over what the GPU stage wrote.
-    assert triage_stage["name"] == "tokenfactory-triage"
-    assert "accelerators" not in triage_stage["resources"]
-    assert "npa workbench token-factory generate" in triage_stage["run"]
-    assert "summarize_run_artifacts" in triage_stage["run"]
-    assert triage_stage["envs"]["ARTIFACTS_URI"] == gpu_stage["envs"]["ARTIFACTS_URI"]
+    from npa.orchestration.npa_workflow.interpreter import build_plan
+    from npa.orchestration.npa_workflow.spec import load_spec
+
+    spec = load_spec(
+        ROOT / "npa" / "workflows" / "workbench" / "npa-workflows" / "tokenfactory-train-triage.yaml"
+    )
+    plan = build_plan(spec, run_id="train-triage-test")
+    steps = {step.state: step for step in plan.steps if step.argv}
+
+    assert sorted(steps) == ["train-gpu", "triage"]
+    # Stage 1 is a genuine GPU training run, in the stage's own pod.
+    assert steps["train-gpu"].tool_ref == "workbench.lerobot.policy_train"
+    assert "accelerators" in spec.resources[steps["train-gpu"].resources]
+    # Stage 2 is zero-GPU hosted triage over exactly what stage 1 wrote.
+    assert steps["triage"].tool_ref == "workbench.token_factory.triage"
+    assert "accelerators" not in spec.resources[steps["triage"].resources]
+    train_argv, triage_argv = steps["train-gpu"].argv, steps["triage"].argv
+    artifacts = train_argv[train_argv.index("--artifacts-s3-uri") + 1]
+    assert artifacts.startswith("s3://")
+    assert triage_argv[triage_argv.index("--artifacts-uri") + 1] == artifacts
 
 
-def test_train_triage_yaml_has_no_hardcoded_infra_ids() -> None:
-    text = TRAIN_TRIAGE_YAML.read_text(encoding="utf-8")
-    assert "<your-registry-id>" in text
-    assert "<your-bucket-name>" in text
+def test_the_retired_train_triage_template_is_gone() -> None:
+    assert not TRAIN_TRIAGE_YAML.exists(), "tokenfactory-train-triage.yaml came back"
 
 
 # --- CLI / SDK / YAML support matrix for the combos -----------------------

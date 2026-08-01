@@ -198,7 +198,7 @@ Worked examples: `tokenfactory-rollout-judge.yaml` (GPU rollout → VLM judge) a
 
 | Workflow | Compute (AI Cloud) | Token Factory | CLI | SDK | YAML |
 | --- | --- | --- | --- | --- | --- |
-| train-triage | serverless GPU LeRobot train | text triage report | runner | — | `tokenfactory-train-triage.yaml` (k8s) |
+| train-triage | k8s GPU LeRobot train | text triage report | `workflow submit` | `npa.workflow.submit` | `npa-workflows/tokenfactory-train-triage.yaml` |
 | sim-sweep | N serverless GPU trains (fan-out) | text design + ranking | runner | — | — (fan-out: runner only) |
 | rollout-judge | k8s GPU rollout | VLM judge | `workflow submit` | `npa.workflow.submit` | `tokenfactory-rollout-judge.yaml` |
 | scene-to-rollout-judge | k8s GPU rollout | reason → VLM judge | `workflow submit` | `npa.workflow.submit` | `tokenfactory-scene-to-rollout-judge.yaml` |
@@ -237,7 +237,7 @@ workflow.submit(
 > Python runners because they need cross-stage orchestration — await a Job,
 > download artifacts, build prompts, fan out N variants — that a single serial
 > SkyPilot YAML cannot express. `train-triage` also has an equivalent **k8s
-> YAML** form (`tokenfactory-train-triage.yaml`) for the declarative path.
+> spec** form (`npa-workflows/tokenfactory-train-triage.yaml`) for the declarative path.
 
 ## Checklist for your own combo
 

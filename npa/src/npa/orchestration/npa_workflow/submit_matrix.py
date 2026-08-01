@@ -193,8 +193,11 @@ SUBMIT_LIVE_MATRIX: tuple[SubmitLiveCase, ...] = (
             "image's LeRobot, one step) and publishes the run's checkpoint AND textual "
             "artifacts, then a hosted text model triages that run with no GPU. The train stage "
             "materialises its own dataset from `--dataset-repo-id`, because stages do not share "
-            "a filesystem. Getting here took three fixes, each from a live run - see "
-            "EVIDENCE.md \u00a7R31."
+            "a filesystem. Requires a SkyPilot-hostable LeRobot image AND one whose torch and "
+            "torchcodec agree: run with "
+            "NPA_E2E_IMAGE_OVERRIDE_LEROBOT=<registry>/npa-lerobot:0.6.0-k8s-runtime. The 0.5.1 "
+            "image fails at training step 0 with a torchcodec ABI mismatch. Six live iterations "
+            "and five engine gaps to get here - see EVIDENCE.md \u00a7R32-R33."
         ),
     ),
     SubmitLiveCase(

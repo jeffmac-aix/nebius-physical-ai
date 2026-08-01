@@ -55,13 +55,6 @@ REMAINING: dict[str, str] = {
         "PRODUCES what the Token Factory stage consumes. A twin needs an in-image LeRobot "
         "producer toolRef plus a policy/dataset fixture"
     ),
-    "tokenfactory-train-triage.yaml": (
-        "same LeRobot-producer blocker, plus one of its own: the triage stage builds "
-        "prompts.jsonl and a system prompt FROM the training artifacts in bash+python before "
-        "calling `token-factory generate`, and no tool does that yet. `npa workbench lerobot` "
-        "has eval/benchmark/train-student but no plain `train`; the template calls "
-        "`lerobot-train` in the vendor venv directly"
-    ),
     # --- twin exists but is NOT live-verified yet ---
     "sonic-locomotion-finetuning.yaml": (
         "twin's retarget stage passes live (job 205) but its train stage asks the in-pod "
@@ -116,6 +109,11 @@ REMAINING: dict[str, str] = {
     # `npa burst submit-yaml`, not a workflow. Same reasoning as the BYOF profiles
     # (DESIGN.md \u00a7R10). See npa/tests/guardrails/test_burst_examples.py.
     # isaac-lab-cosmos-sdg-burst-smoke.yaml
+    #
+    # tokenfactory-train-triage.yaml  job 256  npa-wf-multi-tokenfactory-train-triage-6732d78a
+    #   train-gpu SUCCEEDED on npa-lerobot:0.6.0-k8s-runtime (real 206 MB checkpoint), then the
+    #   CPU triage stage wrote a report from that run's artifacts. Six live iterations, five
+    #   engine gaps and one broken vendor image on the way. See EVIDENCE.md \u00a7R32-R33.
     #
     # Phase 2c: RELOCATED (not deleted) to npa/src/npa/workflows/byof/profiles/ —
     # they are BYOF resource profiles reached through byof.yaml's toolRef, not
