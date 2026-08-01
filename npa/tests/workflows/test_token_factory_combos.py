@@ -510,7 +510,7 @@ def test_sdk_exposes_workflow_submit_for_combo_yamls() -> None:
     assert callable(workflow.submit)
 
 
-def test_sdk_workflow_submit_delegates_to_orchestrator(mocker) -> None:
+def test_sdk_workflow_submit_delegates_to_orchestrator(mocker, monkeypatch) -> None:
     """npa.workflow.submit forwards a combo YAML to the SkyPilot orchestrator.
 
     Every combo is a spec now, so this submits one — `workflow.submit` accepts both formats and
@@ -520,6 +520,8 @@ def test_sdk_workflow_submit_delegates_to_orchestrator(mocker) -> None:
 
     from npa import workflow
 
+    # Rendering a spec needs somewhere for a stage to get npa from; the submit itself is mocked.
+    monkeypatch.setenv("NPA_SRC_S3_URI", "s3://example-bucket/prefix/npa")
     fake = types.SimpleNamespace(status="SUBMITTED", job_id="job-1")
     submit_mock = mocker.patch(
         "npa.orchestration.skypilot.workflow.submit_workflow", return_value=fake
