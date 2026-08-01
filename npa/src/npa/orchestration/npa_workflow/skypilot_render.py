@@ -62,10 +62,21 @@ TOOL_REF_PIP_EXTRAS: dict[str, str] = {
 #: cosmos3-ea-fetch.yaml pip-installed `huggingface_hub[cli]` in its setup, and that one line
 #: was the only load-bearing part of its ~60-line preamble. Dropping it made the stage fail
 #: with "No such file or directory: 'huggingface-cli'" (live job 226).
+#: A requirement is (probe, pip requirement). The probe is an executable name checked with
+#: ``command -v``, or ``python:<module>`` checked with an import — a library has no binary to
+#: look for. `lerobot policy_train` needs the latter: it materialises its dataset with
+#: `huggingface_hub`, and the interpreter running npa in a vendor image is not the vendor's own
+#: venv, so the library is not necessarily importable there (live job 244).
 TOOL_REF_PIP_REQUIREMENTS: dict[str, tuple[tuple[str, str], ...]] = {
     "workbench.cosmos.fetch": (("huggingface-cli", "huggingface_hub[cli]>=0.23,<1.0"),),
     "workbench.cosmos.check": (("huggingface-cli", "huggingface_hub[cli]>=0.23,<1.0"),),
+    "workbench.lerobot.policy_train": (
+        ("python:huggingface_hub", "huggingface_hub>=0.23,<1.0"),
+    ),
 }
+
+#: Prefix marking a probe as "is this python module importable?" rather than an executable.
+PYTHON_MODULE_PROBE = "python:"
 
 
 class NpaWorkflowRenderError(NpaWorkflowError):
@@ -186,11 +197,20 @@ def render_pip_requirements_setup(requirements: Sequence[tuple[str, str]]) -> st
 
     if not requirements:
         return ""
-    lines = ["# Stage shells out to third-party CLIs; install any that are missing.\n"]
-    for executable, requirement in requirements:
+    lines = ["# Stage needs third-party packages; install any that are missing.\n"]
+    for probe, requirement in requirements:
+        if probe.startswith(PYTHON_MODULE_PROBE):
+            module = probe[len(PYTHON_MODULE_PROBE) :]
+            # A library has no binary to look for, and the interpreter that matters is the one
+            # the shim recorded — a vendor image's own venv is a different one.
+            condition = f"! python3 -c 'import {module}' >/dev/null 2>&1"
+            label = module
+        else:
+            condition = f"! command -v {probe} >/dev/null 2>&1"
+            label = probe
         lines.append(
-            f"if ! command -v {executable} >/dev/null 2>&1; then\n"
-            f"  echo 'installing {requirement} for {executable}' >&2\n"
+            f"if {condition}; then\n"
+            f"  echo 'installing {requirement} for {label}' >&2\n"
             f"  npa_pip_install '{requirement}'\n"
             "fi\n"
         )

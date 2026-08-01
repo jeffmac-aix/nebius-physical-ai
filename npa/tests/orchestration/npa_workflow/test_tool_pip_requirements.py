@@ -79,3 +79,46 @@ def test_shipped_cosmos_spec_renders_the_installer(monkeypatch: pytest.MonkeyPat
     for doc in stages:
         assert "huggingface_hub[cli]" in doc["setup"], doc["name"]
     assert_no_unresolved_placeholders(text)
+
+
+def test_a_library_requirement_is_probed_by_import_not_by_command_v() -> None:
+    """`huggingface_hub` has no binary, and the shim's interpreter is not a vendor venv.
+
+    Live job 244: the LeRobot producer materialised its dataset with `huggingface_hub` and died
+    with "huggingface_hub is required to download the example dataset" — the stage ran
+    `/home/sky/miniconda3/bin/python3` (where npa is installed), not the image's
+    `/opt/lerobot/venv`.
+    """
+
+    setup = render_pip_requirements_setup(tool_pip_requirements("workbench.lerobot.policy_train"))
+
+    assert "if ! python3 -c 'import huggingface_hub' >/dev/null 2>&1; then" in setup
+    assert "command -v" not in setup
+    assert "npa_pip_install 'huggingface_hub>=0.23,<1.0'" in setup
+
+
+def test_executable_and_module_probes_can_coexist() -> None:
+    setup = render_pip_requirements_setup(
+        (("huggingface-cli", "huggingface_hub[cli]"), ("python:numpy", "numpy>=1.24"))
+    )
+
+    assert "command -v huggingface-cli" in setup
+    assert "python3 -c 'import numpy'" in setup
+
+
+def test_shipped_lerobot_spec_installs_the_library(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("NPA_SRC_S3_URI", "s3://example-bucket/prefix/npa")
+    spec = load_spec(SPECS / "tokenfactory-train-triage.yaml")
+    plan = build_plan(spec, run_id="pip-requirements-check")
+
+    text = render_skypilot_yaml(
+        spec,
+        plan,
+        run_id="pip-requirements-check",
+        options=SkypilotRenderOptions(image_overrides={"*": ""}),
+    )
+
+    docs = [doc for doc in yaml.safe_load_all(text) if doc]
+    train = next(doc for doc in docs if doc.get("name", "").endswith("train-gpu"))
+    assert "import huggingface_hub" in train["setup"]
+    assert_no_unresolved_placeholders(text)
