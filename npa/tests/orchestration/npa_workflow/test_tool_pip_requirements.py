@@ -163,10 +163,16 @@ def test_vendor_setup_installs_npa_there_and_records_it() -> None:
     )
 
     assert "for npa_vendor_python in /opt/lerobot/venv/bin/python; do" in setup
-    # --no-deps: resolving npa's requirements inside a vendor venv can bump torch and
+    # --no-deps FIRST: resolving npa's requirements inside a vendor venv can bump torch and
     # break the vendor's own compiled extensions (live job 253, a torchcodec ABI mismatch).
-    assert "-m pip install -q --no-deps -e" in setup
-    assert "-m pip install -q -e" not in setup
+    no_deps = setup.index("-m pip install -q --no-deps -e")
+    # ... and a with-deps attempt only AFTER it, for vendor environments that carry none of
+    # npa's dependencies (live job 268: Isaac's kit python, where --no-deps alone left
+    # npa.workbench unimportable). Order is the whole safety property.
+    with_deps = setup.index('-m pip install -q -e "$npa_vendor_src"')
+    assert no_deps < with_deps
+    # The second attempt is guarded by the probe, so it never runs when the first sufficed.
+    assert setup.count("if ! \"$npa_vendor_python\" -c 'import npa.workbench'") == 2
     # Records it as THE stage interpreter, which is what the run shim reads.
     assert 'echo "$npa_vendor_python" > /tmp/npa-python' in setup
     # Probes a real subpackage: a vendor image may bake a PARTIAL npa on PYTHONPATH that makes
@@ -174,6 +180,9 @@ def test_vendor_setup_installs_npa_there_and_records_it() -> None:
     assert "-c 'import npa.workbench'" in setup
     # Skips a candidate that is not present, rather than failing the stage.
     assert '[ -x "$npa_vendor_python" ] || continue' in setup
+    # And when it gives up on a candidate it says why: job 268's bare warning blamed a
+    # shadowing partial npa when the cause was missing dependencies.
+    assert "\"$npa_vendor_python\" -c 'import npa.workbench' 2>&1 | tail -3 >&2" in setup
     assert "${" not in setup
 
 
