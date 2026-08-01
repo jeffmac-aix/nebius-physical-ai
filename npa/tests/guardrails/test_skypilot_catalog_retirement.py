@@ -40,7 +40,6 @@ REMAINING: dict[str, str] = {
     "cosmos2-transfer.yaml": "no twin; cosmos2.transfer is used via other specs",
     "cosmos3-text-to-image-inference.yaml": "no twin; raw-sky e2e test targets it",
     "dataset-ingest-curate.yaml": "twin exists but has no live-matrix coverage yet",
-    "isaac-franka-capture-reason.yaml": "no twin",
     # --- twin exists but is NOT live-verified yet ---
     "sonic-locomotion-finetuning.yaml": (
         "twin's retarget stage passes live (job 205) but its train stage asks the in-pod "
@@ -115,6 +114,11 @@ REMAINING: dict[str, str] = {
     # sim2real-actions.yaml  job npa-wf-multi-sim2real-envgen-shards-d5c752f1
     #   Absorbed as the envgen spec's fourth stage; its actions-summary.json records
     #   input_train_uri == the split stage's own output. See EVIDENCE.md \u00a7R36.
+    #
+    # isaac-franka-capture-reason.yaml  job 283
+    #   npa-wf-multi-isaac-franka-capture-reason-d8eca4b3: Isaac rendered the Franka and cube on
+    #   a GPU, a hosted reasoner planned from those frames on CPU, and the plan describes what
+    #   the frames actually show. Four defects on the way. See EVIDENCE.md \u00a7R37.
     #
     # Phase 2c: RELOCATED (not deleted) to npa/src/npa/workflows/byof/profiles/ —
     # they are BYOF resource profiles reached through byof.yaml's toolRef, not

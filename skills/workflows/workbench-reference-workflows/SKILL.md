@@ -37,7 +37,6 @@ templates retire.
 - `cosmos2-transfer.yaml`: Cosmos Transfer augmentation.
 - `cosmos3-text-to-image-inference.yaml`: H100 text-to-image smoke inference.
 - `dataset-ingest-curate.yaml`: dataset-of-record ingest and curation.
-- `isaac-franka-capture-reason.yaml`: Franka capture plus Cosmos reasoning.
 - `sim-to-real-pipeline.yaml`: full sim-to-real pipeline.
 - `sim-to-real-trigger.yaml`: trigger wrapper for sim-to-real work.
 - `sonic-train-standalone.yaml`: standalone SONIC training.
@@ -62,6 +61,9 @@ These raw templates were retired once their `npa.workflow` spec had a live run
 - `vlm-eval.yaml`, `vlm-eval-benchmark.yaml` — self-hosted VLM scoring and the labeled
   sweep. The renderer now starts and health-checks the vLLM server the spec asks for, so
   no prebuilt serving image is needed.
+- `isaac-franka-capture-reason.yaml` — retired to
+  `npa-workflows/isaac-franka-capture-reason.yaml`. The capture code moved into the package
+  (`npa.workflows.isaac_capture`), so the stage no longer needs a repo mounted into the pod.
 - `sim2real-actions.yaml` — retired into `npa-workflows/sim2real-envgen-shards.yaml` as its
   fourth stage, which conditions the train slice the `split` stage just wrote.
 - `tokenfactory-scene-to-rollout-judge.yaml` — hosted reasoner, GPU rollout, hosted judge. Its
