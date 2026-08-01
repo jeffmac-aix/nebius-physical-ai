@@ -45,6 +45,7 @@ NON_CLI_ARGV = frozenset(
         "workbench.rl.write_success_decision",
         "workbench.scenario_gen.write_hardening_decision",
         "workbench.sim2real.write_decision",
+        "workbench.lerobot.policy_rollout",
         "workbench.lerobot.policy_train",
         "workbench.token_factory.triage",
         "workbench.sim2real_envgen.raw_shard",
@@ -63,6 +64,7 @@ AUDITED_ELSEWHERE = frozenset(
         "workbench.lancedb.create_failure_views",
         "workbench.sim2real_envgen.raw_shard",
         "workbench.sim2real_envgen.split",
+        "workbench.lerobot.policy_rollout",
         "workbench.lerobot.policy_train",
         "workbench.token_factory.triage",
     }

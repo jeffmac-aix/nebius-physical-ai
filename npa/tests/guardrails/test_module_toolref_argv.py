@@ -71,6 +71,8 @@ def _dummy(value: str, *, flag: str) -> str:
         "--steps",
         "--batch-size",
         "--max-tokens",
+        "--episodes",
+        "--num-episodes",
     }:
         return "1"
     if flag in {"--train-fraction"}:
