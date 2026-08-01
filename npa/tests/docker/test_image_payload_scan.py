@@ -317,3 +317,35 @@ def test_history_matching_ignores_comments_inside_heredocs() -> None:
     assert scanner.classify_history(
         command + "\nRUN /opt/npa/bin/isaac-bootstrap ensure"
     )
+
+
+def test_sonic_excludes_the_robocasa_omniverse_asset_tree() -> None:
+    """The third independent finding, pinned so it cannot come back.
+
+    Omniverse 3D assets are a separate licence question from the Kit SDK and from model
+    weights, and they are what kept sonic restricted after the wheels were dealt with:
+    decoupled_wbc/dexmg drags in RoboCasa's asset library, including
+    .../robocasa/models/assets/objects/omniverse/*.{obj,mtl,png} -- NVIDIA Omniverse meshes,
+    materials and albedo textures, i.e. exactly the "models and textures" the Isaac Sim
+    licence covers. Found by scanning the built image; invisible in the Dockerfile.
+    """
+    dockerfile = _sonic_dockerfile()
+    instructions = _instructions_only(dockerfile)
+    assert '"!/decoupled_wbc/dexmg/**"' in instructions, (
+        "the sparse checkout must exclude decoupled_wbc/dexmg, which carries the RoboCasa "
+        "Omniverse asset library"
+    )
+    # And the build must prove the absence itself, not rely on someone remembering to scan.
+    assert "FATAL: NVIDIA Omniverse assets baked into the image" in dockerfile
+    assert "no Omniverse assets" in dockerfile
+
+
+def test_scanner_flags_omniverse_asset_paths() -> None:
+    """The scanner must catch these too - it is what found them in the first place."""
+    for path in (
+        "opt/sonic/decoupled_wbc/dexmg/gr00trobocasa/robocasa/models/assets/objects/"
+        "omniverse/locomanip/cardbox_c1/meshes/cardbox_c1.obj",
+        "opt/sonic/decoupled_wbc/dexmg/gr00trobocasa/robocasa/models/assets/objects/"
+        "omniverse/locomanip/cardbox_c1/textures/T_Cardbox_C2_Albedo.png",
+    ):
+        assert scanner.classify_path(path), path

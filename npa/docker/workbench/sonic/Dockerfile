@@ -154,6 +154,14 @@ RUN export GIT_LFS_SKIP_SMUDGE=1 \
       "/gear_sonic/**" \
       "/gear_sonic_deploy/**" \
       "/decoupled_wbc/**" \
+      `# Excluded: decoupled_wbc/dexmg is dexterous-manipulation generation, and it drags` \
+      `# in RoboCasa's asset library including` \
+      `# .../robocasa/models/assets/objects/omniverse/ -- NVIDIA Omniverse 3D meshes,` \
+      `# materials and albedo textures, i.e. exactly the "models and textures" the Isaac` \
+      `# Sim licence covers. Found by scanning the BUILT image, not by reading this file.` \
+      `# Nothing in the locomotion training path or the MuJoCo eval (which uses` \
+      `# decoupled_wbc/sim2mujoco) needs it.` \
+      "!/decoupled_wbc/dexmg/**" \
       "/LICENSE" \
     && git checkout "${SONIC_REPO_REF}" \
     && test "$(git rev-parse HEAD)" = "${SONIC_REPO_REF}" \
@@ -250,6 +258,22 @@ for path in home.rglob("*"):
         allowed.append(f"{relative} ({path.stat().st_size} B)")
         continue
     payload.append(str(path))
+# And no NVIDIA Omniverse 3D assets/textures. This is a SEPARATE licence question from the
+# Kit SDK and from model weights, and it is the one that kept sonic restricted after the
+# wheels were dealt with: the RoboCasa asset library under decoupled_wbc/dexmg shipped
+# .../models/assets/objects/omniverse/*.{obj,mtl,png}. Asserted here so the build proves
+# it, rather than leaving it to a scan someone might forget to run.
+omniverse_assets = sorted(
+    str(path.relative_to(home))
+    for path in home.rglob("*")
+    if path.is_file() and "omniverse" in str(path.relative_to(home)).lower()
+)
+if omniverse_assets:
+    raise SystemExit(
+        "FATAL: NVIDIA Omniverse assets baked into the image "
+        f"({len(omniverse_assets)} path(s)): {omniverse_assets[:8]}"
+    )
+
 if pointers:
     print(f"NPA_SONIC_LFS_POINTERS_ONLY {len(pointers)} unresolved weight pointer(s), e.g. {pointers[:3]}")
 if allowed:
@@ -280,7 +304,7 @@ if os.environ.get("REQUIRE_TORCH_SM120") == "1":
                 f"kernels; RTX PRO 6000 Blackwell needs CUDA >= 12.8"
             )
         print(f"NPA_SONIC_TORCH_CUDA_SUPPORTS_SM120_OK cuda={cuda_version}")
-print("NPA_SONIC_BUILD_IMPORTS_OK no baked Isaac, no baked weights")
+print("NPA_SONIC_BUILD_IMPORTS_OK no baked Isaac, no baked weights, no Omniverse assets")
 PY
 
 # The C++ deploy stack is included for VM/container deployment paths, but TensorRT and
