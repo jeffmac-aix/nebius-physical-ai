@@ -29,8 +29,8 @@ import subprocess
 import sys
 from dataclasses import dataclass
 
+from npa.deploy import images
 from npa.deploy.images import (
-    OMNIVERSE_RESTRICTED_TOOLS,
     container_image_for_tool,
     is_publicly_redistributable,
     omniverse_restricted_image_names,
@@ -64,7 +64,12 @@ def build_publish_plan(
 
     plan: list[PublishItem] = []
     for tool in publicly_publishable_tools():
-        if not is_publicly_redistributable(tool) or tool in OMNIVERSE_RESTRICTED_TOOLS:
+        # Read the restricted set through the module, never a from-import: a
+        # defence-in-depth check that holds a stale copy of the thing it is defending is
+        # worse than no check at all. (`from ... import OMNIVERSE_RESTRICTED_TOOLS` binds
+        # the value at import time, so this guard and publicly_publishable_tools() could
+        # disagree - which is exactly what a test caught once the set stopped being empty.)
+        if not is_publicly_redistributable(tool) or tool in images.OMNIVERSE_RESTRICTED_TOOLS:
             raise ValueError(
                 f"refusing to publish restricted (Omniverse Kit) tool {tool!r} to a public registry"
             )

@@ -119,13 +119,21 @@ def test_publish_plan_now_includes_isaac_lab_and_groot() -> None:
 
 
 def test_publish_plan_still_refuses_a_restricted_image(monkeypatch) -> None:
-    """The hard refusal inside build_publish_plan is defence in depth around the
-    selector, so it must keep working even though the selector currently excludes
-    nothing. Monkeypatched so the refusal has something to refuse."""
+    """The hard refusal inside build_publish_plan is defence in depth around the selector.
+
+    Monkeypatching the set is also what pins that the refusal reads it through the module
+    rather than through a from-import: a stale binding made this guard disagree with
+    publicly_publishable_tools(), so a tool the selector considered publishable tripped the
+    refusal and the whole plan raised. A defence-in-depth check holding a stale copy of the
+    thing it defends is worse than no check.
+    """
     monkeypatch.setattr(images, "OMNIVERSE_RESTRICTED_TOOLS", frozenset({"genesis"}))
     plan = build_publish_plan(target_registry="ghcr.io/example/workbench")
     names = {item.source_ref.rsplit("/", 1)[-1].split(":", 1)[0] for item in plan}
     assert "npa-genesis" not in names
+    # sonic is publishable under this monkeypatched set, so the plan must contain it -
+    # proving the refusal followed the patched set instead of a captured one.
+    assert "npa-sonic" in names
 
 
 def test_publish_plan_requires_a_target() -> None:
