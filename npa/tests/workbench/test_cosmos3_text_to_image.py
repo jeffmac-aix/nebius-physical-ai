@@ -259,6 +259,8 @@ def test_generate_uses_the_field_the_fetch_result_actually_has(tmp_path: Path, m
             produced.write_bytes(_png(320, 240))
 
     monkeypatch.setattr(t2i, "_run", fake_run)
+    # uv resolution is covered separately; this test is about the fetch-result plumbing.
+    monkeypatch.setattr(t2i, "uv_argv", lambda: ["uv"])
     monkeypatch.setenv("NPA_TEST_OUTPUT_DIR", str(tmp_path / "out"))
 
     result = t2i.generate(
