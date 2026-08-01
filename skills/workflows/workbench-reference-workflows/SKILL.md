@@ -43,7 +43,6 @@ templates retire.
 - `sim-to-real-trigger.yaml`: trigger wrapper for sim-to-real work.
 - `sonic-train-standalone.yaml`: standalone SONIC training.
 - `sonic-locomotion-finetuning.yaml`: retargeting, SONIC, and MJLab flow.
-- `tokenfactory-rollout-judge.yaml`: Token Factory rollout judging.
 - `tokenfactory-scene-to-rollout-judge.yaml`: scene-to-rollout judging.
 
 ## Retired Templates
@@ -65,6 +64,9 @@ These raw templates were retired once their `npa.workflow` spec had a live run
 - `vlm-eval.yaml`, `vlm-eval-benchmark.yaml` — self-hosted VLM scoring and the labeled
   sweep. The renderer now starts and health-checks the vLLM server the spec asks for, so
   no prebuilt serving image is needed.
+- `tokenfactory-rollout-judge.yaml` — GPU rollout then a hosted VLM judge. Its twin is
+  `npa-workflows/tokenfactory-rollout-judge-combo.yaml`; note the older same-named spec is a
+  *different* workflow (a Cosmos reasoner feeding a judge over externally-seeded rollouts).
 - `tokenfactory-train-triage.yaml` — GPU LeRobot training then a hosted triage report. Its twin
   `npa-workflows/tokenfactory-train-triage.yaml` trains in the stage's own pod (the renderer
   switches to the vendor image's interpreter) and triages with

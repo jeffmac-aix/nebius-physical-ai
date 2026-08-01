@@ -42,13 +42,6 @@ REMAINING: dict[str, str] = {
     "dataset-ingest-curate.yaml": "twin exists but has no live-matrix coverage yet",
     "isaac-franka-capture-reason.yaml": "no twin",
     "sim2real-actions.yaml": "no twin",
-    "tokenfactory-rollout-judge.yaml": (
-        "the same-named spec is NOT an equivalent twin: the template's first stage is a "
-        "LeRobot eval rollout on a GPU that PRODUCES the rollouts its judge stage scores, "
-        "while the spec's first stage is an unrelated Cosmos scene reasoner and its judge "
-        "reads rollouts seeded from outside. Retiring needs a spec whose producer stage "
-        "feeds the judge (workbench.lerobot.eval -> workbench.vlm_eval.run)"
-    ),
     "tokenfactory-scene-to-rollout-judge.yaml": (
         "shares the tokenfactory-rollout-judge blocker: its GPU stage is a LeRobot eval "
         "rollout run INSIDE the vendor image (`source /opt/lerobot/venv/bin/activate`) that "
@@ -114,6 +107,12 @@ REMAINING: dict[str, str] = {
     #   train-gpu SUCCEEDED on npa-lerobot:0.6.0-k8s-runtime (real 206 MB checkpoint), then the
     #   CPU triage stage wrote a report from that run's artifacts. Six live iterations, five
     #   engine gaps and one broken vendor image on the way. See EVIDENCE.md \u00a7R32-R33.
+    #
+    # tokenfactory-rollout-judge.yaml  job 261
+    #   npa-wf-multi-tokenfactory-rollout-judge-combo-d4798e41. Twin is the NEW
+    #   tokenfactory-rollout-judge-combo.yaml, not the older same-named spec, which is a
+    #   different workflow (EVIDENCE.md \u00a7R23). Two real MP4 episodes rendered on GPU, then
+    #   scored from CPU by the hosted backend. See EVIDENCE.md \u00a7R34.
     #
     # Phase 2c: RELOCATED (not deleted) to npa/src/npa/workflows/byof/profiles/ —
     # they are BYOF resource profiles reached through byof.yaml's toolRef, not
