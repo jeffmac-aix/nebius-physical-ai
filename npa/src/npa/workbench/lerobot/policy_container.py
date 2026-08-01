@@ -540,7 +540,8 @@ def run_lerobot_eval(
     if proc.returncode != 0 or not eval_info_path.exists():
         raise PolicyContainerError(
             f"lerobot-eval failed or did not produce eval_info.json "
-            f"(exit={proc.returncode}, eval_info={eval_info_path}, log={log})"
+            f"(exit={proc.returncode}, eval_info={eval_info_path}, log={log})\n"
+            f"{_tail_training_log(log)}"
         )
     metrics = json.loads(eval_info_path.read_text(encoding="utf-8"))
     overall = metrics.get("overall", {}) if isinstance(metrics, dict) else {}
