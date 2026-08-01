@@ -285,6 +285,16 @@ def seed_live_workflow_inputs(
 
     # VLM-eval GPU twins score a rollout: seed a short RGB frame sequence under
     # the rollouts prefix so the self-hosted VLM has real frames to evaluate.
+    if spec_name == "tokenfactory-scene-to-rollout-judge.yaml":
+        # Three stages, three inputs: a scene for the reasoner and a processor-format policy for
+        # the rollout. The judge's input is produced by the rollout, which is the point.
+        _seed_scene_frame(client, bucket=bucket, marker=marker)
+        src = os.environ.get("NPA_E2E_LEROBOT_POLICY_SRC", "").strip()
+        if not src:
+            pytest.skip("NPA_E2E_LEROBOT_POLICY_SRC not set; see tokenfactory-rollout-judge-combo")
+        _seed_prefix_from_source(src, bucket, f"{marker}/policy/", client)
+        return
+
     if spec_name == "tokenfactory-rollout-judge-combo.yaml":
         # The rollout stage needs a policy in LeRobot's PROCESSOR format. The obvious public
         # choice, `lerobot/diffusion_pusht`, predates it and fails with ProcessorMigrationError

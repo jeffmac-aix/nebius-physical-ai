@@ -178,6 +178,24 @@ SUBMIT_LIVE_MATRIX: tuple[SubmitLiveCase, ...] = (
         notes="Insights ingest + dashboard over one run prefix. CPU-only.",
     ),
     SubmitLiveCase(
+        "tokenfactory-scene-to-rollout-judge.yaml",
+        "multi",
+        secret_envs=(
+            "NEBIUS_TOKEN_FACTORY_KEY",
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+            "HF_TOKEN",
+        ),
+        requires_token_factory=True,
+        image_tool="lerobot",
+        notes=(
+            "Three stages, one chain: a hosted reasoner plans from a seeded scene, a GPU rolls "
+            "out a policy, and a hosted VLM judges that rollout AGAINST THAT PLAN "
+            "(`--task-from` reads the reasoner's artifact). Only the middle stage holds a GPU. "
+            "Same LeRobot image requirement as the rollout-judge combo."
+        ),
+    ),
+    SubmitLiveCase(
         "tokenfactory-rollout-judge-combo.yaml",
         "multi",
         secret_envs=(
