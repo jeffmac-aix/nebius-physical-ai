@@ -282,6 +282,36 @@ TOOL_CATALOG: dict[str, ToolEntry] = {
             "{{config.augmented_frames_uri}}",
         ],
     ),
+    "workbench.sim2real_envgen.actions": ToolEntry(
+        name="workbench.sim2real_envgen.actions",
+        description="Condition the train slice on a policy image's action space.",
+        argv_template=[
+            "python3",
+            "-m",
+            "npa.workflows.sim2real_envgen",
+            "actions",
+            "--run-id",
+            "{{run.id}}",
+            "--output-uri",
+            "{{config.envgen_root_uri}}",
+            "--env-count",
+            "{{config.env_count}}",
+            "--seed",
+            "{{config.envgen_seed}}",
+            "--limit",
+            "{{config.action_limit}}",
+            # Recorded as provenance in actions-summary.json and salted into each env's seed;
+            # the shipped generator does not run the image (see the spec's note).
+            "--policy-image",
+            "{{config.policy_image}}",
+            # The split stage's own output, so actions conditions the same train slice rather
+            # than recomputing a split of its own.
+            "--train-envs-uri",
+            "{{config.train_envs_uri}}",
+            "--actions-uri",
+            "{{config.actions_uri}}",
+        ],
+    ),
     "workbench.sim2real_envgen.split": ToolEntry(
         name="workbench.sim2real_envgen.split",
         description="Split the generated env catalog into disjoint train and held-out sets.",

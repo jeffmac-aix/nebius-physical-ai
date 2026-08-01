@@ -16,13 +16,21 @@ kind: Workflow
 #
 # CPU on purpose: env-shard generation writes a catalog of environment descriptors, it does
 # not render. The template asked for RTXPRO6000:1, which the work never used.
+#
+# The spec also absorbs skypilot/sim2real-actions.yaml as a fourth stage. That template took
+# NPA_TRAIN_ENVS_URI from the operator, which is exactly the slice `split` had just written —
+# the two templates were halves of one pipeline that the raw surface could not join.
 
 metadata:
   name: sim2real-envgen-shards
   description: >
     Sim2Real raw environment generation sharded across concurrent workers, then an
     80/20 train/held-out split over the combined catalog.
-  skypilotTwin: npa/src/npa/workflows/skypilot/sim2real-envgen-split.yaml
+  # Two templates, one spec: the split template produced the train slice and the actions
+  # template consumed it, but nothing in the raw surface connected them.
+  skypilotTwins:
+    - npa/src/npa/workflows/skypilot/sim2real-envgen-split.yaml
+    - npa/src/npa/workflows/skypilot/sim2real-actions.yaml
 
 config:
   bucket: example-bucket
@@ -35,6 +43,14 @@ config:
   # Optional Cosmos-augmented frame set to condition generation on; empty means none.
   augmented_frames_uri: ""
 
+  # Action conditioning. `policy_image` is provenance, not a launch target: the shipped
+  # `sim2real_envgen actions` generator writes reference actions on CPU and records the image
+  # (and salts each env's seed with it). The retired sim2real-actions.yaml pinned
+  # `image_id: docker:${POLICY_IMAGE}` and an RTXPRO6000, both of which the implementation never
+  # used — swapping in a real policy container is a resource-profile change here, not a rewrite.
+  action_limit: "32"
+  policy_image: "npa-reference-policy:local"
+
   # Overridden per shard by the `params:` block of each parallel member.
   shard_index: "0"
 
@@ -43,6 +59,9 @@ config:
   envgen_root_uri: "s3://{{config.bucket}}/{{config.prefix}}/"
   raw_envs_uri: "s3://{{config.bucket}}/{{config.prefix}}/envs/raw/"
   manifest_uri: "s3://{{config.bucket}}/{{config.prefix}}/envs/manifest/"
+  # What `split` uploads, and what `actions` conditions.
+  train_envs_uri: "s3://{{config.bucket}}/{{config.prefix}}/envs/train/envs.jsonl"
+  actions_uri: "s3://{{config.bucket}}/{{config.prefix}}/actions/train/"
 
 resources:
   cpu:
@@ -89,4 +108,17 @@ states:
     outputs:
       - uri: "{{config.manifest_uri}}split-manifest.json"
         schema: npa.sim2real.split_manifest.v1
+    next: actions
+
+  actions:
+    description: Condition the train slice on the policy image's action space.
+    needs: [split]
+    resources: cpu
+    toolRef: workbench.sim2real_envgen.actions
+    inputs:
+      - uri: "{{config.train_envs_uri}}"
+        schema: npa.sim2real.env_catalog.v1
+    outputs:
+      - uri: "{{config.actions_uri}}actions-summary.json"
+        schema: npa.sim2real.actions_summary.v1
     terminal: true
