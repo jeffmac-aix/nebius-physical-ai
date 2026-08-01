@@ -136,6 +136,12 @@ def test_vendor_interpreter_resolves_by_prefix() -> None:
         "/opt/lerobot/venv/bin/python",
     )
     assert tool_vendor_interpreters("workbench.mjlab.eval") == ()
+    # Live job 267: npa went into /usr/bin/python3 and the capture stage died with
+    # `No module named 'isaaclab'` — the simulator lives in the Omniverse kit environment.
+    assert tool_vendor_interpreters("workbench.isaac_lab.capture_frames") == (
+        "/isaac-sim/python.sh",
+        "/isaac-sim/kit/python/bin/python3",
+    )
 
 
 def test_vendor_setup_installs_npa_there_and_records_it() -> None:

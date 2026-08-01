@@ -93,6 +93,15 @@ PYTHON_MODULE_PROBE = "python:"
 #: so the tool and the vendor library share one environment.
 TOOL_REF_VENDOR_INTERPRETERS: dict[str, tuple[str, ...]] = {
     "workbench.lerobot": ("/opt/lerobot/venv/bin/python",),
+    # Isaac Lab's simulator packages live in the Omniverse kit environment, not in the image's
+    # system python. Live job 267 installed npa into /usr/bin/python3 and the stage died with
+    # `isaaclab is required in the Isaac Lab image: No module named 'isaaclab'`. python.sh is
+    # the vendor's own launcher (it sets the kit's library paths); the kit interpreter is the
+    # fallback for images that do not ship it.
+    "workbench.isaac_lab": (
+        "/isaac-sim/python.sh",
+        "/isaac-sim/kit/python/bin/python3",
+    ),
 }
 
 
