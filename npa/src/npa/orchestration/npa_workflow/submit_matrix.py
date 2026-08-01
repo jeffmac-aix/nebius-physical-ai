@@ -178,6 +178,16 @@ SUBMIT_LIVE_MATRIX: tuple[SubmitLiveCase, ...] = (
         notes="Insights ingest + dashboard over one run prefix. CPU-only.",
     ),
     SubmitLiveCase(
+        "cosmos3-text-to-image.yaml",
+        "gpu",
+        secret_envs=("HF_TOKEN", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"),
+        notes=(
+            "Clones the Cosmos framework, syncs its uv environment, downloads Cosmos3-Nano and "
+            "generates an image. Runs on SkyPilot's default GPU image: the capability is npa "
+            "code now, not a bash block, so it needs no vendor image."
+        ),
+    ),
+    SubmitLiveCase(
         "cosmos2-transfer.yaml",
         "gpu",
         secret_envs=("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "HF_TOKEN"),

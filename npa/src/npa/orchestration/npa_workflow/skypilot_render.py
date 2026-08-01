@@ -80,6 +80,12 @@ TOOL_REF_PIP_REQUIREMENTS: dict[str, tuple[tuple[str, str], ...]] = {
     "workbench.lerobot.policy_rollout": (
         ("python:huggingface_hub", "huggingface_hub>=0.23,<1.0"),
     ),
+    # Text-to-image clones the framework and hands its environment to uv, exactly as the
+    # retired template did; the checkpoint download still goes through the HF CLI.
+    "workbench.cosmos3.text_to_image": (
+        ("huggingface-cli", "huggingface_hub[cli]>=0.23,<1.0"),
+        ("uv", "uv>=0.5"),
+    ),
 }
 
 #: Prefix marking a probe as "is this python module importable?" rather than an executable.
