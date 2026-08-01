@@ -349,3 +349,80 @@ def test_scanner_flags_omniverse_asset_paths() -> None:
         "omniverse/locomanip/cardbox_c1/textures/T_Cardbox_C2_Albedo.png",
     ):
         assert scanner.classify_path(path), path
+
+
+# --------------------------------------------------------------------------------------
+# history-only mode (the fast pre-publish gate)
+# --------------------------------------------------------------------------------------
+
+
+def _fake_registry(monkeypatch, *, history: list[str], entries: list[str]) -> dict[str, int]:
+    """Stub the two registry readers and count which ones actually get called."""
+    calls = {"history": 0, "export": 0}
+
+    def fake_history(image: str):
+        calls["history"] += 1
+        return history, "sha256:" + "0" * 64
+
+    def fake_export(image: str):
+        calls["export"] += 1
+        yield from entries
+
+    monkeypatch.setattr(scanner, "_image_history", fake_history)
+    monkeypatch.setattr(scanner, "_iter_crane_export", fake_export)
+    return calls
+
+
+def test_history_only_does_not_stream_the_filesystem(monkeypatch) -> None:
+    """The whole point: it must read the config blob and NOT the ~69 GB of layers."""
+    calls = _fake_registry(monkeypatch, history=["ENV FOO=1"], entries=["opt/x"])
+
+    report = scanner.scan("reg/npa-isaac-lab:t", None, history_only=True)
+
+    assert calls["history"] == 1
+    assert calls["export"] == 0, "history-only must not stream the image filesystem"
+    assert report.entries_scanned == 0
+    assert report.history_only is True
+    assert report.clean
+
+
+def test_history_only_still_catches_a_baked_install(monkeypatch) -> None:
+    """A gate that cannot fail is not a gate. This is the case it exists for."""
+    _fake_registry(
+        monkeypatch,
+        history=['RUN /bin/bash -lc pip install --no-deps "isaaclab==2.3.2.post1"'],
+        entries=[],
+    )
+
+    report = scanner.scan("reg/npa-isaac-lab:t", None, history_only=True)
+
+    assert not report.clean
+    assert report.history_hits
+
+
+def test_history_only_is_recorded_in_the_report(monkeypatch) -> None:
+    """A history-only 'clean' is a weaker claim than a full-scan 'clean'.
+
+    It says the build ran no Isaac install, not that the image ships no Isaac bytes -- a
+    COPY from a vendor stage would pass it. The flag has to survive into the JSON so a
+    consumer cannot quietly cite a gate result as the redistribution proof.
+    """
+    _fake_registry(monkeypatch, history=[], entries=[])
+
+    gated = scanner.scan("reg/i:t", None, history_only=True).to_dict()
+    full = scanner.scan("reg/i:t", None).to_dict()
+
+    assert gated["history_only"] is True
+    assert full["history_only"] is False
+    assert gated["verdict"] == full["verdict"] == "clean"
+
+
+def test_full_scan_remains_the_default(monkeypatch) -> None:
+    """Nobody should get the weaker check by accident."""
+    calls = _fake_registry(monkeypatch, history=[], entries=["opt/x", "opt/y"])
+
+    report = scanner.scan("reg/i:t", None)
+
+    assert calls["export"] == 1
+    assert report.entries_scanned == 2
+    assert report.history_only is False
