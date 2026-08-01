@@ -5,9 +5,15 @@ exposure" of the workbench means mirroring the publicly-redistributable image
 subset to a public-capable registry (e.g. GHCR ``ghcr.io/<org>/<repo>``).
 
 This tool is license-guarded: it only ever copies tools reported by
-``images.publicly_publishable_tools()`` and hard-refuses the Omniverse-Kit
-images (``isaac-lab``, ``sonic``, ``groot`` / ``sonic-mujoco``), which are
-NVIDIA-proprietary and must not be redistributed to third parties.
+``images.publicly_publishable_tools()`` and hard-refuses anything in
+``images.OMNIVERSE_RESTRICTED_TOOLS`` as defence in depth around that selector.
+
+That set is currently empty. It used to hold ``isaac-lab``, ``sonic`` and ``groot``
+(plus the derived ``sonic-mujoco``), which baked NVIDIA Omniverse Kit; those images
+were re-architected to fetch Isaac Sim / Isaac Lab at first run under the operator's
+own EULA acceptance, so all 19 workbench images are now publishable. The refusal is
+kept, and tested against a synthetic restricted tool, for the next runtime we cannot
+ship.
 
 Example (dry run first, then execute):
 
@@ -95,9 +101,22 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("no target registry; pass --target or set NPA_PUBLIC_REGISTRY")
 
     plan = build_publish_plan(target_registry=args.target, source_registry=args.source_registry)
-    restricted = ", ".join(omniverse_restricted_image_names())
+    restricted = omniverse_restricted_image_names()
     print(f"Publishing {len(plan)} OSS image(s) to {args.target.rstrip('/')}")
-    print(f"Excluded (NVIDIA Omniverse Kit, not for public registries): {restricted}")
+    if restricted:
+        print(
+            "Excluded (bakes a runtime we may not redistribute): "
+            + ", ".join(restricted)
+        )
+    else:
+        # Don't print a dangling "Excluded: " with nothing after it, and say why the
+        # list is empty — an operator reading this needs to know that the Isaac images
+        # being absent from the exclusion list is intended, not an oversight.
+        print(
+            "Excluded: none — every workbench image is publicly redistributable. The "
+            "Isaac images fetch Isaac Sim / Isaac Lab at first run under the operator's "
+            "own EULA acceptance rather than baking it."
+        )
     for item in plan:
         print(f"  {item.source_ref}  ->  {item.target_ref}")
     if args.dry_run:
