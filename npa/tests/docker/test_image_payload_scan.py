@@ -238,7 +238,7 @@ def test_sonic_build_checks_weights_by_content_not_extension() -> None:
         "the weight check must recognise git-LFS pointers by their magic string"
     )
     assert "NPA_SONIC_LFS_POINTERS_ONLY" in dockerfile
-    assert "real model weights baked into the image (not LFS pointers)" in dockerfile
+    assert "real model weights baked into the image (not LFS pointers, not an " in dockerfile
     # And smudging must be disabled, which is what actually keeps the tensors out.
     assert "GIT_LFS_SKIP_SMUDGE=1" in dockerfile, (
         "`git lfs install --system` makes a plain `git checkout` download every tracked "
