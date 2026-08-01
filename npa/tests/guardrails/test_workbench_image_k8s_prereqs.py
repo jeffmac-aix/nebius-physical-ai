@@ -113,6 +113,15 @@ def test_derived_prereq_dockerfile_matches_the_shipped_one(tool: str) -> None:
             f"{tool} derives from an Isaac base, where /isaac-sim is mode 750 "
             "isaac-sim:isaac-sim, so the runtime user must join that group"
         )
+        # Scheduling is not enough: Kit also has to be able to WRITE. Without these three
+        # directories Isaac boots, fails to save its user config, and then renders nothing
+        # while burning CPU — live job 271 stalled for 45 minutes that way, which is far
+        # harder to diagnose than a pod that never starts.
+        for kit_dir in ("/isaac-sim/kit/data", "/isaac-sim/kit/logs", "/isaac-sim/kit/cache"):
+            assert kit_dir in text, (
+                f"{tool}: {kit_dir} must exist and belong to the runtime user, or Kit stalls"
+            )
+        assert "chown -R ubuntu:ubuntu /isaac-sim/kit/data" in text
 
 
 def test_in_cluster_build_script_is_executable_and_generic() -> None:

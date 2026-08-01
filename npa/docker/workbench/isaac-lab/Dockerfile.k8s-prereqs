@@ -15,9 +15,10 @@
 # by the `ubuntu` user the image runs as. Without this, provisioning fails with
 # "Failed to get ssh user for pod ...: container not found (ray-node)".
 #
-# All four ingredients are required (verified by bisecting derived images live):
+# Four ingredients are required to SCHEDULE (verified by bisecting derived images live):
 # system python3, /isaac-sim group access, passwordless sudo for the runtime user, and
-# the system interpreter first on PATH. Group membership avoids rewriting multi-GB
+# the system interpreter first on PATH. A fifth is required to RENDER: writable Kit
+# data/cache/log directories (see below, live job 271). Group membership avoids rewriting multi-GB
 # layers; the image stays non-root. Training still runs through ISAAC_LAB_PYTHON.
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
@@ -32,6 +33,25 @@ RUN apt-get update \
     && printf 'ubuntu ALL=(ALL) NOPASSWD:ALL\n' > /etc/sudoers.d/99-npa-runtime-user \
     && chmod 0440 /etc/sudoers.d/99-npa-runtime-user \
     && python3 --version
+
+# Kit needs writable data/cache/log directories, and the runtime user does not have them.
+#
+# /isaac-sim is mode 750 isaac-sim:isaac-sim, `kit/data` and `kit/logs` do not exist, and
+# `kit/cache` is root-owned 0755 — so as `ubuntu` the app cannot create or write any of them.
+# Isaac still BOOTS: it logs
+#     [Error] [omni.kit.app.plugin] failed to open file
+#         '/isaac-sim/kit/data/Kit/Isaac-Sim/5.1/user.config.json' - unable to save the dictionary
+#     [Error] [omni.kvdb.plugin] Unexpected key-value database error
+#     [Warning] [omni.kit.material.library.material_library] get_mdl_list_async: mdl_list_cache
+#         is not complete
+# and then never renders a frame. Live job 271 sat at 170% CPU for 45 minutes past
+# "Completed setting up the environment" with an empty output directory, which reads like a slow
+# simulation and is actually a stalled one.
+#
+# Three empty directories, so the layer is tiny. Nothing else about the image changes: it stays
+# non-root, and this does not touch the multi-GB payload under /isaac-sim.
+RUN mkdir -p /isaac-sim/kit/data /isaac-sim/kit/logs /isaac-sim/kit/cache \
+    && chown -R ubuntu:ubuntu /isaac-sim/kit/data /isaac-sim/kit/logs /isaac-sim/kit/cache
 
 # SkyPilot's bootstrap must find the SYSTEM interpreter, not Isaac's kit python (which
 # the base image puts earlier on PATH and which cannot import its own site-packages
