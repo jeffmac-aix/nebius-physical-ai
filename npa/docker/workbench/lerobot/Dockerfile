@@ -140,6 +140,13 @@ RUN apt-get update \
 # Only these three packages: this image purges linux-libc-dev as CVE hardening, so pulling
 # anything that depends on libc6-dev (python3-pip, openssh-client) breaks apt. The system
 # python3 the bootstrap needs is already present, so it is asserted rather than installed.
+# The base leaves apt in a BROKEN state on purpose: it purges `linux-libc-dev` with
+# `--force-depends` as CVE hardening, which strands `libc6-dev` depending on a package that is
+# gone. apt then refuses to install ANYTHING ("Unmet dependencies"), which is why even `rsync`
+# was blocked in-cluster. Dropping the stranded build-time `libc6-dev` restores consistency
+# WITHOUT reinstating the purged package, so the hardening survives; a runtime image does not
+# need C headers.
+RUN dpkg --remove --force-depends libc6-dev 2>/dev/null || true
 RUN apt-get update \
     && apt-get install -y --no-install-recommends rsync sudo netcat-openbsd \
     && rm -rf /var/lib/apt/lists/* \
