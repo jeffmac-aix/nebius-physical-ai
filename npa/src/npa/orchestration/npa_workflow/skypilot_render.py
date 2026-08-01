@@ -41,6 +41,10 @@ SECRET_ENV_HINTS: dict[str, tuple[str, ...]] = {
     "workbench.token_factory": ("NEBIUS_TOKEN_FACTORY_KEY",),
     "workbench.vlm_eval": (),
     "workbench.cosmos3": ("HF_TOKEN",),
+    # Cosmos-Transfer2.5 downloads its guardrail checkpoints from a gated Hugging Face repo
+    # before it will generate anything. Live job 286 got all the way into examples/inference.py
+    # and died on `hf download nvidia/Cosmos-Guardrail1` with no token.
+    "workbench.cosmos2": ("HF_TOKEN",),
     "workbench.sonic": ("HF_TOKEN", "NGC_API_KEY"),
     "workbench.groot": ("HF_TOKEN", "NGC_API_KEY"),
 }

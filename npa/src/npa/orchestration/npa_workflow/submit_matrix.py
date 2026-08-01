@@ -180,7 +180,7 @@ SUBMIT_LIVE_MATRIX: tuple[SubmitLiveCase, ...] = (
     SubmitLiveCase(
         "cosmos2-transfer.yaml",
         "gpu",
-        secret_envs=("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"),
+        secret_envs=("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "HF_TOKEN"),
         image_tool="cosmos2-transfer",
         notes=(
             "The REAL Cosmos-Transfer2.5 model, not a manifest: --execute makes a missing "
