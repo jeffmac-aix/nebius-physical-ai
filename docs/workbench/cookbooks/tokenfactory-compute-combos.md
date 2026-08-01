@@ -11,7 +11,7 @@ Token Factory working alongside Nebius compute, not just on its own.
 | **train-triage** | Serverless GPU Job (LeRobot train) | Text model writes a triage report from the run's artifacts | [`run_tokenfactory_train_triage.py`](../../../npa/scripts/run_tokenfactory_train_triage.py) |
 | **sim-sweep** | N serverless GPU Jobs (LeRobot train fan-out) | Text model designs the sweep, then ranks the runs | [`run_tokenfactory_sim_sweep.py`](../../../npa/scripts/run_tokenfactory_sim_sweep.py) |
 | **rollout-judge** | Managed Kubernetes GPU (LeRobot eval rollout) | Hosted VLM scores the rollout (`vlm-eval --backend api`) | [`tokenfactory-rollout-judge-combo.yaml`](../../../npa/workflows/workbench/npa-workflows/tokenfactory-rollout-judge-combo.yaml) |
-| **scene-to-rollout-judge** | Managed Kubernetes GPU (LeRobot eval rollout) | Reasoner extracts a plan, then a VLM judges the rollout against it | [`tokenfactory-scene-to-rollout-judge.yaml`](../../../npa/src/npa/workflows/skypilot/tokenfactory-scene-to-rollout-judge.yaml) |
+| **scene-to-rollout-judge** | Managed Kubernetes GPU (LeRobot eval rollout) | Reasoner extracts a plan, then a VLM judges the rollout against it | [`tokenfactory-scene-to-rollout-judge.yaml`](../../../npa/workflows/workbench/npa-workflows/tokenfactory-scene-to-rollout-judge.yaml) |
 
 All are intentionally **smoke-sized** so they are cheap to run end-to-end. New to
 composing these? Read
@@ -132,7 +132,7 @@ rollout accomplished the plan.
 npa skypilot bootstrap
 
 npa workbench workflow submit \
-  npa/src/npa/workflows/skypilot/tokenfactory-scene-to-rollout-judge.yaml \
+  npa/workflows/workbench/npa-workflows/tokenfactory-scene-to-rollout-judge.yaml \
   --run-id scene-judge \
   --var NPA_LEROBOT_IMAGE=cr.eu-north1.nebius.cloud/<registry>/npa-lerobot:0.5.1 \
   --var NPA_TOKEN_FACTORY_IMAGE=cr.eu-north1.nebius.cloud/<registry>/npa-cosmos:1.0.9 \

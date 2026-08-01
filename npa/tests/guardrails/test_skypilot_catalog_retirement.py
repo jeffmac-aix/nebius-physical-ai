@@ -42,12 +42,6 @@ REMAINING: dict[str, str] = {
     "dataset-ingest-curate.yaml": "twin exists but has no live-matrix coverage yet",
     "isaac-franka-capture-reason.yaml": "no twin",
     "sim2real-actions.yaml": "no twin",
-    "tokenfactory-scene-to-rollout-judge.yaml": (
-        "shares the tokenfactory-rollout-judge blocker: its GPU stage is a LeRobot eval "
-        "rollout run INSIDE the vendor image (`source /opt/lerobot/venv/bin/activate`) that "
-        "PRODUCES what the Token Factory stage consumes. A twin needs an in-image LeRobot "
-        "producer toolRef plus a policy/dataset fixture"
-    ),
     # --- twin exists but is NOT live-verified yet ---
     "sonic-locomotion-finetuning.yaml": (
         "twin's retarget stage passes live (job 205) but its train stage asks the in-pod "
@@ -113,6 +107,11 @@ REMAINING: dict[str, str] = {
     #   tokenfactory-rollout-judge-combo.yaml, not the older same-named spec, which is a
     #   different workflow (EVIDENCE.md \u00a7R23). Two real MP4 episodes rendered on GPU, then
     #   scored from CPU by the hosted backend. See EVIDENCE.md \u00a7R34.
+    #
+    # tokenfactory-scene-to-rollout-judge.yaml  job 262
+    #   npa-wf-multi-tokenfactory-scene-to-rollout-judge-c9b64b65, all three stages SUCCEEDED on
+    #   the first attempt, and the judge's task literally contained the reasoner's analysis.
+    #   See EVIDENCE.md \u00a7R35.
     #
     # Phase 2c: RELOCATED (not deleted) to npa/src/npa/workflows/byof/profiles/ —
     # they are BYOF resource profiles reached through byof.yaml's toolRef, not

@@ -18,7 +18,7 @@ Factory inference* (zero-GPU on the client side):
 4. **scene-to-rollout-judge (kubernetes).** A hosted reasoner extracts a plan
    from scene images, a Nebius **Managed Kubernetes GPU** rolls out a policy, and
    a hosted VLM judges the rollout against that plan. Workflow:
-   ``npa/src/npa/workflows/skypilot/tokenfactory-scene-to-rollout-judge.yaml``.
+   ``npa/workflows/workbench/npa-workflows/tokenfactory-scene-to-rollout-judge.yaml``.
 
 This module holds only pure logic (digesting artifacts, building prompts,
 deriving run IDs / job names / URIs / variant grids) so it is unit-testable

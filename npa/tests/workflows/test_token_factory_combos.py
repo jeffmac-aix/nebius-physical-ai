@@ -40,7 +40,7 @@ SWEEP_RUNNER = ROOT / "npa" / "scripts" / "run_tokenfactory_sim_sweep.py"
 # Combo workflows that still have a raw SkyPilot YAML form. train-triage is retired: its twin
 # `npa-workflows/tokenfactory-train-triage.yaml` was verified live (job 256, EVIDENCE.md §R32–R33),
 # and the shape assertions moved onto the spec below.
-COMBO_YAMLS = [SCENE_JUDGE_YAML]
+COMBO_YAMLS: list = []
 
 
 def _load_module(name: str, path: Path):
@@ -388,30 +388,47 @@ def test_sweep_runner_disambiguates_colliding_run_labels() -> None:
 # --- scene-to-rollout-judge SkyPilot YAML (reason -> k8s GPU -> VLM judge) -
 
 
-def test_scene_judge_is_three_stage_reason_gpu_judge() -> None:
-    docs = _docs(SCENE_JUDGE_YAML)
-    assert docs[0] == {"name": "tokenfactory-scene-to-rollout-judge", "execution": "serial"}
-    reason_stage, gpu_stage, judge_stage = docs[1], docs[2], docs[3]
+def test_scene_to_rollout_judge_spec_chains_reason_to_judge() -> None:
+    """The three-stage chain, on the spec that replaced the template.
 
-    # Stage 1: hosted reasoner, zero-GPU.
-    assert reason_stage["name"] == "scene-reason"
-    assert "accelerators" not in reason_stage["resources"]
-    assert "npa workbench token-factory reason" in reason_stage["run"]
-    assert reason_stage["envs"]["PLAN_URI"].startswith("s3://")
+    Live proof: job 262 (`npa-wf-multi-tokenfactory-scene-to-rollout-judge-c9b64b65`), all three
+    stages SUCCEEDED and the judge's task literally contained the reasoner's analysis.
+    See EVIDENCE.md §R35.
+    """
 
-    # Stage 2: genuine Nebius k8s GPU rollout.
-    assert gpu_stage["name"] == "rollout-gpu"
-    assert gpu_stage["resources"]["cloud"] == "kubernetes"
-    assert "accelerators" in gpu_stage["resources"]
-    assert "lerobot-eval" in gpu_stage["run"]
+    from npa.orchestration.npa_workflow.interpreter import build_plan
+    from npa.orchestration.npa_workflow.spec import load_spec
 
-    # Stage 3: hosted VLM judge that consumes the plan and the rollout.
-    assert judge_stage["name"] == "scene-judge"
-    assert "accelerators" not in judge_stage["resources"]
-    assert "npa workbench vlm-eval run" in judge_stage["run"]
-    assert "--backend api" in judge_stage["run"]
-    assert judge_stage["envs"]["PLAN_URI"] == reason_stage["envs"]["PLAN_URI"]
-    assert judge_stage["envs"]["ROLLOUTS_URI"] == gpu_stage["envs"]["ROLLOUTS_URI"]
+    spec = load_spec(
+        ROOT
+        / "npa"
+        / "workflows"
+        / "workbench"
+        / "npa-workflows"
+        / "tokenfactory-scene-to-rollout-judge.yaml"
+    )
+    plan = build_plan(spec, run_id="scene-judge-test")
+    steps = {step.state: step for step in plan.steps if step.argv}
+
+    assert sorted(steps) == ["rollout-gpu", "scene-judge", "scene-reason"]
+    # Only the middle stage holds a GPU.
+    assert "accelerators" not in spec.resources[steps["scene-reason"].resources]
+    assert "accelerators" in spec.resources[steps["rollout-gpu"].resources]
+    assert "accelerators" not in spec.resources[steps["scene-judge"].resources]
+
+    reason_argv = steps["scene-reason"].argv
+    rollout_argv = steps["rollout-gpu"].argv
+    judge_argv = steps["scene-judge"].argv
+    # The judge scores what the rollout rendered ...
+    rollouts = rollout_argv[rollout_argv.index("--rollouts-s3-uri") + 1]
+    assert judge_argv[judge_argv.index("--input-path") + 1] == rollouts
+    # ... against the plan the reasoner wrote. Without this link the third stage is decorative.
+    plan_uri = reason_argv[reason_argv.index("--output-path") + 1]
+    assert judge_argv[judge_argv.index("--task-from") + 1] == f"{plan_uri}scene_reasoning.json"
+
+
+def test_the_retired_scene_judge_template_is_gone() -> None:
+    assert not SCENE_JUDGE_YAML.exists(), "tokenfactory-scene-to-rollout-judge.yaml came back"
 
 
 def test_scene_judge_has_no_hardcoded_infra_ids() -> None:
