@@ -120,16 +120,24 @@ def _capture_frames(
     except ImportError as exc:
         raise SystemExit(f"isaaclab is required in the Isaac Lab image: {exc}") from exc
 
-    import gymnasium as gym
-    import isaaclab_tasks  # noqa: F401
     import torch
-    from isaaclab_tasks.utils import parse_env_cfg
 
     if not torch.cuda.is_available():
         raise SystemExit("CUDA GPU is required for Isaac Lab frame capture")
 
+    # AppLauncher FIRST, then the task packages. Isaac Lab's modules reach into the Omniverse
+    # kit runtime (`pxr`, the USD bindings) at import time, and that runtime does not exist
+    # until the app is launched. Importing `isaaclab_tasks` before this line fails with
+    # `ModuleNotFoundError: No module named 'pxr'` — live job 270, the first time this code had
+    # ever run, because the template that owned it required a repo mounted into the pod and so
+    # could not be exercised.
     launcher = AppLauncher(headless=True, enable_cameras=True)
     simulation_app = launcher.app
+
+    import gymnasium as gym
+    import isaaclab_tasks  # noqa: F401
+    from isaaclab_tasks.utils import parse_env_cfg
+
     device = "cuda:0"
     output_dir.mkdir(parents=True, exist_ok=True)
     render_steps = _heldout_render_step_indices(max_steps, max_frames=max_frames)
