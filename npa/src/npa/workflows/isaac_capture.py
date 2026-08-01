@@ -152,15 +152,17 @@ def look_at_quaternion(
     *,
     world_up: Sequence[float] = (0.0, 0.0, 1.0),
 ) -> tuple[float, float, float, float]:
-    """Return the `(w, x, y, z)` world-convention rotation that aims a camera at ``target``.
+    """Return the `(w, x, y, z)` rotation that aims a camera at ``target``, world convention.
 
-    Isaac's world convention has the camera looking down its own -Z with +Y up, so the basis is
-    built from that and converted to a quaternion. Pure arithmetic on purpose: it is the part of
-    the framing that can be checked without a simulator.
+    Isaac Lab's ``convention="world"`` is the REP-103 frame: the camera looks along its own **+X**
+    with **+Z** up (not the OpenGL -Z-forward frame). Getting that wrong does not fail, it just
+    photographs somewhere else — live job 281 aimed 90 degrees off and returned six pictures of
+    the ground plane receding to a horizon, which the reasoner described as "a tall building with
+    a grid-patterned facade".
+
+    Pure arithmetic on purpose: framing is the part of this stage that can be checked without a
+    simulator, and `test_isaac_capture.py` rotates the +X axis to prove it lands on the target.
     """
-
-    def _sub(a: Sequence[float], b: Sequence[float]) -> list[float]:
-        return [a[i] - b[i] for i in range(3)]
 
     def _cross(a: Sequence[float], b: Sequence[float]) -> list[float]:
         return [
@@ -175,18 +177,22 @@ def look_at_quaternion(
             raise ValueError("cannot normalise a zero-length vector")
         return [component / length for component in v]
 
-    backward = _norm(_sub(eye, target))  # camera +Z points away from the subject
-    right = _cross(world_up, backward)
-    if math.sqrt(sum(c * c for c in right)) < 1e-6:
-        # Looking straight along world up: any right vector will do, pick a stable one.
-        right = [1.0, 0.0, 0.0]
-    right = _norm(right)
-    up = _cross(backward, right)
+    forward = _norm([target[i] - eye[i] for i in range(3)])  # camera +X
+    # World up, projected off the view direction, is the camera's +Z.
+    dot_up = sum(world_up[i] * forward[i] for i in range(3))
+    up = [world_up[i] - dot_up * forward[i] for i in range(3)]
+    if math.sqrt(sum(c * c for c in up)) < 1e-6:
+        # Looking straight up or down: any perpendicular will do, pick a stable one.
+        up = [1.0, 0.0, 0.0]
+        dot_up = sum(up[i] * forward[i] for i in range(3))
+        up = [up[i] - dot_up * forward[i] for i in range(3)]
+    up = _norm(up)
+    left = _cross(up, forward)  # right-handed: +Y = +Z x +X
 
     m = [
-        [right[0], up[0], backward[0]],
-        [right[1], up[1], backward[1]],
-        [right[2], up[2], backward[2]],
+        [forward[0], left[0], up[0]],
+        [forward[1], left[1], up[1]],
+        [forward[2], left[2], up[2]],
     ]
     trace = m[0][0] + m[1][1] + m[2][2]
     if trace > 0.0:

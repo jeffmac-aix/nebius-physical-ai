@@ -99,8 +99,10 @@ def test_look_at_quaternion_actually_points_at_the_target() -> None:
     The template borrowed a camera pose tuned for a different scene, so the capture succeeded
     and the reasoner honestly reported "a tiled floor ... no visible objects". Framing is the
     one part of this stage that can be checked without a simulator, so it is checked here:
-    rotate the camera's own -Z axis by the returned quaternion and it must point from the eye
-    towards the target.
+    rotate the camera's own +X axis by the returned quaternion and it must point from the eye
+    towards the target. Job 281 then aimed 90 degrees off because the frame was assumed to be
+    OpenGL's -Z-forward instead of Isaac's world/REP-103 +X-forward, and returned six pictures
+    of the ground receding to a horizon.
     """
 
     import math
@@ -121,12 +123,13 @@ def test_look_at_quaternion_actually_points_at_the_target() -> None:
         (isaac_capture.DEFAULT_CAMERA_EYE, isaac_capture.DEFAULT_CAMERA_TARGET),
         ((2.0, 0.0, 0.5), (0.0, 0.0, 0.5)),
         ((0.0, -1.5, 1.5), (0.0, 0.0, 0.0)),
+        ((0.0, 0.0, 2.0), (0.0, 0.0, 0.0)),  # straight down: the degenerate up-vector case
     ):
         quat = isaac_capture.look_at_quaternion(eye, target)
         assert math.isclose(sum(c * c for c in quat), 1.0, rel_tol=1e-6), "not a unit quaternion"
 
-        # Isaac's world convention: the camera looks down its own -Z.
-        forward = rotate(quat, (0.0, 0.0, -1.0))
+        # Isaac Lab's world convention is REP-103: the camera looks along its own +X.
+        forward = rotate(quat, (1.0, 0.0, 0.0))
         wanted = [target[i] - eye[i] for i in range(3)]
         length = math.sqrt(sum(c * c for c in wanted))
         wanted = [c / length for c in wanted]
