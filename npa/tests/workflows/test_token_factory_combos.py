@@ -485,7 +485,11 @@ def test_sdk_exposes_workflow_submit_for_combo_yamls() -> None:
 
 
 def test_sdk_workflow_submit_delegates_to_orchestrator(mocker) -> None:
-    """npa.workflow.submit forwards a combo YAML to the SkyPilot orchestrator."""
+    """npa.workflow.submit forwards a combo YAML to the SkyPilot orchestrator.
+
+    Uses the scene-judge template, the last combo still in raw form; rollout-judge retired to
+    `npa-workflows/tokenfactory-rollout-judge-combo.yaml` (EVIDENCE.md §R34).
+    """
     import types
 
     from npa import workflow
@@ -496,7 +500,7 @@ def test_sdk_workflow_submit_delegates_to_orchestrator(mocker) -> None:
     )
 
     workflow.submit(
-        ROLLOUT_JUDGE_YAML,
+        SCENE_JUDGE_YAML,
         run_id="rj-test",
         secret_env=["NEBIUS_TOKEN_FACTORY_KEY", "AWS_ACCESS_KEY_ID"],
     )
