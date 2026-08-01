@@ -189,7 +189,12 @@ def generate(
         raise Cosmos3TextToImageError("a prompt is required")
 
     fetched = fetch_cosmos3_artifacts(config, force=True)
-    source_dir = Path(fetched.source_dir)
+    if not fetched.ok:
+        raise Cosmos3TextToImageError(
+            "fetching the Cosmos framework and checkpoint failed: "
+            + "; ".join(fetched.errors or ("no reason reported",))
+        )
+    source_dir = Path(fetched.source_checkout)
     if not source_dir.is_dir():
         raise Cosmos3TextToImageError(f"source checkout missing after fetch: {source_dir}")
 

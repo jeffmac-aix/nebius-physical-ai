@@ -192,3 +192,82 @@ def test_the_spec_declares_the_manifest_the_tool_writes() -> None:
     declared = spec["states"]["text-to-image"]["outputs"][0]["uri"]
 
     assert declared.endswith(t2i.MANIFEST_FILENAME)
+
+
+def test_generate_reports_a_failed_fetch_instead_of_a_confusing_attribute_error(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Live job 289 died with `'Cosmos3FetchResult' object has no attribute 'source_dir'`.
+
+    Two bugs in one line: the wrong field name, and no check of `ok` — so a fetch that failed
+    for a real reason (no token, no network, gated repo) would surface as an AttributeError
+    with the actual cause discarded.
+    """
+
+    from npa.workbench.cosmos import cosmos3 as cosmos3_module
+    from npa.workbench.cosmos.cosmos3 import Cosmos3AccessConfig, Cosmos3FetchResult
+
+    monkeypatch.setattr(
+        t2i,
+        "fetch_cosmos3_artifacts",
+        lambda *a, **k: Cosmos3FetchResult(
+            ok=False,
+            cache_dir="/tmp/c",
+            source_checkout="",
+            checkpoint_dir="",
+            checkpoint="",
+            reasoning_parser="qwen3",
+            tool_call_parser="hermes",
+            errors=("HF token missing",),
+        ),
+    )
+    assert cosmos3_module is not None
+
+    with pytest.raises(t2i.Cosmos3TextToImageError, match="HF token missing"):
+        t2i.generate(
+            Cosmos3AccessConfig.from_env(environ={}),
+            prompt="a robot",
+            output_dir=tmp_path / "out",
+        )
+
+
+def test_generate_uses_the_field_the_fetch_result_actually_has(tmp_path: Path, monkeypatch) -> None:
+    from npa.workbench.cosmos.cosmos3 import Cosmos3AccessConfig, Cosmos3FetchResult
+
+    source = tmp_path / "source"
+    source.mkdir()
+    monkeypatch.setattr(
+        t2i,
+        "fetch_cosmos3_artifacts",
+        lambda *a, **k: Cosmos3FetchResult(
+            ok=True,
+            cache_dir=str(tmp_path),
+            source_checkout=str(source),
+            checkpoint_dir=str(tmp_path / "ckpt"),
+            checkpoint="Cosmos3-Nano",
+            reasoning_parser="qwen3",
+            tool_call_parser="hermes",
+        ),
+    )
+    ran: list[list[str]] = []
+
+    def fake_run(argv, *, cwd, env, what):
+        ran.append(list(argv))
+        if "cosmos_framework.scripts.inference" in argv:
+            produced = Path(env["NPA_TEST_OUTPUT_DIR"]) / t2i.FRAMEWORK_OUTPUT_RELPATH
+            produced.parent.mkdir(parents=True, exist_ok=True)
+            produced.write_bytes(_png(320, 240))
+
+    monkeypatch.setattr(t2i, "_run", fake_run)
+    monkeypatch.setenv("NPA_TEST_OUTPUT_DIR", str(tmp_path / "out"))
+
+    result = t2i.generate(
+        Cosmos3AccessConfig.from_env(environ={}),
+        prompt="a robot",
+        output_dir=tmp_path / "out",
+    )
+
+    assert result.status == "ok"
+    assert (result.width, result.height) == (320, 240)
+    assert result.source_dir == str(source)
+    assert ran[0][:2] == ["uv", "sync"]
