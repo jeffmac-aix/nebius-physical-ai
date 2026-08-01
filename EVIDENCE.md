@@ -2572,3 +2572,54 @@ triage stage, `--task-from`, and the vendor-interpreter switch. One more gap sur
 porting the last test: `npa.workflow.submit` had no `image` parameter, so a spec pinning
 workbench images could not be submitted from Python against anything else — the CLI's `--image`
 now has an SDK equivalent.
+
+## R36. `sim2real-actions.yaml` retired (10 → 9) — two templates were halves of one pipeline
+
+The actions template took its train slice from an operator-supplied `NPA_TRAIN_ENVS_URI`. That
+URI is precisely what the split template had just written. Nothing in the raw surface connected
+them: joining the two was an operator's job, done by hand, with no record that it had happened.
+So the actions template is not a spec of its own — it is the fourth stage of
+`sim2real-envgen-shards.yaml`.
+
+### Live: `npa-wf-multi-sim2real-envgen-shards-d5c752f1` (runtime tier, 8m16s)
+
+Four stages: two shards concurrently, a split barrier, then action conditioning.
+
+```
+  42292  envs/raw/raw-shard-00-of-02.jsonl
+    378  envs/raw/raw-shard-00-summary.json
+  42287  envs/raw/raw-shard-01-of-02.jsonl
+    378  envs/raw/raw-shard-01-summary.json
+  67385  envs/train/envs.jsonl              <- split
+  17194  envs/heldout/envs.jsonl
+    642  envs/manifest/split-manifest.json
+  70621  actions/train/envs.jsonl           <- actions
+    487  actions/train/actions-summary.json
+```
+
+and the join is recorded in the artifact rather than asserted:
+
+```json
+{
+  "input_train_uri": "s3://…/sim2real-envgen-shards/envs/train/envs.jsonl",
+  "action_conditioned_count": 32,
+  "policy_image": "npa-reference-policy:local",
+  "schema": "npa.sim2real.actions_summary.v1"
+}
+```
+
+`input_train_uri` is the split stage's own output. The pipeline is now one submitted object, and
+the connection is checkable offline.
+
+### Another decorative GPU, and an honest note about the policy image
+
+The template pinned `accelerators: RTXPRO6000:1` and `image_id: docker:${POLICY_IMAGE}`. The
+shipped `sim2real_envgen actions` implementation uses neither: it reads the train slice, salts a
+per-env seed with the image name, and writes reference actions with `random.Random`. It never
+loads the image or touches a GPU. Third such finding (§R25 scenario-gen, §R27 envgen-split).
+
+Rather than quietly drop the image, the spec keeps `--policy-image` — it is real provenance in
+`actions-summary.json` and it changes the generated seeds — and states plainly where the swap
+point is: a resource-profile change on the spec, not a rewrite. A reader who wants a real policy
+container knows what to change; a reader who assumed the template already ran one now knows it
+did not.

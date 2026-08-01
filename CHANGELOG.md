@@ -7,7 +7,7 @@ a versioned heading when a release is cut.
 
 ## Unreleased
 
-### Retiring the raw SkyPilot task catalog (36 → 10 templates)
+### Retiring the raw SkyPilot task catalog (36 → 9 templates)
 
 `npa.workflow/v0.0.1` specs are becoming the only workflow authoring surface.
 SkyPilot remains the execution engine, and `npa workbench workflow submit` still
@@ -23,7 +23,7 @@ under `npa/src/npa/workflows/skypilot/`.
   `vlm-eval.yaml`, `vlm-eval-benchmark.yaml`, `sim-to-real-loop.yaml`,
   `scenario-gen-adversarial.yaml`, `sim2real-envgen-split.yaml`, `cosmos3-ea-fetch.yaml`,
   `tokenfactory-train-triage.yaml`, `tokenfactory-rollout-judge.yaml`,
-  `tokenfactory-scene-to-rollout-judge.yaml`.
+  `tokenfactory-scene-to-rollout-judge.yaml`, `sim2real-actions.yaml`.
   `test_skypilot_catalog_retirement.py` pins the remaining set, so the tally is
   machine-checked and a new raw template needs a deliberate edit.
 - **Multi-node stages.** A resource profile can declare `num_nodes`, so a spec can ask
