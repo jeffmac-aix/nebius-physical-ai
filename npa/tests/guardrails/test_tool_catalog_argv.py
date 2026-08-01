@@ -51,6 +51,7 @@ NON_CLI_ARGV = frozenset(
         "workbench.sim2real_envgen.raw_shard",
         "workbench.sim2real_envgen.split",
         "workbench.sim2real_envgen.actions",
+        "workbench.isaac_lab.capture_frames",
     }
 )
 
@@ -66,6 +67,7 @@ AUDITED_ELSEWHERE = frozenset(
         "workbench.sim2real_envgen.raw_shard",
         "workbench.sim2real_envgen.split",
         "workbench.sim2real_envgen.actions",
+        "workbench.isaac_lab.capture_frames",
         "workbench.lerobot.policy_rollout",
         "workbench.lerobot.policy_train",
         "workbench.token_factory.triage",

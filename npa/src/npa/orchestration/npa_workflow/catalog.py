@@ -282,6 +282,23 @@ TOOL_CATALOG: dict[str, ToolEntry] = {
             "{{config.augmented_frames_uri}}",
         ],
     ),
+    "workbench.isaac_lab.capture_frames": ToolEntry(
+        name="workbench.isaac_lab.capture_frames",
+        description="Capture RGB frames from a headless Isaac Lab task and publish them.",
+        argv_template=[
+            "python3",
+            "-m",
+            "npa.workflows.isaac_capture",
+            "--task",
+            "{{config.isaac_task}}",
+            "--output-path",
+            "{{config.scene_uri}}",
+            "--max-steps",
+            "{{config.capture_max_steps}}",
+            "--max-frames",
+            "{{config.capture_max_frames}}",
+        ],
+    ),
     "workbench.sim2real_envgen.actions": ToolEntry(
         name="workbench.sim2real_envgen.actions",
         description="Condition the train slice on a policy image's action space.",
