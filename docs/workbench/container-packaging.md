@@ -221,6 +221,46 @@ pointing the resolver at the public mirror:
 export NPA_REGISTRY=ghcr.io/nebius/nebius-physical-ai   # OSS images, any tenant
 ```
 
+### Pushing is not publishing
+
+A newly created GHCR container package is **private**, and a package linked to a repository
+inherits that repository's access *permissions* but **not** its visibility — so even a
+public repo yields private packages. GitHub exposes **no REST API** to change visibility for
+organisation-owned packages (only user-owned ones), so this step cannot be automated. It is
+manual, per package, and one-way.
+
+The publish workflow therefore verifies the outcome it claims rather than reporting success
+on a copy:
+
+```bash
+# checks every planned target over the UNAUTHENTICATED path; non-zero if any is private
+python -m npa.deploy.publish_public --verify-public
+```
+
+As of writing, all 19 report `NOT PUBLIC` because nothing has ever been pushed to the
+mirror — `ghcr.io/nebius/nebius-physical-ai` does not exist yet. GHCR creates a package on
+first push; there is no registry to provision in advance.
+
+To make a package public, someone with admin on it must:
+
+1. Open <https://github.com/orgs/nebius/packages>
+2. Select the package (e.g. `npa-lerobot`) → **Package settings**
+3. **Danger Zone** → **Change visibility** → **Public**
+
+> **This is irreversible.** A public package cannot be made private again, and deleting a
+> tag does not undo publication — treat a mistaken publish as an incident, not a revert.
+> Confirm the `redistribution` classification of every image in the plan first.
+
+Two related notes:
+
+- `crane copy` transfers manifests unchanged, so it cannot add an
+  `org.opencontainers.image.source` label. Published packages will therefore be
+  org-scoped and unlinked from the repo. Adding that label to each Dockerfile would make
+  packages link automatically (and inherit repo access permissions), but it requires
+  rebuilding every image, so it is deliberately not done here.
+- The workflow needs a `NEBIUS_CR_TOKEN` secret to *read* from the Nebius source registry.
+  GHCR push uses the built-in `GITHUB_TOKEN`.
+
 Never add a `restricted` image to a public target. Nothing is currently classified
 that way, and `publish_public` refuses anything that is, as defence in depth around the
 selector.
