@@ -431,10 +431,19 @@ def test_the_retired_scene_judge_template_is_gone() -> None:
     assert not SCENE_JUDGE_YAML.exists(), "tokenfactory-scene-to-rollout-judge.yaml came back"
 
 
-def test_scene_judge_has_no_hardcoded_infra_ids() -> None:
-    text = SCENE_JUDGE_YAML.read_text(encoding="utf-8")
-    assert "<your-registry-id>" in text
-    assert "<your-bucket-name>" in text
+def test_combo_specs_have_no_hardcoded_infra_ids() -> None:
+    """Every combo is a spec now, and a spec parameterises infra instead of placeholdering it."""
+
+    specs = ROOT / "npa" / "workflows" / "workbench" / "npa-workflows"
+    for name in (
+        "tokenfactory-rollout-judge-combo.yaml",
+        "tokenfactory-scene-to-rollout-judge.yaml",
+        "tokenfactory-train-triage.yaml",
+    ):
+        text = (specs / name).read_text(encoding="utf-8")
+        assert "bucket: example-bucket" in text, name
+        # No registry id anywhere: images come from --registry / the image resolver.
+        assert "nebius.cloud/" not in text, name
 
 
 # --- train-triage SkyPilot YAML (k8s GPU train -> hosted Token Factory triage) -
@@ -504,8 +513,8 @@ def test_sdk_exposes_workflow_submit_for_combo_yamls() -> None:
 def test_sdk_workflow_submit_delegates_to_orchestrator(mocker) -> None:
     """npa.workflow.submit forwards a combo YAML to the SkyPilot orchestrator.
 
-    Uses the scene-judge template, the last combo still in raw form; rollout-judge retired to
-    `npa-workflows/tokenfactory-rollout-judge-combo.yaml` (EVIDENCE.md §R34).
+    Every combo is a spec now, so this submits one — `workflow.submit` accepts both formats and
+    routes on the apiVersion (DESIGN.md §D5).
     """
     import types
 
@@ -517,7 +526,12 @@ def test_sdk_workflow_submit_delegates_to_orchestrator(mocker) -> None:
     )
 
     workflow.submit(
-        SCENE_JUDGE_YAML,
+        ROOT
+        / "npa"
+        / "workflows"
+        / "workbench"
+        / "npa-workflows"
+        / "tokenfactory-scene-to-rollout-judge.yaml",
         run_id="rj-test",
         secret_env=["NEBIUS_TOKEN_FACTORY_KEY", "AWS_ACCESS_KEY_ID"],
     )
