@@ -271,3 +271,29 @@ def test_generate_uses_the_field_the_fetch_result_actually_has(tmp_path: Path, m
     assert (result.width, result.height) == (320, 240)
     assert result.source_dir == str(source)
     assert ran[0][:2] == ["uv", "sync"]
+
+
+def test_hf_cli_falls_back_to_the_module_when_the_script_is_not_on_path(monkeypatch) -> None:
+    """Live job 290: `No such file or directory: 'huggingface-cli'`, moments after installing it.
+
+    Console scripts land in whichever scripts directory pip chose; under a PEP 668 `--user`
+    fallback that is not the one on PATH. The module is importable from the interpreter that
+    installed it by construction, so it is the more reliable entry point.
+    """
+
+    import sys
+
+    from npa.workbench.cosmos import cosmos3 as cosmos3_module
+
+    monkeypatch.setattr(cosmos3_module.shutil, "which", lambda _name: None)
+    argv = cosmos3_module._huggingface_cli()
+
+    assert argv == [sys.executable, "-m", "huggingface_hub.commands.huggingface_cli"]
+
+
+def test_hf_cli_prefers_a_real_executable(monkeypatch) -> None:
+    from npa.workbench.cosmos import cosmos3 as cosmos3_module
+
+    monkeypatch.setattr(cosmos3_module.shutil, "which", lambda _name: "/usr/bin/huggingface-cli")
+
+    assert cosmos3_module._huggingface_cli() == ["/usr/bin/huggingface-cli"]
