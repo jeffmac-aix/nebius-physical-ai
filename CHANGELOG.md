@@ -7,7 +7,7 @@ a versioned heading when a release is cut.
 
 ## Unreleased
 
-### Retiring the raw SkyPilot task catalog (36 → 9 templates)
+### Retiring the raw SkyPilot task catalog (36 → 8 templates)
 
 `npa.workflow/v0.0.1` specs are becoming the only workflow authoring surface.
 SkyPilot remains the execution engine, and `npa workbench workflow submit` still
@@ -23,7 +23,8 @@ under `npa/src/npa/workflows/skypilot/`.
   `vlm-eval.yaml`, `vlm-eval-benchmark.yaml`, `sim-to-real-loop.yaml`,
   `scenario-gen-adversarial.yaml`, `sim2real-envgen-split.yaml`, `cosmos3-ea-fetch.yaml`,
   `tokenfactory-train-triage.yaml`, `tokenfactory-rollout-judge.yaml`,
-  `tokenfactory-scene-to-rollout-judge.yaml`, `sim2real-actions.yaml`.
+  `tokenfactory-scene-to-rollout-judge.yaml`, `sim2real-actions.yaml`,
+  `isaac-franka-capture-reason.yaml`.
   `test_skypilot_catalog_retirement.py` pins the remaining set, so the tally is
   machine-checked and a new raw template needs a deliberate edit.
 - **Multi-node stages.** A resource profile can declare `num_nodes`, so a spec can ask
@@ -170,6 +171,15 @@ under `npa/src/npa/workflows/skypilot/`.
   remote `--checkpoint-path`: a local path, an `s3://` prefix or a Hugging Face model id, because
   a stage's pod starts empty. Note LeRobot >= 0.6 requires the processor format, so a
   pre-0.6 public policy such as `lerobot/diffusion_pusht` needs migrating first.
+- **Isaac Lab frame capture is a package module** (`npa.workflows.isaac_capture`) instead of a
+  repo script, so it runs in a pod with no checkout; `npa/scripts/capture_isaac_lab_scene_frames.py`
+  remains as a shim. It also owns its camera framing (`--camera-eye`/`--camera-target`) and
+  renders at 512x512 for VLM consumption.
+- **Isaac images give Kit writable data/cache/log directories.** Without them Isaac boots and
+  then stalls indefinitely without rendering; the k8s-prereqs guardrail now separates "can be
+  scheduled" from "can render".
+- **The vendor npa install falls back to installing dependencies** when `--no-deps` leaves npa
+  unimportable, which is the case in Isaac's kit python.
 - **`vlm-eval run --task-from <artifact>`** scores a rollout against the plan an earlier
   reasoning stage wrote, reading its `analysis` field. The retired scene-to-rollout-judge
   template did this with `--task "$(python3 … )"`; without it a three-stage combo's judge would

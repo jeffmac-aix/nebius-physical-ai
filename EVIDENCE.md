@@ -2623,3 +2623,75 @@ Rather than quietly drop the image, the spec keeps `--policy-image` — it is re
 point is: a resource-profile change on the spec, not a rewrite. A reader who wants a real policy
 container knows what to change; a reader who assumed the template already ran one now knows it
 did not.
+
+## R37. `isaac-franka-capture-reason.yaml` retired (9 → 8) — code that had never run
+
+Two stages: a headless Isaac Lab Franka rollout renders RGB frames on a GPU, then a hosted
+Cosmos3 reasoner plans from them on CPU. The template could not run at all without a repo
+mounted into the pod —
+
+```bash
+REPO_ROOT="${NPA_REPO_ROOT:-/opt/nebius-physical-ai}"
+if [ -d "${REPO_ROOT}/npa" ]; then … else
+  echo "NPA repo not found at ${REPO_ROOT}; mount or bake /opt/nebius-physical-ai" >&2
+```
+
+— because the capture code lived in `npa/scripts/`. Moving it into the package as
+`npa.workflows.isaac_capture` removed that requirement **and made the code reachable for the
+first time.** It did not work. Four defects, in the order the cluster found them:
+
+| Job | Symptom | Cause |
+| --- | --- | --- |
+| 267/268 | `No module named 'isaaclab'` | npa installed into `/usr/bin/python3`; the simulator lives in the Omniverse kit environment. Isaac is now a declared vendor interpreter, and the `--no-deps` vendor install learned a with-deps fallback (job 268: the kit python carries none of npa's dependencies). |
+| 270 | `No module named 'pxr'` | `isaaclab_tasks` was imported before `AppLauncher`. Isaac Lab's modules reach into the kit runtime at import time; that runtime does not exist until the app launches. |
+| 271 | 45 minutes at 170% CPU, no frames | `/isaac-sim/kit/data` and `/logs` did not exist and `/cache` was root-owned, so Kit could not write. It logged `failed to open … user.config.json`, `omni.kvdb … Unexpected key-value database error`, `mdl_list_cache is not complete` — and then simply stopped. Three empty directories in the image; the capture now takes **25 seconds**. |
+| 278 | six frames, exit 0, nothing uploaded | `simulation_app.close()` ends the process instead of returning, so the upload that lived after `_capture_frames()` never ran. Publishing is now a callback that fires before the simulator tears down. |
+
+### Then it ran, and the run was still wrong
+
+Job 280 succeeded end to end and produced six technically perfect photographs of **bare floor**.
+The reasoner was not fooled — it replied that it could see "a tiled floor … no visible objects,
+obstacles, or environmental features". The template had borrowed the sim2real engine's
+`_attach_isaac_viz_camera`, whose pose was tuned for a different scene.
+
+Job 281, with the stage owning its own look-at pose, aimed 90 degrees off and photographed the
+ground receding to a horizon ("a tall building with a grid-patterned facade", said the reasoner):
+the look-at was built for OpenGL's -Z-forward frame, while Isaac Lab's `convention="world"` is
+REP-103, **+X forward, +Z up**.
+
+<img alt="Job 281: mis-framed capture, ground plane and sky" src="/opt/cursor/artifacts/screenshots/isaac-franka-capture-misframed-job281.png" width="320" />
+
+**A capture stage that photographs the wrong thing fails silently, which is worse than failing
+loudly.** Both runs were green. Only looking at the pixels caught it.
+
+### Job 283 — `npa-wf-multi-isaac-franka-capture-reason-d8eca4b3`, both stages SUCCEEDED
+
+```
+capture  2m46s  1x[RTXPRO-6000-BLACKWELL-SERVER-EDITION:1]   SUCCEEDED   25.0s of simulation
+reason   0m49s  1x[CPU:4+]                                   SUCCEEDED   6 images -> a plan
+
+  191727  scene/frame_00.png        (512x512, was 128x128: a VLM has to read these)
+  …
+  225767  scene/frame_05.png
+     335  scene/isaac_capture_summary.json
+    2515  reasoning/scene_reasoning.json
+```
+
+<img alt="Job 283: the Franka, its table and the cube, correctly framed" src="/opt/cursor/artifacts/screenshots/isaac-franka-capture-frame-03-job283.png" width="420" />
+
+and `nvidia/Cosmos3-Super-Reasoner`, reading those six frames:
+
+> *"The scene is a simulated environment featuring a robot arm mounted on a black table. The
+> robot arm has a gripper at its end and is positioned above a small, colorful cube on the table.
+> The background consists of a grid-patterned floor…"*
+
+That is the picture. The stage is verified by comparing what the model said against what the
+camera saw, not by an exit code.
+
+### What this template's retirement bought
+
+Three of the four fixes are engine- or image-level and benefit every Isaac stage, not just this
+one: the vendor-interpreter entry, the with-deps fallback, and the writable Kit directories
+(pinned by `test_workbench_image_k8s_prereqs.py`, which now separates "can be scheduled" from
+"can render"). The framing is unit-tested without a simulator by rotating the camera's +X axis
+and asserting it lands on the target.
