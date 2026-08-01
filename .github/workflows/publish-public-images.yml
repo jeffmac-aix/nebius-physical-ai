@@ -1,12 +1,21 @@
-# Mirror the OSS-redistributable workbench images to a PUBLIC registry.
+# Mirror the publicly-redistributable workbench images to a PUBLIC registry.
 #
 # Nebius Container Registry has no anonymous/public mode, so "public exposure"
-# means mirroring the publicly-redistributable subset to a public-capable
-# registry (GHCR by default). This workflow is license-guarded: it runs
-# `python -m npa.deploy.publish_public`, which only ever copies
-# `images.publicly_publishable_tools()` and HARD-refuses the Omniverse-Kit
-# images (isaac-lab, sonic, sonic-mujoco, groot) — those are NVIDIA-proprietary
-# and must not be redistributed to third parties.
+# means mirroring to a public-capable registry (GHCR by default). This workflow
+# runs `python -m npa.deploy.publish_public`, which copies exactly
+# `images.publicly_publishable_tools()`.
+#
+# THE ISAAC IMAGES ARE NOW IN THAT SET. This comment previously said the opposite
+# -- that the workflow "HARD-refuses" isaac-lab/sonic/sonic-mujoco/groot as
+# NVIDIA-proprietary. That was true when they baked Omniverse Kit. They no longer
+# do: they ship no NVIDIA Isaac bytes and fetch Isaac Sim / Isaac Lab at first run
+# under the OPERATOR's own EULA acceptance. See docs/workbench/container-packaging.md.
+#
+# That reclassification rests on the canonical tags resolving to the runtime-fetch
+# images. If a canonical tag still points at an old Omniverse-baked build, this
+# workflow would publish proprietary content -- irreversibly, because GHCR package
+# visibility cannot be undone. The "Gate" step below checks that mechanically before
+# any copy happens; do not remove it.
 #
 # Manual dispatch only (never auto-publishes). Defaults to dry-run.
 #
@@ -80,6 +89,41 @@ jobs:
             echo "${{ secrets.NEBIUS_CR_TOKEN }}" | crane auth login "$host" -u iam --password-stdin
           done
 
+      # Last line of defence before an irreversible action. publish_public trusts the
+      # packaging contract, which is a statement about the Dockerfiles; this checks the
+      # actual images the canonical tags resolve to right now.
+      #
+      # History-only because a full filesystem scan streams ~69 GB across these five and
+      # would not finish on a hosted runner. It is the weaker check -- it catches a build
+      # that RAN an Isaac install, not payload that arrived by COPY -- so it is a gate,
+      # not the proof. The full scan runs in omniverse-payload-scan (image-security-scan.yml).
+      - name: Gate — the Isaac canonical tags must not be Omniverse-baked
+        if: ${{ inputs.dry_run == false }}
+        run: |
+          set -euo pipefail
+          source_registry="cr.eu-north1.nebius.cloud/e00cm0vc6t09m0z5gw"
+          failed=0
+          for ref in \
+            "npa-isaac-lab:2.3.2.post1" \
+            "npa-sonic:0.1.2" \
+            "npa-sonic:0.1.2-k8s-runtime" \
+            "npa-sonic-mujoco:0.1.3-mvp" \
+            "npa-groot:0.1.0"; do
+            echo "::group::$ref"
+            if ! python npa/scripts/scan_image_omniverse_payload.py --history-only \
+                 "${source_registry}/${ref}"; then
+              echo "::error::${ref} shows a build-time Isaac install — refusing to publish"
+              failed=1
+            fi
+            echo "::endgroup::"
+          done
+          if [ "$failed" -ne 0 ]; then
+            echo "Refusing to publish. A canonical tag resolves to an Omniverse-baked image."
+            echo "Promote the runtime-fetch builds first:"
+            echo "  ./npa/scripts/promote_isaac_rtfetch_tags.sh --i-have-sign-off"
+            exit 1
+          fi
+
       - name: Publish
         if: ${{ inputs.dry_run == false }}
         run: python -m npa.deploy.publish_public --target "${{ steps.target.outputs.value }}"
@@ -90,7 +134,7 @@ jobs:
       # API to change visibility for organisation-owned packages, so it cannot be automated
       # here; it is a one-time manual step per package, and it is irreversible.
       #
-      # Without this check the job would copy 19 images, exit 0 and look successful while
+      # Without this check the job would copy every image, exit 0 and look successful while
       # nothing was actually publicly pullable. It fails the run instead, and prints the
       # exact UI path to fix it.
       - name: Verify the published images are anonymously pullable
