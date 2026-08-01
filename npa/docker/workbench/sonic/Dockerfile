@@ -128,15 +128,25 @@ RUN "${NPA_ISAAC_VENV}/bin/python" -m pip install --no-cache-dir uv \
 # "NVIDIA Open Model License" next to decoupled_wbc/.../g1/policy/*.onnx), and weights are
 # the operator's to fetch at run time with their own HF token via download_from_hf.py.
 #
-# Weight-bearing files are tracked in git LFS, so a plain checkout gets ~130-byte POINTER
-# files rather than tensors. We deliberately do NOT `git lfs pull` them: the previous
-# `git lfs pull --include="gear_sonic/**,decoupled_wbc/**"` was wrapped in `|| true`, so
-# whether real weights landed in the image depended on whether LFS happened to succeed on
-# the build machine. That is exactly the kind of thing that is fine for a year and then
-# silently bakes NVIDIA Open Model License tensors into a public image. Now the pull is
-# scoped to the one non-weight path that needs it, and the build below asserts on file
-# CONTENT that nothing weight-bearing was materialised.
-RUN git clone --filter=blob:none --no-checkout "${SONIC_REPO_URL}" "${SONIC_HOME}" \
+# Weight-bearing files are tracked in git LFS, and GIT_LFS_SKIP_SMUDGE=1 is what keeps
+# them OUT of this image. This is not a precaution - it is a fix for something this image
+# was actually doing:
+#
+#   `git lfs install --system` runs in the apt layer above, and once LFS is installed a
+#   plain `git checkout` SMUDGES automatically, i.e. downloads every tracked object. The
+#   old `git lfs pull ... || true` line was therefore beside the point: the checkout had
+#   already materialised the tensors, so npa-sonic shipped
+#   decoupled_wbc/.../g1/policy/GR00T-WholeBodyControl-{Walk,Balance}.onnx -- from a
+#   directory that literally contains a file named "NVIDIA Open Model License" -- plus six
+#   SMPL-X regressors. That is a gated-weights redistribution problem entirely separate
+#   from Omniverse Kit, and it was invisible because nothing checked for it.
+#
+# With smudging off, those paths stay ~130-byte pointer stubs: references the operator
+# resolves with their own HF token via download_from_hf.py (which has a --no-smpl flag
+# precisely because the SMPL assets are a separate opt-in). The assertion further down
+# checks by CONTENT, so a pointer passes and a real tensor fails.
+RUN export GIT_LFS_SKIP_SMUDGE=1 \
+    && git clone --filter=blob:none --no-checkout "${SONIC_REPO_URL}" "${SONIC_HOME}" \
     && cd "${SONIC_HOME}" \
     && git sparse-checkout init --no-cone \
     && git sparse-checkout set \
@@ -147,7 +157,6 @@ RUN git clone --filter=blob:none --no-checkout "${SONIC_REPO_URL}" "${SONIC_HOME
       "/LICENSE" \
     && git checkout "${SONIC_REPO_REF}" \
     && test "$(git rev-parse HEAD)" = "${SONIC_REPO_REF}" \
-    && git lfs pull --include="download_from_hf.py" \
     && rm -rf "${SONIC_HOME}/.git"
 
 # Constrain torch and friends so gear_sonic's transitive requirements cannot replace the

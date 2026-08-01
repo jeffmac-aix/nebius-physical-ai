@@ -226,9 +226,34 @@ def test_sonic_build_checks_weights_by_content_not_extension() -> None:
     )
     assert "NPA_SONIC_LFS_POINTERS_ONLY" in dockerfile
     assert "real model weights baked into the image (not LFS pointers)" in dockerfile
-    # And the LFS pull must be scoped, not a best-effort `|| true` over weight paths.
-    assert 'git lfs pull --include="download_from_hf.py"' in dockerfile
-    assert "gear_sonic/**,gear_sonic_deploy/**,decoupled_wbc/**" not in dockerfile, (
-        "a broad `git lfs pull` made whether real weights got baked depend on whether LFS "
-        "happened to succeed on the build machine"
+    # And smudging must be disabled, which is what actually keeps the tensors out.
+    assert "GIT_LFS_SKIP_SMUDGE=1" in dockerfile, (
+        "`git lfs install --system` makes a plain `git checkout` download every tracked "
+        "object, so without GIT_LFS_SKIP_SMUDGE=1 the image bakes gated weights"
+    )
+    assert "git lfs pull" not in dockerfile, (
+        "no `git lfs pull` should remain: any pull re-materialises the tensors this "
+        "image must not ship"
+    )
+
+
+def test_sonic_does_not_bake_the_gated_groot_policies() -> None:
+    """Regression pin for a real, previously-invisible gated-weights leak.
+
+    npa-sonic was shipping decoupled_wbc/.../g1/policy/GR00T-WholeBodyControl-{Walk,
+    Balance}.onnx -- from a directory containing a file named "NVIDIA Open Model License"
+    -- plus six SMPL-X regressors, because `git lfs install --system` makes `git checkout`
+    smudge automatically. Entirely separate from the Omniverse Kit problem, and nothing
+    checked for it until the build-time weight assertion was added.
+    """
+    dockerfile = (
+        REPO_ROOT / "npa" / "docker" / "workbench" / "sonic" / "Dockerfile"
+    ).read_text(encoding="utf-8")
+    smudge_line = next(
+        line for line in dockerfile.splitlines() if "GIT_LFS_SKIP_SMUDGE" in line
+    )
+    clone_index = dockerfile.index("git clone")
+    assert dockerfile.index(smudge_line) < clone_index, (
+        "GIT_LFS_SKIP_SMUDGE must be exported BEFORE the clone/checkout, or the objects "
+        "are already downloaded by the time it takes effect"
     )
