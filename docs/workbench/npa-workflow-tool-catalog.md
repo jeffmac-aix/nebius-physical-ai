@@ -29,6 +29,7 @@ This table must list every `TOOL_CATALOG` key (enforced by
 | `workbench.lerobot.policy_rollout` | `python3 -m npa.workbench.lerobot.policy_container eval` | `config.policy_checkpoint`, `config.rollout_episodes` | rendered episodes under `config.rollouts_uri` | no |
 | `workbench.lerobot.policy_train` | `python -m npa.workbench.lerobot.policy_container train` | `config.lerobot_dataset`, `config.train_steps` | checkpoint + run artifacts under `config.artifacts_uri` | no |
 | `workbench.token_factory.triage` | `python -m npa.workflows.token_factory_triage run` | `config.artifacts_uri` | `<triage_uri>/generations.jsonl` | no |
+| `workbench.cosmos3.text_to_image` | `npa workbench cosmos3 text-to-image` | `config.t2i_prompt`, `config.t2i_output_uri`, `config.cosmos_model_id`, `config.cosmos_source_repo`, `config.cosmos_cache_dir`, `config.t2i_uv_group`, `config.t2i_seed`, `config.t2i_checkpoint_name` | `<t2i_output_uri>success.json`, `<t2i_output_uri>text-to-image.png` | no |
 | `workbench.cosmos.check` | `npa workbench cosmos check` | `config.cosmos_source_repo`, `config.cosmos_model_id` | access report (stdout JSON) | no |
 | `workbench.cosmos.fetch` | `npa workbench cosmos fetch` | `config.cosmos_source_repo`, `config.cosmos_model_id` | source + checkpoint in `config.cosmos_cache_dir` | no |
 | `workbench.sim2real_envgen.raw_shard` | `python -m npa.workflows.sim2real_envgen raw-shard` | `config.envgen_root_uri`, `config.env_count`, `config.shard_index` | `envs/raw/raw-shard-<ii>-summary.json` | no |

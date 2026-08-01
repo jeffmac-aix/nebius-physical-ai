@@ -9,6 +9,7 @@ document, the argv, and above all the verification, which is what stands between
 from __future__ import annotations
 
 import json
+import os
 import struct
 import zlib
 from pathlib import Path
@@ -31,7 +32,9 @@ def _png(width: int, height: int, *, pad: int = 4096) -> bytes:
     return (
         b"\x89PNG\r\n\x1a\n"
         + chunk(b"IHDR", ihdr)
-        + chunk(b"IDAT", zlib.compress(b"\x00" * pad))
+        # Random padding: zlib squashes a run of zeros to ~30 bytes, which the size check
+        # (correctly) rejects as a truncated image.
+        + chunk(b"IDAT", zlib.compress(os.urandom(pad)))
         + chunk(b"IEND", b"")
     )
 
