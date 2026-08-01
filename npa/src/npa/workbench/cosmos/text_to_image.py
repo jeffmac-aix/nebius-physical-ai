@@ -164,6 +164,45 @@ def inference_argv(
     return argv
 
 
+#: transformer_engine, which the framework imports at inference time, links against a modern
+#: libstdc++. Live job 296 died with
+#:   OSError: /usr/lib/x86_64-linux-gnu/libstdc++.so.6: version `GLIBCXX_3.4.29' not found
+#: on SkyPilot's default image. The template set LD_LIBRARY_PATH="" and would have hit the same
+#: wall; a newer libstdc++ is usually already present in the conda prefix the stage runs from.
+REQUIRED_GLIBCXX = b"GLIBCXX_3.4.29"
+
+
+def _has_required_glibcxx(candidate: Path) -> bool:
+    try:
+        return REQUIRED_GLIBCXX in candidate.read_bytes()
+    except OSError:
+        return False
+
+
+def runtime_library_dir(candidates: Sequence[Path] | None = None) -> str:
+    """Return a directory holding a libstdc++ new enough for transformer_engine, or ``""``.
+
+    Checked by looking for the version symbol in the library itself rather than by parsing
+    `ldconfig` output or trusting a distro version: the question is exactly "does this file
+    export GLIBCXX_3.4.29", and the file can answer it.
+    """
+
+    import sys as _sys
+
+    if candidates is None:
+        candidates = (
+            Path(_sys.prefix) / "lib",
+            Path(_sys.base_prefix) / "lib",
+            Path("/opt/conda/lib"),
+            Path("/usr/lib/x86_64-linux-gnu"),
+        )
+    for directory in candidates:
+        library = directory / "libstdc++.so.6"
+        if library.is_file() and _has_required_glibcxx(library):
+            return str(directory)
+    return ""
+
+
 def uv_argv() -> list[str]:
     """Return an argv prefix for uv, preferring a module over a PATH lookup.
 
@@ -239,9 +278,14 @@ def generate(
     input_json = output_dir / "npa-t2i.json"
     input_json.write_text(json.dumps(build_job_document(prompt), sort_keys=True) + "\n")
 
-    # uv sync leaves a venv whose loader must not inherit the caller's LD_LIBRARY_PATH.
+    # The template cleared LD_LIBRARY_PATH here. Clearing it is right in spirit — the caller's
+    # value is not the framework's — but it is not enough: transformer_engine needs a libstdc++
+    # newer than some hosts ship (live job 296). Point the loader at one when we can find it.
     infer_env = dict(env)
-    infer_env["LD_LIBRARY_PATH"] = ""
+    library_dir = runtime_library_dir()
+    infer_env["LD_LIBRARY_PATH"] = library_dir
+    if library_dir:
+        print(f"cosmos3 text-to-image: LD_LIBRARY_PATH={library_dir}", flush=True)
     _run(
         inference_argv(
             input_json=input_json,

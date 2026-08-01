@@ -337,3 +337,27 @@ def test_uv_argv_says_what_is_missing(monkeypatch) -> None:
 
     with pytest.raises(t2i.Cosmos3TextToImageError, match="uv is required"):
         t2i.uv_argv()
+
+
+def test_runtime_library_dir_picks_a_libstdcxx_that_exports_the_symbol(tmp_path: Path) -> None:
+    """Live job 296: `version GLIBCXX_3.4.29 not found` for transformer_engine.
+
+    The check reads the library rather than trusting a path or a distro version, because that is
+    literally the question the loader will ask.
+    """
+
+    old = tmp_path / "old"
+    new = tmp_path / "new"
+    old.mkdir()
+    new.mkdir()
+    (old / "libstdc++.so.6").write_bytes(b"GLIBCXX_3.4.25\x00GLIBCXX_3.4.28\x00")
+    (new / "libstdc++.so.6").write_bytes(b"GLIBCXX_3.4.28\x00GLIBCXX_3.4.29\x00")
+
+    assert t2i.runtime_library_dir([old, new]) == str(new)
+    assert t2i.runtime_library_dir([new, old]) == str(new)
+
+
+def test_runtime_library_dir_is_empty_when_nothing_qualifies(tmp_path: Path) -> None:
+    (tmp_path / "libstdc++.so.6").write_bytes(b"GLIBCXX_3.4.25\x00")
+
+    assert t2i.runtime_library_dir([tmp_path, tmp_path / "missing"]) == ""
