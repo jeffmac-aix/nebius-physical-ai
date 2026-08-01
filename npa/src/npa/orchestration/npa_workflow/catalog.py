@@ -94,6 +94,36 @@ TOOL_CATALOG: dict[str, ToolEntry] = {
             "{{config.vlm_backend}}",
         ],
     ),
+    "workbench.vlm_eval.judge_against_plan": ToolEntry(
+        name="workbench.vlm_eval.judge_against_plan",
+        description=(
+            "Score a rollout against the plan an earlier reasoning stage produced."
+        ),
+        argv_template=[
+            "npa",
+            "workbench",
+            "vlm-eval",
+            "run",
+            "--input-path",
+            "{{config.rollouts_uri}}",
+            "--output-path",
+            "{{config.scores_uri}}",
+            # The judge's task comes from the reasoner's artifact, not a literal: that is what
+            # makes this a three-stage combo rather than two unrelated stages.
+            "--task-from",
+            "{{config.plan_uri}}scene_reasoning.json",
+            "--backend",
+            "{{config.vlm_backend}}",
+            "--api-key-env",
+            "NEBIUS_TOKEN_FACTORY_KEY",
+            "--frame-selection",
+            "{{config.vlm_frame_selection}}",
+            "--max-frames",
+            "{{config.vlm_max_frames}}",
+            "--success-threshold",
+            "{{config.vlm_success_threshold}}",
+        ],
+    ),
     "workbench.vlm_eval.loop": ToolEntry(
         name="workbench.vlm_eval.loop",
         description=(

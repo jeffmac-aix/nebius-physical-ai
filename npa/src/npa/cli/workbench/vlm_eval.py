@@ -71,6 +71,14 @@ def run_cmd(
     input_path: str = typer.Option(..., "--input-path", help="S3 or local artifact path to score."),
     output_path: str = typer.Option(..., "--output-path", help="S3 or local path for eval JSON."),
     task: str = typer.Option("sim-to-real", "--task", help="Evaluation task label."),
+    task_from: str = typer.Option(
+        "",
+        "--task-from",
+        help=(
+            "Read the task from a reasoning artifact (its `analysis` field) instead of --task, "
+            "so a judge can score a rollout against a plan an earlier stage wrote."
+        ),
+    ),
     backend: BackendName = typer.Option(
         BackendName.self_hosted,
         "--backend",
@@ -128,6 +136,8 @@ def run_cmd(
     """Score a rollout artifact with a VLM backend."""
 
     try:
+        if task_from.strip():
+            task = task_from_reasoning_artifact(task_from)
         result = evaluate_vlm(
             input_path=input_path,
             output_path=output_path,
@@ -153,6 +163,51 @@ def run_cmd(
         _fail(str(exc))
         return
     _emit(payload, output)
+
+
+#: How much of a plan to carry into the judge prompt; the retired template used this budget.
+PLAN_TASK_CHARS = 900
+
+
+def task_from_reasoning_artifact(uri: str) -> str:
+    """Build a judge task from the `analysis` an earlier reasoning stage wrote.
+
+    The retired `tokenfactory-scene-to-rollout-judge.yaml` did this in inline python and passed
+    the result through `--task "$(…)"`. That command substitution IS the three-stage combo — the
+    judge scores the rollout *against the plan the reasoner produced* — and it is exactly what a
+    `toolRef` argv cannot express.
+    """
+
+    import tempfile as _tempfile
+
+    raw = uri.strip()
+    if not raw:
+        _fail("--task-from needs a reasoning artifact URI")
+    if raw.startswith("s3://"):
+        from npa.clients.storage import StorageClient
+
+        with _tempfile.TemporaryDirectory(prefix="npa-plan-") as tmp:
+            local = Path(StorageClient.from_environment().download_path(raw, tmp))
+            payload = _read_reasoning_payload(local, uri)
+    else:
+        payload = _read_reasoning_payload(Path(raw), uri)
+    analysis = str(payload.get("analysis") or "").strip().replace("\n", " ")
+    if not analysis:
+        _fail(f"reasoning artifact has no `analysis` to judge against: {uri}")
+    return (
+        "Judge whether the robot rollout accomplishes this planned task. "
+        f"Plan: {analysis[:PLAN_TASK_CHARS]}"
+    )
+
+
+def _read_reasoning_payload(local: Path, uri: str) -> dict[str, Any]:
+    if not local.is_file():
+        _fail(f"reasoning artifact not found: {uri}")
+    try:
+        return json.loads(local.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        _fail(f"reasoning artifact is not readable JSON: {uri} ({exc})")
+        return {}
 
 
 @app.command("loop")
