@@ -308,3 +308,29 @@ def test_rt_core_tools_are_not_scheduled_on_throughput_gpus(name: str) -> None:
         f"serverless project offers gpu-rtx6000/gpu-b200-sxm/cpu-d3 and no h100 at all, so "
         f"an h100 request fails outright with NotFound.)"
     )
+
+
+def test_every_manifest_entry_resolves_to_a_real_image() -> None:
+    """A golden eval you cannot resolve an image for is not a golden eval.
+
+    This exists because adding sonic-mujoco's entry passed every other check and then died
+    at submission time with `KeyError: 'sonic-mujoco'` — a variant is deliberately not a
+    CONTAINER_IMAGE_NAMES key, so it has to resolve through its parent tool's image
+    manifest instead. Nothing checked that the entry pointed at something resolvable.
+    """
+    from npa.deploy.images import container_image_for_tool
+
+    for name, spec in load_manifest().items():
+        if spec.foundation:
+            continue  # foundation images are not resolved through CONTAINER_IMAGE_NAMES
+        if spec.variant_of:
+            ref = container_image_for_tool(
+                spec.variant_of,
+                registry="registry.example/test",
+                image_variant=spec.image_variant,
+            )
+        else:
+            ref = container_image_for_tool(name, registry="registry.example/test")
+        assert ref.rsplit("/", 1)[-1].startswith(spec.image + ":"), (
+            f"{name}: manifest declares image {spec.image!r} but resolves to {ref!r}"
+        )

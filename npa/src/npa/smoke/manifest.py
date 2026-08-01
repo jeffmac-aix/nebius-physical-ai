@@ -77,6 +77,11 @@ class ContainerSpec:
     #: so it needs its own golden eval. Without this field the only way to give it one
     #: would be to mislabel it ``foundation``.
     variant_of: str | None = None
+    #: For a variant, the ``image_variant`` selector its parent tool's image manifest uses
+    #: (``container_image_for_tool(parent, image_variant=...)``). Without this a variant's
+    #: image cannot be resolved at all: the variant is deliberately not a
+    #: CONTAINER_IMAGE_NAMES key, so a plain lookup raises KeyError.
+    image_variant: str | None = None
 
 
 @dataclass
@@ -149,6 +154,7 @@ def load_manifest() -> dict[str, ContainerSpec]:
             foundation=bool(raw.get("foundation", False)),
             external_build=bool(raw.get("external_build", False)),
             variant_of=raw.get("variant_of"),
+            image_variant=raw.get("image_variant"),
         )
     return specs
 
@@ -226,6 +232,12 @@ def validate_manifest(
         if spec.variant_of is not None:
             if spec.foundation:
                 report.add(name, "an entry cannot be both foundation and a variant")
+            if not spec.image_variant:
+                report.add(
+                    name,
+                    "a variant must set image_variant so its image can be resolved "
+                    "through its parent tool's image manifest",
+                )
             if expected_tools is not None and spec.variant_of not in expected_tools:
                 report.add(
                     name, f"variant_of names an unknown tool: {spec.variant_of!r}"

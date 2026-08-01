@@ -118,3 +118,38 @@ def test_serverless_runner_omits_unset_acceptance(monkeypatch) -> None:
 
     monkeypatch.setenv("OMNI_KIT_ACCEPT_EULA", "YES")
     assert serverless_runner.isaac_eula_env() == {"OMNI_KIT_ACCEPT_EULA": "YES"}
+
+
+# --------------------------------------------------------------------------------------
+# Bootstrap ordering in SkyPilot setup blocks
+# --------------------------------------------------------------------------------------
+
+
+def _templates_asserting_the_isaac_tree() -> list[Path]:
+    marker = "test -f /workspace/isaaclab/scripts"
+    return sorted(
+        path for path in SKYPILOT_DIR.glob("*.yaml") if marker in path.read_text(encoding="utf-8")
+    )
+
+
+@pytest.mark.parametrize("path", _templates_asserting_the_isaac_tree(), ids=lambda p: p.name)
+def test_isaac_tree_assertion_comes_after_the_bootstrap_is_triggered(path: Path) -> None:
+    """Asserting the Isaac Lab tree exists before fetching it is a guaranteed FAILED_SETUP.
+
+    The isaaclab wheel ships the library but no ``scripts/``, so /workspace/isaaclab is
+    populated on first use of the interpreter — not by the image. A real
+    ``sky launch`` of isaac-lab-rl-train-rtxpro-smoke failed exactly this way: the setup
+    block ran ``test -f .../rsl_rl/train.py`` before anything had invoked
+    ``/isaac-sim/python.sh``.
+    """
+    text = path.read_text(encoding="utf-8")
+    for match in re.finditer(r"(?m)^\s*test -f /workspace/isaaclab/scripts\S*", text):
+        preceding = text[: match.start()]
+        # The bootstrap fires on any invocation of the Isaac interpreter.
+        last_setup = preceding.rfind("setup:")
+        assert last_setup != -1, f"{path.name}: tree assertion outside a setup block"
+        block = preceding[last_setup:]
+        assert '"${PYTHON_BIN}"' in block or "isaac-bootstrap" in block, (
+            f"{path.name}: asserts the Isaac Lab tree before anything triggers the "
+            f"bootstrap that fetches it — this fails setup every time"
+        )

@@ -44,6 +44,10 @@ setup: |
   if [ ! -x "${PYTHON_BIN}" ]; then
     PYTHON_BIN="$(command -v python3 || command -v python)"
   fi
+  # Trigger the Isaac bootstrap BEFORE asserting the tree exists: the isaaclab wheel ships
+  # no scripts/, so /workspace/isaaclab is populated on first use of the interpreter, not by
+  # the image. Asserting first is a guaranteed FAILED_SETUP.
+  "${PYTHON_BIN}" -c "pass"
   test -f /workspace/isaaclab/scripts/reinforcement_learning/rsl_rl/train.py
   "${PYTHON_BIN}" -m pip install --quiet boto3
 run: |

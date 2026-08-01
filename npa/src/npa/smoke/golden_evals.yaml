@@ -362,6 +362,9 @@ containers:
     # It is still separately built and separately published, with a capability its parent
     # does not exercise, so it gets its own golden eval rather than none at all.
     variant_of: sonic
+    # Resolves as container_image_for_tool("sonic", image_variant="mujoco"); sonic's image
+    # manifest maps that alias to the sonic-mujoco-h100-mvp entry.
+    image_variant: mujoco
     physical_ai:
       useful: true
       role: >-

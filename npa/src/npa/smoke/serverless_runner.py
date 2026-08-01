@@ -107,7 +107,14 @@ def submit_golden_eval(
     gpu = gpu_type or spec.golden_eval.serverless_gpu or DEFAULT_SERVERLESS_GPU
 
     resolved_project = _project_id(project_id)
-    image = container_image_for_tool(tool, registry=registry, tag=tag)
+    # A variant (e.g. sonic-mujoco) is deliberately not a CONTAINER_IMAGE_NAMES key, so a
+    # plain lookup raises KeyError; it resolves through its parent tool's image manifest.
+    if spec.variant_of:
+        image = container_image_for_tool(
+            spec.variant_of, registry=registry, tag=tag, image_variant=spec.image_variant
+        )
+    else:
+        image = container_image_for_tool(tool, registry=registry, tag=tag)
     cfg = load_credentials(export_to_environment=True)
     bucket = (cfg.s3_bucket or "").rstrip("/")
     if not bucket:
