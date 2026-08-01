@@ -1109,6 +1109,34 @@ TOOL_CATALOG: dict[str, ToolEntry] = {
             "{{config.triage_max_tokens}}",
         ],
     ),
+    "workbench.lerobot.policy_rollout": ToolEntry(
+        name="workbench.lerobot.policy_rollout",
+        description=(
+            "Roll out a LeRobot policy IN the stage's own pod and publish the rendered episodes."
+        ),
+        argv_template=[
+            "python3",
+            "-m",
+            "npa.workbench.lerobot.policy_container",
+            "eval",
+            # A public Hugging Face policy id, an s3:// prefix or a local path; a stage's pod
+            # starts empty, so anything remote is materialised first.
+            "--checkpoint-path",
+            "{{config.policy_checkpoint}}",
+            "--output-dir",
+            "{{config.rollout_output_dir}}",
+            "--env-type",
+            "{{config.rollout_env}}",
+            "--episodes",
+            "{{config.rollout_episodes}}",
+            "--device",
+            "{{config.policy_device}}",
+            # The judge stage reads what this stage rendered; the retired template did the
+            # upload in a trailing inline-python block.
+            "--rollouts-s3-uri",
+            "{{config.rollouts_uri}}",
+        ],
+    ),
     "workbench.lerobot.eval": ToolEntry(
         name="workbench.lerobot.eval",
         description="Evaluate a LeRobot policy checkpoint.",

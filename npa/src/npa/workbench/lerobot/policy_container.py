@@ -1101,6 +1101,46 @@ def _materialize_train_dataset(args: argparse.Namespace) -> Path:
     return dataset
 
 
+def _materialize_eval_checkpoint(args: argparse.Namespace) -> Path:
+    """Resolve --checkpoint-path to a local checkpoint directory.
+
+    `run_lerobot_eval` validates real weights on disk, but a stage's pod starts empty and the
+    retired templates pointed at a *public Hugging Face policy* (`lerobot/diffusion_pusht`). A
+    local path is used as-is; anything else is fetched first.
+    """
+
+    given = Path(args.checkpoint_path)
+    if given.exists():
+        return given
+
+    raw = str(args.checkpoint_path).strip()
+    cache = Path(args.checkpoint_cache_dir)
+    cache.mkdir(parents=True, exist_ok=True)
+    if raw.startswith("s3://"):
+        from npa.clients.storage import StorageClient
+
+        target = cache / raw.rstrip("/").rsplit("/", 1)[-1]
+        StorageClient.from_environment().download_directory(raw, str(target))
+        print(f"NPA_LEROBOT_POLICY_READY {target}", flush=True)
+        return target
+
+    repo_id = raw[len("hf://") :] if raw.startswith("hf://") else raw
+    if "/" not in repo_id:
+        raise PolicyContainerError(
+            f"--checkpoint-path {raw!r} is neither a local path, an s3:// prefix, nor a "
+            "Hugging Face repo id (owner/name)"
+        )
+    try:
+        from huggingface_hub import snapshot_download
+    except ImportError as exc:  # pragma: no cover - guarded by the stage's requirements
+        raise PolicyContainerError(
+            f"huggingface_hub is required to fetch the policy {repo_id!r}"
+        ) from exc
+    target = Path(snapshot_download(repo_id=repo_id, local_dir=cache / repo_id.replace("/", "__")))
+    print(f"NPA_LEROBOT_POLICY_READY {target}", flush=True)
+    return target
+
+
 def upload_run_artifacts(output_dir: str | Path, artifacts_uri: str) -> str:
     """Upload a training run's whole output tree, not just its checkpoint.
 
@@ -1172,6 +1212,11 @@ def build_parser() -> argparse.ArgumentParser:
     eval_cmd.add_argument("--device", default=os.environ.get("LEROBOT_POLICY_DEVICE", "cuda"))
     eval_cmd.add_argument("--log-path", type=Path, default=None)
     eval_cmd.add_argument("--timeout-seconds", type=int, default=DEFAULT_EVAL_TIMEOUT_SECONDS)
+    # A stage has no shared filesystem, so --checkpoint-path may name something remote: an
+    # `hf://` / bare Hugging Face model id (the retired templates used
+    # `lerobot/diffusion_pusht`) or an s3:// prefix. It is materialised locally first.
+    eval_cmd.add_argument("--checkpoint-cache-dir", type=Path, default=Path("/tmp/npa-lerobot-policy"))
+    eval_cmd.add_argument("--rollouts-s3-uri", default="")
     validate_cmd = subparsers.add_parser("validate-checkpoint", help="Assert a checkpoint has loadable weights.")
     validate_cmd.add_argument("--checkpoint-path", type=Path, required=True)
     feedback_cmd = subparsers.add_parser("feedback-step", help="Run one feedback trainer-hook step.")
@@ -1238,7 +1283,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "eval":
         result = run_lerobot_eval(
-            checkpoint_path=args.checkpoint_path,
+            checkpoint_path=_materialize_eval_checkpoint(args),
             output_dir=args.output_dir,
             env_type=args.env_type,
             env_task=args.env_task,
@@ -1247,7 +1292,12 @@ def main(argv: list[str] | None = None) -> int:
             log_path=args.log_path,
             timeout_seconds=args.timeout_seconds,
         )
-        print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+        eval_payload = result.to_dict()
+        if args.rollouts_s3_uri.strip():
+            eval_payload["rollouts_uri"] = upload_run_artifacts(
+                result.output_dir, args.rollouts_s3_uri
+            )
+        print(json.dumps(eval_payload, indent=2, sort_keys=True))
         return 0
     if args.command == "validate-checkpoint":
         result = validate_lerobot_checkpoint(args.checkpoint_path)

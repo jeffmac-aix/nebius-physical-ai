@@ -73,6 +73,9 @@ TOOL_REF_PIP_REQUIREMENTS: dict[str, tuple[tuple[str, str], ...]] = {
     "workbench.lerobot.policy_train": (
         ("python:huggingface_hub", "huggingface_hub>=0.23,<1.0"),
     ),
+    "workbench.lerobot.policy_rollout": (
+        ("python:huggingface_hub", "huggingface_hub>=0.23,<1.0"),
+    ),
 }
 
 #: Prefix marking a probe as "is this python module importable?" rather than an executable.
