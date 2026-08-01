@@ -20,10 +20,10 @@ import argparse
 import json
 import math
 import os
-import sys
 import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
 
 DEFAULT_TASK = "Isaac-Lift-Cube-Franka-v0"
