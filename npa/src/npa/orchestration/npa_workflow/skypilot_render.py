@@ -131,12 +131,16 @@ def render_vendor_interpreter_setup(candidates: Sequence[str]) -> str:
         "--break-system-packages \\\n"
         "      || \"$npa_vendor_python\" -m pip install -q -e \"$npa_vendor_src\" --user || true\n"
         "  fi\n"
-        "  if \"$npa_vendor_python\" -c 'import npa' >/dev/null 2>&1; then\n"
+        # `import npa` is not enough: a vendor image may bake a PARTIAL npa on PYTHONPATH for
+        # its own entrypoint, which shadows the real install — `import npa` passes and
+        # `import npa.workbench` fails (live job 250). Probe a real subpackage.
+        "  if \"$npa_vendor_python\" -c 'import npa.workbench' >/dev/null 2>&1; then\n"
         "    echo \"$npa_vendor_python\" > /tmp/npa-python\n"
         "    echo \"npa interpreter switched to vendor python: $npa_vendor_python\" >&2\n"
         "    break\n"
         "  fi\n"
-        "  echo \"warning: npa is not importable from $npa_vendor_python\" >&2\n"
+        "  echo \"warning: npa.workbench is not importable from $npa_vendor_python "
+        "(a baked partial npa on PYTHONPATH will shadow it)\" >&2\n"
         "done\n"
     )
 

@@ -160,6 +160,9 @@ def test_vendor_setup_installs_npa_there_and_records_it() -> None:
     assert "-m pip install -q -e" in setup
     # Records it as THE stage interpreter, which is what the run shim reads.
     assert 'echo "$npa_vendor_python" > /tmp/npa-python' in setup
+    # Probes a real subpackage: a vendor image may bake a PARTIAL npa on PYTHONPATH that makes
+    # `import npa` pass while `import npa.workbench` fails (live job 250).
+    assert "-c 'import npa.workbench'" in setup
     # Skips a candidate that is not present, rather than failing the stage.
     assert '[ -x "$npa_vendor_python" ] || continue' in setup
     assert "${" not in setup
