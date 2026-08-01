@@ -78,6 +78,68 @@ TOOL_REF_PIP_REQUIREMENTS: dict[str, tuple[tuple[str, str], ...]] = {
 #: Prefix marking a probe as "is this python module importable?" rather than an executable.
 PYTHON_MODULE_PROBE = "python:"
 
+#: toolRef prefix -> the vendor image's own interpreter(s), in preference order.
+#:
+#: A vendor image keeps its libraries in its own environment (`/opt/lerobot/venv`,
+#: `/isaac-sim/python.sh`), while setup installs npa into whatever `python3` resolves to —
+#: SkyPilot's miniconda. The stage then runs a tool that imports the vendor library and fails
+#: with `No module named 'lerobot'` (live job 245). The retired template avoided this by
+#: `source /opt/lerobot/venv/bin/activate` before doing anything.
+#:
+#: When a candidate exists, setup installs npa INTO it and records it as the stage interpreter,
+#: so the tool and the vendor library share one environment.
+TOOL_REF_VENDOR_INTERPRETERS: dict[str, tuple[str, ...]] = {
+    "workbench.lerobot": ("/opt/lerobot/venv/bin/python",),
+}
+
+
+def tool_vendor_interpreters(tool_ref: str) -> tuple[str, ...]:
+    """Return the vendor interpreters this toolRef prefers, most specific match first."""
+
+    if tool_ref in TOOL_REF_VENDOR_INTERPRETERS:
+        return TOOL_REF_VENDOR_INTERPRETERS[tool_ref]
+    best = ""
+    for prefix in TOOL_REF_VENDOR_INTERPRETERS:
+        if (tool_ref == prefix or tool_ref.startswith(prefix + ".")) and len(prefix) > len(best):
+            best = prefix
+    return TOOL_REF_VENDOR_INTERPRETERS.get(best, ())
+
+
+def render_vendor_interpreter_setup(candidates: Sequence[str]) -> str:
+    """Install npa into the vendor image's interpreter and make it the stage interpreter."""
+
+    if not candidates:
+        return ""
+    listed = " ".join(candidates)
+    return (
+        "# Vendor image: its libraries live in its own environment, so npa has to be installed\n"
+        "# there and that interpreter has to be the one the stage runs.\n"
+        f"for npa_vendor_python in {listed}; do\n"
+        "  [ -x \"$npa_vendor_python\" ] || continue\n"
+        "  npa_vendor_src=\"\"\n"
+        "  if [ -s /tmp/npa-src-root ]; then\n"
+        "    npa_vendor_src=\"$(cat /tmp/npa-src-root)\"\n"
+        "  elif [ -d /opt/nebius-physical-ai/npa ]; then\n"
+        "    npa_vendor_src=/opt/nebius-physical-ai/npa\n"
+        "  elif [ -d /tmp/npa-src ]; then\n"
+        "    npa_vendor_src=/tmp/npa-src\n"
+        "  fi\n"
+        "  if [ -n \"$npa_vendor_src\" ]; then\n"
+        "    echo \"installing npa into vendor interpreter $npa_vendor_python\" >&2\n"
+        "    \"$npa_vendor_python\" -m pip install -q -e \"$npa_vendor_src\" \\\n"
+        "      || \"$npa_vendor_python\" -m pip install -q -e \"$npa_vendor_src\" "
+        "--break-system-packages \\\n"
+        "      || \"$npa_vendor_python\" -m pip install -q -e \"$npa_vendor_src\" --user || true\n"
+        "  fi\n"
+        "  if \"$npa_vendor_python\" -c 'import npa' >/dev/null 2>&1; then\n"
+        "    echo \"$npa_vendor_python\" > /tmp/npa-python\n"
+        "    echo \"npa interpreter switched to vendor python: $npa_vendor_python\" >&2\n"
+        "    break\n"
+        "  fi\n"
+        "  echo \"warning: npa is not importable from $npa_vendor_python\" >&2\n"
+        "done\n"
+    )
+
 
 class NpaWorkflowRenderError(NpaWorkflowError):
     """Raised when an npa.workflow plan cannot be rendered to SkyPilot YAML."""
@@ -197,13 +259,20 @@ def render_pip_requirements_setup(requirements: Sequence[tuple[str, str]]) -> st
 
     if not requirements:
         return ""
-    lines = ["# Stage needs third-party packages; install any that are missing.\n"]
+    lines = [
+        "# Stage needs third-party packages; install any that are missing INTO the interpreter\n"
+        "# the stage will actually run (the vendor one when setup switched to it).\n"
+        "npa_req_python=python3\n"
+        "if [ -s /tmp/npa-python ]; then\n"
+        "  npa_req_python=\"$(cat /tmp/npa-python)\"\n"
+        "fi\n"
+    ]
     for probe, requirement in requirements:
         if probe.startswith(PYTHON_MODULE_PROBE):
             module = probe[len(PYTHON_MODULE_PROBE) :]
             # A library has no binary to look for, and the interpreter that matters is the one
             # the shim recorded — a vendor image's own venv is a different one.
-            condition = f"! python3 -c 'import {module}' >/dev/null 2>&1"
+            condition = f"! \"$npa_req_python\" -c 'import {module}' >/dev/null 2>&1"
             label = module
         else:
             condition = f"! command -v {probe} >/dev/null 2>&1"
@@ -211,7 +280,9 @@ def render_pip_requirements_setup(requirements: Sequence[tuple[str, str]]) -> st
         lines.append(
             f"if {condition}; then\n"
             f"  echo 'installing {requirement} for {label}' >&2\n"
-            f"  npa_pip_install '{requirement}'\n"
+            f"  \"$npa_req_python\" -m pip install -q '{requirement}' \\\n"
+            f"    || \"$npa_req_python\" -m pip install -q '{requirement}' --break-system-packages \\\n"
+            f"    || \"$npa_req_python\" -m pip install -q '{requirement}' --user\n"
             "fi\n"
         )
     return "".join(lines)
@@ -701,6 +772,7 @@ def render_setup_for_tool(
     if not options.default_setup:
         return ""
     parts = [default_npa_setup()]
+    parts.append(render_vendor_interpreter_setup(tool_vendor_interpreters(tool_ref)))
     extra = tool_pip_extra(tool_ref)
     if extra:
         parts.append(render_pip_extra_setup(extra))

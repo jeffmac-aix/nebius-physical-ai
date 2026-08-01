@@ -122,3 +122,79 @@ def test_shipped_lerobot_spec_installs_the_library(monkeypatch: pytest.MonkeyPat
     train = next(doc for doc in docs if doc.get("name", "").endswith("train-gpu"))
     assert "import huggingface_hub" in train["setup"]
     assert_no_unresolved_placeholders(text)
+
+
+# ------------------------------------------------------------- vendor interpreters
+
+
+def test_vendor_interpreter_resolves_by_prefix() -> None:
+    from npa.orchestration.npa_workflow.skypilot_render import tool_vendor_interpreters
+
+    assert tool_vendor_interpreters("workbench.lerobot.policy_train") == (
+        "/opt/lerobot/venv/bin/python",
+    )
+    assert tool_vendor_interpreters("workbench.mjlab.eval") == ()
+
+
+def test_vendor_setup_installs_npa_there_and_records_it() -> None:
+    """Live job 245: `LeRobot import failed: No module named 'lerobot'`.
+
+    Setup installs npa into whatever `python3` resolves to — SkyPilot's miniconda — while the
+    vendor image keeps LeRobot in `/opt/lerobot/venv`. The retired template avoided this with
+    `source /opt/lerobot/venv/bin/activate`; the engine now installs npa into the vendor
+    interpreter and records it, so the tool and the vendor library share one environment.
+    """
+
+    from npa.orchestration.npa_workflow.skypilot_render import (
+        render_vendor_interpreter_setup,
+        tool_vendor_interpreters,
+    )
+
+    setup = render_vendor_interpreter_setup(
+        tool_vendor_interpreters("workbench.lerobot.policy_train")
+    )
+
+    assert "for npa_vendor_python in /opt/lerobot/venv/bin/python; do" in setup
+    assert "-m pip install -q -e" in setup
+    # Records it as THE stage interpreter, which is what the run shim reads.
+    assert 'echo "$npa_vendor_python" > /tmp/npa-python' in setup
+    # Skips a candidate that is not present, rather than failing the stage.
+    assert '[ -x "$npa_vendor_python" ] || continue' in setup
+    assert "${" not in setup
+
+
+def test_no_vendor_interpreter_renders_nothing() -> None:
+    from npa.orchestration.npa_workflow.skypilot_render import render_vendor_interpreter_setup
+
+    assert render_vendor_interpreter_setup(()) == ""
+
+
+def test_requirements_install_into_the_recorded_interpreter() -> None:
+    """A library installed into miniconda is invisible to the vendor interpreter."""
+
+    setup = render_pip_requirements_setup(tool_pip_requirements("workbench.lerobot.policy_train"))
+
+    assert 'npa_req_python="$(cat /tmp/npa-python)"' in setup
+    assert '"$npa_req_python" -c \'import huggingface_hub\'' in setup
+    assert '"$npa_req_python" -m pip install -q' in setup
+
+
+def test_lerobot_stage_switches_interpreter_before_installing_requirements(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("NPA_SRC_S3_URI", "s3://example-bucket/prefix/npa")
+    spec = load_spec(SPECS / "tokenfactory-train-triage.yaml")
+    plan = build_plan(spec, run_id="vendor-check")
+
+    text = render_skypilot_yaml(
+        spec,
+        plan,
+        run_id="vendor-check",
+        options=SkypilotRenderOptions(image_overrides={"*": ""}),
+    )
+
+    docs = [doc for doc in yaml.safe_load_all(text) if doc]
+    train = next(doc for doc in docs if doc.get("name", "").endswith("train-gpu"))
+    setup = train["setup"]
+    assert setup.index("npa_vendor_python") < setup.index("npa_req_python")
+    assert_no_unresolved_placeholders(text)
