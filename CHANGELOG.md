@@ -7,7 +7,7 @@ a versioned heading when a release is cut.
 
 ## Unreleased
 
-### Retiring the raw SkyPilot task catalog (36 → 8 templates)
+### Retiring the raw SkyPilot task catalog (36 → 7 templates)
 
 `npa.workflow/v0.0.1` specs are becoming the only workflow authoring surface.
 SkyPilot remains the execution engine, and `npa workbench workflow submit` still
@@ -24,7 +24,7 @@ under `npa/src/npa/workflows/skypilot/`.
   `scenario-gen-adversarial.yaml`, `sim2real-envgen-split.yaml`, `cosmos3-ea-fetch.yaml`,
   `tokenfactory-train-triage.yaml`, `tokenfactory-rollout-judge.yaml`,
   `tokenfactory-scene-to-rollout-judge.yaml`, `sim2real-actions.yaml`,
-  `isaac-franka-capture-reason.yaml`.
+  `isaac-franka-capture-reason.yaml`, `cosmos2-transfer.yaml`.
   `test_skypilot_catalog_retirement.py` pins the remaining set, so the tally is
   machine-checked and a new raw template needs a deliberate edit.
 - **Multi-node stages.** A resource profile can declare `num_nodes`, so a spec can ask
@@ -171,6 +171,12 @@ under `npa/src/npa/workflows/skypilot/`.
   remote `--checkpoint-path`: a local path, an `s3://` prefix or a Hugging Face model id, because
   a stage's pod starts empty. Note LeRobot >= 0.6 requires the processor format, so a
   pre-0.6 public policy such as `lerobot/diffusion_pusht` needs migrating first.
+- **`npa` is shimmed to the recorded interpreter**, like `python3` already was, so a vendor
+  image's baked console script cannot run a stale CLI against a fresh library.
+- **The staged npa source goes ahead of a baked one on `PYTHONPATH`.** A source tree on
+  PYTHONPATH shadows every install; three vendor images ship one.
+- **`npa workbench cosmos2 transfer` publishes its manifest to S3** beside the augmented clip
+  instead of only echoing it, so the provenance of a synthetic clip survives the pod.
 - **Isaac Lab frame capture is a package module** (`npa.workflows.isaac_capture`) instead of a
   repo script, so it runs in a pod with no checkout; `npa/scripts/capture_isaac_lab_scene_frames.py`
   remains as a shim. It also owns its camera framing (`--camera-eye`/`--camera-target`) and

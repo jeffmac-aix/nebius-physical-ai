@@ -2695,3 +2695,62 @@ one: the vendor-interpreter entry, the with-deps fallback, and the writable Kit 
 (pinned by `test_workbench_image_k8s_prereqs.py`, which now separates "can be scheduled" from
 "can render"). The framing is unit-tested without a simulator by rotating the camera's +X axis
 and asserting it lands on the target.
+
+## R38. `cosmos2-transfer.yaml` retired (8 → 7) — a stub replaced by the real model
+
+The template held an `RTXPRO6000:1` in order to run this:
+
+```python
+payload = { …, "status": "contract_ready" }
+print(json.dumps(payload, indent=2, sort_keys=True))
+```
+
+It transferred nothing. **A faithful twin would have been a stub on the new surface**, which is
+precisely what `skills/atomic/real-components/SKILL.md` exists to prevent, so the twin uses
+`workbench.cosmos2.transfer_execute` — `--execute` turns a missing transfer runtime into a hard
+error instead of a silent fall back to reference augmentation. It is also the first spec to use
+that toolRef, which had been sitting in the catalog unused while five specs used the
+manifest-only variant.
+
+### Three defects between the template and a real run
+
+| Job | Symptom | Cause |
+| --- | --- | --- |
+| 284 | `No such command 'cosmos2'. Did you mean 'cosmos'?` | The image bakes its own `npa` console script, first on PATH. Setup saw `command -v npa` succeed, skipped installing, and the stage ran a stale CLI. `python3` was already shimmed to the recorded interpreter; `npa` now is too. |
+| 285 | same error, now from the shim | Deeper: the image ships `PYTHONPATH=/opt/npa/src` holding a stale npa **source tree**, which shadows every install, editable or not, in any interpreter. A probe pod settled it: `/opt/npa/src/npa/__init__.py`, `cosmos2 registered: False`. Third image to do this (lerobot was job 250), so the engine now puts the staged source ahead of whatever PYTHONPATH it inherited. |
+| 286 | `hf download nvidia/Cosmos-Guardrail1` exit 1 | It reached `examples/inference.py` — the real model — and stopped at a gated Hugging Face repo. `workbench.cosmos2` now hints `HF_TOKEN`, and the guardrail that pins hint-vs-case agreement immediately found three other cosmos2 cases missing it. |
+
+### Job 287 — the model ran, and published half of what it made
+
+`SUCCEEDED` in 14m21s, leaving exactly one object: a 3.9 MB augmented MP4. The manifest — prompt,
+control spec, guidance, whether the run was conditioned on an input clip — was echoed to stdout
+and died with the pod. **For a synthetic-data stage that provenance is the product**, and the
+spec had nothing durable to declare as its output. The data-factory path already published a run
+manifest; the single-inference path now matches it.
+
+### Job 288 — `npa-wf-gpu-cosmos2-transfer-f867e7c3`, SUCCEEDED, 14m23s on one GPU
+
+```
+  3918459  cosmos2-transfer/augmented/robot_depth.mp4
+     1068  cosmos2-transfer/augmented/manifest.json
+```
+
+```json
+{
+  "mode": "cosmos_transfer2.5",
+  "status": "executed",
+  "output_kind": "video",
+  "control_spec": "assets/robot_example/depth/robot_depth_spec.json",
+  "video_bytes": 3918459,
+  "schema": "npa.cosmos2.transfer.v1"
+}
+```
+
+`"status": "executed"` where the template said `"contract_ready"`. Frame 20 of the generated
+clip — photoreal output synthesised from a depth control spec:
+
+<img alt="Job 288: a frame from the Cosmos-Transfer2.5 augmented clip" src="/opt/cursor/artifacts/screenshots/cosmos2-transfer-augmented-frame-job288.png" width="420" />
+
+Two of the three engine fixes here (the `npa` shim, the PYTHONPATH precedence) apply to every
+vendor image, not just this one, and both replace a class of failure that presents as "the tool
+does not have this command" while the tool plainly does.
