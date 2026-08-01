@@ -27,7 +27,9 @@ from urllib.parse import urlparse
 DEFAULT_TASK = "Isaac-Lift-Cube-Franka-v0"
 
 
-def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+def build_parser() -> argparse.ArgumentParser:
+    """Return the argument parser, so a guardrail can check toolRef argv against it."""
+
     parser = argparse.ArgumentParser(description="Capture Isaac Lab scene frames as PNGs.")
     parser.add_argument(
         "--task",
@@ -63,7 +65,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Print the resolved settings and exit without starting Isaac Sim.",
     )
-    return parser.parse_args(argv)
+    return parser
+
+
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    return build_parser().parse_args(argv)
 
 
 def _upload_tree(local_dir: Path, output_uri: str) -> dict[str, str]:

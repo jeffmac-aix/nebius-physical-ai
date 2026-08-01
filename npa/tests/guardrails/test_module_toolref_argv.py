@@ -36,6 +36,7 @@ PARSER_FACTORIES = {
     "npa.workflows.sim2real_envgen": "build_parser",
     "npa.workflows.token_factory_triage": "build_parser",
     "npa.workbench.lerobot.policy_container": "build_parser",
+    "npa.workflows.isaac_capture": "build_parser",
 }
 
 
