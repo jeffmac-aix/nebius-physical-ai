@@ -45,7 +45,9 @@ def test_install_is_conditional_on_the_executable_being_absent() -> None:
     assert "if ! command -v huggingface-cli >/dev/null 2>&1; then" in setup
     assert "-m pip install -q 'huggingface_hub[cli]>=0.23,<1.0'" in setup
     # Same PEP 668 fallbacks default_npa_setup uses: plain, --break-system-packages, --user.
-    assert setup.count("huggingface_hub[cli]>=0.23,<1.0") == 3
+    # Four mentions: the echo plus the three PEP 668 fallbacks (plain,
+    # --break-system-packages, --user) that default_npa_setup also uses.
+    assert setup.count("huggingface_hub[cli]>=0.23,<1.0") == 4
 
 
 def test_no_requirements_renders_nothing() -> None:
