@@ -7,7 +7,7 @@ a versioned heading when a release is cut.
 
 ## Unreleased
 
-### Retiring the raw SkyPilot task catalog (36 → 13 templates)
+### Retiring the raw SkyPilot task catalog (36 → 12 templates)
 
 `npa.workflow/v0.0.1` specs are becoming the only workflow authoring surface.
 SkyPilot remains the execution engine, and `npa workbench workflow submit` still
@@ -21,7 +21,8 @@ under `npa/src/npa/workflows/skypilot/`.
   `token-factory-generate.yaml`, `token-factory-cosmos-reason.yaml`,
   `vlm-eval-token-factory.yaml`, `mjlab-eval.yaml`, `retargeting.yaml`,
   `vlm-eval.yaml`, `vlm-eval-benchmark.yaml`, `sim-to-real-loop.yaml`,
-  `scenario-gen-adversarial.yaml`, `sim2real-envgen-split.yaml`, `cosmos3-ea-fetch.yaml`.
+  `scenario-gen-adversarial.yaml`, `sim2real-envgen-split.yaml`, `cosmos3-ea-fetch.yaml`,
+  `tokenfactory-train-triage.yaml`.
   `test_skypilot_catalog_retirement.py` pins the remaining set, so the tally is
   machine-checked and a new raw template needs a deliberate edit.
 - **Multi-node stages.** A resource profile can declare `num_nodes`, so a spec can ask
@@ -155,6 +156,17 @@ under `npa/src/npa/workflows/skypilot/`.
   run's textual artifacts and has a hosted text model write the report, replacing ~45 lines of
   inline bash that ended in `token-factory generate --system-prompt "$(cat …)"`. It fails loudly
   rather than triaging nothing when a run has no readable text.
+- **A `toolRef` can declare its vendor image's interpreter** (`TOOL_REF_VENDOR_INTERPRETERS`).
+  Setup installs npa into it — with `--no-deps`, so a vendor's pinned stack is never perturbed —
+  and records it as the stage interpreter, so a tool and the vendor library it imports share one
+  environment. Without this, a stage on a vendor image runs the system python and fails with
+  `No module named 'lerobot'`; the probe checks `import npa.workbench` rather than `import npa`,
+  because these images bake a partial npa on `PYTHONPATH` that would otherwise mask the problem.
+- **`npa-lerobot` is SkyPilot-hostable** (plus a `Dockerfile.k8s-prereqs` for repairing a
+  published tag). Note that `0.5.1` fails LeRobot training at step 0 with a torch/torchcodec ABI
+  mismatch; use `0.6.0` or later.
+- **A LeRobot training failure carries its log** (last 60 lines) instead of naming a path inside
+  a pod that no longer exists.
 - **New guardrails** (none weakened): a catalog-wide check that every `toolRef` argv
   names real CLI options and passes values its options can mean — including the `npa …`
   commands **inside** a `bash -c` toolRef, a blind spot where a real defect had shipped;

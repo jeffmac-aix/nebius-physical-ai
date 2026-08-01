@@ -2411,3 +2411,59 @@ which is the next thing to try.
 
 The same producer is the blocker for `tokenfactory-scene-to-rollout-judge` and a real
 `tokenfactory-rollout-judge` twin (§R30), so one image repair unblocks three templates.
+
+## R33. `tokenfactory-train-triage.yaml` retired (13 → 12) — the combo, live
+
+The `torchcodec` ABI mismatch of §R32 is specific to `npa-lerobot:0.5.1`. `0.6.0` pairs torch and
+torchcodec consistently, so the derived hostable tag was rebuilt from it
+(`npa-lerobot:0.6.0-k8s-runtime`) and the twin ran clean.
+
+### Job 256 — `npa-wf-multi-tokenfactory-train-triage-6732d78a`, both stages SUCCEEDED
+
+```
+train-gpu  3m40s   1x[RTXPRO-6000-BLACKWELL-SERVER-EDITION:1]   SUCCEEDED
+triage    11m46s   1x[CPU:4+]                                    SUCCEEDED
+```
+
+The GPU stage produced a real training run, not a manifest:
+
+```
+ 206666936  artifacts/model.safetensors
+ 412752084  artifacts/checkpoints/000001/training_state/optimizer_state.safetensors
+      5817  artifacts/train_config.json
+      3263  artifacts/checkpoints/000001/training_state/optimizer_param_groups.json
+        62  artifacts/checkpoints/000001/training_state/training_step.json
+     23214  triage/generations.jsonl
+     20635  triage/prompts.jsonl
+```
+
+and the hosted model's report is genuinely derived from those artifacts — it quotes values *out
+of the files it was handed*:
+
+```
+### Summary
+The training run `tokenfactory-train-triage` appears to be training a robot policy using a
+ResNet18 backbone with a transformer architecture. …
+
+### Signals
+- **Training Step**: … (`"step": 1` in `training_state/training_step.json`)
+- **Batch Size**: … 2 (`"batch_size": 2` …)
+- **Learning Rate**: … 1e-5 (`"lr": 1e-05` in `optimizer_param_groups.json`)
+```
+
+2,529 characters of report from an 18,779-character prompt built by
+`npa.workflows.token_factory_triage` out of the run's textual artifacts. That is the combo's whole
+point: Nebius GPU compute produces a run, a hosted model reads it, and **no GPU is held on the
+reading side** — the triage stage ran on `1x[CPU:4+]`.
+
+The migrated test asserts something the template could only imply: the triage stage's
+`--artifacts-uri` is byte-identical to the train stage's `--artifacts-s3-uri`, so the consumer
+provably reads what the producer wrote.
+
+### What this unblocks
+
+The same in-image LeRobot producer is the blocker for `tokenfactory-scene-to-rollout-judge` and
+for a real `tokenfactory-rollout-judge` twin (§R30, §R23). Both now have a proven path: the
+vendor-interpreter switch, the dataset materialisation, the hostable image and the artifact
+upload all exist and are live-verified. What remains for those two is authoring their specs
+(reason → rollout → judge) and a policy checkpoint for the eval-based producer.
