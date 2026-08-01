@@ -10,7 +10,6 @@ It is import-safe (no GPU/framework deps) and is used by both
 
 from __future__ import annotations
 
-import os
 import time
 from pathlib import Path
 from typing import Any
