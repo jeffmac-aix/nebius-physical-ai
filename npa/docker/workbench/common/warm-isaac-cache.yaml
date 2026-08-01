@@ -75,6 +75,16 @@ spec:
         runAsUser: 0
       containers:
         - name: warm
+          # The job's only legitimate writes are into the mounted cache volume, so the
+          # root filesystem is immutable and /tmp is a separate scratch volume (pip needs
+          # a writable TMPDIR). Flagged by Trivy KSV-0014 on the first draft of this file
+          # — worth honouring rather than ignoring, because this job downloads and unpacks
+          # ~4.5 GB of third-party code as root.
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           # Any of the Isaac images works; they share the bootstrap.
           image: cr.eu-north1.nebius.cloud/<your-registry-id>/npa-isaac-lab:2.3.2.post1
           command: ["/opt/npa/bin/isaac-bootstrap", "warm"]
@@ -93,6 +103,8 @@ spec:
           volumeMounts:
             - name: isaac-cache
               mountPath: /opt/isaac-cache
+            - name: tmp
+              mountPath: /tmp
           resources:
             requests:
               cpu: "2"
@@ -106,6 +118,11 @@ spec:
         - name: isaac-cache
           persistentVolumeClaim:
             claimName: npa-isaac-cache
+        # Writable scratch, because the root filesystem is read-only. pip unpacks wheels
+        # here, so size it for the largest one (isaacsim-extscache-kit is ~3 GB) plus room.
+        - name: tmp
+          emptyDir:
+            sizeLimit: 12Gi
         # Option (b): swap the block above for a per-pod scratch volume. Size it for the
         # cache plus headroom, or the pod is evicted part-way through the bootstrap.
         # - name: isaac-cache
