@@ -270,3 +270,25 @@ def test_sonic_does_not_bake_the_gated_groot_policies() -> None:
         "GIT_LFS_SKIP_SMUDGE must be exported BEFORE the clone/checkout, or the objects "
         "are already downloaded by the time it takes effect"
     )
+
+
+def test_the_one_allowlisted_source_asset_is_named_and_size_bounded() -> None:
+    """The single non-LFS weight-shaped file in gear_sonic is a reviewed exception.
+
+    `coco_aug_dict.pth` is committed directly to git (not LFS) at ~1.8 KiB. The repo's
+    dual licence separates Apache-2.0 SOURCE from NVIDIA-Open-Model-License WEIGHTS, and a
+    sub-2-KiB keypoint-augmentation lookup table in the source tree is source. That is a
+    judgement call, so it must stay a named allowlist entry with a size bound - not a
+    pattern that would also admit a real checkpoint - and it must remain visible in the
+    diff for a reviewer to object to.
+    """
+    dockerfile = _sonic_dockerfile()
+    assert "ALLOWED_SOURCE_ASSETS" in dockerfile
+    assert "gear_sonic/trl/utils/smplx/body_model/coco_aug_dict.pth" in dockerfile
+    assert "ALLOWED_SOURCE_ASSET_MAX_BYTES" in dockerfile, "the exception must be size-bounded"
+    instructions = _instructions_only(dockerfile)
+    # A wildcard or suffix-wide exemption would defeat the whole check.
+    for forbidden in ("*.pth", "*.pt", "smplx/**", 'suffix in ALLOWED'):
+        assert forbidden not in instructions, (
+            f"the allowlist must name exact paths, found {forbidden!r}"
+        )

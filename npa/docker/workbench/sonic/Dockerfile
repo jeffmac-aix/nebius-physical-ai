@@ -222,18 +222,42 @@ if leaked:
 # both are reported and only real payload is fatal.
 LFS_MAGIC = b"version https://git-lfs.github.com/spec/v1"
 WEIGHT_SUFFIXES = {".pt", ".pth", ".safetensors", ".ckpt", ".onnx", ".bin", ".gguf"}
-pointers, payload = [], []
-for path in Path(os.environ["SONIC_HOME"]).rglob("*"):
+
+# One reviewed exception, named explicitly rather than exempted by pattern.
+#
+# gear_sonic/trl/utils/smplx/body_model/coco_aug_dict.pth is committed directly to git
+# (not LFS) and is ~1.8 KiB. The repo's dual licence separates "SOURCE CODE - Apache
+# License 2.0" from "MODEL WEIGHTS - all trained model checkpoints and weights"; a 1.8 KiB
+# keypoint-augmentation lookup table living in the source tree is source, not a trained
+# checkpoint. Every actual checkpoint in this repo is LFS-tracked and stays a pointer.
+#
+# This is a judgement call, so it is a one-line allowlist a reviewer can object to rather
+# than a silent suffix exemption. The size bound is deliberate: if this file ever grows
+# past a few KiB it has stopped being a lookup table and the decision must be re-made.
+ALLOWED_SOURCE_ASSETS = {"gear_sonic/trl/utils/smplx/body_model/coco_aug_dict.pth"}
+ALLOWED_SOURCE_ASSET_MAX_BYTES = 8 * 1024
+
+home = Path(os.environ["SONIC_HOME"])
+pointers, payload, allowed = [], [], []
+for path in home.rglob("*"):
     if not path.is_file() or path.suffix not in WEIGHT_SUFFIXES:
         continue
-    head = path.read_bytes()[:64]
-    (pointers if head.startswith(LFS_MAGIC) else payload).append(str(path))
+    if path.read_bytes()[:64].startswith(LFS_MAGIC):
+        pointers.append(str(path))
+        continue
+    relative = str(path.relative_to(home))
+    if relative in ALLOWED_SOURCE_ASSETS and path.stat().st_size <= ALLOWED_SOURCE_ASSET_MAX_BYTES:
+        allowed.append(f"{relative} ({path.stat().st_size} B)")
+        continue
+    payload.append(str(path))
 if pointers:
     print(f"NPA_SONIC_LFS_POINTERS_ONLY {len(pointers)} unresolved weight pointer(s), e.g. {pointers[:3]}")
+if allowed:
+    print(f"NPA_SONIC_ALLOWED_SOURCE_ASSETS {allowed}")
 if payload:
     raise SystemExit(
-        "FATAL: real model weights baked into the image (not LFS pointers): "
-        f"{sorted(payload)[:10]}"
+        "FATAL: real model weights baked into the image (not LFS pointers, not an "
+        f"allowlisted source asset): {sorted(payload)[:10]}"
     )
 
 if os.environ.get("REQUIRE_TORCH_SM120") == "1":
