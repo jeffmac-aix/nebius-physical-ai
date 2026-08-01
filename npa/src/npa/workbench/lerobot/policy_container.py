@@ -443,7 +443,8 @@ def run_lerobot_training(
     if proc.returncode != 0 or checkpoint is None or validation is None:
         raise PolicyContainerError(
             f"lerobot-train failed or did not produce loadable real weights "
-            f"(exit={proc.returncode}, checkpoint={checkpoint}, log={log})"
+            f"(exit={proc.returncode}, checkpoint={checkpoint}, log={log})\n"
+            f"{_tail_training_log(log)}"
         )
     upload_checkpoint_path(checkpoint, config)
     return LeRobotTrainingResult(
@@ -1047,6 +1048,24 @@ def create_app() -> Any:
         return result.to_dict()
 
     return app
+
+
+def _tail_training_log(log: Path | str, *, lines: int = 60) -> str:
+    """Return the tail of the training log, for a failure message that leaves the pod.
+
+    Naming the log path is useless once the pod is gone: the message travelled to the operator
+    while `/tmp/lerobot_output.train.log` did not (live job 252, where `lerobot-train` exited 1
+    and the reason was unreachable). The tail travels with the exception.
+    """
+
+    try:
+        with open(log, encoding="utf-8", errors="replace") as handle:
+            captured = handle.readlines()[-lines:]
+    except OSError as exc:
+        return f"(could not read {log}: {exc})"
+    if not captured:
+        return f"(training log {log} is empty)"
+    return f"--- last {len(captured)} lines of {log} ---\n" + "".join(captured)
 
 
 def _materialize_train_dataset(args: argparse.Namespace) -> Path:
