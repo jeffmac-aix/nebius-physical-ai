@@ -237,3 +237,34 @@ def test_the_npa_console_script_is_looked_for_in_the_user_scheme_too() -> None:
     assert 'scheme=\"posix_user\"' in setup
     assert '"$HOME/.local/bin"' in setup
     assert "ln -sf" in setup
+
+
+def test_the_npa_console_script_is_shimmed_to_the_recorded_interpreter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Live job 284: `No such command 'cosmos2'. Did you mean 'cosmos'?`
+
+    The cosmos2-transfer image bakes its own npa, whose console script is first on PATH. Setup
+    saw `command -v npa` succeed and skipped installing; the overlay went into the vendor
+    interpreter; the stage then ran a stale CLI against a fresh library. `python3` was already
+    shimmed to the recorded interpreter, so `npa` has to be too — otherwise the two disagree
+    about which install they mean, which is exactly the bug.
+    """
+
+    monkeypatch.setenv("NPA_SRC_S3_URI", "s3://example-bucket/prefix/npa")
+    spec = load_spec(SPECS / "cosmos2-transfer.yaml")
+    plan = build_plan(spec, run_id="npa-shim-check")
+    text = render_skypilot_yaml(
+        spec,
+        plan,
+        run_id="npa-shim-check",
+        options=SkypilotRenderOptions(image_overrides={"*": ""}),
+    )
+    docs = [doc for doc in yaml.safe_load_all(text) if doc]
+    run_script = next(doc["run"] for doc in docs if doc.get("run"))
+
+    assert "> /tmp/npa-shim/python3" in run_script
+    assert "> /tmp/npa-shim/npa" in run_script
+    assert "from npa.cli.main import app_entry" in run_script
+    # Both shims come from the same recorded interpreter.
+    assert run_script.count('"$npa_python"') >= 2
