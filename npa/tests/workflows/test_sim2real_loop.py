@@ -46,8 +46,10 @@ SIM2REAL_ACTIONS = (
 SIM2REAL_ENVGEN_SPLIT = (
     ROOT / "npa" / "src" / "npa" / "workflows" / "skypilot" / "sim2real-envgen-split.yaml"
 )
+# The raw cosmos2-transfer template is retired; its spec is the surface, and unlike the
+# template it runs the real model (EVIDENCE.md §R38).
 COSMOS2_TRANSFER = (
-    ROOT / "npa" / "src" / "npa" / "workflows" / "skypilot" / "cosmos2-transfer.yaml"
+    ROOT / "npa" / "workflows" / "workbench" / "npa-workflows" / "cosmos2-transfer.yaml"
 )
 # The raw cosmos3-reason template is retired; its npa.workflow spec is the surface
 # (both run the same manifest builder — EVIDENCE §R2).

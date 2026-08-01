@@ -37,7 +37,6 @@ REMAINING: dict[str, str] = {
     "sim-to-real-trigger.yaml": "three-tier contract (legacy YAML tier)",
     "sonic-train-standalone.yaml": "three-tier contract + standalone-policy guardrail",
     # --- no npa.workflow twin authored yet ---
-    "cosmos2-transfer.yaml": "no twin; cosmos2.transfer is used via other specs",
     "cosmos3-text-to-image-inference.yaml": "no twin; raw-sky e2e test targets it",
     "dataset-ingest-curate.yaml": "twin exists but has no live-matrix coverage yet",
     # --- twin exists but is NOT live-verified yet ---
@@ -119,6 +118,11 @@ REMAINING: dict[str, str] = {
     #   npa-wf-multi-isaac-franka-capture-reason-d8eca4b3: Isaac rendered the Franka and cube on
     #   a GPU, a hosted reasoner planned from those frames on CPU, and the plan describes what
     #   the frames actually show. Four defects on the way. See EVIDENCE.md \u00a7R37.
+    #
+    # cosmos2-transfer.yaml  job 288
+    #   The template held a GPU to print `"status": "contract_ready"`. Its twin ran the real
+    #   Cosmos-Transfer2.5 model for 14m23s and published a 3.9 MB augmented clip plus the
+    #   manifest that says how it was made. See EVIDENCE.md \u00a7R38.
     #
     # Phase 2c: RELOCATED (not deleted) to npa/src/npa/workflows/byof/profiles/ —
     # they are BYOF resource profiles reached through byof.yaml's toolRef, not

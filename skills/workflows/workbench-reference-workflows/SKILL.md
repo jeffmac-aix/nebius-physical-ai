@@ -34,7 +34,6 @@ templates retire.
 
 - `bdd100k-pipeline.yaml`: BDD100K ingest, backfill, CLIP embedding,
   materialized views, training, and evaluation.
-- `cosmos2-transfer.yaml`: Cosmos Transfer augmentation.
 - `cosmos3-text-to-image-inference.yaml`: H100 text-to-image smoke inference.
 - `dataset-ingest-curate.yaml`: dataset-of-record ingest and curation.
 - `sim-to-real-pipeline.yaml`: full sim-to-real pipeline.
@@ -61,6 +60,8 @@ These raw templates were retired once their `npa.workflow` spec had a live run
 - `vlm-eval.yaml`, `vlm-eval-benchmark.yaml` — self-hosted VLM scoring and the labeled
   sweep. The renderer now starts and health-checks the vLLM server the spec asks for, so
   no prebuilt serving image is needed.
+- `cosmos2-transfer.yaml` — retired to `npa-workflows/cosmos2-transfer.yaml`, which runs the
+  REAL Cosmos-Transfer2.5 model (`--execute`) instead of printing a `contract_ready` payload.
 - `isaac-franka-capture-reason.yaml` — retired to
   `npa-workflows/isaac-franka-capture-reason.yaml`. The capture code moved into the package
   (`npa.workflows.isaac_capture`), so the stage no longer needs a repo mounted into the pod.
