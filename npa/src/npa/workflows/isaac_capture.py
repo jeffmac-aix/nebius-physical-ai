@@ -18,10 +18,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -60,6 +61,19 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=1,
         help="Number of episodes (only the first episode is captured).",
+    )
+    parser.add_argument(
+        "--camera-eye",
+        default="",
+        help=(
+            "Camera position as 'x,y,z' in environment coordinates. Defaults to a pose that "
+            "frames a tabletop manipulator at the origin."
+        ),
+    )
+    parser.add_argument(
+        "--camera-target",
+        default="",
+        help="Point the camera looks at, as 'x,y,z'. Defaults to the manipulator's workspace.",
     )
     parser.add_argument(
         "--render-only",
@@ -101,6 +115,148 @@ def _upload_tree(local_dir: Path, output_uri: str) -> dict[str, str]:
     return uploaded
 
 
+#: The scene key the shared frame extractor looks the camera up by. Keeping the name means this
+#: module can own the POSE (which is scene-specific) while reusing the extraction (which is not);
+#: `test_isaac_capture.py` pins the two in agreement so a rename cannot silently return no frames.
+CAPTURE_CAMERA_NAME = "heldout_viz_camera"
+
+
+#: Where the camera sits and what it points at, for a tabletop manipulator whose base is at the
+#: environment origin. The retired template borrowed `_attach_isaac_viz_camera` from the sim2real
+#: engine, whose pose was tuned for a different scene: live job 280 rendered six technically
+#: perfect frames of bare floor, and the reasoner correctly replied that it could see
+#: "a tiled floor ... no visible objects, obstacles, or environmental features". A capture stage
+#: that photographs the wrong thing fails silently, which is worse than failing loudly.
+DEFAULT_CAMERA_EYE = (1.6, 1.6, 1.3)
+DEFAULT_CAMERA_TARGET = (0.4, 0.0, 0.3)
+
+
+def parse_point(raw: str, default: Sequence[float]) -> tuple[float, float, float]:
+    """Parse an 'x,y,z' argument, falling back to ``default`` when it is empty."""
+
+    text = (raw or "").strip()
+    if not text:
+        return tuple(float(component) for component in default)  # type: ignore[return-value]
+    parts = [piece.strip() for piece in text.split(",")]
+    if len(parts) != 3:
+        raise SystemExit(f"expected three comma-separated numbers, got {raw!r}")
+    try:
+        return (float(parts[0]), float(parts[1]), float(parts[2]))
+    except ValueError as exc:
+        raise SystemExit(f"expected three numbers, got {raw!r}") from exc
+
+
+def look_at_quaternion(
+    eye: Sequence[float],
+    target: Sequence[float],
+    *,
+    world_up: Sequence[float] = (0.0, 0.0, 1.0),
+) -> tuple[float, float, float, float]:
+    """Return the `(w, x, y, z)` world-convention rotation that aims a camera at ``target``.
+
+    Isaac's world convention has the camera looking down its own -Z with +Y up, so the basis is
+    built from that and converted to a quaternion. Pure arithmetic on purpose: it is the part of
+    the framing that can be checked without a simulator.
+    """
+
+    def _sub(a: Sequence[float], b: Sequence[float]) -> list[float]:
+        return [a[i] - b[i] for i in range(3)]
+
+    def _cross(a: Sequence[float], b: Sequence[float]) -> list[float]:
+        return [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        ]
+
+    def _norm(v: Sequence[float]) -> list[float]:
+        length = math.sqrt(sum(component * component for component in v))
+        if length < 1e-9:
+            raise ValueError("cannot normalise a zero-length vector")
+        return [component / length for component in v]
+
+    backward = _norm(_sub(eye, target))  # camera +Z points away from the subject
+    right = _cross(world_up, backward)
+    if math.sqrt(sum(c * c for c in right)) < 1e-6:
+        # Looking straight along world up: any right vector will do, pick a stable one.
+        right = [1.0, 0.0, 0.0]
+    right = _norm(right)
+    up = _cross(backward, right)
+
+    m = [
+        [right[0], up[0], backward[0]],
+        [right[1], up[1], backward[1]],
+        [right[2], up[2], backward[2]],
+    ]
+    trace = m[0][0] + m[1][1] + m[2][2]
+    if trace > 0.0:
+        s = math.sqrt(trace + 1.0) * 2.0
+        w = 0.25 * s
+        x = (m[2][1] - m[1][2]) / s
+        y = (m[0][2] - m[2][0]) / s
+        z = (m[1][0] - m[0][1]) / s
+    elif m[0][0] > m[1][1] and m[0][0] > m[2][2]:
+        s = math.sqrt(1.0 + m[0][0] - m[1][1] - m[2][2]) * 2.0
+        w = (m[2][1] - m[1][2]) / s
+        x = 0.25 * s
+        y = (m[0][1] + m[1][0]) / s
+        z = (m[0][2] + m[2][0]) / s
+    elif m[1][1] > m[2][2]:
+        s = math.sqrt(1.0 + m[1][1] - m[0][0] - m[2][2]) * 2.0
+        w = (m[0][2] - m[2][0]) / s
+        x = (m[0][1] + m[1][0]) / s
+        y = 0.25 * s
+        z = (m[1][2] + m[2][1]) / s
+    else:
+        s = math.sqrt(1.0 + m[2][2] - m[0][0] - m[1][1]) * 2.0
+        w = (m[1][0] - m[0][1]) / s
+        x = (m[0][2] + m[2][0]) / s
+        y = (m[1][2] + m[2][1]) / s
+        z = 0.25 * s
+    return (w, x, y, z)
+
+
+def _attach_capture_camera(
+    env_cfg: Any,
+    *,
+    eye: Sequence[float],
+    target: Sequence[float],
+    width: int = 512,
+    height: int = 512,
+) -> None:
+    """Attach a camera that actually frames the task.
+
+    512x512 rather than the sim2real engine's 128x128: these frames are read by a VLM, and a
+    128-pixel thumbnail of a robot arm is not something a reasoner can plan from.
+    """
+
+    import isaaclab.sim as sim_utils
+
+    try:
+        from isaaclab.sensors import TiledCameraCfg as _CameraCfg
+    except ImportError:  # pragma: no cover - older Isaac Lab
+        from isaaclab.sensors import CameraCfg as _CameraCfg
+
+    camera_cfg = _CameraCfg(
+        prim_path="{ENV_REGEX_NS}/NpaCaptureCamera",
+        offset=_CameraCfg.OffsetCfg(
+            pos=tuple(float(component) for component in eye),
+            rot=look_at_quaternion(eye, target),
+            convention="world",
+        ),
+        data_types=["rgb"],
+        spawn=sim_utils.PinholeCameraCfg(
+            focal_length=24.0,
+            focus_distance=400.0,
+            horizontal_aperture=20.955,
+            clipping_range=(0.1, 20.0),
+        ),
+        width=width,
+        height=height,
+    )
+    setattr(env_cfg.scene, CAPTURE_CAMERA_NAME, camera_cfg)
+
+
 def _capture_frames(
     *,
     task: str,
@@ -108,6 +264,8 @@ def _capture_frames(
     max_steps: int,
     max_frames: int,
     episodes: int,
+    camera_eye: Sequence[float] = DEFAULT_CAMERA_EYE,
+    camera_target: Sequence[float] = DEFAULT_CAMERA_TARGET,
     publish: Callable[[dict[str, object]], None] | None = None,
 ) -> dict[str, object]:
     """Capture frames, then hand the summary to ``publish`` BEFORE the simulator shuts down.
@@ -119,7 +277,6 @@ def _capture_frames(
     """
 
     from npa.workflows.sim2real.engine import (
-        _attach_isaac_viz_camera,
         _heldout_render_step_indices,
         _isaac_extract_rgb_frame,
         _write_render_png,
@@ -156,7 +313,7 @@ def _capture_frames(
 
     try:
         env_cfg = parse_env_cfg(task, device=device, num_envs=1)
-        _attach_isaac_viz_camera(env_cfg)
+        _attach_capture_camera(env_cfg, eye=camera_eye, target=camera_target)
         env = gym.make(task, cfg=env_cfg)
         for episode in range(episodes):
             env.reset()
@@ -233,6 +390,8 @@ def main(argv: list[str] | None = None) -> int:
         max_steps=args.max_steps,
         max_frames=args.max_frames,
         episodes=args.episodes,
+        camera_eye=parse_point(args.camera_eye, DEFAULT_CAMERA_EYE),
+        camera_target=parse_point(args.camera_target, DEFAULT_CAMERA_TARGET),
         publish=publish,
     )
     return 0

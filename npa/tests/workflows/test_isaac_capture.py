@@ -88,3 +88,78 @@ def test_render_only_reports_the_resolved_settings_without_a_simulator(capsys) -
 def test_upload_rejects_a_non_s3_destination(tmp_path: Path) -> None:
     with pytest.raises(ValueError):
         isaac_capture._upload_tree(tmp_path, "gs://bucket/scene/")
+
+
+# ------------------------------------------------------------------ camera framing
+
+
+def test_look_at_quaternion_actually_points_at_the_target() -> None:
+    """Live job 280 rendered six perfect photographs of bare floor.
+
+    The template borrowed a camera pose tuned for a different scene, so the capture succeeded
+    and the reasoner honestly reported "a tiled floor ... no visible objects". Framing is the
+    one part of this stage that can be checked without a simulator, so it is checked here:
+    rotate the camera's own -Z axis by the returned quaternion and it must point from the eye
+    towards the target.
+    """
+
+    import math
+
+    def rotate(q, v):
+        w, x, y, z = q
+        # v' = q * v * q^-1, written out.
+        tx = 2.0 * (y * v[2] - z * v[1])
+        ty = 2.0 * (z * v[0] - x * v[2])
+        tz = 2.0 * (x * v[1] - y * v[0])
+        return (
+            v[0] + w * tx + (y * tz - z * ty),
+            v[1] + w * ty + (z * tx - x * tz),
+            v[2] + w * tz + (x * ty - y * tx),
+        )
+
+    for eye, target in (
+        (isaac_capture.DEFAULT_CAMERA_EYE, isaac_capture.DEFAULT_CAMERA_TARGET),
+        ((2.0, 0.0, 0.5), (0.0, 0.0, 0.5)),
+        ((0.0, -1.5, 1.5), (0.0, 0.0, 0.0)),
+    ):
+        quat = isaac_capture.look_at_quaternion(eye, target)
+        assert math.isclose(sum(c * c for c in quat), 1.0, rel_tol=1e-6), "not a unit quaternion"
+
+        # Isaac's world convention: the camera looks down its own -Z.
+        forward = rotate(quat, (0.0, 0.0, -1.0))
+        wanted = [target[i] - eye[i] for i in range(3)]
+        length = math.sqrt(sum(c * c for c in wanted))
+        wanted = [c / length for c in wanted]
+        dot = sum(forward[i] * wanted[i] for i in range(3))
+        assert dot > 0.999, f"camera looks {dot:.4f} away from {target} when placed at {eye}"
+
+
+def test_the_camera_name_matches_what_the_frame_extractor_looks_up() -> None:
+    """Owning the pose must not cost us the extraction.
+
+    `_isaac_extract_rgb_frame` finds the camera by scene key; renaming ours would make every
+    capture return `None` and the stage would fail with "No frames captured" for a reason that
+    has nothing to do with rendering.
+    """
+
+    from npa.workflows.sim2real.engine import HELDOUT_VIZ_CAMERA_NAME
+
+    assert isaac_capture.CAPTURE_CAMERA_NAME == HELDOUT_VIZ_CAMERA_NAME
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("", (1.6, 1.6, 1.3)),
+        ("1,2,3", (1.0, 2.0, 3.0)),
+        (" 0.5 , -1 , 2.25 ", (0.5, -1.0, 2.25)),
+    ],
+)
+def test_parse_point(raw: str, expected: tuple[float, float, float]) -> None:
+    assert isaac_capture.parse_point(raw, isaac_capture.DEFAULT_CAMERA_EYE) == expected
+
+
+@pytest.mark.parametrize("raw", ["1,2", "a,b,c", "1,2,3,4"])
+def test_parse_point_rejects_nonsense(raw: str) -> None:
+    with pytest.raises(SystemExit):
+        isaac_capture.parse_point(raw, isaac_capture.DEFAULT_CAMERA_EYE)
