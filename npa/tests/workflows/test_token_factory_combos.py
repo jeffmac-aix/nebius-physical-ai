@@ -536,6 +536,8 @@ def test_sdk_workflow_submit_delegates_to_orchestrator(mocker, monkeypatch) -> N
         / "tokenfactory-scene-to-rollout-judge.yaml",
         run_id="rj-test",
         secret_env=["NEBIUS_TOKEN_FACTORY_KEY", "AWS_ACCESS_KEY_ID"],
+        # Clear the workbench image pins: resolving them would mint a registry token.
+        image="none",
     )
 
     submit_mock.assert_called_once()
