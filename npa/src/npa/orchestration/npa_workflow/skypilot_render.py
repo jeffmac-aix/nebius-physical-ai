@@ -126,10 +126,17 @@ def render_vendor_interpreter_setup(candidates: Sequence[str]) -> str:
         "  fi\n"
         "  if [ -n \"$npa_vendor_src\" ]; then\n"
         "    echo \"installing npa into vendor interpreter $npa_vendor_python\" >&2\n"
-        "    \"$npa_vendor_python\" -m pip install -q -e \"$npa_vendor_src\" \\\n"
-        "      || \"$npa_vendor_python\" -m pip install -q -e \"$npa_vendor_src\" "
+        # --no-deps is essential, not an optimisation: a vendor image ships a PINNED stack, and
+        # resolving npa's requirements inside it can bump torch, after which the vendor's own
+        # compiled extensions stop loading (live job 253: torchcodec's
+        # libtorchcodec_core4.so failed with `undefined symbol: _ZN3c1013MessageLogger...`,
+        # the classic torch-ABI mismatch). The stage only needs npa importable; anything npa
+        # actually misses surfaces as a clear ImportError from the probe below.
+        "    \"$npa_vendor_python\" -m pip install -q --no-deps -e \"$npa_vendor_src\" \\\n"
+        "      || \"$npa_vendor_python\" -m pip install -q --no-deps -e \"$npa_vendor_src\" "
         "--break-system-packages \\\n"
-        "      || \"$npa_vendor_python\" -m pip install -q -e \"$npa_vendor_src\" --user || true\n"
+        "      || \"$npa_vendor_python\" -m pip install -q --no-deps -e \"$npa_vendor_src\" "
+        "--user || true\n"
         "  fi\n"
         # `import npa` is not enough: a vendor image may bake a PARTIAL npa on PYTHONPATH for
         # its own entrypoint, which shadows the real install — `import npa` passes and

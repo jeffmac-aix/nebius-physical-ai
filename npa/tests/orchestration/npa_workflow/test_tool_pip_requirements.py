@@ -157,7 +157,10 @@ def test_vendor_setup_installs_npa_there_and_records_it() -> None:
     )
 
     assert "for npa_vendor_python in /opt/lerobot/venv/bin/python; do" in setup
-    assert "-m pip install -q -e" in setup
+    # --no-deps: resolving npa's requirements inside a vendor venv can bump torch and
+    # break the vendor's own compiled extensions (live job 253, a torchcodec ABI mismatch).
+    assert "-m pip install -q --no-deps -e" in setup
+    assert "-m pip install -q -e" not in setup
     # Records it as THE stage interpreter, which is what the run shim reads.
     assert 'echo "$npa_vendor_python" > /tmp/npa-python' in setup
     # Probes a real subpackage: a vendor image may bake a PARTIAL npa on PYTHONPATH that makes
