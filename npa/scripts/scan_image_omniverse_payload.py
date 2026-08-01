@@ -169,6 +169,9 @@ class ScanReport:
     payload_hits: list[dict[str, str]] = field(default_factory=list)
     history_hits: list[dict[str, str]] = field(default_factory=list)
     weight_shaped_paths: list[str] = field(default_factory=list)
+    #: True when only the layer history was inspected. Recorded in the JSON report so a
+    #: consumer can never mistake a fast gate result for a full-filesystem proof.
+    history_only: bool = False
 
     @property
     def clean(self) -> bool:
@@ -180,6 +183,10 @@ class ScanReport:
             "image": self.image,
             "source": self.source,
             "digest": self.digest,
+            # Recorded so a consumer can never mistake a fast pre-publish gate result for
+            # a full-filesystem proof: a history-only "clean" says the build ran no Isaac
+            # install, not that the image ships no Isaac bytes.
+            "history_only": self.history_only,
             "entries_scanned": self.entries_scanned,
             "verdict": "clean" if self.clean else "omniverse-payload-detected",
             "payload_hits": self.payload_hits,
@@ -256,7 +263,24 @@ def _image_history(image: str) -> tuple[list[str], str | None]:
     return commands, (digest.stdout.strip() or None)
 
 
-def scan(image: str | None, tarball: Path | None, *, max_report: int = 40) -> ScanReport:
+def scan(
+    image: str | None,
+    tarball: Path | None,
+    *,
+    max_report: int = 40,
+    history_only: bool = False,
+) -> ScanReport:
+    """Scan an image for Omniverse payload.
+
+    ``history_only`` skips the filesystem walk and inspects only the layer history, which
+    needs the config blob (a few KB) instead of streaming the whole image (tens of GB).
+    That makes it usable as a pre-publish gate in CI, where streaming 69 GB is not.
+
+    It is strictly weaker: it catches a build that RAN an Isaac install, not a payload
+    that arrived some other way (a COPY from a vendor stage, an ADD of a tarball). Use it
+    as a fast gate in front of an irreversible action, never as the proof itself -- the
+    full scan is what the redistribution claim actually rests on.
+    """
     if tarball is not None:
         report = ScanReport(image=str(tarball), source="tarball")
         entries = _iter_tarball(tarball)
@@ -265,7 +289,8 @@ def scan(image: str | None, tarball: Path | None, *, max_report: int = 40) -> Sc
         assert image is not None
         report = ScanReport(image=image, source="registry")
         history, report.digest = _image_history(image)
-        entries = _iter_crane_export(image)
+        entries = () if history_only else _iter_crane_export(image)
+    report.history_only = history_only
 
     for path in entries:
         report.entries_scanned += 1
@@ -293,17 +318,28 @@ def main(argv: list[str] | None = None) -> int:
         "--tarball", type=Path, help="Scan a `docker save` tarball instead of a registry."
     )
     parser.add_argument("--json", type=Path, help="Write the JSON report here.")
+    parser.add_argument(
+        "--history-only",
+        action="store_true",
+        help=(
+            "Inspect only the layer history (config blob, a few KB) instead of streaming "
+            "the whole filesystem. Fast enough for a CI pre-publish gate; strictly weaker "
+            "than a full scan, so never treat it as the redistribution proof itself."
+        ),
+    )
     args = parser.parse_args(argv)
 
     if not args.image and not args.tarball:
         parser.error("pass an image reference or --tarball")
 
-    report = scan(args.image, args.tarball)
+    report = scan(args.image, args.tarball, history_only=args.history_only)
     payload = report.to_dict()
 
     print(f"image            {payload['image']}")
     if payload["digest"]:
         print(f"digest           {payload['digest']}")
+    if report.history_only:
+        print("mode             history-only (layer commands; filesystem NOT scanned)")
     print(f"entries scanned  {payload['entries_scanned']}")
     print(f"allowlisted      {len(payload['allowlisted_paths_present'])} path(s) we do ship:")
     for path in payload["allowlisted_paths_present"][:20]:
