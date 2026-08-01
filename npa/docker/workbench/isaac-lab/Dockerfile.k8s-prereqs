@@ -50,8 +50,10 @@ RUN apt-get update \
 #
 # Three empty directories, so the layer is tiny. Nothing else about the image changes: it stays
 # non-root, and this does not touch the multi-GB payload under /isaac-sim.
-RUN mkdir -p /isaac-sim/kit/data /isaac-sim/kit/logs /isaac-sim/kit/cache \
-    && chown -R ubuntu:ubuntu /isaac-sim/kit/data /isaac-sim/kit/logs /isaac-sim/kit/cache
+RUN if [ -d /isaac-sim ]; then \
+      mkdir -p /isaac-sim/kit/data /isaac-sim/kit/logs /isaac-sim/kit/cache \
+      && chown -R ubuntu:ubuntu /isaac-sim/kit/data /isaac-sim/kit/logs /isaac-sim/kit/cache; \
+    fi
 
 # SkyPilot's bootstrap must find the SYSTEM interpreter, not Isaac's kit python (which
 # the base image puts earlier on PATH and which cannot import its own site-packages
