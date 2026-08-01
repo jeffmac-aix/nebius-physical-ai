@@ -21,6 +21,7 @@ import json
 import os
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -107,7 +108,16 @@ def _capture_frames(
     max_steps: int,
     max_frames: int,
     episodes: int,
+    publish: Callable[[dict[str, object]], None] | None = None,
 ) -> dict[str, object]:
+    """Capture frames, then hand the summary to ``publish`` BEFORE the simulator shuts down.
+
+    ``simulation_app.close()`` tears the process down rather than returning, so anything left
+    for the caller to do afterwards silently never happens: live job 278 wrote all six frames,
+    exited 0, uploaded nothing, and the next stage failed with "No scene images found". Work
+    that must survive the run has to happen before that call.
+    """
+
     from npa.workflows.sim2real.engine import (
         _attach_isaac_viz_camera,
         _heldout_render_step_indices,
@@ -163,22 +173,25 @@ def _capture_frames(
                         frames_written.append(name)
                         print(f"ISAAC_CAPTURE_FRAME {name} step={step}", flush=True)
         env.close()
+
+        summary: dict[str, object] = {
+            "status": "success" if frames_written else "failed",
+            "task": task,
+            "episodes": episodes,
+            "max_steps": max_steps,
+            "max_frames": max_frames,
+            "frames": frames_written,
+            "output_dir": str(output_dir),
+            "duration_seconds": round(time.time() - started, 2),
+        }
+        (output_dir / "isaac_capture_summary.json").write_text(json.dumps(summary, indent=2))
+        if not frames_written:
+            raise SystemExit("No frames captured — check task cameras and GPU rendering.")
+        if publish is not None:
+            publish(summary)
     finally:
         simulation_app.close()
 
-    summary = {
-        "status": "success" if frames_written else "failed",
-        "task": task,
-        "episodes": episodes,
-        "max_steps": max_steps,
-        "max_frames": max_frames,
-        "frames": frames_written,
-        "output_dir": str(output_dir),
-        "duration_seconds": round(time.time() - started, 2),
-    }
-    (output_dir / "isaac_capture_summary.json").write_text(json.dumps(summary, indent=2))
-    if not frames_written:
-        raise SystemExit("No frames captured — check task cameras and GPU rendering.")
     return summary
 
 
@@ -207,21 +220,21 @@ def main(argv: list[str] | None = None) -> int:
         local_dir = Path(output_path)
         local_dir.mkdir(parents=True, exist_ok=True)
 
-    summary = _capture_frames(
+    def publish(summary: dict[str, object]) -> None:
+        if parsed.scheme == "s3":
+            # Includes isaac_capture_summary.json, so the record travels with the frames.
+            summary["uploads"] = _upload_tree(local_dir, output_path)
+            summary["output_path"] = output_path.rstrip("/") + "/"
+        print(json.dumps(summary, indent=2), flush=True)
+
+    _capture_frames(
         task=args.task,
         output_dir=local_dir,
         max_steps=args.max_steps,
         max_frames=args.max_frames,
         episodes=args.episodes,
+        publish=publish,
     )
-
-    if parsed.scheme == "s3":
-        uploads = _upload_tree(local_dir, output_path)  # includes isaac_capture_summary.json
-        summary["uploads"] = uploads
-        summary["output_path"] = output_path.rstrip("/") + "/"
-        print(json.dumps(summary, indent=2), flush=True)
-    else:
-        print(json.dumps(summary, indent=2), flush=True)
     return 0
 
 
