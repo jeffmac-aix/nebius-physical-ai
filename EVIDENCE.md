@@ -2344,3 +2344,70 @@ passing live case — the same discipline as `dataset-ingest-curate` (§R16).
 
 The three templates therefore remain, but their blocker has gone from "no twin" (§R30) to a
 single named feature with two of the three producer pieces already shipped and unit-tested.
+
+---
+
+## R32. The LeRobot producer, run to ground: five engine gaps closed, one broken vendor image
+
+§R31 left one named gap. Closing it took six live iterations, each of which found a distinct
+defect that no offline test could have shown. Every fix is in the engine or the tools; the last
+failure is in the published image itself.
+
+| Job | How far it got | What it found |
+| --- | --- | --- |
+| 242 | died before training | `bash: python: command not found` — five toolRefs invoked bare `python`, which the vendor image lacks. The same argv had *passed* on SkyPilot's default image, where miniconda provides it (§R31) |
+| 243 | module ran | `--data-path or --dataset-path is required` — `run_lerobot_training` needs a local dataset root, and stages share no filesystem, so the stage must materialise its own |
+| 245 / 247 | no LeRobot at all | the rendered document had **no `image_id`**: the harness's *submit* path only ever consulted `NPA_E2E_CLEAR_WORKBENCH_IMAGES` and silently dropped a case's `image_tool`, which the *runtime* path had honoured all along |
+| 250 | vendor interpreter switch worked | `No module named 'npa.workbench'` — the image bakes a **partial** npa (`__init__`, `server`, `smoke`) on `PYTHONPATH` for its own entrypoint, which shadows the real one a stage installs |
+| 252 | dataset materialised, training started | `lerobot-train failed (exit=1, log=/tmp/lerobot_output.train.log)` — a path inside a dead pod, so the reason was unreachable |
+| 253 / 254 | training reached step 0 | the log tail finally showed it (below) |
+
+### What the engine gained
+
+* **`TOOL_REF_VENDOR_INTERPRETERS`** — a toolRef declares its vendor image's interpreter. Setup
+  installs npa **into** it and records it as the stage interpreter, so the tool and the vendor
+  library share one environment. Live proof, job 250:
+
+  ```
+  npa interpreter recorded: /usr/bin/python3
+  installing npa into vendor interpreter /opt/lerobot/venv/bin/python
+  npa interpreter switched to vendor python: /opt/lerobot/venv/bin/python
+  using npa interpreter /opt/lerobot/venv/bin/python for this stage
+  ```
+
+  It probes `import npa.workbench`, not `import npa`, precisely because a baked stub makes the
+  latter pass. And it installs with **`--no-deps`**: a vendor image ships a pinned stack, and
+  resolving npa's requirements inside it can bump torch.
+* **`npa-lerobot` is now SkyPilot-hostable** (`Dockerfile` + `Dockerfile.k8s-prereqs`, added to
+  `SKYPILOT_HOSTED_IMAGES`). Two things had to be understood to get the derived build through:
+  the base purges `linux-libc-dev` with `--force-depends` as CVE hardening, which strands
+  `libc6-dev` and leaves **apt refusing to install anything** (even `rsync`); and the fourth
+  prerequisite — system python first on PATH — is exactly what *creates* the need for the vendor
+  interpreter switch. The source build installs the prerequisites *before* the hardening step so
+  nothing needs repairing; only the derived recipe uses `--fix-broken`, and says so.
+* **The harness treats `image_tool` the same in both paths**, so a case that must run inside a
+  vendor image cannot silently get the default one.
+* **A training failure carries its log out of the pod** (last 60 lines), the same pattern as the
+  vLLM preamble's server-log tail.
+
+### The remaining failure is the published image, and `--no-deps` proves it
+
+```
+OSError: /opt/lerobot/venv/lib/python3.12/site-packages/torchcodec/libtorchcodec_core4.so:
+         undefined symbol: _ZN3c1013MessageLoggerC1EPKciib
+OSError: Could not load this library: .../torchcodec/libtorchcodec_core5.so
+[end of libtorchcodec loading traceback]
+```
+
+`torchcodec`'s compiled extensions in `npa-lerobot:0.5.1` are built against a different torch
+than the one installed — the classic ABI mismatch, and LeRobot loads the decoder on the training
+path. The obvious suspicion was that installing npa into the venv bumped torch; job 254 ran with
+`--no-deps` and reproduced the identical error, which **rules that out**: the image ships broken.
+
+So `tokenfactory-train-triage.yaml` is not retired. Its twin's engine path is now complete and
+each piece is proven live; what is left is a vendor-image repair (a consistent torch/torchcodec
+pair) rather than anything in this change. `npa-lerobot:0.6.0` exists and may already pair them,
+which is the next thing to try.
+
+The same producer is the blocker for `tokenfactory-scene-to-rollout-judge` and a real
+`tokenfactory-rollout-judge` twin (§R30), so one image repair unblocks three templates.
