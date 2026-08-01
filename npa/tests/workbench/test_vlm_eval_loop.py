@@ -194,3 +194,30 @@ def test_loop_scores_each_rollout_against_its_own_input(tmp_path: Path) -> None:
     assert scored_inputs == {str(root / "episode_000"), str(root / "episode_001")}
     # The prefix itself was never handed to the scorer.
     assert str(root) not in scored_inputs
+
+
+# --------------------------------------------------- lerobot eval checkpoint resolution
+
+
+def test_eval_checkpoint_uri_is_not_mangled_into_a_repo_id() -> None:
+    """`--checkpoint-path` must stay a string: Path() collapses `s3://` to `s3:/`.
+
+    Live job 259 fell through to the Hugging Face branch and raised
+    `HFValidationError: Repo id must be in the form 'repo_name' or 'namespace/repo_name':
+    's3:/lerobot-…/policy'` — the double slash had already been eaten by argparse's `type=Path`.
+    """
+
+    from npa.workbench.lerobot.policy_container import build_parser
+
+    args = build_parser().parse_args(
+        [
+            "eval",
+            "--checkpoint-path",
+            "s3://bucket/prefix/policy/",
+            "--output-dir",
+            "/tmp/out",
+        ]
+    )
+
+    assert args.checkpoint_path == "s3://bucket/prefix/policy/"
+    assert isinstance(args.checkpoint_path, str)

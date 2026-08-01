@@ -1205,7 +1205,11 @@ def build_parser() -> argparse.ArgumentParser:
     train_cmd.add_argument("--checkpoint-s3-access-key-id", default="")
     train_cmd.add_argument("--checkpoint-s3-secret-access-key", default="")
     eval_cmd = subparsers.add_parser("eval", help="Run measured LeRobot rollout eval.")
-    eval_cmd.add_argument("--checkpoint-path", type=Path, required=True)
+    # NOT type=Path: the value may be an s3:// URI or a Hugging Face id, and Path()
+    # collapses the double slash to "s3:/…", which then looks like a repo id
+    # (live job 259: HFValidationError on "s3:/bucket/…"). _materialize_eval_checkpoint
+    # converts once it knows what the value is.
+    eval_cmd.add_argument("--checkpoint-path", required=True)
     eval_cmd.add_argument("--output-dir", type=Path, required=True)
     eval_cmd.add_argument("--env-type", default="pusht")
     eval_cmd.add_argument("--env-task", default="")
