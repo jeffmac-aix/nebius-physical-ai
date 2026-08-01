@@ -286,9 +286,23 @@ def test_hf_cli_falls_back_to_the_module_when_the_script_is_not_on_path(monkeypa
     from npa.workbench.cosmos import cosmos3 as cosmos3_module
 
     monkeypatch.setattr(cosmos3_module.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(
+        cosmos3_module.importlib.util, "find_spec", lambda name: object() if name else None
+    )
     argv = cosmos3_module._huggingface_cli()
 
     assert argv == [sys.executable, "-m", "huggingface_hub.commands.huggingface_cli"]
+
+
+def test_hf_cli_keeps_the_plain_name_when_neither_is_available(monkeypatch) -> None:
+    """So the error names the missing tool rather than a confusing module path."""
+
+    from npa.workbench.cosmos import cosmos3 as cosmos3_module
+
+    monkeypatch.setattr(cosmos3_module.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(cosmos3_module.importlib.util, "find_spec", lambda _name: None)
+
+    assert cosmos3_module._huggingface_cli() == ["huggingface-cli"]
 
 
 def test_hf_cli_prefers_a_real_executable(monkeypatch) -> None:
