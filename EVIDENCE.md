@@ -2467,3 +2467,50 @@ for a real `tokenfactory-rollout-judge` twin (§R30, §R23). Both now have a pro
 vendor-interpreter switch, the dataset materialisation, the hostable image and the artifact
 upload all exist and are live-verified. What remains for those two is authoring their specs
 (reason → rollout → judge) and a policy checkpoint for the eval-based producer.
+
+## R34. `tokenfactory-rollout-judge.yaml` retired (12 → 11) — the GPU producer feeds the hosted judge
+
+§R23 recorded that the spec sharing this template's *name* is a different workflow. The real twin
+is `tokenfactory-rollout-judge-combo.yaml`, which keeps the property the combo exists to
+demonstrate: **the GPU stage produces exactly what the zero-GPU hosted judge scores.**
+
+### Job 261 — `npa-wf-multi-tokenfactory-rollout-judge-combo-d4798e41`, both stages SUCCEEDED
+
+```
+rollout-gpu  1m50s  1x[RTXPRO-6000-BLACKWELL-SERVER-EDITION:1]  SUCCEEDED
+judge        1m37s  1x[CPU:4+]                                   SUCCEEDED
+
+    1328  rollouts/eval_info.json
+   89634  rollouts/videos/pusht_0/eval_episode_0.mp4
+   97428  rollouts/videos/pusht_0/eval_episode_1.mp4
+    1129  scores/vlm_eval_stub.json
+```
+
+Two real rendered episodes, then a hosted judgment of them:
+
+```json
+{
+  "backend": "api",
+  "model": "Qwen/Qwen2.5-VL-72B-Instruct",
+  "frame_selection": "keyframes", "frame_count": 4,
+  "passed": false,
+  "rationale": "The robot appears to be attempting to interact with a blue sphere, but there is
+                no clear indication that the task has been completed. … The outcome is ambiguous
+                and does not show clear task completion."
+}
+```
+
+That is a description of the *pusht* task from the rendered frames, not a stub, produced by a
+**72B** model on a stage holding `1x[CPU:4+]`. The judge's `input_path` is byte-identical to the
+rollout stage's `--rollouts-s3-uri`, and the migrated test pins that equality.
+
+### Three more defects on the way, all now fixed
+
+| Job | Symptom | Cause |
+| --- | --- | --- |
+| 257 | `lerobot-eval failed (… log=/tmp/lerobot_rollout.eval.log)` | the eval path named a log inside a dead pod — the same gap `train` had (§R32); it now carries its tail too |
+| 258 | `ProcessorMigrationError: Config file 'policy_preprocessor.json' not found` | LeRobot ≥ 0.6 needs the processor format, and the obvious public policy `lerobot/diffusion_pusht` predates it. A checkpoint produced *by* 0.6 already has it — job 256's own training output — so the live case seeds one, the same pattern as the SONIC fixture |
+| 259 | `HFValidationError: Repo id must be … : 's3:/lerobot-…/policy'` | argparse's `type=Path` had collapsed `s3://` to `s3:/`, so the S3 branch never matched. `--checkpoint-path` is a string now; it may be a URI, an HF id or a path |
+| 260 | `bash: npa: command not found` in the judge stage | `npa_pip_install` falls back to `--user` under PEP 668, which moves the console script out of the default scripts dir; setup now also looks in the user scheme and `$HOME/.local/bin` |
+
+Two of the four are general engine fixes that apply to every stage, not just this one.
