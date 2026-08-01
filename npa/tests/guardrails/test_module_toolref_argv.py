@@ -57,39 +57,44 @@ def _module_tool_refs() -> list[tuple[str, tuple[str, ...]]]:
 MODULE_TOOL_REFS = _module_tool_refs()
 
 
-def _dummy(value: str, *, flag: str) -> str:
-    """Replace placeholders with a value the parser's `type=` will accept."""
+def _dummy(value: str, *, action: argparse.Action | None) -> str:
+    """Replace a placeholder with a value the parser's own `type=` will accept.
+
+    Derived from the parser rather than a hand-kept flag list: a list drifts silently the moment
+    a toolRef gains a numeric option nobody remembered to add (which is how this guardrail first
+    failed on `--max-steps`), and a drifted list reports a fake parse error instead of a real one.
+    """
 
     if not PLACEHOLDER.search(value):
         return value
-    # Numeric options are the common case in these CLIs; a plain string breaks `type=int`.
-    if flag in {
-        "--env-count",
-        "--shard-index",
-        "--shard-count",
-        "--seed",
-        "--limit",
-        "--steps",
-        "--batch-size",
-        "--max-tokens",
-        "--episodes",
-        "--num-episodes",
-    }:
-        return "1"
-    if flag in {"--train-fraction"}:
-        return "0.8"
+    caster = getattr(action, "type", None) if action is not None else None
+    if caster is None:
+        return "dummy"
+    for candidate in ("dummy", "1", "0.8"):
+        try:
+            caster(candidate)
+        except (TypeError, ValueError):
+            continue
+        return candidate
     return "dummy"
 
 
-def _resolve(argv: Sequence[str]) -> list[str]:
+def _actions_by_flag(parser: argparse.ArgumentParser) -> dict[str, argparse.Action]:
+    return {
+        option: action for action in parser._actions for option in action.option_strings
+    }
+
+
+def _resolve(argv: Sequence[str], parser: argparse.ArgumentParser) -> list[str]:
+    actions = _actions_by_flag(parser)
     resolved: list[str] = []
-    flag = ""
+    action: argparse.Action | None = None
     for token in argv:
         if token.startswith("--"):
-            flag = token
+            action = actions.get(token)
             resolved.append(token)
             continue
-        resolved.append(_dummy(token, flag=flag))
+        resolved.append(_dummy(token, action=action))
     return resolved
 
 
@@ -110,7 +115,7 @@ def test_module_tool_ref_argv_parses(tool_ref: str, argv: tuple[str, ...]) -> No
     parser: argparse.ArgumentParser = getattr(import_module(module_name), factory)()
 
     try:
-        parser.parse_args(_resolve(argv[3:]))
+        parser.parse_args(_resolve(argv[3:], parser))
     except SystemExit as exc:  # argparse exits 2 on a usage error
         pytest.fail(f"{tool_ref} argv does not parse against {module_name}: exit {exc.code}")
 
