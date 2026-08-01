@@ -516,14 +516,24 @@ def test_oss_deps_carry_no_nvidia_isaac_package() -> None:
         assert not requirement.replace("_", "-").startswith(("isaacsim", "isaaclab")), line
 
 
-def test_oss_deps_include_the_undeclared_scipy_dependency() -> None:
-    """Regression pin: without scipy, isaaclab_tasks's extension startup dies.
+@pytest.mark.parametrize(
+    ("package", "why"),
+    [
+        ("scipy", "isaacsim.core.utils.numpy.rotations imports scipy.spatial.transform"),
+        ("matplotlib", "isaaclab.envs -> .ui -> widgets.image_plot imports matplotlib.cm"),
+        ("opencv-python-headless", "isaaclab_assets.sensors.gelsight imports cv2"),
+        ("boto3", "omni.replicator.core imports botocore.exceptions"),
+    ],
+)
+def test_oss_deps_include_every_undeclared_isaac_dependency(package: str, why: str) -> None:
+    """Regression pins for dependencies nothing in the Isaac wheels declares.
 
-    isaacsim.core.utils.numpy.rotations does `from scipy.spatial.transform import
-    Rotation`, and nothing in the Isaac wheels declares scipy — it used to arrive with
-    the nvcr.io base image. Found by running train.py, not by reading requirements.
+    All four used to arrive free with the nvcr.io base image, and each was found by running
+    Isaac on a GPU and reading a traceback - not by reading requirements. The failure mode is
+    nasty: Kit logs the ImportError during extension startup and carries on, so the run dies
+    later somewhere that looks unrelated to the missing package.
     """
-    assert "scipy" in OSS_DEPS.read_text(encoding="utf-8")
+    assert package in OSS_DEPS.read_text(encoding="utf-8"), f"{package}: {why}"
 
 
 # --------------------------------------------------------------------------------------

@@ -86,6 +86,14 @@ matplotlib
 # isaaclab_assets.sensors.gelsight -> isaaclab_contrib ... visuotactile_render -> import cv2
 #   (breaks the isaaclab_assets extension). Headless build: no GUI libs in a container.
 opencv-python-headless
+# omni.replicator.core -> from botocore.exceptions import ClientError, NoCredentialsError
+#   Found on an RTX PRO 6000 pod: the extension fails to start with "No module named
+#   'botocore'". Non-fatal for headless training (the isaac-lab golden eval passes 6/6
+#   without it) but replicator IS the synthetic-data-generation path, e.g.
+#   isaac-lab-cosmos-sdg-burst-smoke.yaml, so a workflow that needs it would fail later
+#   and somewhere confusing. boto3 pulls botocore and the workbench uses boto3 everywhere
+#   already.
+boto3
 # Kit tooling and rsl_rl's git-provenance logging
 PyYAML>=6.0
 GitPython>=3.1.50
