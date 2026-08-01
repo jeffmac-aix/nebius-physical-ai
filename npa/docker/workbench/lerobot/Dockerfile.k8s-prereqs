@@ -1,0 +1,47 @@
+# Kubernetes-schedulability prerequisites for an ALREADY BUILT npa-lerobot image.
+#
+# Same change the main lerobot/Dockerfile now applies, expressed as a derived build so an
+# operator can repair an existing tag without rebuilding the multi-GB torch/LeRobot base:
+#
+#   scripts/build-workbench-image-in-cluster.sh \
+#     --base <registry>/npa-lerobot:<tag> \
+#     --tag  <registry>/npa-lerobot:<tag>-k8s-runtime \
+#     --dockerfile npa/docker/workbench/lerobot/Dockerfile.k8s-prereqs
+#
+# Why it is needed: SkyPilot's Kubernetes runtime bootstrap runs inside the task container.
+# Without a system python3, rsync, passwordless sudo for the runtime user and the system
+# interpreter first on PATH, provisioning fails with
+# "Failed to get ssh user for pod ...: container not found (ray-node)" — the failure the Isaac
+# Lab image hit on npa-rtxpro-mk8s (see ../isaac-lab/Dockerfile.k8s-prereqs for the live
+# bisection).
+#
+# NOTE on the PATH ingredient, which matters more here than for the other images: the shipped
+# lerobot image ends with `ENV PATH=/opt/lerobot/venv/bin:$PATH`, i.e. the VENDOR python first.
+# SkyPilot needs the system python first, so this flips the order — which in turn means npa
+# installs into the system interpreter and a tool importing `lerobot` would fail. That is
+# exactly what `TOOL_REF_VENDOR_INTERPRETERS` in the renderer resolves: the stage's setup
+# installs npa INTO /opt/lerobot/venv/bin/python and records it as the stage interpreter, so the
+# tool and the vendor library share one environment. The two halves are complementary; neither
+# works alone.
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+# Must match the runtime user the shipped lerobot image ends on.
+ARG NPA_RUNTIME_USER=ubuntu
+
+USER root
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+         python3 python3-pip rsync curl openssh-client sudo netcat-openbsd \
+    && rm -rf /var/lib/apt/lists/* \
+    && printf '%s ALL=(ALL) NOPASSWD:ALL\n' "${NPA_RUNTIME_USER}" \
+         > /etc/sudoers.d/99-npa-runtime-user \
+    && chmod 0440 /etc/sudoers.d/99-npa-runtime-user \
+    && python3 --version
+
+# System interpreter first; the vendor venv stays reachable by absolute path, which is how the
+# renderer's vendor-interpreter setup addresses it.
+ENV PATH=/usr/bin:$PATH
+
+USER ${NPA_RUNTIME_USER}

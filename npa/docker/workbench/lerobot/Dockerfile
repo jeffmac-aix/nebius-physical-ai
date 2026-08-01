@@ -128,6 +128,26 @@ RUN apt-get update \
     && dpkg --purge --force-depends linux-libc-dev \
     && rm -rf /var/lib/apt/lists/*
 
+# SkyPilot-on-Kubernetes runtime prerequisites, so this image can host a workflow stage.
+# SkyPilot's bootstrap runs inside the task container; without these, provisioning fails with
+# "container not found (ray-node)" (see Dockerfile.k8s-prereqs and
+# npa/tests/guardrails/test_workbench_image_k8s_prereqs.py).
+#
+# The PATH line flips the vendor venv OFF the front of PATH, which SkyPilot requires. The
+# vendor python stays reachable by absolute path, and the renderer's
+# TOOL_REF_VENDOR_INTERPRETERS installs npa into it and records it as the stage interpreter —
+# without that half, a tool importing `lerobot` would run under the system python and fail.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+         rsync openssh-client sudo netcat-openbsd \
+    && rm -rf /var/lib/apt/lists/* \
+    && printf '%s ALL=(ALL) NOPASSWD:ALL\n' ubuntu \
+         > /etc/sudoers.d/99-npa-runtime-user \
+    && chmod 0440 /etc/sudoers.d/99-npa-runtime-user \
+    && python3 --version
+
+ENV PATH=/usr/bin:$PATH
+
 USER ubuntu
 
 EXPOSE 8080

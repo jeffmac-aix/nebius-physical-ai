@@ -23,7 +23,7 @@ DOCKER_ROOT = Path(__file__).resolve().parents[2] / "docker" / "workbench"
 # workflows) and therefore must be schedulable in a pod. This list grows as the raw
 # SkyPilot task catalog is retired: once a tool's only workflow surface is an
 # npa.workflow spec, its image MUST be able to host a SkyPilot task.
-SKYPILOT_HOSTED_IMAGES = ("isaac-lab", "sonic")
+SKYPILOT_HOSTED_IMAGES = ("isaac-lab", "lerobot", "sonic")
 
 
 #: The four ingredients a SkyPilot-hosted image needs, established by bisecting
