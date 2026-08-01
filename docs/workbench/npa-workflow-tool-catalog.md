@@ -32,6 +32,7 @@ This table must list every `TOOL_CATALOG` key (enforced by
 | `workbench.cosmos.check` | `npa workbench cosmos check` | `config.cosmos_source_repo`, `config.cosmos_model_id` | access report (stdout JSON) | no |
 | `workbench.cosmos.fetch` | `npa workbench cosmos fetch` | `config.cosmos_source_repo`, `config.cosmos_model_id` | source + checkpoint in `config.cosmos_cache_dir` | no |
 | `workbench.sim2real_envgen.raw_shard` | `python -m npa.workflows.sim2real_envgen raw-shard` | `config.envgen_root_uri`, `config.env_count`, `config.shard_index` | `envs/raw/raw-shard-<ii>-summary.json` | no |
+| `workbench.sim2real_envgen.actions` | `python3 -m npa.workflows.sim2real_envgen actions` | `config.envgen_root_uri`, `config.train_envs_uri`, `config.actions_uri`, `config.action_limit`, `config.policy_image` | `<actions_uri>actions-summary.json`, `<actions_uri>envs.jsonl` | no |
 | `workbench.sim2real_envgen.split` | `python -m npa.workflows.sim2real_envgen split` | `config.envgen_root_uri`, `config.train_fraction` | `envs/manifest/split-manifest.json` | no |
 | `workbench.sim2real.policy_rollouts` | workflow stub (`echo`) | `config.rollouts_uri` | rollout prefix on S3 | yes |
 | `workbench.sim2real.heldout_eval` | workflow stub (`echo`) | — | `config.heldout_report_uri` | yes |
