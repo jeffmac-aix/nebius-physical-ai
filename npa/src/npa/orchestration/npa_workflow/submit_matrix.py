@@ -178,6 +178,24 @@ SUBMIT_LIVE_MATRIX: tuple[SubmitLiveCase, ...] = (
         notes="Insights ingest + dashboard over one run prefix. CPU-only.",
     ),
     SubmitLiveCase(
+        "tokenfactory-rollout-judge-combo.yaml",
+        "multi",
+        secret_envs=(
+            "NEBIUS_TOKEN_FACTORY_KEY",
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+            "HF_TOKEN",
+        ),
+        requires_token_factory=True,
+        image_tool="lerobot",
+        notes=(
+            "The real rollout-judge twin: the GPU stage rolls out a public LeRobot policy in its "
+            "own pod and publishes the rendered episodes, then a hosted VLM scores exactly that "
+            "prefix with no GPU. Needs a hostable LeRobot image whose torch and torchcodec agree "
+            "(NPA_E2E_IMAGE_OVERRIDE_LEROBOT=<registry>/npa-lerobot:0.6.0-k8s-runtime)."
+        ),
+    ),
+    SubmitLiveCase(
         "tokenfactory-train-triage.yaml",
         "multi",
         secret_envs=(
