@@ -137,14 +137,17 @@ RUN apt-get update \
 # vendor python stays reachable by absolute path, and the renderer's
 # TOOL_REF_VENDOR_INTERPRETERS installs npa into it and records it as the stage interpreter —
 # without that half, a tool importing `lerobot` would run under the system python and fail.
+# Only these three packages: this image purges linux-libc-dev as CVE hardening, so pulling
+# anything that depends on libc6-dev (python3-pip, openssh-client) breaks apt. The system
+# python3 the bootstrap needs is already present, so it is asserted rather than installed.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-         rsync openssh-client sudo netcat-openbsd \
+    && apt-get install -y --no-install-recommends rsync sudo netcat-openbsd \
     && rm -rf /var/lib/apt/lists/* \
     && printf '%s ALL=(ALL) NOPASSWD:ALL\n' ubuntu \
          > /etc/sudoers.d/99-npa-runtime-user \
     && chmod 0440 /etc/sudoers.d/99-npa-runtime-user \
-    && python3 --version
+    && test -x /usr/bin/python3 \
+    && /usr/bin/python3 --version
 
 ENV PATH=/usr/bin:$PATH
 

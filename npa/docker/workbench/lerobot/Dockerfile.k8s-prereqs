@@ -31,14 +31,19 @@ ARG NPA_RUNTIME_USER=ubuntu
 
 USER root
 
+# NOTE on the package list: the shipped lerobot image purges `linux-libc-dev` (and dirmngr,
+# gpg-agent, nodejs, software-properties-common) as CVE hardening, so a derived `apt-get install`
+# of anything pulling `libc6-dev` fails with "Unmet dependencies" — `python3-pip` does exactly
+# that (observed in-cluster). Only the four ingredients are installed here, and the system
+# python3 is asserted rather than installed, because the base already ships one.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-         python3 python3-pip rsync curl openssh-client sudo netcat-openbsd \
+    && apt-get install -y --no-install-recommends rsync sudo netcat-openbsd \
     && rm -rf /var/lib/apt/lists/* \
     && printf '%s ALL=(ALL) NOPASSWD:ALL\n' "${NPA_RUNTIME_USER}" \
          > /etc/sudoers.d/99-npa-runtime-user \
     && chmod 0440 /etc/sudoers.d/99-npa-runtime-user \
-    && python3 --version
+    && test -x /usr/bin/python3 \
+    && /usr/bin/python3 --version
 
 # System interpreter first; the vendor venv stays reachable by absolute path, which is how the
 # renderer's vendor-interpreter setup addresses it.
