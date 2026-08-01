@@ -20,6 +20,7 @@ import yaml
 from npa.clients.credentials import load_credentials
 from npa.clients.serverless import ServerlessClient, ServerlessClientError
 from npa.deploy.images import container_image_for_tool
+from npa.serverless_common.env import ISAAC_EULA_VARS, isaac_eula_env  # noqa: F401 (re-exported)
 from npa.serverless_common import (
     build_serverless_job_env,
     require_s3_credentials,
@@ -66,23 +67,6 @@ def _project_id(explicit: str | None) -> str:
         "project_id to ~/.npa/config.yaml), set NEBIUS_PROJECT_ID, or pass "
         "project_id explicitly."
     )
-
-
-#: NVIDIA licence acceptance for the Isaac images, forwarded from the CALLER's environment.
-#:
-#: The Isaac images ship no Isaac Sim and refuse to fetch it unless the operator has
-#: accepted NVIDIA's terms, so an automated path that does not carry that acceptance simply
-#: cannot run them -- the golden eval fails with the refusal message, which is correct but
-#: useless as a test. The fix is emphatically NOT to hardcode "YES" here: that would be us
-#: accepting on the operator's behalf and would gut the mechanism the whole re-architecture
-#: rests on. Instead the person running the eval sets these in their own shell, and they
-#: are passed through. Absent, the job still fails with the actionable refusal.
-ISAAC_EULA_VARS = ("OMNI_KIT_ACCEPT_EULA", "ISAACSIM_ACCEPT_EULA")
-
-
-def isaac_eula_env() -> dict[str, str]:
-    """Return whichever Isaac EULA acceptance variables the caller has set."""
-    return {name: os.environ[name] for name in ISAAC_EULA_VARS if os.environ.get(name)}
 
 
 def submit_golden_eval(
@@ -137,7 +121,6 @@ def submit_golden_eval(
         # pyarrow/lancedb/fiftyone deps missing from slim tool images.
         "NPA_SKIP_EAGER_IMPORTS": "1",
     }
-    extra_env.update(isaac_eula_env())
     full_env = build_serverless_job_env(
         output_path=output_path,
         hf_token=cfg.hf_token,

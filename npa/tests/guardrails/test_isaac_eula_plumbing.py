@@ -153,3 +153,65 @@ def test_isaac_tree_assertion_comes_after_the_bootstrap_is_triggered(path: Path)
             f"{path.name}: asserts the Isaac Lab tree before anything triggers the "
             f"bootstrap that fetches it — this fails setup every time"
         )
+
+
+def test_the_shared_serverless_builder_forwards_acceptance() -> None:
+    """It belongs in the SHARED builder, not one caller.
+
+    Every CLI serverless path (isaac_lab, groot, genesis, cosmos, fiftyone) and the
+    golden-eval runner go through build_serverless_job_env, so putting the forwarding there
+    is what makes `npa workbench isaac-lab train --runtime serverless` work too. An earlier
+    version fixed only the golden-eval runner and left the CLI path broken.
+    """
+    import os
+
+    from npa.serverless_common.env import build_serverless_job_env
+
+    previous = {var: os.environ.get(var) for var in EULA_VARS}
+    try:
+        for var in EULA_VARS:
+            os.environ[var] = "YES"
+        env = build_serverless_job_env(output_path="s3://b/p/")
+        for var in EULA_VARS:
+            assert env[var] == "YES", var
+
+        for var in EULA_VARS:
+            del os.environ[var]
+        env = build_serverless_job_env(output_path="s3://b/p/")
+        for var in EULA_VARS:
+            assert var not in env, f"{var} must stay absent, not become an empty string"
+    finally:
+        for var, value in previous.items():
+            if value is None:
+                os.environ.pop(var, None)
+            else:
+                os.environ[var] = value
+
+
+def test_an_explicit_caller_value_beats_the_forwarded_one(monkeypatch) -> None:
+    """extra_env is applied after the forward, so a caller can still override."""
+    from npa.serverless_common.env import build_serverless_job_env
+
+    monkeypatch.setenv("OMNI_KIT_ACCEPT_EULA", "YES")
+    env = build_serverless_job_env(
+        output_path="s3://b/p/", extra_env={"OMNI_KIT_ACCEPT_EULA": "no"}
+    )
+    assert env["OMNI_KIT_ACCEPT_EULA"] == "no"
+
+
+def test_every_cli_serverless_path_uses_the_shared_builder() -> None:
+    """If a submitter hand-rolls its env, it silently loses the acceptance forwarding."""
+    cli_root = REPO_ROOT / "npa" / "src" / "npa" / "cli"
+    submitters = sorted(
+        path
+        for path in cli_root.rglob("*.py")
+        if "create_job(" in path.read_text(encoding="utf-8")
+    )
+    assert submitters, "no serverless submitters found — has the API changed?"
+    for path in submitters:
+        text = path.read_text(encoding="utf-8")
+        assert "build_serverless_job_env" in text, (
+            f"{path.relative_to(REPO_ROOT)} submits a serverless job without using "
+            f"build_serverless_job_env, so it will not carry the operator's Isaac EULA "
+            f"acceptance (nor the standard S3/HF wiring)"
+        )
