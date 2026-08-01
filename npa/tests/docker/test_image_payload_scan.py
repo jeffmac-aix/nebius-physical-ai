@@ -191,6 +191,20 @@ def test_scanner_is_executable_and_self_documenting() -> None:
 # --------------------------------------------------------------------------------------
 
 
+def _sonic_dockerfile() -> str:
+    return (REPO_ROOT / "npa" / "docker" / "workbench" / "sonic" / "Dockerfile").read_text(
+        encoding="utf-8"
+    )
+
+
+def _instructions_only(dockerfile_text: str) -> str:
+    """Drop comment lines. These Dockerfiles document what they deliberately do NOT do, so
+    prose naming a removed instruction must not read as that instruction being present."""
+    return "\n".join(
+        line for line in dockerfile_text.splitlines() if not line.lstrip().startswith("#")
+    )
+
+
 def test_weight_shaped_paths_are_reported_not_flagged_as_kit_payload() -> None:
     """A .pt file is not Omniverse Kit, so it must not fail the Kit verdict."""
     for path in (
@@ -218,9 +232,8 @@ def test_sonic_build_checks_weights_by_content_not_extension() -> None:
     someone towards weakening the guard; failing to notice a real tensor would be far
     worse. So the build reports pointers and fails only on real payload.
     """
-    dockerfile = (
-        REPO_ROOT / "npa" / "docker" / "workbench" / "sonic" / "Dockerfile"
-    ).read_text(encoding="utf-8")
+    dockerfile = _sonic_dockerfile()
+    instructions = _instructions_only(dockerfile)
     assert "version https://git-lfs.github.com/spec/v1" in dockerfile, (
         "the weight check must recognise git-LFS pointers by their magic string"
     )
@@ -231,7 +244,9 @@ def test_sonic_build_checks_weights_by_content_not_extension() -> None:
         "`git lfs install --system` makes a plain `git checkout` download every tracked "
         "object, so without GIT_LFS_SKIP_SMUDGE=1 the image bakes gated weights"
     )
-    assert "git lfs pull" not in dockerfile, (
+    # Instructions only: the surrounding comment explains the old `git lfs pull ... ||
+    # true` line, so matching raw text would trip on the very prose that documents the fix.
+    assert "git lfs pull" not in instructions, (
         "no `git lfs pull` should remain: any pull re-materialises the tensors this "
         "image must not ship"
     )
@@ -246,14 +261,12 @@ def test_sonic_does_not_bake_the_gated_groot_policies() -> None:
     smudge automatically. Entirely separate from the Omniverse Kit problem, and nothing
     checked for it until the build-time weight assertion was added.
     """
-    dockerfile = (
-        REPO_ROOT / "npa" / "docker" / "workbench" / "sonic" / "Dockerfile"
-    ).read_text(encoding="utf-8")
+    instructions = _instructions_only(_sonic_dockerfile())
     smudge_line = next(
-        line for line in dockerfile.splitlines() if "GIT_LFS_SKIP_SMUDGE" in line
+        line for line in instructions.splitlines() if "GIT_LFS_SKIP_SMUDGE" in line
     )
-    clone_index = dockerfile.index("git clone")
-    assert dockerfile.index(smudge_line) < clone_index, (
+    clone_index = instructions.index("git clone")
+    assert instructions.index(smudge_line) < clone_index, (
         "GIT_LFS_SKIP_SMUDGE must be exported BEFORE the clone/checkout, or the objects "
         "are already downloaded by the time it takes effect"
     )
