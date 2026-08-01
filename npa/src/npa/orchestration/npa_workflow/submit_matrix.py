@@ -178,6 +178,21 @@ SUBMIT_LIVE_MATRIX: tuple[SubmitLiveCase, ...] = (
         notes="Insights ingest + dashboard over one run prefix. CPU-only.",
     ),
     SubmitLiveCase(
+        "isaac-franka-capture-reason.yaml",
+        "multi",
+        secret_envs=(
+            "NEBIUS_TOKEN_FACTORY_KEY",
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+        ),
+        requires_token_factory=True,
+        image_tool="isaac-lab",
+        notes=(
+            "Isaac Lab renders Franka frames on a GPU, then a hosted Cosmos3 reasoner plans "
+            "from them on CPU. Needs no seeded input: the first stage produces the second's."
+        ),
+    ),
+    SubmitLiveCase(
         "tokenfactory-scene-to-rollout-judge.yaml",
         "multi",
         secret_envs=(
