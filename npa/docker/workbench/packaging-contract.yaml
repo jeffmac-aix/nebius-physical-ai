@@ -154,12 +154,12 @@ images:
     dockerfile: sonic/Dockerfile
     isaac_runtime_fetch: true
     tier: job
-    redistribution: restricted
+    redistribution: public
   sonic-mujoco:
     dockerfile: sonic/Dockerfile.mujoco
     isaac_runtime_fetch: true
     tier: job
-    redistribution: restricted
+    redistribution: public
   sim2real-eval:
     dockerfile: sim2real-eval/Dockerfile
     tier: job
@@ -180,7 +180,7 @@ images:
     dockerfile: isaac-lab/Dockerfile
     isaac_runtime_fetch: true
     tier: interactive
-    redistribution: restricted
+    redistribution: public
   fiftyone:
     dockerfile: fiftyone/Dockerfile
     tier: interactive
@@ -198,7 +198,7 @@ images:
     tier: interactive
     ports: [8080]
     notes: "EXPOSE 8080 without default server CMD; promote to service when ready."
-    redistribution: restricted
+    redistribution: public
   retargeting:
     dockerfile: retargeting/Dockerfile
     tier: interactive

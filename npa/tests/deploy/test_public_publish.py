@@ -1,10 +1,18 @@
 """License-guarded public-registry publishing.
 
 Nebius CR has no anonymous/public mode, so public exposure means mirroring the
-OSS-redistributable image subset to a public registry. These tests lock the
-license boundary: the Omniverse-Kit images (isaac-lab, sonic, groot,
-sonic-mujoco) must never be selected for a public registry, and the selector
-must stay in sync with the packaging contract's redistribution classification.
+OSS-redistributable image subset to a public registry. These tests lock the license
+boundary: whatever is classified non-redistributable must never be selected for a public
+registry, and the selector must stay in sync with the packaging contract's
+``redistribution:`` fields.
+
+``OMNIVERSE_RESTRICTED_TOOLS`` is currently EMPTY — the four Isaac images were
+re-architected to fetch Isaac Sim / Isaac Lab at first run under the operator's own EULA
+acceptance instead of baking it, so every workbench tool is now publishable. That makes
+the boundary tests the delicate ones: asserting "nothing is restricted" would pass just
+as well against a guard that had been deleted. So the tests that exercise the refusal
+monkeypatch a synthetic restricted tool in, proving the mechanism still bites while its
+membership is empty.
 """
 
 from __future__ import annotations
@@ -33,33 +41,72 @@ ROOT = Path(__file__).resolve().parents[3]
 CONTRACT_PATH = ROOT / "npa" / "docker" / "workbench" / "packaging-contract.yaml"
 
 
-def test_restricted_tools_are_the_omniverse_images() -> None:
-    assert OMNIVERSE_RESTRICTED_TOOLS == frozenset({"isaac-lab", "sonic", "groot"})
+def test_no_tool_is_currently_restricted() -> None:
+    """The Isaac images no longer bake Omniverse Kit, so nothing is excluded.
+
+    isaac-lab, sonic (both variants), sonic-mujoco and groot used to be here. They now
+    fetch Isaac Sim / Isaac Lab at first run from pypi.nvidia.com under the operator's
+    own EULA acceptance and ship no NVIDIA Isaac bytes, which is verified against the
+    built images by npa/scripts/scan_image_omniverse_payload.py.
+    """
+    assert OMNIVERSE_RESTRICTED_TOOLS == frozenset()
+    assert OMNIVERSE_RESTRICTED_DERIVED_IMAGES == frozenset()
+    for tool in ("isaac-lab", "sonic", "groot"):
+        assert is_publicly_redistributable(tool), tool
 
 
-def test_public_set_excludes_every_restricted_tool() -> None:
+def test_public_set_excludes_every_restricted_tool(monkeypatch) -> None:
+    """The exclusion still works. Monkeypatched, because the real set is empty and an
+    all-inclusive selector would satisfy an assertion over an empty set trivially."""
+    monkeypatch.setattr(images, "OMNIVERSE_RESTRICTED_TOOLS", frozenset({"genesis", "cosmos"}))
     public = set(publicly_publishable_tools())
-    assert public.isdisjoint(OMNIVERSE_RESTRICTED_TOOLS)
-    for tool in OMNIVERSE_RESTRICTED_TOOLS:
+    assert public.isdisjoint({"genesis", "cosmos"})
+    for tool in ("genesis", "cosmos"):
         assert not is_publicly_redistributable(tool)
+    assert "lerobot" in public, "unrelated tools must stay publishable"
 
 
 def test_public_set_includes_the_oss_tools() -> None:
     public = set(publicly_publishable_tools())
-    for tool in ("lerobot", "genesis", "cosmos", "fiftyone", "lancedb", "rerun-viewer", "lichtblick"):
+    for tool in (
+        "lerobot",
+        "genesis",
+        "cosmos",
+        "fiftyone",
+        "lancedb",
+        "rerun-viewer",
+        "lichtblick",
+        # Newly publishable: no baked Omniverse Kit.
+        "isaac-lab",
+        "sonic",
+        "groot",
+    ):
         assert tool in public, tool
-    # Everything not Omniverse-restricted is public.
-    assert public == set(CONTAINER_IMAGE_NAMES) - OMNIVERSE_RESTRICTED_TOOLS
+    # Nothing is restricted, so the public set is every tool.
+    assert public == set(CONTAINER_IMAGE_NAMES)
 
 
-def test_publish_plan_never_targets_a_restricted_image() -> None:
+def test_publish_plan_now_includes_the_isaac_images() -> None:
+    """The point of the re-architecture: these four are publishable at last."""
     plan = build_publish_plan(target_registry="ghcr.io/example/workbench")
     names = {item.source_ref.rsplit("/", 1)[-1].split(":", 1)[0] for item in plan}
-    for restricted in ("npa-isaac-lab", "npa-sonic", "npa-groot", "npa-sonic-mujoco"):
-        assert restricted not in names
-    # Targets are all under the requested public registry.
+    for image in ("npa-isaac-lab", "npa-sonic", "npa-groot"):
+        assert image in names, image
+    # sonic-mujoco is a sonic variant, so it is published as part of sonic's manifest
+    # rather than as its own tool key.
+    assert "npa-sonic-mujoco" not in names
     for item in plan:
         assert item.target_ref.startswith("ghcr.io/example/workbench/")
+
+
+def test_publish_plan_still_refuses_a_restricted_image(monkeypatch) -> None:
+    """The hard refusal inside build_publish_plan is defence in depth around the
+    selector, so it must keep working even though the selector currently excludes
+    nothing. Monkeypatched so the refusal has something to refuse."""
+    monkeypatch.setattr(images, "OMNIVERSE_RESTRICTED_TOOLS", frozenset({"genesis"}))
+    plan = build_publish_plan(target_registry="ghcr.io/example/workbench")
+    names = {item.source_ref.rsplit("/", 1)[-1].split(":", 1)[0] for item in plan}
+    assert "npa-genesis" not in names
 
 
 def test_publish_plan_requires_a_target() -> None:
@@ -94,14 +141,20 @@ def test_public_registry_honors_env_override(monkeypatch) -> None:
 
 def test_publish_plan_targets_public_registry_by_default() -> None:
     plan = build_publish_plan(target_registry=DEFAULT_PUBLIC_CONTAINER_REGISTRY)
-    assert len(plan) == 16
+    # Was 16 (every tool except isaac-lab, sonic and groot). Derived rather than
+    # hardcoded so adding a tool cannot silently leave it unpublished.
+    assert len(plan) == len(CONTAINER_IMAGE_NAMES) - len(OMNIVERSE_RESTRICTED_TOOLS) == 19
     for item in plan:
         assert item.target_ref.startswith(DEFAULT_PUBLIC_CONTAINER_REGISTRY + "/npa-")
 
 
 def test_restricted_image_names_cover_every_contract_restricted_image() -> None:
     """The operator-facing excluded list must name every restricted image, derived
-    variants included, without any caller hardcoding them."""
+    variants included, without any caller hardcoding them.
+
+    Both sides are currently empty, which is the property being locked: the code and the
+    packaging contract must agree about what may not be published.
+    """
     contract = yaml.safe_load(CONTRACT_PATH.read_text(encoding="utf-8"))
     contract_restricted = {
         name
@@ -111,14 +164,52 @@ def test_restricted_image_names_cover_every_contract_restricted_image() -> None:
     names = omniverse_restricted_image_names()
     assert names == sorted(names), "names must be stable/sorted for operator output"
     assert contract_restricted <= set(names), sorted(contract_restricted - set(names))
-    # Derived variants are not canonical tools, so they never reach the public set.
     assert set(OMNIVERSE_RESTRICTED_DERIVED_IMAGES).isdisjoint(CONTAINER_IMAGE_NAMES)
     assert set(OMNIVERSE_RESTRICTED_DERIVED_IMAGES).isdisjoint(publicly_publishable_tools())
 
 
+def test_contract_marks_the_isaac_images_public_and_runtime_fetch() -> None:
+    """The contract must record BOTH facts: publishable, and why it is allowed to be.
+
+    `redistribution: public` on its own would look like someone simply relabelled four
+    restricted images; `isaac_runtime_fetch: true` is the claim that earns it, and
+    npa/tests/docker/test_packaging_contract.py checks the Dockerfiles actually
+    implement it.
+    """
+    contract = yaml.safe_load(CONTRACT_PATH.read_text(encoding="utf-8"))
+    for name in ("isaac-lab", "sonic", "sonic-mujoco", "groot"):
+        entry = contract["images"][name]
+        assert entry["redistribution"] == "public", name
+        assert entry.get("isaac_runtime_fetch") is True, name
+
+
+def test_the_restriction_mechanism_still_exists() -> None:
+    """Deliberately kept with an empty membership, not deleted.
+
+    The next runtime we cannot ship needs exactly this machinery, and a mechanism that
+    gets deleted when unused has to be rebuilt and re-reviewed under time pressure.
+    """
+    assert hasattr(images, "OMNIVERSE_RESTRICTED_TOOLS")
+    assert hasattr(images, "OMNIVERSE_RESTRICTED_DERIVED_IMAGES")
+    for symbol in (
+        "is_publicly_redistributable",
+        "omniverse_restricted_image_names",
+        "publicly_publishable_tools",
+        "is_public_registry",
+    ):
+        assert callable(getattr(images, symbol)), symbol
+    assert "restricted" in yaml.safe_load(CONTRACT_PATH.read_text(encoding="utf-8"))[
+        "redistribution"
+    ]["classes"], "the restricted class must survive having no members"
+
+
 def test_selector_matches_packaging_contract_classification() -> None:
     """Every image the packaging contract marks ``restricted`` must resolve to a
-    tool that the selector also treats as non-public (kept in sync)."""
+    tool that the selector also treats as non-public (kept in sync).
+
+    Vacuous while nothing is restricted; kept so that classifying something restricted
+    again immediately re-arms the sync check.
+    """
     contract = yaml.safe_load(CONTRACT_PATH.read_text(encoding="utf-8"))
     # contract image keys that map onto canonical tool keys
     for image_name, entry in contract["images"].items():
