@@ -10,6 +10,7 @@ It is import-safe (no GPU/framework deps) and is used by both
 
 from __future__ import annotations
 
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -67,6 +68,23 @@ def _project_id(explicit: str | None) -> str:
     )
 
 
+#: NVIDIA licence acceptance for the Isaac images, forwarded from the CALLER's environment.
+#:
+#: The Isaac images ship no Isaac Sim and refuse to fetch it unless the operator has
+#: accepted NVIDIA's terms, so an automated path that does not carry that acceptance simply
+#: cannot run them -- the golden eval fails with the refusal message, which is correct but
+#: useless as a test. The fix is emphatically NOT to hardcode "YES" here: that would be us
+#: accepting on the operator's behalf and would gut the mechanism the whole re-architecture
+#: rests on. Instead the person running the eval sets these in their own shell, and they
+#: are passed through. Absent, the job still fails with the actionable refusal.
+ISAAC_EULA_VARS = ("OMNI_KIT_ACCEPT_EULA", "ISAACSIM_ACCEPT_EULA")
+
+
+def isaac_eula_env() -> dict[str, str]:
+    """Return whichever Isaac EULA acceptance variables the caller has set."""
+    return {name: os.environ[name] for name in ISAAC_EULA_VARS if os.environ.get(name)}
+
+
 def submit_golden_eval(
     tool: str,
     *,
@@ -106,16 +124,18 @@ def submit_golden_eval(
         "endpoint_url": cfg.s3_endpoint,
     }
     require_s3_credentials(s3_credentials, context=f"the {tool} golden eval job")
+    extra_env = {
+        "NPA_GOLDEN_EVAL": tool,
+        # Smoke modules import npa.smoke.*; skip eager SDK imports that pull
+        # pyarrow/lancedb/fiftyone deps missing from slim tool images.
+        "NPA_SKIP_EAGER_IMPORTS": "1",
+    }
+    extra_env.update(isaac_eula_env())
     full_env = build_serverless_job_env(
         output_path=output_path,
         hf_token=cfg.hf_token,
         s3_credentials=s3_credentials,
-        extra_env={
-            "NPA_GOLDEN_EVAL": tool,
-            # Smoke modules import npa.smoke.*; skip eager SDK imports that pull
-            # pyarrow/lancedb/fiftyone deps missing from slim tool images.
-            "NPA_SKIP_EAGER_IMPORTS": "1",
-        },
+        extra_env=extra_env,
     )
     env, secret_env = split_serverless_env(full_env)
 
