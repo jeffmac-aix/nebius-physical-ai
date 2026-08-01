@@ -620,6 +620,25 @@ def render_task_run_script(command: Sequence[str], preamble: str = "") -> str:
         "    npa_python=\"\"\n"
         "  fi\n"
         "fi\n"
+        # A vendor image can bake a STALE npa source tree on PYTHONPATH, which shadows every
+        # install — editable or not, in any interpreter. Live job 285: the cosmos2-transfer image
+        # ships `PYTHONPATH=/opt/npa/src`, whose npa predates the `cosmos2` subcommand, so the
+        # stage kept running the old CLI no matter what had just been installed. Third image to
+        # do this (lerobot was job 250), so the engine handles it rather than each image.
+        # Prepending the recorded source is a no-op wherever the install already wins.
+        # (no ${...} expansions here: the renderer's placeholder guard rejects them)
+        "if [ -s /tmp/npa-src-root ] && [ -d \"$(cat /tmp/npa-src-root)/src\" ]; then\n"
+        "  npa_src_path=\"$(cat /tmp/npa-src-root)/src\"\n"
+        "  if [ -z \"$PYTHONPATH\" ]; then\n"
+        "    export PYTHONPATH=\"$npa_src_path\"\n"
+        "  else\n"
+        "    case \":$PYTHONPATH:\" in\n"
+        "      *\":$npa_src_path:\"*) : ;;\n"
+        "      *) export PYTHONPATH=\"$npa_src_path:$PYTHONPATH\" ;;\n"
+        "    esac\n"
+        "  fi\n"
+        "  echo \"npa source path: $npa_src_path\" >&2\n"
+        "fi\n"
         "if [ -n \"$npa_python\" ]; then\n"
         "  mkdir -p /tmp/npa-shim\n"
         "  printf '#!/bin/sh\\nexec \"%s\" \"$@\"\\n' \"$npa_python\" "
@@ -764,6 +783,8 @@ def default_npa_setup() -> str:
         "    token = resp.get('NextContinuationToken')\n"
         "PY\n"
         "  npa_pip_install -e /tmp/npa-src-overlay --no-deps\n"
+        # The overlay is the freshest tree, so it is the one worth putting on the import path.
+        "  npa_record_src_root /tmp/npa-src-overlay\n"
         "fi\n"
         # Record the interpreter that can actually import npa, i.e. the one pip just
         # installed into (it has npa AND its dependencies). Stage bodies use it via a
