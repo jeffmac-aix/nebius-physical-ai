@@ -129,10 +129,32 @@ def classify_path(path: str) -> str | None:
     return None
 
 
+def _history_instructions(command: str) -> str:
+    """Strip comment lines from a recorded layer command.
+
+    buildkit records the *whole* RUN, heredocs included, so a Python comment inside an
+    inlined script ends up in the image history. That bit for real: sonic's build-time
+    check contains the line
+
+        # happens on GPU (isaac-bootstrap verify / the golden eval).
+
+    which made the scanner report "a build layer ran the runtime bootstrap" against an
+    image that had done no such thing. A false positive here is not harmless - it would
+    block a legitimate reclassification, and the obvious "fix" is to loosen the pattern.
+    Same prose-versus-instruction distinction the packaging guard makes on Dockerfiles.
+    """
+    return "\n".join(
+        line
+        for line in command.splitlines()
+        if not line.lstrip().startswith("#")
+    )
+
+
 def classify_history(command: str) -> str | None:
     """Return why a layer command looks like a build-time Isaac install, or ``None``."""
+    instructions = _history_instructions(command)
     for pattern, why in HISTORY_BAKE_PATTERNS:
-        if re.search(pattern, command):
+        if re.search(pattern, instructions):
             return why
     return None
 

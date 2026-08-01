@@ -292,3 +292,28 @@ def test_the_one_allowlisted_source_asset_is_named_and_size_bounded() -> None:
         assert forbidden not in instructions, (
             f"the allowlist must name exact paths, found {forbidden!r}"
         )
+
+
+def test_history_matching_ignores_comments_inside_heredocs() -> None:
+    """A comment in an inlined script must not read as a build-time Isaac install.
+
+    buildkit records the whole RUN, heredocs included, so sonic's own explanatory line
+    "# happens on GPU (isaac-bootstrap verify / the golden eval)" landed in the image
+    history and made the scanner report a bake against a clean image. A false positive
+    here is worse than useless: it would block a legitimate reclassification, and the
+    tempting fix is to loosen the pattern until it stops firing.
+    """
+    command = (
+        'RUN python - <<PY\n'
+        "    # See install_isaac_runtime_base.sh: a driverless builder reports an empty\n"
+        "    # arch list, so the per-device check happens on GPU (isaac-bootstrap verify\n"
+        "    # / the golden eval).\n"
+        "    print('ok')\n"
+        "PY"
+    )
+    assert scanner.classify_history(command) is None, "prose must not count as a bake"
+
+    # ... but a real invocation on an instruction line still must.
+    assert scanner.classify_history(
+        command + "\nRUN /opt/npa/bin/isaac-bootstrap ensure"
+    )
