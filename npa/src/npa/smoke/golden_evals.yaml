@@ -223,7 +223,11 @@ containers:
     golden_eval:
       kind: container-smoke
       command: /isaac-sim/python.sh /opt/npa/docker/workbench/isaac-lab/smoke_functional.py
-      serverless_gpu: h100
+      # RT cores required: Isaac Lab / SONIC render paths silently produce wrong
+      # results or fail on H100/H200, which have none. rtx6000 is also the only
+      # RT-core platform the serverless project actually offers (gpu-h100-sxm is
+      # not available there at all -- a job requesting it fails with NotFound).
+      serverless_gpu: rtx6000
       gpu: required
       timeout_seconds: 1800
       status: gpu-gated
@@ -341,7 +345,11 @@ containers:
       kind: entrypoint-smoke
       command: /entrypoint.sh smoke
       artifact: sonic_smoke_result.json
-      serverless_gpu: h100
+      # RT cores required: Isaac Lab / SONIC render paths silently produce wrong
+      # results or fail on H100/H200, which have none. rtx6000 is also the only
+      # RT-core platform the serverless project actually offers (gpu-h100-sxm is
+      # not available there at all -- a job requesting it fails with NotFound).
+      serverless_gpu: rtx6000
       gpu: required
       timeout_seconds: 900
       status: gpu-gated
@@ -377,7 +385,11 @@ containers:
       kind: entrypoint-smoke
       command: /entrypoint.sh mujoco-eval
       artifact: sonic_eval_results.json
-      serverless_gpu: h100
+      # RT cores required: Isaac Lab / SONIC render paths silently produce wrong
+      # results or fail on H100/H200, which have none. rtx6000 is also the only
+      # RT-core platform the serverless project actually offers (gpu-h100-sxm is
+      # not available there at all -- a job requesting it fails with NotFound).
+      serverless_gpu: rtx6000
       gpu: required
       timeout_seconds: 900
       status: gpu-gated

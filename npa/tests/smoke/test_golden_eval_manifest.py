@@ -288,3 +288,23 @@ def test_cli_run_dry_run_prints_command() -> None:
 def test_cli_run_rejects_unknown_container() -> None:
     result = runner.invoke(app, ["workbench", "golden-eval", "run", "nope"])
     assert result.exit_code != 0
+
+
+# Isaac Lab and SONIC render through RTX ray-tracing cores. H100 and H200 have none: they
+# are throughput parts. A render path scheduled there does not fail cleanly -- imports pass
+# and the job burns its budget before producing wrong or empty output, which is the worst
+# kind of failure to debug. See skills/atomic/gpu-selection/SKILL.md.
+RT_CORE_GPUS = {"l40s", "rtx6000"}
+RT_CORE_REQUIRED = {"isaac-lab", "sonic", "sonic-mujoco"}
+
+
+@pytest.mark.parametrize("name", sorted(RT_CORE_REQUIRED))
+def test_rt_core_tools_are_not_scheduled_on_throughput_gpus(name: str) -> None:
+    spec = load_manifest()[name]
+    gpu = spec.golden_eval.serverless_gpu
+    assert gpu in RT_CORE_GPUS, (
+        f"{name} renders through RT cores, but its golden eval requests {gpu!r}, which has "
+        f"none. Use one of {sorted(RT_CORE_GPUS)}. (A live submission also showed the "
+        f"serverless project offers gpu-rtx6000/gpu-b200-sxm/cpu-d3 and no h100 at all, so "
+        f"an h100 request fails outright with NotFound.)"
+    )
