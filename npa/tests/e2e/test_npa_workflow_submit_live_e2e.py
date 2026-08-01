@@ -156,11 +156,6 @@ def _run_id_for(case: SubmitLiveCase) -> str:
     return f"npa-wf-{tier}-{stem}-{stamp}"
 
 
-@pytest.mark.parametrize(
-    "case",
-    one_shot_submit_cases(),
-    ids=lambda c: f"{c.tier}:{c.spec}",
-)
 def _image_args(case: SubmitLiveCase, registry: str) -> list[str]:
     """Return the ``--image`` argument this case needs.
 
@@ -185,6 +180,11 @@ def _image_args(case: SubmitLiveCase, registry: str) -> list[str]:
     return []
 
 
+@pytest.mark.parametrize(
+    "case",
+    one_shot_submit_cases(),
+    ids=lambda c: f"{c.tier}:{c.spec}",
+)
 def test_npa_workflow_submit_live_reaches_terminal(
     case: SubmitLiveCase,
     tmp_path: Path,
