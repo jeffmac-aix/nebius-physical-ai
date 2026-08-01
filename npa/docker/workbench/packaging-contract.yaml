@@ -154,22 +154,12 @@ images:
     dockerfile: sonic/Dockerfile
     isaac_runtime_fetch: true
     tier: job
-    redistribution: restricted
-    restricted_reason: >-
-      Omniverse Kit is gone (fetched at run time), but the gear_sonic checkout still bakes
-      NVIDIA Omniverse 3D models and textures under
-      decoupled_wbc/dexmg/gr00trobocasa/robocasa/models/assets/objects/omniverse/ --
-      found by npa/scripts/scan_image_omniverse_payload.py against the built image, and
-      an entirely separate problem from the pip wheels. Blocked on excluding that asset
-      tree from the sparse checkout (it is RoboCasa manipulation content, not needed by
-      locomotion training or the MuJoCo eval) and re-scanning clean.
+    redistribution: public
   sonic-mujoco:
     dockerfile: sonic/Dockerfile.mujoco
     isaac_runtime_fetch: true
     tier: job
-    redistribution: restricted
-    restricted_reason: >-
-      Inherits sonic's baked Omniverse asset tree; see sonic. Its own layers are clean.
+    redistribution: public
   sim2real-eval:
     dockerfile: sim2real-eval/Dockerfile
     tier: job

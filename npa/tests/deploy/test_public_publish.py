@@ -41,38 +41,31 @@ ROOT = Path(__file__).resolve().parents[3]
 CONTRACT_PATH = ROOT / "npa" / "docker" / "workbench" / "packaging-contract.yaml"
 
 
-def test_isaac_lab_and_groot_are_no_longer_restricted() -> None:
-    """Removing baked Omniverse Kit made isaac-lab and groot publishable.
+def test_isaac_images_are_no_longer_restricted() -> None:
+    """Removing baked Omniverse Kit made the Isaac images publishable.
 
-    Both now fetch Isaac Sim / Isaac Lab at first run from pypi.nvidia.com under the
+    They now fetch Isaac Sim / Isaac Lab at first run from pypi.nvidia.com under the
     operator's own EULA acceptance and ship no NVIDIA Isaac bytes, verified against the
     built image by npa/scripts/scan_image_omniverse_payload.py (isaac-lab: 83,043 entries
-    scanned, VERDICT clean).
+    scanned; sonic: 125,655 entries; both VERDICT clean).
     """
-    for tool in ("isaac-lab", "groot"):
+    for tool in ("isaac-lab", "sonic", "groot"):
         assert is_publicly_redistributable(tool), tool
 
 
-def test_sonic_is_still_restricted_for_a_different_reason() -> None:
-    """sonic's Omniverse Kit is gone, but it bakes Omniverse ASSETS.
+def test_no_tool_is_currently_restricted() -> None:
+    """Nothing is excluded any more, which took THREE separate fixes for sonic.
 
-    The gear_sonic checkout carries NVIDIA Omniverse 3D models and textures under
-    decoupled_wbc/dexmg/gr00trobocasa/robocasa/models/assets/objects/omniverse/. That is a
-    separate redistribution problem from the pip wheels, and it was found by scanning the
-    built image rather than by reading the Dockerfile - which is the argument for scanning
-    built images. Until that asset tree is excluded and the scan comes back clean, sonic
-    and its mujoco variant stay restricted.
+    Omniverse Kit was only the first: sonic also baked gated model weights (git-LFS
+    smudging) and NVIDIA Omniverse 3D assets (the RoboCasa asset library under
+    decoupled_wbc/dexmg). Both were found by scanning the built image, and neither was
+    visible in the Dockerfile. The scan that clears it:
+    npa-sonic:0.1.2-rtfetch-rc5, 125,655 entries, 16 allowlisted paths, VERDICT clean.
     """
-    assert OMNIVERSE_RESTRICTED_TOOLS == frozenset({"sonic"})
-    assert OMNIVERSE_RESTRICTED_DERIVED_IMAGES == frozenset({"sonic-mujoco"})
-    assert not is_publicly_redistributable("sonic")
-
-    contract = yaml.safe_load(CONTRACT_PATH.read_text(encoding="utf-8"))
-    for name in ("sonic", "sonic-mujoco"):
-        entry = contract["images"][name]
-        assert entry["redistribution"] == "restricted", name
-        # A bare "restricted" invites someone to flip it back without knowing why.
-        assert "omniverse" in entry.get("restricted_reason", "").lower(), name
+    assert OMNIVERSE_RESTRICTED_TOOLS == frozenset()
+    assert OMNIVERSE_RESTRICTED_DERIVED_IMAGES == frozenset()
+    for tool in ("isaac-lab", "sonic", "groot"):
+        assert is_publicly_redistributable(tool), tool
 
 
 def test_public_set_excludes_every_restricted_tool(monkeypatch) -> None:
@@ -96,24 +89,24 @@ def test_public_set_includes_the_oss_tools() -> None:
         "lancedb",
         "rerun-viewer",
         "lichtblick",
-        # Newly publishable: no baked Omniverse Kit.
+        # Newly publishable: no baked Omniverse Kit, weights or assets.
         "isaac-lab",
+        "sonic",
         "groot",
     ):
         assert tool in public, tool
     assert public == set(CONTAINER_IMAGE_NAMES) - OMNIVERSE_RESTRICTED_TOOLS
 
 
-def test_publish_plan_now_includes_isaac_lab_and_groot() -> None:
+def test_publish_plan_now_includes_the_isaac_images() -> None:
     """The point of the re-architecture: these are publishable at last."""
     plan = build_publish_plan(target_registry="ghcr.io/example/workbench")
     names = {item.source_ref.rsplit("/", 1)[-1].split(":", 1)[0] for item in plan}
-    for image in ("npa-isaac-lab", "npa-groot"):
+    for image in ("npa-isaac-lab", "npa-sonic", "npa-groot"):
         assert image in names, image
-    # sonic is still held back by its baked Omniverse asset tree, and sonic-mujoco
-    # inherits that.
-    for image in ("npa-sonic", "npa-sonic-mujoco"):
-        assert image not in names, image
+    # sonic-mujoco is a sonic variant, so it ships through sonic's image manifest rather
+    # than as its own tool key.
+    assert "npa-sonic-mujoco" not in names
     for item in plan:
         assert item.target_ref.startswith("ghcr.io/example/workbench/")
 
@@ -170,10 +163,9 @@ def test_publish_plan_targets_public_registry_by_default() -> None:
     plan = build_publish_plan(target_registry=DEFAULT_PUBLIC_CONTAINER_REGISTRY)
     # Was 16 (every tool except isaac-lab, sonic and groot). Derived rather than
     # hardcoded so adding a tool cannot silently leave it unpublished.
-    # Was 16 (isaac-lab, sonic and groot all excluded); isaac-lab and groot are now
-    # publishable and sonic is not yet. Derived rather than hardcoded so adding a tool
-    # cannot silently leave it unpublished.
-    assert len(plan) == len(CONTAINER_IMAGE_NAMES) - len(OMNIVERSE_RESTRICTED_TOOLS) == 18
+    # Was 16 (isaac-lab, sonic and groot all excluded). Derived rather than hardcoded so
+    # adding a tool cannot silently leave it unpublished.
+    assert len(plan) == len(CONTAINER_IMAGE_NAMES) - len(OMNIVERSE_RESTRICTED_TOOLS) == 19
     for item in plan:
         assert item.target_ref.startswith(DEFAULT_PUBLIC_CONTAINER_REGISTRY + "/npa-")
 
@@ -198,21 +190,18 @@ def test_restricted_image_names_cover_every_contract_restricted_image() -> None:
     assert set(OMNIVERSE_RESTRICTED_DERIVED_IMAGES).isdisjoint(publicly_publishable_tools())
 
 
-def test_contract_records_runtime_fetch_for_all_four_isaac_images() -> None:
-    """All four fetch Isaac at run time; only two are publishable, for a separate reason.
+def test_contract_marks_the_isaac_images_public_and_runtime_fetch() -> None:
+    """The contract must record BOTH facts: publishable, and what earns it.
 
-    `redistribution: public` on its own would look like someone relabelled a restricted
-    image; `isaac_runtime_fetch: true` is the claim that earns it, and
-    npa/tests/docker/test_packaging_contract.py checks the Dockerfiles implement it. Note
-    that sonic carries BOTH flags - it genuinely fetches Isaac at run time, and is
-    restricted for baked Omniverse assets instead. Keeping the two facts separate is the
-    point: they are different problems with different fixes.
+    `redistribution: public` on its own would look like someone relabelled four restricted
+    images; `isaac_runtime_fetch: true` is the claim that earns it, and
+    npa/tests/docker/test_packaging_contract.py checks the Dockerfiles implement it.
     """
     contract = yaml.safe_load(CONTRACT_PATH.read_text(encoding="utf-8"))
     for name in ("isaac-lab", "sonic", "sonic-mujoco", "groot"):
-        assert contract["images"][name].get("isaac_runtime_fetch") is True, name
-    for name in ("isaac-lab", "groot"):
-        assert contract["images"][name]["redistribution"] == "public", name
+        entry = contract["images"][name]
+        assert entry["redistribution"] == "public", name
+        assert entry.get("isaac_runtime_fetch") is True, name
 
 
 def test_the_restriction_mechanism_still_exists() -> None:
@@ -223,7 +212,7 @@ def test_the_restriction_mechanism_still_exists() -> None:
     """
     assert hasattr(images, "OMNIVERSE_RESTRICTED_TOOLS")
     assert hasattr(images, "OMNIVERSE_RESTRICTED_DERIVED_IMAGES")
-    assert omniverse_restricted_image_names() == ["sonic", "sonic-mujoco"]
+    assert omniverse_restricted_image_names() == []
     for symbol in (
         "is_publicly_redistributable",
         "omniverse_restricted_image_names",

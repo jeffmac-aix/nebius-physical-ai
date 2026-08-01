@@ -73,23 +73,16 @@ CONTAINER_IMAGE_NAMES = {
 # tests monkeypatch a synthetic restricted tool in, so the guard cannot rot while
 # its membership is empty. Kept in sync with packaging-contract.yaml's
 # `redistribution:` fields by npa/tests/deploy/test_public_publish.py.
-# NOTE: `sonic` is still here, but NOT for the Omniverse Kit reason. Kit is gone from it
-# (fetched at run time like isaac-lab and groot); what remains is that the gear_sonic
-# checkout bakes NVIDIA Omniverse 3D models and textures under
-# decoupled_wbc/dexmg/gr00trobocasa/robocasa/models/assets/objects/omniverse/ -- an
-# entirely separate redistribution problem, found by
-# npa/scripts/scan_image_omniverse_payload.py against the built image rather than by
-# reading the Dockerfile. See packaging-contract.yaml's restricted_reason for sonic.
-OMNIVERSE_RESTRICTED_TOOLS: frozenset[str] = frozenset({"sonic"})
+OMNIVERSE_RESTRICTED_TOOLS: frozenset[str] = frozenset()
 
 # Images built FROM a restricted tool image, so they inherit whatever it bakes and
 # the same no-public-redistribution rule. They are not separate
 # CONTAINER_IMAGE_NAMES entries (they are variants of their parent tool), so they
 # never reach publicly_publishable_tools(); they are listed here so operator-facing
 # output can name every excluded image without hardcoding it at the call site.
-# ``sonic-mujoco`` builds FROM npa-sonic and therefore inherits its baked Omniverse asset
-# tree, even though its own layers are clean.
-OMNIVERSE_RESTRICTED_DERIVED_IMAGES: frozenset[str] = frozenset({"sonic-mujoco"})
+# Empty for the same reason as above: ``sonic-mujoco`` inherits sonic's runtime-fetch
+# architecture and adds no Isaac and no Omniverse assets of its own.
+OMNIVERSE_RESTRICTED_DERIVED_IMAGES: frozenset[str] = frozenset()
 
 # Public mirror registry for the OSS-redistributable image subset. Nebius CR does
 # NOT support anonymous/public pulls and has no cross-tenant / all-authenticated
