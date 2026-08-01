@@ -765,12 +765,22 @@ def default_npa_setup() -> str:
         # non-standard interpreter can leave it outside PATH, so link it where every
         # shell will find it.
         "if [ ! -x /usr/local/bin/npa ]; then\n"
-        "  scripts_dir=\"$(python3 -c 'import sysconfig; "
-        "print(sysconfig.get_path(\"scripts\"))' 2>/dev/null || true)\"\n"
-        "  if [ -n \"$scripts_dir\" ] && [ -x \"$scripts_dir/npa\" ]; then\n"
-        "    ln -sf \"$scripts_dir/npa\" /usr/local/bin/npa 2>/dev/null || "
+        # Look in the USER scheme and $HOME/.local/bin too: npa_pip_install falls back to
+        # `--user` under PEP 668, and the console script then lands outside the default
+        # scripts dir — the judge stage died with `bash: npa: command not found` on an image
+        # where that fallback fired (live job 260).
+        "  for scripts_dir in "
+        "\"$(python3 -c 'import sysconfig; print(sysconfig.get_path(\"scripts\"))' "
+        "2>/dev/null || true)\" "
+        "\"$(python3 -c 'import sysconfig; "
+        "print(sysconfig.get_path(\"scripts\", scheme=\"posix_user\"))' 2>/dev/null || true)\" "
+        "\"$HOME/.local/bin\"; do\n"
+        "    if [ -n \"$scripts_dir\" ] && [ -x \"$scripts_dir/npa\" ]; then\n"
+        "      ln -sf \"$scripts_dir/npa\" /usr/local/bin/npa 2>/dev/null || "
         "sudo -n ln -sf \"$scripts_dir/npa\" /usr/local/bin/npa 2>/dev/null || true\n"
-        "  fi\n"
+        "      break\n"
+        "    fi\n"
+        "  done\n"
         "fi\n"
     )
 

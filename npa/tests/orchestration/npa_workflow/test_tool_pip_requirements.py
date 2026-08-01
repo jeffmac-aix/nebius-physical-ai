@@ -206,3 +206,19 @@ def test_lerobot_stage_switches_interpreter_before_installing_requirements(
     setup = train["setup"]
     assert setup.index("npa_vendor_python") < setup.index("npa_req_python")
     assert_no_unresolved_placeholders(text)
+
+
+def test_the_npa_console_script_is_looked_for_in_the_user_scheme_too() -> None:
+    """`npa_pip_install` falls back to `--user` under PEP 668, which moves the script.
+
+    Live job 260: the judge stage died with `bash: npa: command not found` on an image where
+    that fallback fired, because the symlink step only consulted the default scripts dir.
+    """
+
+    from npa.orchestration.npa_workflow.skypilot_render import default_npa_setup
+
+    setup = default_npa_setup()
+
+    assert 'scheme=\"posix_user\"' in setup
+    assert '"$HOME/.local/bin"' in setup
+    assert "ln -sf" in setup
