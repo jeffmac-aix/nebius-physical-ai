@@ -28,7 +28,7 @@ def test_publish_runs_before_the_simulator_closes(monkeypatch, tmp_path: Path) -
         def close(self) -> None:
             order.append("close")
 
-    def fake_capture(*, task, output_dir, max_steps, max_frames, episodes, publish=None):
+    def fake_capture(*, task, output_dir, publish=None, **_kwargs):
         output_dir.mkdir(parents=True, exist_ok=True)
         (output_dir / "frame_00.png").write_bytes(b"png")
         summary = {"status": "success", "frames": ["frame_00.png"], "task": task}
