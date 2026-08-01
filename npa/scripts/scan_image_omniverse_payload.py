@@ -58,6 +58,15 @@ PAYLOAD_SIGNATURES: tuple[tuple[str, str], ...] = (
     (r"(?i)isaac.?sim.?assets", "Isaac Sim's bundled assets"),
 )
 
+# Gated model weights are a separate licence axis from Omniverse Kit, and the workbench
+# rule is the same for both: never baked, always fetched at run time by the operator with
+# their own token. gear_sonic's weights sit behind git LFS, so a plain checkout leaves
+# ~130-byte pointer stubs; a pointer is a reference the operator resolves, not a weight.
+# This scanner only sees a tar listing (names, not contents), so it reports weight-shaped
+# paths for a human to eyeball rather than failing on them - the authoritative
+# content-based check runs inside the image build, where the bytes are available.
+WEIGHT_SUFFIXES: tuple[str, ...] = (".pt", ".pth", ".safetensors", ".ckpt", ".onnx", ".gguf")
+
 # Paths we DO ship that a loose name filter would flag. Deliberately short and exact: an
 # unlisted path that matches a signature fails the scan.
 ALLOWED_EXACT: frozenset[str] = frozenset(
@@ -137,6 +146,7 @@ class ScanReport:
     allowlisted_hits: list[str] = field(default_factory=list)
     payload_hits: list[dict[str, str]] = field(default_factory=list)
     history_hits: list[dict[str, str]] = field(default_factory=list)
+    weight_shaped_paths: list[str] = field(default_factory=list)
 
     @property
     def clean(self) -> bool:
@@ -153,6 +163,7 @@ class ScanReport:
             "payload_hits": self.payload_hits,
             "history_hits": self.history_hits,
             "allowlisted_paths_present": sorted(self.allowlisted_hits),
+            "weight_shaped_paths": sorted(self.weight_shaped_paths),
         }
 
 
@@ -239,6 +250,8 @@ def scan(image: str | None, tarball: Path | None, *, max_report: int = 40) -> Sc
         if is_allowed(path):
             report.allowlisted_hits.append(_normalize(path))
             continue
+        if path.endswith(WEIGHT_SUFFIXES) and len(report.weight_shaped_paths) < max_report:
+            report.weight_shaped_paths.append(_normalize(path))
         why = classify_path(path)
         if why and len(report.payload_hits) < max_report:
             report.payload_hits.append({"path": _normalize(path), "why": why})
@@ -281,6 +294,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\nBUILD-TIME ISAAC INSTALL DETECTED ({len(report.history_hits)} layer(s)):")
         for hit in report.history_hits:
             print(f"  {hit['why']}\n      {hit['command']}")
+    if report.weight_shaped_paths:
+        print(
+            f"\nFYI - {len(report.weight_shaped_paths)} weight-shaped path(s) present. "
+            f"A tar listing has no contents, so these may be git-LFS pointers (fine) or "
+            f"real tensors (not fine). The image build checks this by content:"
+        )
+        for path in report.weight_shaped_paths[:15]:
+            print(f"  {path}")
     print(f"\nVERDICT: {payload['verdict']}")
 
     if args.json:

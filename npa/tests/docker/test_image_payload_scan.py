@@ -179,3 +179,56 @@ def test_scanner_is_executable_and_self_documenting() -> None:
     # The reason it cannot simply grep for "isaac" is the single most likely thing for a
     # future reader to try to "simplify"; keep the rationale in the file.
     assert "python.sh" in text and "allowlist" in text.lower()
+
+
+# --------------------------------------------------------------------------------------
+# Gated model weights are a separate licence axis from Omniverse Kit, and the workbench
+# rule is the same: never baked. The distinction that matters is a git-LFS POINTER (a
+# ~130-byte reference the operator resolves with their own token - the compliant
+# arrangement) versus a real tensor. This scanner sees only a tar listing, so it reports
+# weight-shaped paths for a human rather than guessing; the authoritative content check
+# runs inside the image build, where the bytes exist.
+# --------------------------------------------------------------------------------------
+
+
+def test_weight_shaped_paths_are_reported_not_flagged_as_kit_payload() -> None:
+    """A .pt file is not Omniverse Kit, so it must not fail the Kit verdict."""
+    for path in (
+        "opt/sonic/gear_sonic/trl/utils/smplx/body_model/smpl_coco17_J_regressor.pt",
+        "opt/sonic/decoupled_wbc/sim2mujoco/resources/robots/g1/policy/"
+        "GR00T-WholeBodyControl-Walk.onnx",
+    ):
+        assert scanner.classify_path(path) is None, path
+        assert path.endswith(scanner.WEIGHT_SUFFIXES), path
+
+
+def test_report_lists_weight_shaped_paths_without_failing() -> None:
+    report = scanner.ScanReport(image="example:tag", source="registry")
+    report.weight_shaped_paths.append("opt/sonic/x/policy.onnx")
+    assert report.clean, "weight-shaped paths are informational, not a Kit-payload failure"
+    assert report.to_dict()["weight_shaped_paths"] == ["opt/sonic/x/policy.onnx"]
+
+
+def test_sonic_build_checks_weights_by_content_not_extension() -> None:
+    """Pin the content-based check in sonic's Dockerfile.
+
+    Discovered the hard way: an extension-only check reported eight 'baked weights' in
+    npa-sonic that were all ~130-byte git-LFS pointers, which are exactly what SHOULD be
+    in the image. Failing on the suffix would have been a false positive that pushed
+    someone towards weakening the guard; failing to notice a real tensor would be far
+    worse. So the build reports pointers and fails only on real payload.
+    """
+    dockerfile = (
+        REPO_ROOT / "npa" / "docker" / "workbench" / "sonic" / "Dockerfile"
+    ).read_text(encoding="utf-8")
+    assert "version https://git-lfs.github.com/spec/v1" in dockerfile, (
+        "the weight check must recognise git-LFS pointers by their magic string"
+    )
+    assert "NPA_SONIC_LFS_POINTERS_ONLY" in dockerfile
+    assert "real model weights baked into the image (not LFS pointers)" in dockerfile
+    # And the LFS pull must be scoped, not a best-effort `|| true` over weight paths.
+    assert 'git lfs pull --include="download_from_hf.py"' in dockerfile
+    assert "gear_sonic/**,gear_sonic_deploy/**,decoupled_wbc/**" not in dockerfile, (
+        "a broad `git lfs pull` made whether real weights got baked depend on whether LFS "
+        "happened to succeed on the build machine"
+    )

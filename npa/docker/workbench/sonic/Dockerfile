@@ -123,9 +123,19 @@ RUN "${NPA_ISAAC_VENV}/bin/python" -m pip install --no-cache-dir \
 RUN "${NPA_ISAAC_VENV}/bin/python" -m pip install --no-cache-dir uv \
     && curl -fsSL https://just.systems/install.sh | bash -s -- --to /usr/local/bin
 
-# gear_sonic source is Apache-2.0. The sparse checkout excludes motionbricks/out, and the
-# build asserts below that no model weights came along with the LFS pull - the weights are
-# under the NVIDIA Open Model License and must be fetched at run time by the operator.
+# gear_sonic source is Apache-2.0. Its model weights are NOT: the repo is dual-licensed
+# (source Apache-2.0, weights NVIDIA Open Model License - there is literally a file named
+# "NVIDIA Open Model License" next to decoupled_wbc/.../g1/policy/*.onnx), and weights are
+# the operator's to fetch at run time with their own HF token via download_from_hf.py.
+#
+# Weight-bearing files are tracked in git LFS, so a plain checkout gets ~130-byte POINTER
+# files rather than tensors. We deliberately do NOT `git lfs pull` them: the previous
+# `git lfs pull --include="gear_sonic/**,decoupled_wbc/**"` was wrapped in `|| true`, so
+# whether real weights landed in the image depended on whether LFS happened to succeed on
+# the build machine. That is exactly the kind of thing that is fine for a year and then
+# silently bakes NVIDIA Open Model License tensors into a public image. Now the pull is
+# scoped to the one non-weight path that needs it, and the build below asserts on file
+# CONTENT that nothing weight-bearing was materialised.
 RUN git clone --filter=blob:none --no-checkout "${SONIC_REPO_URL}" "${SONIC_HOME}" \
     && cd "${SONIC_HOME}" \
     && git sparse-checkout init --no-cone \
@@ -137,7 +147,7 @@ RUN git clone --filter=blob:none --no-checkout "${SONIC_REPO_URL}" "${SONIC_HOME
       "/LICENSE" \
     && git checkout "${SONIC_REPO_REF}" \
     && test "$(git rev-parse HEAD)" = "${SONIC_REPO_REF}" \
-    && (git lfs pull --include="download_from_hf.py,gear_sonic/**,gear_sonic_deploy/**,decoupled_wbc/**" --exclude="motionbricks/out/**" || true) \
+    && git lfs pull --include="download_from_hf.py" \
     && rm -rf "${SONIC_HOME}/.git"
 
 # Constrain torch and friends so gear_sonic's transitive requirements cannot replace the
@@ -194,13 +204,28 @@ if leaked:
 
 # No gated model weights either: those are the operator's to download at run time with
 # their own HF token (download_from_hf.py), under the NVIDIA Open Model License.
-weights = [
-    str(path)
-    for path in Path(os.environ["SONIC_HOME"]).rglob("*")
-    if path.is_file() and path.suffix in {".pt", ".pth", ".safetensors", ".ckpt", ".onnx"}
-]
-if weights:
-    raise SystemExit(f"FATAL: model weights baked into the image: {weights[:10]}")
+#
+# Checked by CONTENT, not by file extension. gear_sonic tracks its weight-bearing files in
+# git LFS, so a plain checkout leaves ~130-byte pointer stubs where the tensors would be.
+# A pointer is not a weight - it is a reference the operator resolves with their own
+# credentials, which is precisely the compliant arrangement - so failing on the suffix
+# alone would be a false positive. Failing to notice a REAL tensor would be far worse, so
+# both are reported and only real payload is fatal.
+LFS_MAGIC = b"version https://git-lfs.github.com/spec/v1"
+WEIGHT_SUFFIXES = {".pt", ".pth", ".safetensors", ".ckpt", ".onnx", ".bin", ".gguf"}
+pointers, payload = [], []
+for path in Path(os.environ["SONIC_HOME"]).rglob("*"):
+    if not path.is_file() or path.suffix not in WEIGHT_SUFFIXES:
+        continue
+    head = path.read_bytes()[:64]
+    (pointers if head.startswith(LFS_MAGIC) else payload).append(str(path))
+if pointers:
+    print(f"NPA_SONIC_LFS_POINTERS_ONLY {len(pointers)} unresolved weight pointer(s), e.g. {pointers[:3]}")
+if payload:
+    raise SystemExit(
+        "FATAL: real model weights baked into the image (not LFS pointers): "
+        f"{sorted(payload)[:10]}"
+    )
 
 if os.environ.get("REQUIRE_TORCH_SM120") == "1":
     import torch
