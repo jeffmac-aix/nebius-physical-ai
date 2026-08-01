@@ -416,6 +416,7 @@ SUBMIT_LIVE_MATRIX: tuple[SubmitLiveCase, ...] = (
             "NEBIUS_TOKEN_FACTORY_KEY",
             "AWS_ACCESS_KEY_ID",
             "AWS_SECRET_ACCESS_KEY",
+                    "HF_TOKEN",
         ),
         requires_token_factory=True,
         notes="Dynamic gate; needs --assume-decision.",
@@ -428,6 +429,7 @@ SUBMIT_LIVE_MATRIX: tuple[SubmitLiveCase, ...] = (
             "NEBIUS_TOKEN_FACTORY_KEY",
             "AWS_ACCESS_KEY_ID",
             "AWS_SECRET_ACCESS_KEY",
+                    "HF_TOKEN",
         ),
         requires_token_factory=True,
         plan_only=True,
@@ -444,6 +446,7 @@ SUBMIT_LIVE_MATRIX: tuple[SubmitLiveCase, ...] = (
     SubmitLiveCase(
         "sim2real-vlm-rl.yaml",
         "multi",
+        secret_envs=("HF_TOKEN",),
         plan_only=True,
         notes="Stub toolRefs; plan-only until engine wiring lands.",
     ),
