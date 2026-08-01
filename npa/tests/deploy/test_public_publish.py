@@ -409,3 +409,24 @@ def test_anonymous_check_sends_no_credentials_for_a_private_registry(monkeypatch
     assert ok, detail
     assert seen["url"].startswith("https://cr.eu-north1.nebius.cloud/v2/abc/npa-lerobot/manifests/")
     assert seen.get("auth") is None, "no Authorization header may be sent for a non-GHCR host"
+
+
+def test_a_token_endpoint_refusal_is_reported_as_a_verdict_not_a_glitch(monkeypatch) -> None:
+    """GHCR can refuse at the token endpoint when a package is private or absent.
+
+    Reporting that as "could not obtain an anonymous token" reads like a network problem and
+    invites a pointless retry; it is actually the answer.
+    """
+    from npa.deploy import publish_public
+
+    def fake_urlopen(request, timeout=None):  # noqa: ANN001
+        raise publish_public.urllib.error.HTTPError(
+            url="https://ghcr.io/token", code=403, msg="Forbidden", hdrs=None, fp=None
+        )
+
+    monkeypatch.setattr(publish_public.urllib.request, "urlopen", fake_urlopen)
+    ok, detail = publish_public.anonymous_pull_ok("ghcr.io/example/workbench/npa-lerobot:1.0")
+
+    assert not ok
+    assert "private or does not exist yet" in detail
+    assert "could not obtain" not in detail

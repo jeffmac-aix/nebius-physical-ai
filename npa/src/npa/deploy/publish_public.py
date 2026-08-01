@@ -120,14 +120,24 @@ def anonymous_pull_ok(ref: str, *, timeout: float = _ANON_TIMEOUT_SECONDS) -> tu
 
     token = ""
     if host == "ghcr.io":
-        # GHCR hands an anonymous bearer token to anyone; it simply carries no rights for
-        # a private package, so the manifest request is what actually decides.
+        # GHCR usually hands an anonymous bearer token to anyone and lets the manifest
+        # request decide. But when the package does not exist or is private it can refuse
+        # at the token endpoint instead, so a 401/403 here is a verdict about the package,
+        # not a transient failure -- report it as such rather than as "could not get a
+        # token", which reads like a network problem and invites a pointless retry.
         try:
             url = f"https://ghcr.io/token?scope=repository:{repository}:pull&service=ghcr.io"
             with urllib.request.urlopen(url, timeout=timeout) as response:  # noqa: S310
                 token = json.loads(response.read()).get("token", "")
+        except urllib.error.HTTPError as exc:
+            if exc.code in (401, 403):
+                return False, (
+                    f"HTTP {exc.code} on the anonymous token request — the package is "
+                    f"private or does not exist yet"
+                )
+            return False, f"token request failed: HTTP {exc.code}"
         except (urllib.error.URLError, json.JSONDecodeError, TimeoutError) as exc:
-            return False, f"could not obtain an anonymous token: {exc}"
+            return False, f"token request failed: {exc}"
 
     request = urllib.request.Request(  # noqa: S310 - https registry API
         f"https://{host}/v2/{repository}/manifests/{reference}",
