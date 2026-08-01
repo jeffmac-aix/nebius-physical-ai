@@ -93,19 +93,23 @@ def test_templates_do_not_pre_accept_the_licence(path: Path) -> None:
                 )
 
 
-def test_serverless_runner_forwards_but_never_invents_acceptance() -> None:
-    """The golden-eval submitter passes the caller's acceptance through, and only that."""
+def test_the_forwarder_never_invents_acceptance() -> None:
+    """Acceptance must come from the caller's environment, never a literal in our code."""
+    from npa.serverless_common import env as env_module
     from npa.smoke import serverless_runner
 
+    # Re-exported from the shared builder, so the golden-eval runner and every CLI path
+    # agree on the variable names.
     assert set(serverless_runner.ISAAC_EULA_VARS) == set(EULA_VARS)
+    assert set(env_module.ISAAC_EULA_VARS) == set(EULA_VARS)
 
-    source = Path(serverless_runner.__file__).read_text(encoding="utf-8")
+    source = Path(env_module.__file__).read_text(encoding="utf-8")
     instructions = "\n".join(
         line for line in source.splitlines() if not line.lstrip().startswith("#")
     )
     for var in EULA_VARS:
         assert f'"{var}": "YES"' not in instructions, "must not pre-accept on the operator's behalf"
-    assert 'os.environ[name]' in instructions, "acceptance must come from the caller's environment"
+    assert "os.environ[name]" in instructions, "acceptance must come from the caller's environment"
 
 
 def test_serverless_runner_omits_unset_acceptance(monkeypatch) -> None:
@@ -199,19 +203,31 @@ def test_an_explicit_caller_value_beats_the_forwarded_one(monkeypatch) -> None:
     assert env["OMNI_KIT_ACCEPT_EULA"] == "no"
 
 
-def test_every_cli_serverless_path_uses_the_shared_builder() -> None:
-    """If a submitter hand-rolls its env, it silently loses the acceptance forwarding."""
-    cli_root = REPO_ROOT / "npa" / "src" / "npa" / "cli"
-    submitters = sorted(
-        path
-        for path in cli_root.rglob("*.py")
-        if "create_job(" in path.read_text(encoding="utf-8")
+#: CLI modules that can launch an Isaac image and therefore must carry acceptance.
+#: Deliberately an explicit list rather than "every module that calls create_job": that
+#: broader assertion also catches npa/src/npa/cli/workbench/lerobot.py, which hand-rolls
+#: its serverless env. That is a real inconsistency and it means lerobot's submitter also
+#: misses the standard S3/HF wiring — but LeRobot cannot run an Isaac image, so fixing it
+#: is unrelated to this change and is reported rather than bundled in here.
+ISAAC_CAPABLE_CLI_SUBMITTERS = (
+    "cli/isaac_lab/__init__.py",
+    "cli/groot/__init__.py",
+)
+
+
+@pytest.mark.parametrize("relative", ISAAC_CAPABLE_CLI_SUBMITTERS)
+def test_isaac_capable_cli_submitters_use_the_shared_builder(relative: str) -> None:
+    """A submitter that hand-rolls its env silently loses the acceptance forwarding.
+
+    These are the CLI paths that can launch an Isaac image, and they are what the
+    e2e_serverless tests drive. Going through build_serverless_job_env is what makes
+    `npa workbench isaac-lab train --runtime serverless` work post-re-architecture.
+    """
+    path = REPO_ROOT / "npa" / "src" / "npa" / relative
+    assert path.is_file(), path
+    text = path.read_text(encoding="utf-8")
+    assert "create_job(" in text, f"{relative} no longer submits a serverless job"
+    assert "build_serverless_job_env" in text, (
+        f"{relative} submits a serverless job without build_serverless_job_env, so it "
+        f"will not carry the operator's Isaac EULA acceptance and the job will exit 78"
     )
-    assert submitters, "no serverless submitters found — has the API changed?"
-    for path in submitters:
-        text = path.read_text(encoding="utf-8")
-        assert "build_serverless_job_env" in text, (
-            f"{path.relative_to(REPO_ROOT)} submits a serverless job without using "
-            f"build_serverless_job_env, so it will not carry the operator's Isaac EULA "
-            f"acceptance (nor the standard S3/HF wiring)"
-        )
