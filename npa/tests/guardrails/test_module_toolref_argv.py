@@ -79,14 +79,39 @@ def _dummy(value: str, *, action: argparse.Action | None) -> str:
     return "dummy"
 
 
-def _actions_by_flag(parser: argparse.ArgumentParser) -> dict[str, argparse.Action]:
-    return {
-        option: action for action in parser._actions for option in action.option_strings
-    }
+def _subparsers(parser: argparse.ArgumentParser) -> dict[str, argparse.ArgumentParser]:
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            return dict(action.choices)
+    return {}
+
+
+def _actions_by_flag(
+    parser: argparse.ArgumentParser, argv: Sequence[str]
+) -> dict[str, argparse.Action]:
+    """Options visible to this argv, following the subcommand it names.
+
+    These CLIs are subcommand-based (`sim2real_envgen actions …`), and a subcommand's options do
+    not appear on the top-level parser — reading only the top level made every numeric option
+    look untyped.
+    """
+
+    parsers = [parser]
+    choices = _subparsers(parser)
+    for token in argv:
+        if token in choices:
+            parsers.append(choices[token])
+            break
+    actions: dict[str, argparse.Action] = {}
+    for candidate in parsers:
+        for action in candidate._actions:
+            for option in action.option_strings:
+                actions.setdefault(option, action)
+    return actions
 
 
 def _resolve(argv: Sequence[str], parser: argparse.ArgumentParser) -> list[str]:
-    actions = _actions_by_flag(parser)
+    actions = _actions_by_flag(parser, argv)
     resolved: list[str] = []
     action: argparse.Action | None = None
     for token in argv:
