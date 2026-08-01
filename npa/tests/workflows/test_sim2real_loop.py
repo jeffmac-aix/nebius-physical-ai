@@ -2140,14 +2140,37 @@ def test_vlm_signal_update_result_from_dict_defaults_and_required() -> None:
         )
 
 
-def test_sim2real_actions_workflow_targets_rtx_pro_6000() -> None:
-    actions = [
-        doc
-        for doc in yaml.safe_load_all(SIM2REAL_ACTIONS.read_text(encoding="utf-8"))
-        if doc is not None
-    ]
+def test_action_conditioning_is_a_stage_of_the_envgen_spec_and_is_cpu() -> None:
+    """`sim2real-actions.yaml` retired into the envgen spec's fourth stage.
 
-    assert actions[0]["resources"]["accelerators"] == "RTXPRO6000:1"
+    The template pinned `RTXPRO6000:1` and `image_id: docker:${POLICY_IMAGE}`; the shipped
+    generator uses neither — it writes reference actions on CPU and records `--policy-image` as
+    provenance. It also took its train slice from an operator-supplied `NPA_TRAIN_ENVS_URI`,
+    which is precisely what `split` had just written. Live proof: job
+    `npa-wf-multi-sim2real-envgen-shards-d5c752f1`, whose actions-summary.json records
+    `input_train_uri` equal to the split stage's own output (EVIDENCE.md §R36).
+    """
+
+    from npa.orchestration.npa_workflow.interpreter import build_plan
+    from npa.orchestration.npa_workflow.spec import load_spec
+
+    spec = load_spec(
+        ROOT / "npa" / "workflows" / "workbench" / "npa-workflows" / "sim2real-envgen-shards.yaml"
+    )
+    plan = build_plan(spec, run_id="envgen-actions-test")
+
+    actions = next(step for step in plan.steps if step.state == "actions")
+    assert actions.tool_ref == "workbench.sim2real_envgen.actions"
+    assert "accelerators" not in spec.resources[actions.resources]
+    # The stage conditions what split wrote, not a split of its own.
+    assert actions.argv[actions.argv.index("--train-envs-uri") + 1].endswith(
+        "/envs/train/envs.jsonl"
+    )
+    assert actions.argv[actions.argv.index("--policy-image") + 1]
+
+
+def test_the_retired_actions_template_is_gone() -> None:
+    assert not SIM2REAL_ACTIONS.exists(), "sim2real-actions.yaml came back"
 
 
 def test_envgen_shard_fan_out_is_cpu_and_declares_its_shards() -> None:

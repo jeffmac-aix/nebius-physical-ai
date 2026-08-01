@@ -41,7 +41,6 @@ REMAINING: dict[str, str] = {
     "cosmos3-text-to-image-inference.yaml": "no twin; raw-sky e2e test targets it",
     "dataset-ingest-curate.yaml": "twin exists but has no live-matrix coverage yet",
     "isaac-franka-capture-reason.yaml": "no twin",
-    "sim2real-actions.yaml": "no twin",
     # --- twin exists but is NOT live-verified yet ---
     "sonic-locomotion-finetuning.yaml": (
         "twin's retarget stage passes live (job 205) but its train stage asks the in-pod "
@@ -112,6 +111,10 @@ REMAINING: dict[str, str] = {
     #   npa-wf-multi-tokenfactory-scene-to-rollout-judge-c9b64b65, all three stages SUCCEEDED on
     #   the first attempt, and the judge's task literally contained the reasoner's analysis.
     #   See EVIDENCE.md \u00a7R35.
+    #
+    # sim2real-actions.yaml  job npa-wf-multi-sim2real-envgen-shards-d5c752f1
+    #   Absorbed as the envgen spec's fourth stage; its actions-summary.json records
+    #   input_train_uri == the split stage's own output. See EVIDENCE.md \u00a7R36.
     #
     # Phase 2c: RELOCATED (not deleted) to npa/src/npa/workflows/byof/profiles/ —
     # they are BYOF resource profiles reached through byof.yaml's toolRef, not
