@@ -181,10 +181,12 @@ SUBMIT_LIVE_MATRIX: tuple[SubmitLiveCase, ...] = (
         "cosmos3-text-to-image.yaml",
         "gpu",
         secret_envs=("HF_TOKEN", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"),
+        image_tool="cosmos3-reason",
         notes=(
             "Clones the Cosmos framework, syncs its uv environment, downloads Cosmos3-Nano and "
-            "generates an image. Runs on SkyPilot's default GPU image: the capability is npa "
-            "code now, not a bash block, so it needs no vendor image."
+            "generates an image. Needs the Cosmos image, not SkyPilot's default: the framework "
+            "links transformer_engine against glibc >= 2.32 (live job 301), which no "
+            "LD_LIBRARY_PATH can supply."
         ),
     ),
     SubmitLiveCase(
