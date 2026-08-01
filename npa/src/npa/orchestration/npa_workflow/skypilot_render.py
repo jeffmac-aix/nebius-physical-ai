@@ -625,6 +625,14 @@ def render_task_run_script(command: Sequence[str], preamble: str = "") -> str:
         "  printf '#!/bin/sh\\nexec \"%s\" \"$@\"\\n' \"$npa_python\" "
         "> /tmp/npa-shim/python3\n"
         "  chmod +x /tmp/npa-shim/python3\n"
+        # ... and `npa` must mean the SAME install. A vendor image can bake its own older npa
+        # whose console script is first on PATH; setup then skips installing (command -v npa
+        # succeeds), the overlay lands in the vendor interpreter, and the stage runs the stale
+        # CLI. Live job 284: `No such command 'cosmos2'. Did you mean 'cosmos'?` — from an npa
+        # predating the subcommand, while the recorded interpreter had the current one.
+        "  printf '#!/bin/sh\\nexec \"%s\" -c \"from npa.cli.main import app_entry; "
+        "app_entry()\" \"$@\"\\n' \"$npa_python\" > /tmp/npa-shim/npa\n"
+        "  chmod +x /tmp/npa-shim/npa\n"
         "  export PATH=\"/tmp/npa-shim:$PATH\"\n"
         "  echo \"using npa interpreter $npa_python for this stage\" >&2\n"
         "fi\n"
