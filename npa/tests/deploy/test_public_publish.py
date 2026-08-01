@@ -161,13 +161,20 @@ def test_public_registry_honors_env_override(monkeypatch) -> None:
 
 def test_publish_plan_targets_public_registry_by_default() -> None:
     plan = build_publish_plan(target_registry=DEFAULT_PUBLIC_CONTAINER_REGISTRY)
-    # Was 16 (every tool except isaac-lab, sonic and groot). Derived rather than
-    # hardcoded so adding a tool cannot silently leave it unpublished.
-    # Was 16 (isaac-lab, sonic and groot all excluded). Derived rather than hardcoded so
-    # adding a tool cannot silently leave it unpublished.
-    assert len(plan) == len(CONTAINER_IMAGE_NAMES) - len(OMNIVERSE_RESTRICTED_TOOLS) == 19
+    # Derived from the contract rather than a magic number, so adding a freely
+    # redistributable image does not silently drift this gate. (main's form, kept over an
+    # earlier hardcoded 19 from this branch -- which main's 20th tool, foxglove-embed,
+    # would have broken immediately.)
+    assert len(plan) == len(publicly_publishable_tools())
+    # And, since the Isaac re-architecture emptied the restricted set: every image the repo
+    # builds is now publishable. This is the assertion that would catch a tool silently
+    # dropping out of the plan, which the derived equality above cannot.
+    assert len(plan) == len(CONTAINER_IMAGE_NAMES) - len(OMNIVERSE_RESTRICTED_TOOLS)
     for item in plan:
         assert item.target_ref.startswith(DEFAULT_PUBLIC_CONTAINER_REGISTRY + "/npa-")
+    # npa-foxglove-embed carries only MIT (@foxglove/embed) + Apache-2.0 (Caddy)
+    # content plus our own assets, so it belongs in the public set.
+    assert "foxglove-embed" in {item.tool for item in plan}
 
 
 def test_restricted_image_names_cover_every_contract_restricted_image() -> None:
