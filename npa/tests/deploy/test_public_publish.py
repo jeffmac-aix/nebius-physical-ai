@@ -296,3 +296,116 @@ def test_oss_tools_resolve_from_the_public_mirror_normally() -> None:
     """The guard must not get in the way of the images that ARE publishable."""
     ref = container_image_for_tool("lerobot", registry=DEFAULT_PUBLIC_CONTAINER_REGISTRY)
     assert ref.startswith(DEFAULT_PUBLIC_CONTAINER_REGISTRY + "/npa-lerobot:")
+
+
+# --------------------------------------------------------------------------------------
+# Anonymous pullability
+#
+# Pushing to GHCR is not publishing: a new container package is PRIVATE, and a package
+# linked to a repository inherits that repository's access *permissions* but explicitly NOT
+# its visibility -- so even a public repo yields private packages. GitHub has no REST API
+# to change visibility for organisation-owned packages, so it cannot be automated. Without
+# a verification step the publish job copies every image, exits 0 and looks successful
+# while nothing is actually pullable, which is a silent false success on the one action in
+# this repo that cannot be undone.
+# --------------------------------------------------------------------------------------
+
+
+def test_registry_host_is_split_off_correctly() -> None:
+    from npa.deploy.publish_public import _registry_host
+
+    assert _registry_host("ghcr.io/nebius/nebius-physical-ai/npa-lerobot:0.5.1") == "ghcr.io"
+    assert _registry_host("cr.eu-north1.nebius.cloud/abc/npa-lerobot:0.5.1") == (
+        "cr.eu-north1.nebius.cloud"
+    )
+
+
+def test_verify_public_reports_every_private_image(monkeypatch) -> None:
+    from npa.deploy import publish_public
+
+    plan = build_publish_plan(target_registry="ghcr.io/example/workbench")
+    private = {plan[0].target_ref, plan[1].target_ref}
+
+    def fake_check(ref: str, **_: object) -> tuple[bool, str]:
+        return (False, "HTTP 403 (package is private)") if ref in private else (True, "HTTP 200")
+
+    monkeypatch.setattr(publish_public, "anonymous_pull_ok", fake_check)
+    failures = publish_public.verify_public(plan)
+
+    assert {item.target_ref for item, _ in failures} == private
+    assert all("403" in detail for _, detail in failures)
+
+
+def test_verify_public_exits_non_zero_when_anything_is_private(monkeypatch, capsys) -> None:
+    """The whole point: a publish that produced private packages must FAIL the run."""
+    from npa.deploy import publish_public
+
+    monkeypatch.setattr(
+        publish_public, "anonymous_pull_ok", lambda ref, **_: (False, "HTTP 403")
+    )
+    rc = publish_public.main(
+        ["--target", "ghcr.io/example/workbench", "--verify-public"]
+    )
+    assert rc == 1
+    captured = capsys.readouterr()
+    # The message has to tell an operator exactly what to do, because there is no API for it.
+    assert "Change visibility" in captured.err
+    assert "irreversible" in captured.err
+
+
+def test_verify_public_exits_zero_when_everything_is_public(monkeypatch) -> None:
+    from npa.deploy import publish_public
+
+    monkeypatch.setattr(publish_public, "anonymous_pull_ok", lambda ref, **_: (True, "HTTP 200"))
+    assert publish_public.main(["--target", "ghcr.io/example/workbench", "--verify-public"]) == 0
+
+
+def test_verify_public_does_not_copy_anything(monkeypatch) -> None:
+    """--verify-public must never be a publish path in disguise."""
+    from npa.deploy import publish_public
+
+    def explode(item) -> None:  # pragma: no cover - must not run
+        raise AssertionError(f"--verify-public must not copy {item.target_ref}")
+
+    monkeypatch.setattr(publish_public, "_crane_copy", explode)
+    monkeypatch.setattr(publish_public, "anonymous_pull_ok", lambda ref, **_: (True, "ok"))
+    assert publish_public.main(["--target", "ghcr.io/example/workbench", "--verify-public"]) == 0
+
+
+def test_anonymous_check_sends_no_credentials_for_a_private_registry(monkeypatch) -> None:
+    """It must test the UNAUTHENTICATED path, or a private package reads as public.
+
+    Using plain HTTP rather than a crane/docker call is deliberate: those would happily
+    reuse an ambient login from an earlier step in the same job.
+    """
+    from npa.deploy import publish_public
+
+    seen: dict[str, object] = {}
+
+    class FakeResponse:
+        status = 200
+
+        def read(self) -> bytes:
+            return b"{}"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+    def fake_urlopen(request, timeout=None):  # noqa: ANN001
+        url = request if isinstance(request, str) else request.full_url
+        seen["url"] = url
+        if not isinstance(request, str):
+            seen["auth"] = request.headers.get("Authorization")
+        return FakeResponse()
+
+    monkeypatch.setattr(publish_public.urllib.request, "urlopen", fake_urlopen)
+    ok, detail = publish_public.anonymous_pull_ok(
+        "cr.eu-north1.nebius.cloud/abc/npa-lerobot:0.5.1"
+    )
+
+    assert ok, detail
+    assert seen["url"].startswith("https://cr.eu-north1.nebius.cloud/v2/abc/npa-lerobot/manifests/")
+    assert seen.get("auth") is None, "no Authorization header may be sent for a non-GHCR host"

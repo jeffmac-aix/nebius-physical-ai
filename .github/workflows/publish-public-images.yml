@@ -83,3 +83,43 @@ jobs:
       - name: Publish
         if: ${{ inputs.dry_run == false }}
         run: python -m npa.deploy.publish_public --target "${{ steps.target.outputs.value }}"
+
+      # Pushing is not publishing. A new GHCR container package is PRIVATE, and a package
+      # linked to a repository inherits that repository's access permissions but NOT its
+      # visibility -- so even a public repo yields private packages. GitHub exposes no REST
+      # API to change visibility for organisation-owned packages, so it cannot be automated
+      # here; it is a one-time manual step per package, and it is irreversible.
+      #
+      # Without this check the job would copy 19 images, exit 0 and look successful while
+      # nothing was actually publicly pullable. It fails the run instead, and prints the
+      # exact UI path to fix it.
+      - name: Verify the published images are anonymously pullable
+        if: ${{ inputs.dry_run == false }}
+        run: python -m npa.deploy.publish_public --target "${{ steps.target.outputs.value }}" --verify-public
+
+      - name: Explain what to do if verification failed
+        if: ${{ failure() && inputs.dry_run == false }}
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<'MD'
+          ## Images copied, but not yet public
+
+          The copy succeeded; the packages are **private**, which is GHCR's default for a
+          newly created package. This cannot be automated — GitHub has no REST API to set
+          visibility for organisation-owned packages.
+
+          One-time, per package, by someone with admin on the package:
+
+          1. <https://github.com/orgs/nebius/packages>
+          2. Select the package (e.g. `npa-lerobot`) → **Package settings**
+          3. **Danger Zone** → **Change visibility** → **Public**
+
+          > **This is irreversible.** A public package cannot be made private again, and
+          > deleting a tag does not undo publication. Confirm the redistribution
+          > classification before doing it — see `docs/workbench/container-packaging.md`.
+
+          Then re-run this workflow with `dry_run=false` to re-verify, or run locally:
+
+          ```
+          npa/.venv/bin/python -m npa.deploy.publish_public --verify-public
+          ```
+          MD
