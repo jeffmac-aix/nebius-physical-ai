@@ -173,6 +173,32 @@ npa/docker/workbench/sonic/build.sh    --registry cr.<region>.nebius.cloud/<id> 
 npa/docker/workbench/groot/build.sh    --registry cr.<region>.nebius.cloud/<id> --push
 ```
 
+### Promoting the canonical tags — mind the order
+
+Because the runtime-fetch images **refuse to run** without the operator's EULA acceptance,
+promoting them onto the canonical tags is not a neutral swap. Four layers had to be taught
+to forward that acceptance: the golden-eval runner, the shared serverless job-env builder
+(`build_serverless_job_env`, which every `--runtime serverless` CLI path goes through), the
+SkyPilot templates, and the K8s sim2real Isaac sibling jobs.
+
+**Promote only after that plumbing is on the default branch.** Anyone running from a branch
+without it who pulls a canonical tag gets an image their code cannot consent to, and the job
+exits 78.
+
+```bash
+./npa/scripts/promote_isaac_rtfetch_tags.sh --dry-run           # default; prints only
+./npa/scripts/promote_isaac_rtfetch_tags.sh --i-have-sign-off   # both registries
+./npa/scripts/promote_isaac_rtfetch_tags.sh --rollback --i-have-sign-off
+```
+
+The script pins the validated digests and the pre-re-architecture digests, checks each
+source exists before touching either registry, and re-reads every tag afterwards to confirm
+parity. Rollback is always safe: the old images bake Isaac and need no acceptance plumbing.
+
+Only after promotion should `npa.deploy.publish_public` be run with `dry_run=false` — it
+resolves **canonical** tags, so publishing beforehand would push the old Omniverse-baked
+images to a public registry, the exact outcome this architecture exists to prevent.
+
 **The honest trade.** `npa-isaac-lab` went from 8.41 GB to 10.66 GB compressed (+27%).
 Removing Isaac Sim saved less than adding a standalone PyTorch cu128 wheel set cost — its
 bundled `nvidia-*` CUDA libraries are ~5 GB uncompressed, where the old nvcr.io base
