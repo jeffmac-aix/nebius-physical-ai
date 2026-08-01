@@ -2514,3 +2514,61 @@ rollout stage's `--rollouts-s3-uri`, and the migrated test pins that equality.
 | 260 | `bash: npa: command not found` in the judge stage | `npa_pip_install` falls back to `--user` under PEP 668, which moves the console script out of the default scripts dir; setup now also looks in the user scheme and `$HOME/.local/bin` |
 
 Two of the four are general engine fixes that apply to every stage, not just this one.
+
+## R35. `tokenfactory-scene-to-rollout-judge.yaml` retired (11 → 10) — the chain holds
+
+The last combo template, and the only three-stage one. Its point is not that three things run:
+it is that **the judge scores the rollout against the plan the reasoner produced.** The template
+carried that link as
+
+```bash
+plan_task="$(python3 - "${PLAN_URI%/}/scene_reasoning.json" <<'PY' … )"
+npa workbench vlm-eval run --task "${plan_task}" …
+```
+
+a command substitution no `toolRef` argv can express. Without it the third stage would score
+against a literal string and the combo would be three unrelated jobs. So `vlm-eval run` gained
+`--task-from <artifact>`, which reads the reasoner's `analysis` and builds the same prompt with
+the same 900-character budget.
+
+### Job 262 — `npa-wf-multi-tokenfactory-scene-to-rollout-judge-c9b64b65`, all three SUCCEEDED, first attempt
+
+```
+scene-reason  1m43s  1x[CPU:4+]                                   SUCCEEDED
+rollout-gpu   1m58s  1x[RTXPRO-6000-BLACKWELL-SERVER-EDITION:1]   SUCCEEDED
+scene-judge   1m38s  1x[CPU:4+]                                   SUCCEEDED
+
+     834  scene/frame_000.png                    (seeded)
+    3330  plan/scene_reasoning.json              (reasoner)
+    1329  rollouts/eval_info.json                (GPU)
+   89457  rollouts/videos/pusht_0/eval_episode_0.mp4
+   99847  rollouts/videos/pusht_0/eval_episode_1.mp4
+    2157  vlm-judge/vlm_eval_stub.json           (hosted judge)
+```
+
+The chain is visible in the artifacts rather than asserted. The reasoner wrote:
+
+> *"The scene consists of a flat brown surface with a red cube positioned on it. The cube is
+> centered on the surface and appears to be the only object present…"*
+
+and the judge's recorded `task` begins:
+
+> *"Judge whether the robot rollout accomplishes this planned task. Plan: The scene consists of a
+> flat brown surface with a red cube positioned on it…"*
+
+— the reasoner's own analysis, carried into the judge by `--task-from`, scored by
+`Qwen/Qwen2.5-VL-72B-Instruct` through the hosted `api` backend. **Only the middle stage held a
+GPU.**
+
+The migrated test pins both links offline: the judge's `--input-path` equals the rollout's
+`--rollouts-s3-uri`, and its `--task-from` equals the reasoner's `--output-path` artifact.
+
+### The Token Factory combo group is done
+
+All three combo templates are retired (§R33, §R34, §R35) and `COMBO_YAMLS` is empty. What made
+them portable was five tool/engine additions, each replacing bash the templates carried:
+in-image LeRobot train and rollout toolRefs, run-artifact and rollout uploads, the executable
+triage stage, `--task-from`, and the vendor-interpreter switch. One more gap surfaced while
+porting the last test: `npa.workflow.submit` had no `image` parameter, so a spec pinning
+workbench images could not be submitted from Python against anything else — the CLI's `--image`
+now has an SDK equivalent.

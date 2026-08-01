@@ -7,7 +7,7 @@ a versioned heading when a release is cut.
 
 ## Unreleased
 
-### Retiring the raw SkyPilot task catalog (36 → 11 templates)
+### Retiring the raw SkyPilot task catalog (36 → 10 templates)
 
 `npa.workflow/v0.0.1` specs are becoming the only workflow authoring surface.
 SkyPilot remains the execution engine, and `npa workbench workflow submit` still
@@ -22,7 +22,8 @@ under `npa/src/npa/workflows/skypilot/`.
   `vlm-eval-token-factory.yaml`, `mjlab-eval.yaml`, `retargeting.yaml`,
   `vlm-eval.yaml`, `vlm-eval-benchmark.yaml`, `sim-to-real-loop.yaml`,
   `scenario-gen-adversarial.yaml`, `sim2real-envgen-split.yaml`, `cosmos3-ea-fetch.yaml`,
-  `tokenfactory-train-triage.yaml`, `tokenfactory-rollout-judge.yaml`.
+  `tokenfactory-train-triage.yaml`, `tokenfactory-rollout-judge.yaml`,
+  `tokenfactory-scene-to-rollout-judge.yaml`.
   `test_skypilot_catalog_retirement.py` pins the remaining set, so the tally is
   machine-checked and a new raw template needs a deliberate edit.
 - **Multi-node stages.** A resource profile can declare `num_nodes`, so a spec can ask
@@ -169,6 +170,13 @@ under `npa/src/npa/workflows/skypilot/`.
   remote `--checkpoint-path`: a local path, an `s3://` prefix or a Hugging Face model id, because
   a stage's pod starts empty. Note LeRobot >= 0.6 requires the processor format, so a
   pre-0.6 public policy such as `lerobot/diffusion_pusht` needs migrating first.
+- **`vlm-eval run --task-from <artifact>`** scores a rollout against the plan an earlier
+  reasoning stage wrote, reading its `analysis` field. The retired scene-to-rollout-judge
+  template did this with `--task "$(python3 … )"`; without it a three-stage combo's judge would
+  score against a literal string.
+- **`npa.workflow.submit` gained `image=`**, mirroring the CLI's `--image` (including `"none"` to
+  clear workbench pins). A spec that pins images could not previously be submitted from Python
+  against anything else.
 - **The `npa` console script is found when PEP 668 pushes it to `--user`**, which previously made
   a stage fail with `bash: npa: command not found`.
 - **A LeRobot training failure carries its log** (last 60 lines) instead of naming a path inside
