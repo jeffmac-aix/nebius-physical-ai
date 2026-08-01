@@ -30,8 +30,12 @@ config:
   bucket: example-bucket
   prefix: "tokenfactory-rollout-judge/{{run.id}}"
 
-  # Producer: a public LeRobot policy, materialised into the stage's pod.
-  policy_checkpoint: lerobot/diffusion_pusht
+  # Producer: the policy to roll out, materialised into the stage's pod. Accepts a local path,
+  # an s3:// prefix, or a Hugging Face model id. NOTE on the obvious public choice: LeRobot >= 0.6
+  # requires the processor format, and `lerobot/diffusion_pusht` is still in the old one — it
+  # fails with `ProcessorMigrationError: Config file 'policy_preprocessor.json' not found`. A
+  # checkpoint produced BY 0.6 already has it, which is what the live case seeds here.
+  policy_checkpoint: "s3://{{config.bucket}}/{{config.prefix}}/policy/"
   rollout_output_dir: /tmp/lerobot_rollout
   rollout_env: pusht
   rollout_episodes: "2"

@@ -285,6 +285,20 @@ def seed_live_workflow_inputs(
 
     # VLM-eval GPU twins score a rollout: seed a short RGB frame sequence under
     # the rollouts prefix so the self-hosted VLM has real frames to evaluate.
+    if spec_name == "tokenfactory-rollout-judge-combo.yaml":
+        # The rollout stage needs a policy in LeRobot's PROCESSOR format. The obvious public
+        # choice, `lerobot/diffusion_pusht`, predates it and fails with ProcessorMigrationError
+        # on LeRobot >= 0.6, so seed a checkpoint produced by 0.6 itself (job 256 wrote one;
+        # stage it once and point NPA_E2E_LEROBOT_POLICY_SRC at it).
+        src = os.environ.get("NPA_E2E_LEROBOT_POLICY_SRC", "").strip()
+        if not src:
+            pytest.skip(
+                "NPA_E2E_LEROBOT_POLICY_SRC not set; stage a processor-format LeRobot policy "
+                "prefix (config.json + model.safetensors + policy_{pre,post}processor*.json)"
+            )
+        _seed_prefix_from_source(src, bucket, f"{marker}/policy/", client)
+        return
+
     if spec_name in {
         "vlm-eval-single.yaml",
         "vlm-eval-benchmark.yaml",
