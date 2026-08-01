@@ -43,9 +43,9 @@ def test_install_is_conditional_on_the_executable_being_absent() -> None:
     setup = render_pip_requirements_setup(tool_pip_requirements("workbench.cosmos.fetch"))
 
     assert "if ! command -v huggingface-cli >/dev/null 2>&1; then" in setup
-    assert "npa_pip_install 'huggingface_hub[cli]>=0.23,<1.0'" in setup
-    # Uses the shared helper, so it inherits the PEP 668 fallbacks default_npa_setup defines.
-    assert setup.count("npa_pip_install") == 1
+    assert "-m pip install -q 'huggingface_hub[cli]>=0.23,<1.0'" in setup
+    # Same PEP 668 fallbacks default_npa_setup uses: plain, --break-system-packages, --user.
+    assert setup.count("huggingface_hub[cli]>=0.23,<1.0") == 3
 
 
 def test_no_requirements_renders_nothing() -> None:
@@ -92,9 +92,9 @@ def test_a_library_requirement_is_probed_by_import_not_by_command_v() -> None:
 
     setup = render_pip_requirements_setup(tool_pip_requirements("workbench.lerobot.policy_train"))
 
-    assert "if ! python3 -c 'import huggingface_hub' >/dev/null 2>&1; then" in setup
+    assert "-c 'import huggingface_hub' >/dev/null 2>&1; then" in setup
     assert "command -v" not in setup
-    assert "npa_pip_install 'huggingface_hub>=0.23,<1.0'" in setup
+    assert "-m pip install -q 'huggingface_hub>=0.23,<1.0'" in setup
 
 
 def test_executable_and_module_probes_can_coexist() -> None:
@@ -103,7 +103,7 @@ def test_executable_and_module_probes_can_coexist() -> None:
     )
 
     assert "command -v huggingface-cli" in setup
-    assert "python3 -c 'import numpy'" in setup
+    assert "-c 'import numpy'" in setup
 
 
 def test_shipped_lerobot_spec_installs_the_library(monkeypatch: pytest.MonkeyPatch) -> None:
