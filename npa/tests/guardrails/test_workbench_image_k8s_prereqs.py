@@ -25,6 +25,12 @@ DOCKER_ROOT = Path(__file__).resolve().parents[2] / "docker" / "workbench"
 # npa.workflow spec, its image MUST be able to host a SkyPilot task.
 SKYPILOT_HOSTED_IMAGES = ("isaac-lab", "lerobot", "sonic")
 
+#: Images built on an Isaac base, where /isaac-sim is mode 750 owned by
+#: isaac-sim:isaac-sim and the runtime user therefore has to join that GROUP (a
+#: recursive chmod would rewrite multi-GB layers). Not universal: the lerobot image has
+#: no /isaac-sim at all, so requiring the usermod there would pin a no-op.
+ISAAC_BASED_IMAGES = ("isaac-lab", "sonic")
+
 
 #: The four ingredients a SkyPilot-hosted image needs, established by bisecting
 #: derived images against a live Kubernetes GPU cluster. Missing any one of them makes
@@ -97,12 +103,16 @@ def test_derived_prereq_dockerfile_matches_the_shipped_one(tool: str) -> None:
     for token in (
         "python3",
         "rsync",
-        "usermod -aG isaac-sim",
         "NOPASSWD",
         "ENV PATH=/usr/bin:$PATH",
         "ARG BASE_IMAGE",
     ):
         assert token in text, f"{tool}: derived prereq Dockerfile is missing {token!r}"
+    if tool in ISAAC_BASED_IMAGES:
+        assert "usermod -aG isaac-sim" in text, (
+            f"{tool} derives from an Isaac base, where /isaac-sim is mode 750 "
+            "isaac-sim:isaac-sim, so the runtime user must join that group"
+        )
 
 
 def test_in_cluster_build_script_is_executable_and_generic() -> None:
