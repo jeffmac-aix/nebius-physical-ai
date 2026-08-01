@@ -83,8 +83,13 @@ TOOL_REF_PIP_REQUIREMENTS: dict[str, tuple[tuple[str, str], ...]] = {
     # Text-to-image clones the framework and hands its environment to uv, exactly as the
     # retired template did; the checkpoint download still goes through the HF CLI.
     "workbench.cosmos3.text_to_image": (
-        ("huggingface-cli", "huggingface_hub[cli]>=0.23,<1.0"),
-        ("uv", "uv>=0.5"),
+        ("python:huggingface_hub", "huggingface_hub[cli]>=0.23,<1.0"),
+        # `python:` on purpose. Probing for a `uv` EXECUTABLE passes on SkyPilot's default image
+        # — it ships one in its runtime directory — and then the stage cannot find it, because
+        # that directory is on setup's PATH and not the command's (live job 291:
+        # `[Errno 2] No such file or directory: 'uv'`). Probing the MODULE installs uv into the
+        # interpreter the stage actually uses, which is the thing that has to be true.
+        ("python:uv", "uv>=0.5"),
     ),
 }
 

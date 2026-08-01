@@ -311,3 +311,27 @@ def test_hf_cli_prefers_a_real_executable(monkeypatch) -> None:
     monkeypatch.setattr(cosmos3_module.shutil, "which", lambda _name: "/usr/bin/huggingface-cli")
 
     assert cosmos3_module._huggingface_cli() == ["/usr/bin/huggingface-cli"]
+
+
+def test_uv_argv_prefers_the_module(monkeypatch) -> None:
+    """Live job 291: a uv on setup's PATH is not a uv the stage command can run."""
+
+    import importlib.util
+    import shutil
+    import sys
+
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: object() if name == "uv" else None)
+    monkeypatch.setattr(shutil, "which", lambda _name: "/somewhere/else/uv")
+
+    assert t2i.uv_argv() == [sys.executable, "-m", "uv"]
+
+
+def test_uv_argv_says_what_is_missing(monkeypatch) -> None:
+    import importlib.util
+    import shutil
+
+    monkeypatch.setattr(importlib.util, "find_spec", lambda _name: None)
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
+
+    with pytest.raises(t2i.Cosmos3TextToImageError, match="uv is required"):
+        t2i.uv_argv()

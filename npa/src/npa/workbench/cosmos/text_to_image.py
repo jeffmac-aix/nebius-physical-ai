@@ -164,6 +164,29 @@ def inference_argv(
     return argv
 
 
+def uv_argv() -> list[str]:
+    """Return an argv prefix for uv, preferring a module over a PATH lookup.
+
+    Live job 291: `[Errno 2] No such file or directory: 'uv'` on SkyPilot's default image, which
+    ships a uv inside its own runtime directory — on setup's PATH, not the stage command's. The
+    module form runs from the interpreter that installed it, so it cannot drift that way.
+    """
+
+    import importlib.util
+    import shutil
+    import sys
+
+    if importlib.util.find_spec("uv") is not None:
+        return [sys.executable, "-m", "uv"]
+    executable = shutil.which("uv")
+    if executable:
+        return [executable]
+    raise Cosmos3TextToImageError(
+        "uv is required to sync the Cosmos framework environment; install it with "
+        "`pip install uv` into the interpreter running this stage"
+    )
+
+
 def _run(argv: list[str], *, cwd: Path, env: dict[str, str], what: str) -> None:
     completed = subprocess.run(argv, cwd=str(cwd), env=env, text=True, capture_output=True)
     if completed.returncode != 0:
@@ -204,7 +227,7 @@ def generate(
     env["GIT_LFS_SKIP_SMUDGE"] = "1"
 
     _run(
-        ["uv", "sync", "--all-extras", f"--group={uv_group}"],
+        [*uv_argv(), "sync", "--all-extras", f"--group={uv_group}"],
         cwd=source_dir,
         env=env,
         what="uv sync of the Cosmos framework environment",
