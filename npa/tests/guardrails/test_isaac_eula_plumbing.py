@@ -231,3 +231,64 @@ def test_isaac_capable_cli_submitters_use_the_shared_builder(relative: str) -> N
         f"{relative} submits a serverless job without build_serverless_job_env, so it "
         f"will not carry the operator's Isaac EULA acceptance and the job will exit 78"
     )
+
+
+# --------------------------------------------------------------------------------------
+# K8s sim2real Isaac sibling jobs
+# --------------------------------------------------------------------------------------
+
+SIM2REAL_ISAAC_BUILDERS = (
+    ("byo_isaac_eval", "build_isaac_eval_job_manifest"),
+    ("byo_isaac_trainer", "build_isaac_job_manifest"),
+    ("byo_isaac_policy_rollout", "build_isaac_rollout_job_manifest"),
+)
+
+_MANIFEST_KWARGS = {
+    "byo_isaac_eval": dict(
+        job_name="j", run_id="r", image="reg/npa-isaac-lab:t", task="Isaac-Lift-Cube-Franka-v0",
+        num_envs=4, checkpoint_uri="s3://b/m.pt", per_env_s3_uri="s3://b/p.json",
+        s3_endpoint="https://s3.example", namespace="default", service_account="sa",
+        gpu_product="NVIDIA-RTX-PRO-6000-Blackwell-Server-Edition",
+    ),
+    "byo_isaac_trainer": dict(
+        job_name="j", run_id="r", image="reg/npa-isaac-lab:t", task="Isaac-Lift-Cube-Franka-v0",
+        num_envs=64, iterations=10, s3_output_uri="s3://b/o/", s3_endpoint="https://s3.example",
+        namespace="default", service_account="sa",
+        gpu_product="NVIDIA-RTX-PRO-6000-Blackwell-Server-Edition",
+    ),
+    "byo_isaac_policy_rollout": dict(
+        job_name="j", run_id="r", image="reg/npa-isaac-lab:t", task="Isaac-Lift-Cube-Franka-v0",
+        rollout_count=2, steps_per_rollout=4, checkpoint_uri="s3://b/m.pt",
+        out_s3_prefix="s3://b/o", s3_endpoint="https://s3.example", namespace="default",
+        service_account="sa", gpu_product="NVIDIA-RTX-PRO-6000-Blackwell-Server-Edition",
+    ),
+}
+
+
+def _job_env(module_name: str, builder_name: str) -> dict[str, str]:
+    import importlib
+
+    module = importlib.import_module(f"npa.workflows.sim2real.{module_name}")
+    manifest = getattr(module, builder_name)(**_MANIFEST_KWARGS[module_name])
+    container = manifest["spec"]["template"]["spec"]["containers"][0]
+    return {entry["name"]: entry["value"] for entry in container.get("env", [])}
+
+
+@pytest.mark.parametrize(("module_name", "builder"), SIM2REAL_ISAAC_BUILDERS)
+def test_sim2real_isaac_jobs_forward_acceptance(monkeypatch, module_name, builder) -> None:
+    """These jobs invoke /isaac-sim/python.sh, so without acceptance they exit 78."""
+    for var in EULA_VARS:
+        monkeypatch.setenv(var, "YES")
+    env = _job_env(module_name, builder)
+    for var in EULA_VARS:
+        assert env.get(var) == "YES", f"{module_name}: {var} not forwarded into the job"
+
+
+@pytest.mark.parametrize(("module_name", "builder"), SIM2REAL_ISAAC_BUILDERS)
+def test_sim2real_isaac_jobs_do_not_invent_acceptance(monkeypatch, module_name, builder) -> None:
+    """Unset must stay unset so the job fails with the refusal, not silent consent."""
+    for var in EULA_VARS:
+        monkeypatch.delenv(var, raising=False)
+    env = _job_env(module_name, builder)
+    for var in EULA_VARS:
+        assert var not in env, f"{module_name}: {var} must not be invented"
