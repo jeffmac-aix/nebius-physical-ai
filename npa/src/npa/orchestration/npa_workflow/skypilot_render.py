@@ -123,43 +123,64 @@ def render_vendor_interpreter_setup(candidates: Sequence[str]) -> str:
     if not candidates:
         return ""
     listed = " ".join(candidates)
+    # Two attempts per candidate, in this order and for opposite reasons.
+    #
+    # --no-deps first, because a vendor image ships a PINNED stack and resolving npa's
+    # requirements inside it can bump torch, after which the vendor's own compiled extensions
+    # stop loading (live job 253: torchcodec's libtorchcodec_core4.so failed with
+    # `undefined symbol: _ZN3c1013MessageLogger…`, the classic torch-ABI mismatch). Where the
+    # vendor environment already carries npa's dependencies — LeRobot's venv does — this is all
+    # that is needed and nothing is perturbed.
+    #
+    # Then WITH deps, because some vendor environments carry almost none of them. Isaac Lab's
+    # Omniverse kit python is one: live job 268 installed npa there with --no-deps, and the
+    # probe still failed because typer/boto3/pydantic were absent. A stage that cannot import
+    # npa is useless, so a perturbed-but-working environment beats a pristine broken one — and
+    # the order means the risky attempt only happens when the safe one was not enough.
+    attempts = (
+        ("--no-deps ", "without dependencies (protects the vendor's pinned stack)"),
+        ("", "with dependencies (the vendor environment lacked them)"),
+    )
+    install_block = ""
+    for flags, why in attempts:
+        install_block += (
+            f'    if ! "$npa_vendor_python" -c \'import npa.workbench\' >/dev/null 2>&1; then\n'
+            f'      echo "installing npa into $npa_vendor_python {why}" >&2\n'
+            f'      "$npa_vendor_python" -m pip install -q {flags}-e "$npa_vendor_src" \\\n'
+            f'        || "$npa_vendor_python" -m pip install -q {flags}-e "$npa_vendor_src" '
+            "--break-system-packages \\\n"
+            f'        || "$npa_vendor_python" -m pip install -q {flags}-e "$npa_vendor_src" '
+            "--user || true\n"
+            "    fi\n"
+        )
     return (
         "# Vendor image: its libraries live in its own environment, so npa has to be installed\n"
         "# there and that interpreter has to be the one the stage runs.\n"
         f"for npa_vendor_python in {listed}; do\n"
-        "  [ -x \"$npa_vendor_python\" ] || continue\n"
-        "  npa_vendor_src=\"\"\n"
+        '  [ -x "$npa_vendor_python" ] || continue\n'
+        '  npa_vendor_src=""\n'
         "  if [ -s /tmp/npa-src-root ]; then\n"
-        "    npa_vendor_src=\"$(cat /tmp/npa-src-root)\"\n"
+        '    npa_vendor_src="$(cat /tmp/npa-src-root)"\n'
         "  elif [ -d /opt/nebius-physical-ai/npa ]; then\n"
         "    npa_vendor_src=/opt/nebius-physical-ai/npa\n"
         "  elif [ -d /tmp/npa-src ]; then\n"
         "    npa_vendor_src=/tmp/npa-src\n"
         "  fi\n"
-        "  if [ -n \"$npa_vendor_src\" ]; then\n"
-        "    echo \"installing npa into vendor interpreter $npa_vendor_python\" >&2\n"
-        # --no-deps is essential, not an optimisation: a vendor image ships a PINNED stack, and
-        # resolving npa's requirements inside it can bump torch, after which the vendor's own
-        # compiled extensions stop loading (live job 253: torchcodec's
-        # libtorchcodec_core4.so failed with `undefined symbol: _ZN3c1013MessageLogger...`,
-        # the classic torch-ABI mismatch). The stage only needs npa importable; anything npa
-        # actually misses surfaces as a clear ImportError from the probe below.
-        "    \"$npa_vendor_python\" -m pip install -q --no-deps -e \"$npa_vendor_src\" \\\n"
-        "      || \"$npa_vendor_python\" -m pip install -q --no-deps -e \"$npa_vendor_src\" "
-        "--break-system-packages \\\n"
-        "      || \"$npa_vendor_python\" -m pip install -q --no-deps -e \"$npa_vendor_src\" "
-        "--user || true\n"
+        '  if [ -n "$npa_vendor_src" ]; then\n'
+        f"{install_block}"
         "  fi\n"
         # `import npa` is not enough: a vendor image may bake a PARTIAL npa on PYTHONPATH for
         # its own entrypoint, which shadows the real install — `import npa` passes and
         # `import npa.workbench` fails (live job 250). Probe a real subpackage.
         "  if \"$npa_vendor_python\" -c 'import npa.workbench' >/dev/null 2>&1; then\n"
-        "    echo \"$npa_vendor_python\" > /tmp/npa-python\n"
-        "    echo \"npa interpreter switched to vendor python: $npa_vendor_python\" >&2\n"
+        '    echo "$npa_vendor_python" > /tmp/npa-python\n'
+        '    echo "npa interpreter switched to vendor python: $npa_vendor_python" >&2\n'
         "    break\n"
         "  fi\n"
-        "  echo \"warning: npa.workbench is not importable from $npa_vendor_python "
-        "(a baked partial npa on PYTHONPATH will shadow it)\" >&2\n"
+        # Print WHY. A bare warning sent job 268's debugging down the wrong path: the message
+        # blamed a shadowing partial npa when the real cause was missing dependencies.
+        '  echo "warning: npa.workbench is not importable from $npa_vendor_python:" >&2\n'
+        "  \"$npa_vendor_python\" -c 'import npa.workbench' 2>&1 | tail -3 >&2 || true\n"
         "done\n"
     )
 
