@@ -37,8 +37,10 @@ TRAIN_TRIAGE_YAML = SKYPILOT / "tokenfactory-train-triage.yaml"
 TRIAGE_RUNNER = ROOT / "npa" / "scripts" / "run_tokenfactory_train_triage.py"
 SWEEP_RUNNER = ROOT / "npa" / "scripts" / "run_tokenfactory_sim_sweep.py"
 
-# Every combo workflow that has a submittable SkyPilot YAML form.
-COMBO_YAMLS = [ROLLOUT_JUDGE_YAML, SCENE_JUDGE_YAML, TRAIN_TRIAGE_YAML]
+# Combo workflows that still have a raw SkyPilot YAML form. train-triage is retired: its twin
+# `npa-workflows/tokenfactory-train-triage.yaml` was verified live (job 256, EVIDENCE.md §R32–R33),
+# and the shape assertions moved onto the spec below.
+COMBO_YAMLS = [ROLLOUT_JUDGE_YAML, SCENE_JUDGE_YAML]
 
 
 def _load_module(name: str, path: Path):
