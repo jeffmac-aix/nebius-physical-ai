@@ -31,18 +31,24 @@ ARG NPA_RUNTIME_USER=ubuntu
 
 USER root
 
-# NOTE on the package list: the shipped lerobot image purges `linux-libc-dev` (and dirmngr,
-# gpg-agent, nodejs, software-properties-common) as CVE hardening, so a derived `apt-get install`
-# of anything pulling `libc6-dev` fails with "Unmet dependencies" — `python3-pip` does exactly
-# that (observed in-cluster). Only the four ingredients are installed here, and the system
-# python3 is asserted rather than installed, because the base already ships one.
+# NOTE — a derived build has to REPAIR apt first, and cannot avoid it.
+#
+# The published base purges `linux-libc-dev` with `--force-depends` as CVE hardening. That
+# strands `libc6-dev` and, through it, `build-essential`, `libexpat1-dev` and
+# `libstdc++-11-dev`, so apt refuses to install ANYTHING — in-cluster, even plain `rsync` was
+# blocked. Removing the stranded packages one by one just walks the chain.
+#
+# So this recipe runs `--fix-broken`, which reinstates `linux-libc-dev` (kernel *headers*, no
+# executable) to make apt usable again. That is a deliberate, stated trade for repairing an
+# already-published tag. The preferred path is a source rebuild: the main Dockerfile now
+# installs these prerequisites BEFORE the hardening step, so a fresh build needs no repair.
 # The base leaves apt in a BROKEN state on purpose: it purges `linux-libc-dev` with
 # `--force-depends` as CVE hardening, which strands `libc6-dev` depending on a package that is
 # gone. apt then refuses to install ANYTHING ("Unmet dependencies"), which is why even `rsync`
 # was blocked in-cluster. Dropping the stranded build-time `libc6-dev` restores consistency
 # WITHOUT reinstating the purged package, so the hardening survives; a runtime image does not
 # need C headers.
-RUN dpkg --remove --force-depends libc6-dev 2>/dev/null || true
+RUN apt-get update && apt-get install -y --fix-broken
 RUN apt-get update \
     && apt-get install -y --no-install-recommends rsync sudo netcat-openbsd \
     && rm -rf /var/lib/apt/lists/* \
