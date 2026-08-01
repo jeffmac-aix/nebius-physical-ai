@@ -178,6 +178,17 @@ SUBMIT_LIVE_MATRIX: tuple[SubmitLiveCase, ...] = (
         notes="Insights ingest + dashboard over one run prefix. CPU-only.",
     ),
     SubmitLiveCase(
+        "cosmos2-transfer.yaml",
+        "gpu",
+        secret_envs=("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"),
+        image_tool="cosmos2-transfer",
+        notes=(
+            "The REAL Cosmos-Transfer2.5 model, not a manifest: --execute makes a missing "
+            "transfer runtime a hard error rather than a silent fall back. Replaces a template "
+            "that held a GPU to print `\"status\": \"contract_ready\"`."
+        ),
+    ),
+    SubmitLiveCase(
         "isaac-franka-capture-reason.yaml",
         "multi",
         secret_envs=(
