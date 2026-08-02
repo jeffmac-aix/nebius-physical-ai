@@ -24,6 +24,7 @@ reason  Build the Cosmos3 reason stage manifest.
 | Command | Description |
 | --- | --- |
 | `reason` | Build the Cosmos3 reason stage manifest. |
+| `text-to-image` | Generate an image from a prompt with the Cosmos3 framework, and publish it. |
 
 ## Examples
 
