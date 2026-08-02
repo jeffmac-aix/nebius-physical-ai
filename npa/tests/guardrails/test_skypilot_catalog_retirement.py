@@ -35,13 +35,6 @@ REMAINING: dict[str, str] = {
     # --- referenced by a CLI/SDK path pointer or shipped data ---
     "sonic-train-standalone.yaml": "three-tier contract + standalone-policy guardrail",
     # --- no npa.workflow twin authored yet ---
-    "cosmos3-text-to-image-inference.yaml": (
-        "TWIN EXISTS and its capability is now real npa code "
-        "(npa workbench cosmos3 text-to-image), driven live through nine jobs to 309, which "
-        "reached the framework's own inference. One dependency short: the cosmos3 image "
-        "installs npa --no-deps with a curated list, so the source overlay leaves the CLI "
-        "without paramiko. See EVIDENCE.md \u00a7R39"
-    ),
     # --- twin exists but is NOT live-verified yet ---
     "sonic-locomotion-finetuning.yaml": (
         "twin's retarget stage passes live (job 205) but its train stage asks the in-pod "
@@ -139,6 +132,11 @@ REMAINING: dict[str, str] = {
     #   npa-wf-cpu-dataset-ingest-curate-754816f0, all five stages SUCCEEDED including
     #   `register`, which read 12 records back out of the in-cluster LanceDB service that
     #   `ingest` had just written. See EVIDENCE.md \u00a7R41.
+    #
+    # cosmos3-text-to-image-inference.yaml  job 320
+    #   npa-wf-gpu-cosmos3-text-to-image-4286b9f4 SUCCEEDED in 5m37s: Cosmos3-Nano generated a
+    #   960x960 image from the prompt and published it with its manifest. Eleven jobs and eight
+    #   defects from the bash block it replaced. See EVIDENCE.md \u00a7R43.
     #
     # Phase 2c: RELOCATED (not deleted) to npa/src/npa/workflows/byof/profiles/ —
     # they are BYOF resource profiles reached through byof.yaml's toolRef, not

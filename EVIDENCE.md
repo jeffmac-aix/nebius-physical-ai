@@ -2890,3 +2890,32 @@ a workflow launching infrastructure the workflow engine had already provisioned 
 the same `SONIC_*` environment, the same S3 upload step — in the pod the stage is running in.
 The body is now shared by both runtimes rather than duplicated, because two training scripts
 would be two trainers; the only thing that differs is who provides the machine.
+
+## R43. `cosmos3-text-to-image-inference.yaml` retired (4 → 3) — eleven jobs, eight defects
+
+The longest chase in this PR, and worth recording as one, because every wall was invisible from
+the diff. §R39 covered jobs 289–309; three more followed once the tool could load at all:
+
+| Job | Symptom | Cause |
+| --- | --- | --- |
+| 309 | `No module named 'paramiko'` | the cosmos3 image installs npa with a curated `--no-deps` list, so the source overlay inherited its omissions. The overlay now retries **with** deps when `import npa.cli.main` fails — `import npa` succeeded there, which is why the probe had to be the command tree. |
+| 319 | `cuDNN version incompatibility … a conflicting cuDNN in LD_LIBRARY_PATH` | the fix for §R39's libstdc++ wall put a whole conda lib directory on the loader path, and that directory also holds an older cuDNN than PyTorch bundles. Now a single symlinked library — and nothing at all when the host's own libstdc++ already exports the symbol. |
+| **320** | — | **SUCCEEDED, 5m37s.** |
+
+```
+203462  cosmos3-text-to-image/text-to-image.png    960 x 960
+   410  cosmos3-text-to-image/success.json         {"status": "ok",
+                                                    "model_id": "nvidia/Cosmos3-Nano",
+                                                    "prompt": "a small robot arm sorting
+                                                               colored blocks on a workbench"}
+```
+
+<img alt="Job 320: Cosmos3-Nano's image for the prompt" src="/opt/cursor/artifacts/screenshots/cosmos3-text-to-image-job320.png" width="420" />
+
+The template carried this as roughly a hundred lines of shell and heredoc'd python inside an
+`envs:` block, with the inference command itself a multi-line environment variable executed by
+`bash -lc "${NPA_COSMOS3_INFER_COMMAND}"`. It was unreachable from the CLI and the SDK, untested,
+and — as eleven jobs showed — had never run. It is now `npa workbench cosmos3 text-to-image`
+with 23 unit tests, and its verification step is the part that matters: a framework that exits 0
+having written a truncated file is the failure worth catching, and it is caught by reading the
+image header rather than trusting the exit code.

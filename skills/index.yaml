@@ -389,7 +389,7 @@ skills:
     smoke:
       - type: workflow_yaml
         paths:
-          - npa/src/npa/workflows/skypilot/cosmos3-text-to-image-inference.yaml
+          - npa/workflows/workbench/npa-workflows/cosmos3-text-to-image.yaml
   - name: cosmos3-post-training
     category: workflows
     when_to_use: "Plan or review Cosmos3 supervised fine-tuning and post-training support."

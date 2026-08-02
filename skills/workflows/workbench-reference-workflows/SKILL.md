@@ -34,7 +34,6 @@ templates retire.
 
 - `bdd100k-pipeline.yaml`: BDD100K ingest, backfill, CLIP embedding,
   materialized views, training, and evaluation.
-- `cosmos3-text-to-image-inference.yaml`: H100 text-to-image smoke inference.
 - `sonic-train-standalone.yaml`: standalone SONIC training.
 - `sonic-locomotion-finetuning.yaml`: retargeting, SONIC, and MJLab flow.
 
@@ -57,6 +56,9 @@ These raw templates were retired once their `npa.workflow` spec had a live run
 - `vlm-eval.yaml`, `vlm-eval-benchmark.yaml` — self-hosted VLM scoring and the labeled
   sweep. The renderer now starts and health-checks the vLLM server the spec asks for, so
   no prebuilt serving image is needed.
+- `cosmos3-text-to-image-inference.yaml` — retired to
+  `npa-workflows/cosmos3-text-to-image.yaml`. The procedure it carried as bash inside an `envs:`
+  block is now `npa workbench cosmos3 text-to-image`.
 - `dataset-ingest-curate.yaml` — retired to `npa-workflows/dataset-ingest-curate.yaml`, whose
   `register` stage reads back what `ingest` wrote to the in-cluster LanceDB service
   (`npa workbench lancedb deploy --runtime kubernetes --namespace workbench`).
