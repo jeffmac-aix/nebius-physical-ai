@@ -7,7 +7,7 @@ a versioned heading when a release is cut.
 
 ## Unreleased
 
-### Retiring the raw SkyPilot task catalog (36 → 7 templates)
+### Retiring the raw SkyPilot task catalog (36 → 4 templates)
 
 `npa.workflow/v0.0.1` specs are becoming the only workflow authoring surface.
 SkyPilot remains the execution engine, and `npa workbench workflow submit` still
@@ -24,7 +24,8 @@ under `npa/src/npa/workflows/skypilot/`.
   `scenario-gen-adversarial.yaml`, `sim2real-envgen-split.yaml`, `cosmos3-ea-fetch.yaml`,
   `tokenfactory-train-triage.yaml`, `tokenfactory-rollout-judge.yaml`,
   `tokenfactory-scene-to-rollout-judge.yaml`, `sim2real-actions.yaml`,
-  `isaac-franka-capture-reason.yaml`, `cosmos2-transfer.yaml`.
+  `isaac-franka-capture-reason.yaml`, `cosmos2-transfer.yaml`,
+  `sim-to-real-pipeline.yaml`, `sim-to-real-trigger.yaml`, `dataset-ingest-curate.yaml`.
   `test_skypilot_catalog_retirement.py` pins the remaining set, so the tally is
   machine-checked and a new raw template needs a deliberate edit.
 - **Multi-node stages.** A resource profile can declare `num_nodes`, so a spec can ask
@@ -185,6 +186,16 @@ under `npa/src/npa/workflows/skypilot/`.
   PYTHONPATH shadows every install; three vendor images ship one.
 - **`npa workbench cosmos2 transfer` publishes its manifest to S3** beside the augmented clip
   instead of only echoing it, so the provenance of a synthetic clip survives the pod.
+- **`npa workbench lancedb deploy --runtime kubernetes`** puts the LanceDB service in the
+  cluster, where a workflow stage can reach it. Previously the only runtimes were a local docker
+  daemon, a blocked VM path, and LanceDB Cloud.
+- **The LanceDB wrapper serves `/index` and `/query`**, the paths the dataset-of-record has
+  always posted, and `dataset ingest` can populate the index it later queries.
+- **`npa workbench sonic train --runtime in-job`** trains in the pod the stage is already
+  running in, instead of provisioning a Nebius Job from inside it.
+- **The legacy `sim_to_real` stack is retired.** The watcher survives and submits
+  `npa-workflows/sim2real-vlm-rl.yaml`; `scripts/run_sim_to_real_pipeline.py` and
+  `run_sim_to_real_quickstart.py` are gone with it.
 - **Isaac Lab frame capture is a package module** (`npa.workflows.isaac_capture`) instead of a
   repo script, so it runs in a pod with no checkout; `npa/scripts/capture_isaac_lab_scene_frames.py`
   remains as a shim. It also owns its camera framing (`--camera-eye`/`--camera-target`) and

@@ -2813,3 +2813,80 @@ The seven that remain, and why each one does — no "not attempted" among them:
 
 Four of the seven are blocked on two decisions (LanceDB, the legacy stack) and one known
 engine problem (the launcher). The other three are one small fix each.
+
+## R40. The legacy sim-to-real stack retired (7 → 5) — deliberately without a twin
+
+`sim-to-real-pipeline.yaml`'s stage ran `python -m npa.workflows.sim_to_real real-loop`. That
+module opens with:
+
+```python
+warnings.warn(
+    "npa.workflows.sim_to_real is legacy. Use npa.workflows.sim2real "
+    "(Sim2RealWorkflow / runbook.yaml) for the production VLM→RL loop.",
+    DeprecationWarning,
+)
+```
+
+Every other retirement in this PR required a live twin first. This one is the exception, and the
+reason is the point: **a twin would have made the new surface the home of a legacy path.** The
+maintained loop already has a spec (`npa-workflows/sim2real-vlm-rl.yaml`) and a runbook for
+reading without npa in the loop (`sim2real/runbook.yaml`).
+
+**Watching a bucket is not deprecated**, so `npa.workflows.sim_to_real_trigger` stays — and was
+ported rather than deleted. It used to shell out to `scripts/run_sim_to_real_pipeline.py`, 531
+lines of in-place document surgery on the template that just went; it now submits the staged
+loop's spec the same way an operator would by hand, and `--render-only` became
+`workflow validate-spec`, which resolves every config token and builds the plan without
+launching anything. `run_sim_to_real_quickstart.py` went with it: it imported that runner to
+drive the same deprecated loop.
+
+Two docs carried a "legacy" banner over this path and were deleted; their readers now land on
+the maintained guide. The two three-tier contracts that named the retired YAML moved onto the
+spec, with the watch parameters declared as `spec_gap` — a stage runs once, a watcher does not —
+which **empties `LEGACY_YAML_TIER`**, so its guardrail flips from "only shrinks" to "must stay
+empty".
+
+## R41. The LanceDB service, deployed — and four defects it had been hiding (5 → 4)
+
+`npa workbench lancedb deploy` could target a local docker daemon, a managed VM (blocked), or
+LanceDB Cloud. **None of those is reachable from a workflow stage**, which is why two templates
+could not retire. `--runtime kubernetes` creates a Deployment and a ClusterIP Service and
+returns `http://npa-lancedb.workbench.svc.cluster.local:8686` — a name every pod can resolve.
+
+Getting one pipeline green took five findings, each invisible until the service existed:
+
+| Symptom | Cause |
+| --- | --- |
+| `ImagePullBackOff`, `401 Unauthorized` on a tag that exists | the namespace's shared registry secret holds an expiring IAM token. SkyPilot never notices because it passes credentials per submit; a Deployment's kubelet pulls again on every restart. The deploy now mints its own. |
+| deploy timed out; `/health` answered `{"detail":"LANCEDB_TOKEN is not configured"}` forever | `auto` auth meant `token` for every non-container runtime. A readiness probe that can never pass, and a timeout that pointed at nothing. `auto` now means "token if the operator supplied one". |
+| deploy reported `running` while the new pod crash-looped | `kubectl wait --for=condition=Available` is satisfied by the OLD ReplicaSet during a rolling update. `rollout status` waits for the new one. |
+| `404 Not Found` for `…/query` (job 313) | the dataset integration posts `/index` and `/query`; the wrapper exposed `/tables/{name}` and `/query-table`. **Two halves written against different APIs that never met**, because nobody had ever been able to make the call. |
+| `register` SUCCEEDED returning 0 records from a table holding 3 matching rows (job 316) | the query sent no table, so the service read its default; and it sent every facet it knows about, set or not, asking for `modality = '' AND min_quality = 'None'`. |
+
+A sixth was upstream of all of them: `index_in_lancedb` had **no caller that could be given an
+endpoint** — the ingest CLI never exposed one — so the dataset-of-record could not populate the
+index it queries.
+
+### Job 317 — `npa-wf-cpu-dataset-ingest-curate-754816f0`, all five stages SUCCEEDED
+
+```
+ingest  validate  quality-gate  curate  register        (5/5 SUCCEEDED, 5m46s)
+
+register: {"backend": "lancedb", "count": 12, "records": [...]}
+```
+
+Twelve records read back out of the service that `ingest` had written to minutes earlier. The
+round trip is the evidence: a query returning rows can only happen if the index was populated,
+through the real service, from this run.
+
+## R42. SONIC trains in the pod it is already in
+
+`workbench.sonic.train` asked for `--runtime serverless`, which provisions a Nebius Job **from
+inside a pod**. A workflow stage cannot: it failed live with
+`SONIC --runtime serverless requires --project-id` (§R11), and given a project id it would mean
+a workflow launching infrastructure the workflow engine had already provisioned for it.
+
+`--runtime in-job` runs the same training body — the SONIC image's own `/entrypoint.sh train`,
+the same `SONIC_*` environment, the same S3 upload step — in the pod the stage is running in.
+The body is now shared by both runtimes rather than duplicated, because two training scripts
+would be two trainers; the only thing that differs is who provides the machine.
