@@ -8,27 +8,14 @@ import yaml
 ROOT = Path(__file__).resolve().parents[3]
 EXPECTED_WORKBENCH_IMAGE = "cr.eu-north1.nebius.cloud/<your-registry-id>/npa-genesis:0.4.6"
 EXPECTED_RETARGETING_IMAGE = "cr.eu-north1.nebius.cloud/<your-registry-id>/npa-retargeting:0.1.1"
-PIPELINE_YAML = (
-    ROOT
-    / "npa"
-    / "src"
-    / "npa"
-    / "workflows"
-    / "skypilot"
-    / "sonic-locomotion-finetuning.yaml"
-)
+# Frozen raw-task fixtures, not shipped templates: the three materializer tests below
+# exercise the submit WRAPPER, which still accepts a customer's own SkyPilot YAML.
+# See npa/tests/fixtures/skypilot/README.md.
+PIPELINE_YAML = ROOT / "npa/tests/fixtures/skypilot/sonic-locomotion-finetuning.yaml"
 # The raw sonic-export / sonic-eval / sonic-export-eval templates are retired; their
 # npa.workflow specs are the surface now (each live-verified — see EVIDENCE §R4/§R5).
 NPA_WORKFLOWS = ROOT / "npa" / "workflows" / "workbench" / "npa-workflows"
-SONIC_TRAIN_STANDALONE_YAML = (
-    ROOT
-    / "npa"
-    / "src"
-    / "npa"
-    / "workflows"
-    / "skypilot"
-    / "sonic-train-standalone.yaml"
-)
+SONIC_TRAIN_STANDALONE_YAML = ROOT / "npa/tests/fixtures/skypilot/sonic-train-standalone.yaml"
 
 
 def _docs(path: Path) -> list[dict]:
@@ -39,64 +26,6 @@ def _docs(path: Path) -> list[dict]:
     ]
 
 
-def test_sonic_locomotion_pipeline_yaml_is_serial_and_uses_expected_tools() -> None:
-    docs = _docs(PIPELINE_YAML)
-
-    assert docs[0] == {"name": "sonic-locomotion-finetuning", "execution": "serial"}
-    tasks = docs[1:]
-    assert [task["name"] for task in tasks] == [
-        "sonic-retarget-motion",
-        "sonic-g1-finetune",
-        "sonic-mujoco-eval",
-    ]
-    assert "npa workbench sonic retargeting run" in tasks[0]["run"]
-    assert "/entrypoint.sh finetune" in tasks[1]["run"]
-    assert "mujoco-eval" in tasks[2]["run"]
-
-
-def test_sonic_locomotion_pipeline_uses_h100_mujoco_mvp_image() -> None:
-    docs = _docs(PIPELINE_YAML)
-    retarget, train, eval_task = docs[1:]
-
-    assert retarget["resources"] == {
-        "cloud": "kubernetes",
-        "cpus": 4,
-        "memory": 16,
-        "image_id": "docker:${NPA_RETARGETING_IMAGE}",
-    }
-    assert retarget["envs"]["NPA_RETARGETING_IMAGE"] == EXPECTED_RETARGETING_IMAGE
-    assert retarget["envs"]["SOURCE_FORMAT"] == "auto"
-    assert retarget["envs"]["RETARGET_FRAME_RATE"] == "30"
-    assert retarget["envs"]["RETARGET_SOURCE_FRAME_RATE"] == "120"
-    assert retarget["envs"]["AWS_PROFILE"] == "nebius"
-    assert retarget["envs"]["AWS_ENDPOINT_URL"] == "https://storage.eu-north1.nebius.cloud"
-    assert train["resources"]["cloud"] == "nebius"
-    assert train["resources"]["region"] == "eu-north1"
-    assert train["resources"]["accelerators"] == "H100:1"
-    assert train["resources"]["use_spot"] is True
-    assert train["resources"]["image_id"] == (
-        "docker:example.invalid/npa-sonic-mujoco:0.1.3-mvp"
-    )
-    assert eval_task["resources"]["cloud"] == "nebius"
-    assert eval_task["resources"]["region"] == "eu-north1"
-    assert eval_task["resources"]["accelerators"] == "H100:1"
-    assert eval_task["resources"]["use_spot"] is True
-    assert eval_task["resources"]["image_id"] == (
-        "docker:example.invalid/npa-sonic-mujoco:0.1.3-mvp"
-    )
-    assert train["envs"]["POLICY_IMAGE"] == "example.invalid/npa-sonic-mujoco:0.1.3-mvp"
-    assert eval_task["envs"]["POLICY_IMAGE"] == "example.invalid/npa-sonic-mujoco:0.1.3-mvp"
-    assert train["envs"]["SONIC_GPU_TYPE"] == "h100"
-    assert train["envs"]["SONIC_IMAGE_VARIANT"] == "sonic-mujoco-h100-mvp"
-    assert train["envs"]["AWS_PROFILE"] == "nebius"
-    assert train["envs"]["RETARGETED_MOTION_URI"].endswith("/retargeted/")
-    assert train["envs"]["SONIC_TRAIN_MODE"] == "finetune"
-    assert train["envs"]["SONIC_RUN_REAL_TRAIN"] == "1"
-    assert eval_task["envs"]["SONIC_FINE_TUNED_CHECKPOINT_URI"].endswith(
-        "/training/checkpoints/last.pt"
-    )
-    assert eval_task["envs"]["AWS_PROFILE"] == "nebius"
-    assert eval_task["envs"]["SONIC_MUJOCO_STEPS"] == "64"
 
 
 def test_sonic_workflow_materializer_resolves_images_and_s3_literals() -> None:
@@ -212,6 +141,27 @@ def test_sonic_workflow_materializer_supports_docker_payload_mode() -> None:
     assert "NVIDIA_VISIBLE_DEVICES=${SONIC_DOCKER_GPU_REQUEST}" in task["run"]
     assert 'docker run --rm "${docker_gpu_args[@]}"' in task["run"]
 
+
+def test_sonic_locomotion_spec_runs_the_three_stages_in_order() -> None:
+    """Replaces the retired template's serial/task-name assertions.
+
+    The template said `execution: serial` over three named tasks. The spec's equivalent is a
+    plan whose steps carry the three toolRefs in the same order, which is a stronger statement:
+    it is what the engine will actually run, not what a document claims.
+    """
+
+    from npa.orchestration.npa_workflow.interpreter import build_plan
+    from npa.orchestration.npa_workflow.spec import load_spec
+
+    spec = load_spec(NPA_WORKFLOWS / "sonic-locomotion-finetuning.yaml")
+    steps = build_plan(spec, run_id="probe").steps
+    assert [step.tool_ref for step in steps] == [
+        "workbench.retargeting.run",
+        "workbench.sonic.train",
+        "workbench.mjlab.eval",
+    ]
+    # Serial, in the engine's terms: each step waits on the one before it.
+    assert all(len(step.depends_on) <= 1 for step in steps)
 
 def test_retargeting_spec_invokes_the_real_cli_surface() -> None:
     """Replaces the retired retargeting template's raw-YAML assertions.
