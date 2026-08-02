@@ -221,6 +221,10 @@ def ensure_registry_secret(
 def registry_host(image: str) -> str:
     """Return the registry host of an image reference, or "" for a bare/Docker Hub name."""
 
+    if "/" not in image:
+        # `npa-lancedb:1` is a Docker Hub name whose tag contains the only colon; without this
+        # the tag would be mistaken for a registry port.
+        return ""
     head = image.split("/", 1)[0]
     return head if ("." in head or ":" in head) else ""
 
