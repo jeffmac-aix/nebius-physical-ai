@@ -427,7 +427,10 @@ CONTRACTS: tuple[CapabilityContract, ...] = (
 
 #: Capabilities whose third tier is still a raw SkyPilot YAML. This set may only
 #: shrink: every entry is a capability whose npa.workflow twin does not exist yet.
-LEGACY_YAML_TIER = frozenset({"workflow/trigger/run", "workflow/trigger/watch"})
+#: Capabilities whose third tier is still a raw SkyPilot YAML's `envs:`. Empty, and it must
+#: stay that way: the last two (the sim-to-real watcher's run/watch pair) moved onto the spec
+#: they submit when their template retired.
+LEGACY_YAML_TIER: frozenset[str] = frozenset()
 
 
 def test_current_three_tier_contracts_are_coherent() -> None:
