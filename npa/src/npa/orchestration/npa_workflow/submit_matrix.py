@@ -371,14 +371,16 @@ SUBMIT_LIVE_MATRIX: tuple[SubmitLiveCase, ...] = (
         "sonic-train.yaml",
         "gpu",
         secret_envs=("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "HF_TOKEN", "NGC_API_KEY"),
+        # The stage runs the SONIC image's own /entrypoint.sh, so it needs that image. Live job
+        # 322 proved the in-job runtime works by reporting exactly what was missing:
+        # "/entrypoint.sh not found in SONIC image" on SkyPilot's default one.
+        image_tool="sonic",
         rotation_skip=True,
         skip_reason=(
-            "Confirmed live: fails 'SONIC --runtime serverless requires "
-            "--project-id'. The twin renders `sonic train --runtime serverless` "
-            "INSIDE an already-GPU SkyPilot job; SONIC's runtimes (vm/container/"
-            "serverless) all delegate to more infra rather than training in-job, "
-            "and serverless needs a project id/creds. Re-include once SONIC train "
-            "supports an in-job runtime for the npa.workflow render."
+            "The launcher problem is fixed — `sonic train --runtime in-job` trains in the pod "
+            "instead of provisioning a Nebius Job from inside it (EVIDENCE.md \u00a7R42) — but a "
+            "real SONIC training run is a long GPU job, not a bounded daily-rotation fit. Run "
+            "it manually."
         ),
     ),
     SubmitLiveCase(
