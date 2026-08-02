@@ -1072,6 +1072,10 @@ TOOL_CATALOG: dict[str, ToolEntry] = {
             # training output prefix to search.
             "--discover-checkpoint",
             "--write-canonical-metrics",
+            # Eval must read labels the way training wrote them; BDD100K categories are
+            # strings and one of them is literally "train" (EVIDENCE.md §R46).
+            "--label-map",
+            "{{config.detection_label_map}}",
         ],
     ),
     "workbench.detection_training.eval_nighttime": ToolEntry(
@@ -1098,6 +1102,10 @@ TOOL_CATALOG: dict[str, ToolEntry] = {
             # training output prefix to search.
             "--discover-checkpoint",
             "--write-canonical-metrics",
+            # Eval must read labels the way training wrote them; BDD100K categories are
+            # strings and one of them is literally "train" (EVIDENCE.md §R46).
+            "--label-map",
+            "{{config.detection_label_map}}",
         ],
     ),
     "workbench.detection_training.eval_distant": ToolEntry(
@@ -1124,6 +1132,10 @@ TOOL_CATALOG: dict[str, ToolEntry] = {
             # training output prefix to search.
             "--discover-checkpoint",
             "--write-canonical-metrics",
+            # Eval must read labels the way training wrote them; BDD100K categories are
+            # strings and one of them is literally "train" (EVIDENCE.md §R46).
+            "--label-map",
+            "{{config.detection_label_map}}",
         ],
     ),
     "workbench.fiftyone.launch_app": ToolEntry(

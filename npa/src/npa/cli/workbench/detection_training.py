@@ -389,6 +389,16 @@ def eval_cmd(
             "--checkpoint-uri, substituting the trained epoch count."
         ),
     ),
+    label_map: str = typer.Option(
+        "",
+        "--label-map",
+        help=(
+            "Category name -> class index, as JSON or name=index pairs. Required whenever the "
+            "dataset stores string categories, which BDD100K does. `train` (the vehicle) is a "
+            "real category name, and without a map it reaches int() and raises "
+            "\"invalid literal for int() with base 10: 'train'\"."
+        ),
+    ),
     write_canonical_metrics: bool = typer.Option(
         False,
         "--write-canonical-metrics/--no-write-canonical-metrics",
@@ -414,6 +424,9 @@ def eval_cmd(
         eval_view=eval_view,
         lance_uri=lance_uri,
         output_uri=output_uri,
+        # Eval must read labels the same way training wrote them; EvalRequest has carried this
+        # field all along with no CLI flag to fill it (EVIDENCE.md §R46).
+        label_map=parse_label_map(label_map),
     ).model_dump(mode="json")
     if service:
         result = request_json("POST", resolved_endpoint, "/eval", payload=payload, token_env=token_env, timeout=900.0)
