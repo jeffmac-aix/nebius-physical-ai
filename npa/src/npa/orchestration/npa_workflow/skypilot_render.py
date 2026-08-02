@@ -21,6 +21,8 @@ TOOL_REF_IMAGE_TOOL: dict[str, str] = {
     "workbench.vlm_eval": "cosmos",
     "workbench.cosmos2": "cosmos2-transfer",
     "workbench.cosmos3": "cosmos3-reason",
+    "workbench.cosmos_curate": "cosmos-curate",
+    "workbench.cosmos_evaluator": "cosmos-evaluator",
     "workbench.lancedb": "lancedb",
     "workbench.detection_training": "detection-training",
     "workbench.fiftyone": "fiftyone",
@@ -40,6 +42,8 @@ TOOL_REF_IMAGE_TOOL: dict[str, str] = {
 SECRET_ENV_HINTS: dict[str, tuple[str, ...]] = {
     "workbench.token_factory": ("NEBIUS_TOKEN_FACTORY_KEY",),
     "workbench.vlm_eval": (),
+    # Attribute verification generates and answers its questions on Token Factory.
+    "workbench.cosmos_evaluator": ("NEBIUS_TOKEN_FACTORY_KEY",),
     "workbench.cosmos3": ("HF_TOKEN",),
     "workbench.sonic": ("HF_TOKEN", "NGC_API_KEY"),
     "workbench.groot": ("HF_TOKEN", "NGC_API_KEY"),
@@ -210,6 +214,24 @@ def render_task_run_script(command: Sequence[str], *, preamble: str = "") -> str
         # imported npa fine, while the stage's non-login shell got the raw kit python
         # and failed). The shim is a no-op when the recorded interpreter is already
         # what python3 means.
+        # A branch overlay has to actually win. Installing it editable only shadows a
+        # baked npa if pip's uninstall removes whatever path hook the image left
+        # behind, and that is not guaranteed: a workbench image whose own npa was
+        # installed by a different pip/backend keeps a .pth pointing at the baked tree,
+        # the overlay install reports success, and the stage silently runs the image's
+        # older code (live: `No such command 'cosmos2'` from an image built for
+        # cosmos2). PYTHONPATH is checked before site-packages, so state the intent
+        # instead of relying on the install to displace it.
+        # Written without ${...} so the rendered YAML stays free of anything SkyPilot
+        # would read as one of its own placeholders.
+        "if [ -d /tmp/npa-src-overlay/src ]; then\n"
+        "  if [ -n \"$PYTHONPATH\" ]; then\n"
+        "    PYTHONPATH=\"/tmp/npa-src-overlay/src:$PYTHONPATH\"\n"
+        "  else\n"
+        "    PYTHONPATH=/tmp/npa-src-overlay/src\n"
+        "  fi\n"
+        "  export PYTHONPATH\n"
+        "fi\n"
         "npa_python=\"\"\n"
         "if [ -s /tmp/npa-python ]; then\n"
         "  npa_python=\"$(cat /tmp/npa-python)\"\n"
@@ -445,6 +467,15 @@ def default_npa_setup() -> str:
         "    token = resp.get('NextContinuationToken')\n"
         "PY\n"
         "  npa_pip_install -e /tmp/npa-src-overlay --no-deps\n"
+        # Same reason as the stage preamble: the install alone is not enough to
+        # displace a baked npa, so make the overlay explicit for the rest of setup too
+        # (the interpreter recorded below is checked with `import npa`).
+        "  if [ -n \"$PYTHONPATH\" ]; then\n"
+        "    PYTHONPATH=\"/tmp/npa-src-overlay/src:$PYTHONPATH\"\n"
+        "  else\n"
+        "    PYTHONPATH=/tmp/npa-src-overlay/src\n"
+        "  fi\n"
+        "  export PYTHONPATH\n"
         "fi\n"
         # Record the interpreter that can actually import npa, i.e. the one pip just
         # installed into (it has npa AND its dependencies). Stage bodies use it via a
