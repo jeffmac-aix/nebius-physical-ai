@@ -3123,3 +3123,13 @@ The spec already carries a live-matrix case.
 So it is listed in `REMAINING` with that reason rather than deleted. Whether the single-pod
 variant should survive alongside its spec is #234's call to make, not this PR's to make silently
 — but the tally now says it exists and why, which is the whole point of a machine-checked list.
+
+A third merge brought #235 and a second new template, `cosmos3-generate.yaml`, caught the same
+way and listed the same way. Its npa.workflow twin (`npa-workflows/cosmos3-generate.yaml`)
+already exists, so retiring the raw one needs only a live run of that twin — which belongs with
+#235 rather than here.
+
+Two templates arriving mid-sweep is the argument for the last step of this work in one line: as
+long as the directory exists, things land in it. Once the SONIC pair clears, the guardrail should
+invert from "these may remain" to "this directory must not exist", and the question stops being
+whether anyone remembered.

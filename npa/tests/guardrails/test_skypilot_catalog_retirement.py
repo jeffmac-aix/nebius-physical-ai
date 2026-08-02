@@ -29,6 +29,11 @@ REMAINING: dict[str, str] = {
     # --- no npa.workflow twin authored yet ---
     # --- twin exists but is NOT live-verified yet ---
     # --- arrived AFTER this sweep, via #234 ---
+    "cosmos3-generate.yaml": (
+        "added by #235, also while this retirement was in flight, and also caught here on "
+        "merge. Its npa.workflow twin is npa-workflows/cosmos3-generate.yaml; retiring the raw "
+        "one needs a live run of that twin, which belongs with #235. See EVIDENCE.md \u00a7R49"
+    ),
     "nurec-reconstruct.yaml": (
         "added by #234 while this retirement was in flight, and caught here on merge rather "
         "than in review, which is what this guardrail is for. It is NOT simply a twinned "

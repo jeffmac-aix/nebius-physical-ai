@@ -32,6 +32,7 @@ CONTAINER_IMAGE_NAMES = {
     "isaac-lab": "npa-isaac-lab",
     "cosmos": "npa-cosmos",
     "cosmos2-transfer": "npa-cosmos2-transfer",
+    "cosmos3": "npa-cosmos3",
     "cosmos3-reason": "npa-cosmos3-reason",
     "cosmos-curate": "npa-cosmos-curate",
     "cosmos-evaluator": "npa-cosmos-evaluator",
@@ -89,6 +90,9 @@ SUPPORTED_TOOL_VERSIONS = {
     "isaac-lab": "2.3.2.post1",
     "cosmos": "1.0.9",
     "cosmos2-transfer": "2.5.1-skypilot-ready-20260801T053000Z",
+    # cosmos-framework 1.2.2 (pinned commit 5e67049c) + torch cu130 inference env.
+    # No weights baked; gated Cosmos3 checkpoints download at runtime.
+    "cosmos3": "1.2.2-cu130",
     "cosmos3-reason": "3.0.1-genuine-sm120",
     "cosmos-curate": "0.1.2",
     "cosmos-evaluator": "0.1.2",
