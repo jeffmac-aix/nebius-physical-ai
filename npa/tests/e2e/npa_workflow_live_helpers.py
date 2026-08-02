@@ -20,6 +20,7 @@ from npa.orchestration.npa_workflow.submit_matrix import (
     selected_submit_cases,
 )
 
+SONIC_MOTION_FIXTURE_PREFIX = "npa-workflow-e2e/fixtures/sonic-motion-soma-g1/"
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SPECS_DIR = REPO_ROOT / "npa" / "workflows" / "workbench" / "npa-workflows"
 
@@ -57,6 +58,7 @@ DYNAMIC_SPECS = frozenset(
 __all__ = [
     "ALL_GOLDEN_SPECS",
     "DYNAMIC_SPECS",
+    "SONIC_MOTION_FIXTURE_PREFIX",
     "SPECS_DIR",
     "SUBMIT_LIVE_MATRIX",
     "SubmitLiveCase",
@@ -991,3 +993,7 @@ def parse_runtime_json(result: Result, forbidden: Iterable[str]) -> dict[str, An
     payload = _json_document_from_stream(result.output or "")
     assert isinstance(payload, dict)
     return payload
+
+def _s3_prefix_has_objects(client, bucket: str, prefix: str) -> bool:
+    response = client.list_objects_v2(Bucket=bucket, Prefix=prefix, MaxKeys=1)
+    return bool(response.get("Contents"))

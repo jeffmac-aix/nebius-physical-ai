@@ -20,6 +20,8 @@ This table must list every `TOOL_CATALOG` key (enforced by
 | `workbench.cosmos2.transfer` | `npa workbench cosmos2 transfer` | `config.trigger_uri` | `config.augment_uri` | no |
 | `workbench.cosmos2.transfer_execute` | `npa workbench cosmos2 transfer --execute` | `config.trigger_uri` | `config.augment_uri` | yes (real Cosmos Transfer 2.5 on GPU; uploads video + frames to S3) |
 | `workbench.cosmos3.reason` | `npa workbench cosmos3 reason` | `config.scene_uri` | `config.reason_uri` | no |
+| `workbench.cosmos_evaluator.evaluate` | `npa workbench cosmos-evaluator evaluate` | `config.rollouts_uri`, `config.input_uri`, `config.configs_uri` | `config.scores_uri` | yes (real NVIDIA Cosmos Evaluator: hallucination + VLM attribute verification) |
+| `workbench.cosmos_curate.curate` | `npa workbench cosmos-curate curate-augmented` | `config.augment_uri` | `config.curated_clips_uri`, `config.curator_report_uri` | yes (real NVIDIA Cosmos Curator stages: split, transcode, motion score, catalog) |
 | `workbench.lerobot.eval` | `npa workbench lerobot eval` | `config.checkpoint_uri`, `config.env` | `config.eval_uri` | no |
 | `workbench.retargeting.run` | `npa workbench sonic retargeting run` | `config.motion_uri` | `config.retargeted_uri` | no |
 | `workbench.mjlab.eval` | `npa workbench mjlab eval` | `config.motion_uri`, `config.checkpoint_uri` | `config.mjlab_uri` | no |
@@ -36,6 +38,10 @@ This table must list every `TOOL_CATALOG` key (enforced by
 | `workbench.isaac_lab.capture_frames` | `python3 -m npa.workflows.isaac_capture` | `config.isaac_task`, `config.scene_uri`, `config.capture_max_steps`, `config.capture_max_frames` | `<scene_uri>frame_NN.png`, `<scene_uri>isaac_capture_summary.json` | yes |
 | `workbench.sim2real_envgen.actions` | `python3 -m npa.workflows.sim2real_envgen actions` | `config.envgen_root_uri`, `config.train_envs_uri`, `config.actions_uri`, `config.action_limit`, `config.policy_image` | `<actions_uri>actions-summary.json`, `<actions_uri>envs.jsonl` | no |
 | `workbench.sim2real_envgen.split` | `python -m npa.workflows.sim2real_envgen split` | `config.envgen_root_uri`, `config.train_fraction` | `envs/manifest/split-manifest.json` | no |
+| `workbench.sonic.train` | `npa workbench sonic train` | `config.sonic_runtime` (use `local`), `config.checkpoint_uri`, `config.data_uri`, `config.train_iterations` | `config.training_uri` (`checkpoint.pt` + `checkpoint.json`) | no |
+| `workbench.sonic.export` | `npa workbench sonic export` | `config.checkpoint_uri` (local path or `s3://`) | `config.onnx_uri` (+ `.metadata.json` sidecar) | no |
+| `workbench.sonic.eval` | `npa workbench sonic eval` | `config.onnx_uri` (local path or `s3://`), `config.episodes`, `config.env` | `config.eval_uri` | no |
+| `workbench.sim2real_envgen.raw_shard` | `python -m npa.workflows.sim2real_envgen raw-shard` | `config.raw_envs_uri`, `config.env_count` | raw env manifest on S3 | no |
 | `workbench.sim2real.policy_rollouts` | workflow stub (`echo`) | `config.rollouts_uri` | rollout prefix on S3 | yes |
 | `workbench.sim2real.heldout_eval` | workflow stub (`echo`) | — | `config.heldout_report_uri` | yes |
 | `workbench.sim2real.write_decision` | demo decision writer | `config.decision_uri`, `config.default_decision` | threshold decision JSON | no |

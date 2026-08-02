@@ -21,6 +21,8 @@ TOOL_REF_IMAGE_TOOL: dict[str, str] = {
     "workbench.vlm_eval": "cosmos",
     "workbench.cosmos2": "cosmos2-transfer",
     "workbench.cosmos3": "cosmos3-reason",
+    "workbench.cosmos_curate": "cosmos-curate",
+    "workbench.cosmos_evaluator": "cosmos-evaluator",
     "workbench.lancedb": "lancedb",
     "workbench.detection_training": "detection-training",
     "workbench.fiftyone": "fiftyone",
@@ -40,6 +42,8 @@ TOOL_REF_IMAGE_TOOL: dict[str, str] = {
 SECRET_ENV_HINTS: dict[str, tuple[str, ...]] = {
     "workbench.token_factory": ("NEBIUS_TOKEN_FACTORY_KEY",),
     "workbench.vlm_eval": (),
+    # Attribute verification generates and answers its questions on Token Factory.
+    "workbench.cosmos_evaluator": ("NEBIUS_TOKEN_FACTORY_KEY",),
     "workbench.cosmos3": ("HF_TOKEN",),
     # Cosmos-Transfer2.5 downloads its guardrail checkpoints from a gated Hugging Face repo
     # before it will generate anything. Live job 286 got all the way into examples/inference.py
@@ -641,6 +645,24 @@ def render_task_run_script(command: Sequence[str], *, preamble: str = "") -> str
         # imported npa fine, while the stage's non-login shell got the raw kit python
         # and failed). The shim is a no-op when the recorded interpreter is already
         # what python3 means.
+        # A branch overlay has to actually win. Installing it editable only shadows a
+        # baked npa if pip's uninstall removes whatever path hook the image left
+        # behind, and that is not guaranteed: a workbench image whose own npa was
+        # installed by a different pip/backend keeps a .pth pointing at the baked tree,
+        # the overlay install reports success, and the stage silently runs the image's
+        # older code (live: `No such command 'cosmos2'` from an image built for
+        # cosmos2). PYTHONPATH is checked before site-packages, so state the intent
+        # instead of relying on the install to displace it.
+        # Written without ${...} so the rendered YAML stays free of anything SkyPilot
+        # would read as one of its own placeholders.
+        "if [ -d /tmp/npa-src-overlay/src ]; then\n"
+        "  if [ -n \"$PYTHONPATH\" ]; then\n"
+        "    PYTHONPATH=\"/tmp/npa-src-overlay/src:$PYTHONPATH\"\n"
+        "  else\n"
+        "    PYTHONPATH=/tmp/npa-src-overlay/src\n"
+        "  fi\n"
+        "  export PYTHONPATH\n"
+        "fi\n"
         "npa_python=\"\"\n"
         "if [ -s /tmp/npa-python ]; then\n"
         "  npa_python=\"$(cat /tmp/npa-python)\"\n"
@@ -682,6 +704,17 @@ def render_task_run_script(command: Sequence[str], *, preamble: str = "") -> str
         "app_entry()\" \"$@\"\\n' \"$npa_python\" > /tmp/npa-shim/npa\n"
         "  chmod +x /tmp/npa-shim/npa\n"
         "  export PATH=\"/tmp/npa-shim:$PATH\"\n"
+        # Console scripts installed next to that interpreter must be resolvable by
+        # name too, which is the same gap the `npa` symlink in setup works around.
+        # Live: vLLM's FlashInfer JIT shells out to `ninja`, which ships as a vLLM
+        # dependency in the interpreter's bin dir — a directory that is not on the
+        # stage shell's PATH, which is the whole reason the shim above exists.
+        # Appended, not prepended, so it cannot shadow a system tool.
+        "  npa_scripts=\"$(\"$npa_python\" -c 'import sysconfig; "
+        "print(sysconfig.get_path(\"scripts\"))' 2>/dev/null || true)\"\n"
+        "  if [ -n \"$npa_scripts\" ] && [ -d \"$npa_scripts\" ]; then\n"
+        "    export PATH=\"$PATH:$npa_scripts\"\n"
+        "  fi\n"
         "  echo \"using npa interpreter $npa_python for this stage\" >&2\n"
         "fi\n"
         "python3 -c 'import npa' >/dev/null 2>&1 || "
@@ -692,6 +725,22 @@ def render_task_run_script(command: Sequence[str], *, preamble: str = "") -> str
         f"{preamble_block}"
         f"{quoted}\n"
     )
+
+
+#: Readiness budget the eval client waits for a self-hosted server, in seconds.
+#: Override per spec with ``config.vlm_ready_timeout_s``.
+DEFAULT_VLM_READY_TIMEOUT_S = 1800
+
+
+def self_hosted_vlm_model(config: Mapping[str, Any]) -> str:
+    """Which VLM a self-hosted stage serves. ``config.vlm_model`` wins."""
+
+    try:
+        from npa.workbench.vlm_eval import DEFAULT_MODEL as _default_model
+    except Exception:  # pragma: no cover - fallback keeps render import-light
+        _default_model = "Qwen/Qwen2-VL-7B-Instruct"
+    raw = config.get("vlm_model") or config.get("vlm_models") or _default_model
+    return str(raw).split(",")[0].strip()
 
 
 def default_npa_setup() -> str:
@@ -827,6 +876,15 @@ def default_npa_setup() -> str:
         "  fi\n"
         # The overlay is the freshest tree, so it is the one worth putting on the import path.
         "  npa_record_src_root /tmp/npa-src-overlay\n"
+        # Same reason as the stage preamble: the install alone is not enough to
+        # displace a baked npa, so make the overlay explicit for the rest of setup too
+        # (the interpreter recorded below is checked with `import npa`).
+        "  if [ -n \"$PYTHONPATH\" ]; then\n"
+        "    PYTHONPATH=\"/tmp/npa-src-overlay/src:$PYTHONPATH\"\n"
+        "  else\n"
+        "    PYTHONPATH=/tmp/npa-src-overlay/src\n"
+        "  fi\n"
+        "  export PYTHONPATH\n"
         "fi\n"
         # Record the interpreter that can actually import npa, i.e. the one pip just
         # installed into (it has npa AND its dependencies). Stage bodies use it via a
@@ -886,6 +944,86 @@ def default_npa_setup() -> str:
     )
 
 
+def _sonic_deps_setup() -> str:
+    """Install the torch/ONNX stack a SONIC stage needs, if it is not baked in.
+
+    The npa-sonic image already ships them, and the check below makes this a
+    no-op there. On the default SkyPilot image (which is what a workflow run
+    with ``--image none`` uses) SONIC train/export/eval would otherwise fail
+    with "requires torch" after the cluster is already up.
+    """
+
+    return (
+        "python3 - <<'PY'\n"
+        "import importlib.util\n"
+        "import subprocess\n"
+        "import sys\n"
+        "\n"
+        "REQUIRED = (\n"
+        "    ('torch', 'torch>=2.12.1'),\n"
+        "    ('onnx', 'onnx>=1.16'),\n"
+        "    ('onnxscript', 'onnxscript>=0.5'),\n"
+        "    ('onnxruntime', 'onnxruntime>=1.18'),\n"
+        ")\n"
+        "missing = [spec for module, spec in REQUIRED if importlib.util.find_spec(module) is None]\n"
+        "if missing:\n"
+        "    base = [sys.executable, '-m', 'pip', 'install', '-q', *missing]\n"
+        "    for extra in ([], ['--break-system-packages'], ['--user']):\n"
+        "        if subprocess.call(base + extra) == 0:\n"
+        "            break\n"
+        "    else:\n"
+        "        raise SystemExit('failed to install SONIC dependencies: ' + ', '.join(missing))\n"
+        "PY\n"
+    )
+
+
+def _vllm_install_setup(model: str) -> str:
+    """Install vLLM and pre-fetch the served weights during ``setup``.
+
+    Two things dominate a self-hosted cold start on a fresh node: resolving and
+    downloading the vLLM + CUDA wheel set, and pulling the model weights. Use
+    ``uv`` for the former (it resolves and downloads in parallel; plain pip took
+    long enough that the eval's readiness window expired) and ``hf_transfer``
+    for the latter, so the ``run`` phase only has to load already-local weights.
+    """
+
+    return (
+        f"export NPA_VLM_SETUP_MODEL={shlex.quote(model)}\n"
+        "python3 - <<'PY'\n"
+        "import importlib.util\n"
+        "import os\n"
+        "import subprocess\n"
+        "import sys\n"
+        "\n"
+        "MODEL = os.environ['NPA_VLM_SETUP_MODEL']\n"
+        "\n"
+        "def pip_install(*packages):\n"
+        "    for prefix in (\n"
+        "        [sys.executable, '-m', 'uv', 'pip', 'install', '--python', sys.executable],\n"
+        "        [sys.executable, '-m', 'pip', 'install', '-q'],\n"
+        "        [sys.executable, '-m', 'pip', 'install', '-q', '--break-system-packages'],\n"
+        "    ):\n"
+        "        if subprocess.call([*prefix, *packages]) == 0:\n"
+        "            return True\n"
+        "    return False\n"
+        "\n"
+        "if importlib.util.find_spec('uv') is None:\n"
+        "    subprocess.call([sys.executable, '-m', 'pip', 'install', '-q', 'uv'])\n"
+        "if importlib.util.find_spec('vllm') is None and not pip_install('vllm>=0.8.5'):\n"
+        "    raise SystemExit('failed to install vllm for the self-hosted VLM backend')\n"
+        "pip_install('hf_transfer')\n"
+        "os.environ.setdefault('HF_HUB_ENABLE_HF_TRANSFER', '1')\n"
+        "try:\n"
+        "    from huggingface_hub import snapshot_download\n"
+        "except ImportError:\n"
+        "    print('huggingface_hub unavailable; vLLM will fetch weights at startup')\n"
+        "else:\n"
+        "    print('pre-fetching', MODEL, flush=True)\n"
+        "    snapshot_download(MODEL)\n"
+        "PY\n"
+    )
+
+
 def render_setup_for_tool(
     tool_ref: str,
     *,
@@ -921,6 +1059,8 @@ def render_setup_for_tool(
             "    subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'ninja'])\n"
             "PY\n"
         )
+    if tool_ref.startswith("workbench.sonic"):
+        parts.append(_sonic_deps_setup())
     if tool_ref.startswith("workbench.token_factory"):
         # Avoid ${VAR:-} bash forms so SkyPilot placeholder lint stays clean.
         parts.append(

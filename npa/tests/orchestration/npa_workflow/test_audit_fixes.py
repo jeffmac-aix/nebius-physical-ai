@@ -229,10 +229,8 @@ def test_cli_validate_spec_rejects_missing_config_token(tmp_path: Path) -> None:
     path.write_text(
         (SPECS / "vlm-eval-single.yaml")
         .read_text(encoding="utf-8")
-        # Replace the config TOKEN, not the whole artifact URI, so this stays valid
-        # when the declared artifact filename changes.
         .replace(
-            "{{config.scores_uri}}",
+            "{{config.scores_uri}}vlm_eval_stub.json",
             "{{config.does_not_exist}}",
         ),
         encoding="utf-8",

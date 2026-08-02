@@ -36,24 +36,6 @@ from npa.workbench.training_config import (
 import typer
 
 
-#: Modules `gear_sonic` imports that the Isaac venv the image builds at runtime does not carry.
-#: Found one live failure at a time — lxml in job 328, open3d in job 329 — because each only
-#: surfaces once the previous one is satisfied and the trainer gets further. Listed as
-#: (import name, pip name) so the probe skips work that is already done.
-GEAR_SONIC_RUNTIME_DEPS: tuple[tuple[str, str], ...] = (
-    ("lxml", "lxml"),
-    ("open3d", "open3d"),
-)
-
-
-#: Values that count as "the operator said yes".
-_AFFIRMATIVE = frozenset({"1", "y", "yes", "true", "accept", "accepted"})
-
-
-def _is_affirmative(value: str) -> bool:
-    return value.strip().lower() in _AFFIRMATIVE
-
-
 def build_sonic_serverless_train_command(
     *,
     checkpoint: str,
@@ -67,41 +49,6 @@ def build_sonic_serverless_train_command(
     training_config: TrainingConfig | None = None,
 ) -> str:
     """Build the remote command for a real SONIC serverless train job."""
-
-    return remote_bash(
-        build_sonic_train_body(
-            checkpoint=checkpoint,
-            data_path=data_path,
-            sample_data=sample_data,
-            embodiment=embodiment,
-            num_envs=num_envs,
-            headless=headless,
-            max_iterations=max_iterations,
-            isaac_lab_version=isaac_lab_version,
-            training_config=training_config,
-        )
-    )
-
-
-def build_sonic_train_body(
-    *,
-    checkpoint: str,
-    data_path: str,
-    sample_data: bool,
-    embodiment: str,
-    num_envs: int,
-    headless: bool,
-    max_iterations: int,
-    isaac_lab_version: str,
-    accept_nvidia_eula: bool = False,
-    training_config: TrainingConfig | None = None,
-) -> str:
-    """The training script itself: find the image's python, set SONIC_*, run its entrypoint.
-
-    Shared by the serverless and in-job runtimes on purpose. Two runtimes with two training
-    scripts would be two trainers; the only thing that differs between them is who provides the
-    machine.
-    """
 
     config = training_config or TrainingConfig()
     local_dir = "/tmp/npa-sonic-train"
@@ -125,155 +72,13 @@ def build_sonic_train_body(
         f"export SONIC_HEADLESS={'True' if headless else 'False'}\n"
         f"export SONIC_MAX_ITERATIONS={str(max_iterations)!r}\n"
         f"export SONIC_ISAAC_LAB_VERSION={isaac_lab_version!r}\n"
-        # Carry the IMAGE's own EULA acceptance into this shell.
-        #
-        # The SONIC image declares OMNI_KIT_ACCEPT_EULA=YES / ISAACSIM_ACCEPT_EULA=YES as docker
-        # ENV, because accepting NVIDIA's terms is a build-time decision its publisher made.
-        # SkyPilot's run shell does not inherit docker ENV, so the entrypoint saw them unset and
-        # refused with "Nothing has been downloaded" (live job 323, EVIDENCE.md §R47).
-        #
-        # Read from /proc/1/environ — the container's own PID 1 — rather than exporting YES
-        # here: this forwards a decision the image already recorded, and an image that did NOT
-        # accept still gets refused, which is the whole point of the gate.
-        + (
-            # The operator's own acceptance, carried from the spec. The gate's message asks for
-            # exactly this ("or as env: entries on the pod/SkyPilot task"), and a spec is where
-            # a reviewer can see who accepted what.
-            "export OMNI_KIT_ACCEPT_EULA=YES\n"
-            "export ISAACSIM_ACCEPT_EULA=YES\n"
-            "export ACCEPT_EULA=Y\n"
-            if accept_nvidia_eula
-            else ""
-        )
-        + (
-        "for npa_eula in OMNI_KIT_ACCEPT_EULA ISAACSIM_ACCEPT_EULA ACCEPT_EULA; do\n"
-        '  if [ -z "$(printenv "$npa_eula" || true)" ] && [ -r /proc/1/environ ]; then\n'
-        '    npa_eula_value="$(tr \'\\0\' \'\\n\' < /proc/1/environ '
-        '| sed -n "s/^$npa_eula=//p" | head -1)"\n'
-        '    if [ -n "$npa_eula_value" ]; then\n'
-        '      export "$npa_eula=$npa_eula_value"\n'
-        '      echo "carried $npa_eula from the image" >&2\n'
-        "    fi\n"
-        "  fi\n"
-        "done\n"
-        )
-        + (
-        # `gear_sonic` imports lxml, and the Isaac venv the image builds AT RUNTIME (after EULA
-        # acceptance, under a content-hashed /opt/isaac-cache path) does not contain it — live
-        # job 328 got the real trainer running against nvidia/GEAR-SONIC weights and then died
-        # on `ModuleNotFoundError: No module named 'lxml'`. That venv does not exist yet when
-        # this script starts, so it cannot be pip-installed into directly; PYTHONPATH is
-        # inherited by whatever interpreter the entrypoint ends up creating.
-        "npa_sonic_deps=/tmp/npa-sonic-deps\n"
-        + "".join(
-            f'if ! "$NPA_PYTHON_BIN" -c \'import {module}\' >/dev/null 2>&1; then\n'
-            f'  "$NPA_PYTHON_BIN" -m pip install -q --target "$npa_sonic_deps" {package} '
-            f"|| echo 'warning: could not stage {package} for gear_sonic' >&2\n"
-            "fi\n"
-            for module, package in GEAR_SONIC_RUNTIME_DEPS
-        )
-        +
-        'if [ -d "$npa_sonic_deps" ]; then\n'
-        '  export PYTHONPATH="$npa_sonic_deps${PYTHONPATH:+:$PYTHONPATH}"\n'
-        "fi\n"
-        )
-        + ('if [ -x /entrypoint.sh ]; then /entrypoint.sh train; '
+        'if [ -x /entrypoint.sh ]; then /entrypoint.sh train; '
         'else echo "/entrypoint.sh not found in SONIC image" >&2; exit 127; fi\n'
         "sonic_rc=$?\n"
         f"{upload}\n"
         'exit "$sonic_rc"'
-        )
     )
-    return body
-
-
-def build_sonic_in_job_train_script(
-    *,
-    checkpoint: str,
-    data_path: str,
-    sample_data: bool,
-    embodiment: str,
-    num_envs: int,
-    headless: bool,
-    max_iterations: int,
-    isaac_lab_version: str,
-    output_path: str,
-    accept_nvidia_eula: bool = False,
-    training_config: TrainingConfig | None = None,
-) -> str:
-    """The same training body the serverless path sends remotely, to run right here.
-
-    Identical on purpose: an in-job run that diverged from the serverless one would be a second
-    implementation of training, and the point is that the SONIC image's own `/entrypoint.sh
-    train` is the trainer in both cases. What changes is who provisions the machine — with
-    `in-job` it is the workflow engine, which already has one.
-    """
-
-    body = build_sonic_train_body(
-        checkpoint=checkpoint,
-        data_path=data_path,
-        sample_data=sample_data,
-        embodiment=embodiment,
-        num_envs=num_envs,
-        headless=headless,
-        max_iterations=max_iterations,
-        isaac_lab_version=isaac_lab_version,
-        accept_nvidia_eula=accept_nvidia_eula,
-        training_config=training_config,
-    )
-    return f"export NPA_OUTPUT_PATH={output_path!r}\n{body}"
-
-
-def _run_in_job_train(
-    *,
-    checkpoint: str,
-    data_path: str,
-    sample_data: bool,
-    embodiment: str,
-    num_envs: int,
-    headless: bool,
-    max_iterations: int,
-    isaac_lab_version: str,
-    output_path: str,
-    output_format: OutputFormat,
-    accept_nvidia_eula: bool,
-    training_config: TrainingConfig,
-) -> None:
-    """Run SONIC training in this pod and report where the checkpoint went."""
-
-    import subprocess
-
-    if not output_path.strip():
-        fail("--runtime in-job needs --output-path (or --checkpoint-s3-uri) to publish to")
-    script = build_sonic_in_job_train_script(
-        checkpoint=checkpoint,
-        data_path=data_path,
-        sample_data=sample_data,
-        embodiment=embodiment,
-        num_envs=num_envs,
-        headless=headless,
-        max_iterations=max_iterations,
-        isaac_lab_version=isaac_lab_version,
-        output_path=output_path,
-        accept_nvidia_eula=accept_nvidia_eula,
-        training_config=training_config,
-    )
-    completed = subprocess.run(["bash", "-c", script], text=True)
-    if completed.returncode != 0:
-        fail(f"SONIC in-job training failed with exit code {completed.returncode}")
-    output(
-        {
-            "status": "completed",
-            "runtime": "in-job",
-            "checkpoint": checkpoint,
-            "embodiment": embodiment,
-            "num_envs": num_envs,
-            "max_iterations": max_iterations,
-            "output_path": output_path,
-            "training_config": training_config.public_dict(),
-        },
-        output_format,
-    )
+    return remote_bash(body)
 
 
 def _run_serverless_train(
@@ -412,6 +217,37 @@ def _run_serverless_train(
     )
 
 
+def _run_local_train(
+    *,
+    checkpoint: str,
+    data_path: str,
+    embodiment: str,
+    num_envs: int,
+    max_iterations: int,
+    seed: int,
+    device: str,
+    output_path: str,
+    output_format: OutputFormat,
+    training_config: TrainingConfig,
+) -> None:
+    from npa.workbench.sonic.train import SonicTrainError, train_local
+
+    try:
+        result = train_local(
+            output_path=output_path,
+            checkpoint=checkpoint,
+            data_path=data_path,
+            embodiment=embodiment,
+            num_envs=num_envs,
+            max_iterations=max_iterations,
+            seed=seed,
+            device=device,
+        )
+    except SonicTrainError as exc:
+        fail(str(exc))
+    output({**result, "training_config": training_config.public_dict()}, output_format)
+
+
 def train_cmd(
     runtime: TrainRuntime = typer.Option(TrainRuntime.serverless, "--runtime", help="Runtime."),
     checkpoint: str = typer.Option(DEFAULT_CHECKPOINT, "--checkpoint", help="Checkpoint ref or path."),
@@ -435,6 +271,12 @@ def train_cmd(
     headless: bool = typer.Option(True, "--headless/--no-headless", help="Run Isaac Lab headless."),
     max_iterations: int = typer.Option(5, "--max-iterations", "--steps", help="Training iterations for smoke."),
     isaac_lab_version: str = typer.Option("2.3+", "--isaac-lab-version", help="Expected Isaac Lab version."),
+    seed: int = typer.Option(0, "--seed", help="Seed for the in-job (--runtime local) trainer."),
+    device: str = typer.Option(
+        "",
+        "--device",
+        help="Torch device for --runtime local. Default: cuda when available, else cpu.",
+    ),
     hf_token_env: str = typer.Option("HF_TOKEN", "--hf-token-env", help="Environment variable containing HF token."),
     output_path: str = typer.Option("", "--output-path", "-o", help="S3 URI where artifacts are written."),
     project_id: str = typer.Option("", "--project-id", help="Nebius project ID for serverless Jobs."),
@@ -443,16 +285,6 @@ def train_cmd(
         "",
         "--image-variant",
         help="SONIC image manifest variant. Defaults from --gpu-type.",
-    ),
-    accept_nvidia_eula: str = typer.Option(
-        "",
-        "--accept-nvidia-eula",
-        help=(
-            "Set to yes to accept NVIDIA's Omniverse / Isaac Sim / Software licence terms so "
-            "`--runtime in-job` may download Isaac Sim and Isaac Lab onto the machine. Empty by "
-            "default: acceptance is the operator's to give, never the tool's to assume. A VALUE "
-            "rather than a bare flag so a spec can carry it as a config key."
-        ),
     ),
     gpu_type: str = typer.Option("l40s", "--gpu-type", help="GPU type for serverless Jobs."),
     gpu_count: int = typer.Option(1, "--gpu-count", help="GPU count for serverless Jobs."),
@@ -492,19 +324,17 @@ def train_cmd(
     data_path = training_config.data_path
     effective_sample_data = sample_data or not data_path
     checkpoint_output_path = resolve_checkpoint_s3_uri(training_config, output_path)
-    if runtime_value == "in-job":
-        _run_in_job_train(
+    if runtime_value == "local":
+        _run_local_train(
             checkpoint=checkpoint,
             data_path=data_path,
-            sample_data=effective_sample_data,
             embodiment=embodiment_tag,
             num_envs=num_envs,
-            headless=headless,
             max_iterations=max_iterations,
-            isaac_lab_version=isaac_lab_version,
+            seed=seed,
+            device=device,
             output_path=checkpoint_output_path,
             output_format=output_format,
-            accept_nvidia_eula=_is_affirmative(accept_nvidia_eula),
             training_config=training_config,
         )
         return
