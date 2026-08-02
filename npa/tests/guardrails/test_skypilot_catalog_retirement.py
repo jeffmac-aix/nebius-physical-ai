@@ -26,11 +26,14 @@ SKYPILOT_DIR = REPO_ROOT / "npa" / "src" / "npa" / "workflows" / "skypilot"
 REMAINING: dict[str, str] = {
     # --- loaded and launched by a shipped runner script ---
     "bdd100k-pipeline.yaml": (
-        "runner PORTED: run_bdd100k_pipeline.py now renders the spec, and its "
-        "--mock-endpoints mode drives every stage's real argv against stand-in "
-        "services. Survives only because a LIVE run needs the LanceDB workbench "
-        "service, which is not deployed (EVIDENCE.md \u00a7R16, \u00a7R26); docs still "
-        "cite it as the raw-YAML authoring reference"
+        "runner PORTED and the LanceDB wall is gone: `npa workbench lancedb deploy --runtime "
+        "kubernetes` puts the service where a stage can reach it, and live job 321 got through "
+        "ingest, both backfills (including the GPU CLIP UDF) and curate-views. It now stops at "
+        "train-rider on a SECOND in-cluster service: "
+        "http://npa-detection-training.workbench.svc.cluster.local:8790. "
+        "`npa workbench detection-training deploy` exists and targets Kubernetes; on this "
+        "cluster it resolved a kubeconfig that produced no deployment, which is the next thing "
+        "to chase. See EVIDENCE.md \u00a7R44"
     ),
     # --- referenced by a CLI/SDK path pointer or shipped data ---
     "sonic-train-standalone.yaml": "three-tier contract + standalone-policy guardrail",
