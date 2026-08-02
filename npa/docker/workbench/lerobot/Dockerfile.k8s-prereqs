@@ -48,7 +48,9 @@ USER root
 # was blocked in-cluster. Dropping the stranded build-time `libc6-dev` restores consistency
 # WITHOUT reinstating the purged package, so the hardening survives; a runtime image does not
 # need C headers.
-RUN apt-get update && apt-get install -y --fix-broken
+# --no-install-recommends because this repairs apt rather than adding anything: `--fix-broken`
+# with recommends could pull packages the CVE hardening deliberately removed (Trivy DS-0029).
+RUN apt-get update && apt-get install -y --no-install-recommends --fix-broken
 RUN apt-get update \
     && apt-get install -y --no-install-recommends rsync sudo netcat-openbsd \
     && rm -rf /var/lib/apt/lists/* \
