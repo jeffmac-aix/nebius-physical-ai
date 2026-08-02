@@ -499,6 +499,10 @@ def render_self_hosted_vlm_preamble(config: Mapping[str, Any]) -> str:
         # cold 7B load can still be finishing when the first request lands.
         "export NPA_VLM_READY_TIMEOUT_S=1800\n"
         f"npa_vlm_model={shlex.quote(model)}\n"
+        # From #238: tell the CLIENT which model this preamble is serving. Without it the eval
+        # asks for its own default and a spec that overrode `vlm_model` would score against a
+        # model nobody started.
+        f"export NPA_VLM_SELF_HOSTED_MODEL={model}\n"
         f"npa_vlm_port={shlex.quote(port)}\n"
         "npa_vlm_log=/tmp/npa-vlm-server.log\n"
         # vLLM's FlashInfer sampler JIT-compiles a CUDA extension and shells out to `ninja`
