@@ -198,6 +198,9 @@ under `npa/src/npa/workflows/skypilot/`.
   daemon, a blocked VM path, and LanceDB Cloud.
 - **The LanceDB wrapper serves `/index` and `/query`**, the paths the dataset-of-record has
   always posted, and `dataset ingest` can populate the index it later queries.
+- **`sonic train --accept-nvidia-eula`** carries the operator's licence acceptance from the
+  spec (`sonic_accept_nvidia_eula`, empty by default) to the vendor entrypoint, which refuses
+  until it is given. Acceptance is the operator's to make, so nothing asserts it for them.
 - **`npa workbench sonic train --runtime in-job`** trains in the pod the stage is already
   running in, instead of provisioning a Nebius Job from inside it.
 - **The legacy `sim_to_real` stack is retired.** The watcher survives and submits
