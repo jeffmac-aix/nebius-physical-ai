@@ -394,16 +394,27 @@ def test_author_workflow_flags_padded_placeholder_states() -> None:
     from npa.cli.agent_workflow import author_workflow_from_goal
     from npa.orchestration.npa_workflow.catalog import TOOL_CATALOG
 
-    # More requested steps than goal-matched tools -> the extra state is padded
-    # from the catalog and flagged as a placeholder for the operator to replace.
-    # Derive the step count from how many catalog tools actually match the goal
-    # keyword ("cosmos") so this stays correct as cosmos tools are added/removed
-    # (e.g. cosmos2.transfer, cosmos2.transfer_execute, cosmos3.reason).
-    cosmos_tools = [ref for ref in TOOL_CATALOG if "cosmos" in ref.lower()]
-    n_steps = min(len(cosmos_tools) + 1, 6)
-    assert n_steps > len(cosmos_tools), "need headroom for at least one padded state"
+    # More requested steps than goal-matched tools -> the extra state is padded from the catalog
+    # and flagged as a placeholder for the operator to replace.
+    #
+    # The keyword is chosen rather than fixed. The author caps a workflow at MAX_AUTHORED_STEPS
+    # states, so a keyword matching that many tools leaves no room to pad — which is exactly
+    # what happened when the sixth cosmos toolRef landed and this test started asserting 6 > 6.
+    max_steps = 6
+    keyword = next(
+        (
+            candidate
+            for candidate in ("cosmos", "sonic", "mjlab", "retargeting")
+            if len([ref for ref in TOOL_CATALOG if candidate in ref.lower()]) < max_steps
+        ),
+        "",
+    )
+    assert keyword, "no catalog keyword leaves headroom for a padded state"
+    matched = [ref for ref in TOOL_CATALOG if keyword in ref.lower()]
+    n_steps = len(matched) + 1
+    assert n_steps <= max_steps
     result = author_workflow_from_goal(
-        f"write me a {n_steps} step npa yaml that uses cosmos",
+        f"write me a {n_steps} step npa yaml that uses {keyword}",
         tool_refs=frozenset(TOOL_CATALOG),
     )
     assert len(result["tool_refs"]) == n_steps
