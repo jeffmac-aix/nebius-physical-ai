@@ -254,7 +254,11 @@ nebius iam get-access-token | crane auth login cr.eu-north1.nebius.cloud -u iam 
 
 In CI that token is the `NEBIUS_CR_TOKEN` repository secret (GHCR push uses the
 built-in `GITHUB_TOKEN`). It is short-lived, so re-mint it rather than assuming the
-stored value still works; the preflight step fails in seconds if it doesn't.
+stored value still works. You do not have to guess: the `Publish public images`
+workflow's default **dry run is a full rehearsal** — it resolves the plan, logs in to
+the source registry, preflights every pinned tag, and runs the Isaac gate, skipping
+only the copy and the public verification. A green dry run means the real run will get
+as far as writing.
 
 or the `Publish public images` GitHub Actions workflow (manual dispatch,
 dry-run by default). **Consumers in any tenant** then pull the OSS images by

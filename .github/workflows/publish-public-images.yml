@@ -17,12 +17,16 @@
 # visibility cannot be undone. The "Gate" step below checks that mechanically before
 # any copy happens; do not remove it.
 #
-# Manual dispatch only (never auto-publishes). Defaults to dry-run.
+# Manual dispatch only (never auto-publishes). Defaults to dry-run, and the dry run is a
+# real rehearsal: it resolves the plan, proves the source credential, reads every pinned
+# source tag, and runs the gate. Only the copy and the public verification are skipped.
 #
-# Required secret to actually copy (not needed for dry-run):
+# Required secret to actually copy:
 #   NEBIUS_CR_TOKEN — a Nebius CR token (static key or access token) with viewer
 #                     on the source registry, used as the docker password (user
-#                     "iam"). GHCR push uses the built-in GITHUB_TOKEN.
+#                     "iam"). GHCR push uses the built-in GITHUB_TOKEN. A dry run
+#                     without it still prints the plan, but says it could not check
+#                     the source registry.
 
 name: Publish public images
 
@@ -78,24 +82,33 @@ jobs:
         if: ${{ inputs.dry_run == false }}
         run: echo "${{ secrets.GITHUB_TOKEN }}" | crane auth login ghcr.io -u "${{ github.actor }}" --password-stdin
 
+      # Runs in dry-run too, so the safe rehearsal actually rehearses the credential.
+      # NEBIUS_CR_TOKEN is short-lived, and a dry run that skipped the login could only
+      # ever tell you the plan was well-formed.
       - name: Login to Nebius source registry
-        if: ${{ inputs.dry_run == false }}
+        id: source-login
         run: |
           if [ -z "${{ secrets.NEBIUS_CR_TOKEN }}" ]; then
+            if [ "${{ inputs.dry_run }}" = "true" ]; then
+              echo "::notice::NEBIUS_CR_TOKEN is not set, so this dry run cannot check the source registry."
+              echo "available=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
             echo "NEBIUS_CR_TOKEN secret is required to copy from the Nebius source registry" >&2
             exit 1
           fi
           for host in cr.eu-north1.nebius.cloud cr.us-central1.nebius.cloud; do
             echo "${{ secrets.NEBIUS_CR_TOKEN }}" | crane auth login "$host" -u iam --password-stdin
           done
+          echo "available=true" >> "$GITHUB_OUTPUT"
 
       # `crane auth login` writes a config file and exits 0 for any string -- it never
       # contacts the registry -- so the step above proves nothing about NEBIUS_CR_TOKEN.
       # This reads every source manifest, which fails in seconds on an expired token or a
       # pin that was never pushed, rather than partway through the copy loop with some
-      # packages already created.
+      # packages already created. It writes nothing, so it is safe in dry-run.
       - name: Preflight the source registry credential and every pinned tag
-        if: ${{ inputs.dry_run == false }}
+        if: ${{ steps.source-login.outputs.available == 'true' }}
         run: python -m npa.deploy.publish_public --target "${{ steps.target.outputs.value }}" --preflight
 
       # Last line of defence before an irreversible action. publish_public trusts the
@@ -106,8 +119,10 @@ jobs:
       # would not finish on a hosted runner. It is the weaker check -- it catches a build
       # that RAN an Isaac install, not payload that arrived by COPY -- so it is a gate,
       # not the proof. The full scan runs in omniverse-payload-scan (image-security-scan.yml).
+      # Also runs in dry-run (it only reads), so the rehearsal exercises the whole safety
+      # chain rather than leaving the gate to fire for the first time on the real run.
       - name: Gate — the Isaac canonical tags must not be Omniverse-baked
-        if: ${{ inputs.dry_run == false }}
+        if: ${{ steps.source-login.outputs.available == 'true' }}
         run: |
           set -euo pipefail
           source_registry="cr.eu-north1.nebius.cloud/e00cm0vc6t09m0z5gw"
