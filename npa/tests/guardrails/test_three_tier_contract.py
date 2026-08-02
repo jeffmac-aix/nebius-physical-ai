@@ -299,18 +299,20 @@ CONTRACTS: tuple[CapabilityContract, ...] = (
             _p("lance_uri", "lance_uri", "--lance-uri"),
         ),
     ),
-    # --- still on the legacy SkyPilot-YAML third tier -------------------------
-    # `sim-to-real-trigger.yaml` has no npa.workflow twin yet: the engine's
-    # driver-side `trigger:` field is the declarative analogue, and the spec that
-    # replaces this YAML lands with the sim-to-real port. Until then the legacy
-    # env check keeps the CLI/SDK/YAML triple honest.
+    # --- the watcher: a DRIVER, so its third tier is the spec it submits --------
+    # `sim-to-real-trigger.yaml` is retired. Its stage ran the watch loop, and the loop's
+    # third tier was that YAML's `envs:`. The loop now submits `sim2real-vlm-rl.yaml`, so the
+    # spec is the third tier — but only for the parameters that describe the RUN. The watch
+    # parameters (where to look, how often, what it has already seen) are driver state with no
+    # stage analogue, which is exactly what `spec_gap` is for.
     CapabilityContract(
         name="workflow/trigger/run",
         cli_module="npa.cli.workbench.trigger",
         cli_callback="run_cmd",
         sdk_module="npa.sdk.workbench.trigger",
         sdk_attr="run_once",
-        yaml_path=Path("npa/src/npa/workflows/skypilot/sim-to-real-trigger.yaml"),
+        spec_path=SPECS / "sim2real-vlm-rl.yaml",
+        tool_ref="workbench.cosmos2.transfer",
         params=(
             _p("s3_endpoint", "s3_endpoint", "--s3-endpoint", "NPA_TRIGGER_S3_ENDPOINT"),
             _p("s3_bucket", "s3_bucket", "--s3-bucket", "NPA_TRIGGER_S3_BUCKET"),
@@ -359,7 +361,8 @@ CONTRACTS: tuple[CapabilityContract, ...] = (
         cli_callback="watch_cmd",
         sdk_module="npa.sdk.workbench.trigger",
         sdk_attr="watch",
-        yaml_path=Path("npa/src/npa/workflows/skypilot/sim-to-real-trigger.yaml"),
+        spec_path=SPECS / "sim2real-vlm-rl.yaml",
+        tool_ref="workbench.cosmos2.transfer",
         params=(
             _p("s3_endpoint", "s3_endpoint", "--s3-endpoint", "NPA_TRIGGER_S3_ENDPOINT"),
             _p("s3_bucket", "s3_bucket", "--s3-bucket", "NPA_TRIGGER_S3_BUCKET"),
