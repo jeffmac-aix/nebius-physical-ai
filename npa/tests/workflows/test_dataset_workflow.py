@@ -9,6 +9,10 @@ from npa.orchestration.npa_workflow.catalog import TOOL_CATALOG, argv_for_tool
 
 ROOT = Path(__file__).resolve().parents[3]
 WORKFLOW = ROOT / "npa" / "workflows" / "workbench" / "npa-workflows" / "dataset-ingest-curate.yaml"
+SPEC = (
+    ROOT / "npa" / "workflows" / "workbench" / "npa-workflows" / "dataset-ingest-curate.yaml"
+)
+# The raw template is retired; the spec is the surface (EVIDENCE.md §R41).
 SKYPILOT = ROOT / "npa" / "src" / "npa" / "workflows" / "skypilot" / "dataset-ingest-curate.yaml"
 
 
@@ -54,14 +58,33 @@ def test_new_dataset_toolrefs_render() -> None:
     assert "--output-path" in ingest_argv
 
 
-def test_skypilot_yaml_has_cpu_and_gpu_stages() -> None:
-    docs = [doc for doc in yaml.safe_load_all(SKYPILOT.read_text()) if doc is not None]
-    assert docs[0]["name"] == "dataset-ingest-curate"
-    assert docs[0]["execution"] == "serial"
-    cpu_task = docs[1]
-    gpu_task = docs[2]
-    assert cpu_task["resources"]["cloud"] == "kubernetes"
-    assert "accelerators" not in cpu_task["resources"]
-    assert gpu_task["resources"]["accelerators"] == "H100:1"
-    assert "npa workbench dataset ingest" in cpu_task["run"]
-    assert "npa workbench dataset curate" in cpu_task["run"]
+def test_the_spec_runs_ingest_and_curate_and_registers_against_the_service() -> None:
+    """`dataset-ingest-curate.yaml` (raw) is retired; its spec ran all five stages live.
+
+    Job 317 finished with the `register` stage reading 12 records back out of the in-cluster
+    LanceDB service that `ingest` had written to (EVIDENCE.md §R41).
+    """
+
+    from npa.orchestration.npa_workflow.interpreter import build_plan
+    from npa.orchestration.npa_workflow.spec import load_spec
+
+    spec = load_spec(SPEC)
+    plan = build_plan(spec, run_id="dataset-test")
+    steps = {step.state: step for step in plan.steps if step.argv}
+
+    assert {"ingest", "validate", "quality-gate", "curate", "register"} <= set(steps)
+    # CPU throughout: the pipeline moves metadata, it does not render.
+    for step in steps.values():
+        assert "accelerators" not in spec.resources[step.resources], step.state
+
+    ingest = steps["ingest"].argv
+    register = steps["register"].argv
+    # Index on the way in, query the same table on the way out — the round trip job 317 proved.
+    endpoint = spec.config["lancedb_endpoint"]
+    assert ingest[ingest.index("--lancedb-endpoint") + 1] == endpoint
+    assert register[register.index("--lancedb-endpoint") + 1] == endpoint
+    assert register[register.index("--lance-table") + 1] == spec.config["dataset_id"]
+
+
+def test_the_retired_dataset_template_is_gone() -> None:
+    assert not SKYPILOT.exists(), "dataset-ingest-curate.yaml came back"
