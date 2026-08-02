@@ -3019,3 +3019,48 @@ npa workbench lancedb deploy --runtime kubernetes --namespace workbench \
 npa workbench detection-training deploy --namespace workbench --gpu-type rtxpro6000 \
   --output-path s3://<bucket>/detection-training/
 ```
+
+## R47. SONIC: the launcher problem is solved; the wall is now inside NVIDIA's asset conversion
+
+The decision this PR asked for was "move the launcher out of the workflow, or train in-pod
+against the vendor image". In-pod was chosen and it works — six live jobs prove it, each getting
+further than the last. Recording the chain because every step of it was invisible from the diff,
+and because the two templates stay for a reason that is no longer about workflows at all.
+
+| Job | Reached | Stopped by |
+| --- | --- | --- |
+| 322 | the training body ran | `/entrypoint.sh not found in SONIC image` — the runtime worked; the live case had not asked for the vendor image |
+| 323 | the SONIC entrypoint | `Not accepted (unset or not YES): OMNI_KIT_ACCEPT_EULA ISAACSIM_ACCEPT_EULA` |
+| 327 | same | the `/proc/1/environ` carry found nothing: **SkyPilot replaces the pod's PID 1**, so the image's docker ENV never reaches any shell in the pod |
+| 328 | **the real trainer**, on `nvidia/GEAR-SONIC` weights, Isaac Sim and Isaac Lab installed | `ModuleNotFoundError: No module named 'lxml'` |
+| 329 | further into `gear_sonic` | `ModuleNotFoundError: No module named 'open3d'` |
+| 330 | Isaac Sim booted; the whole env config instantiated; robot USD conversion started | `[Error] [omni.usd] Failed to open layer @/tmp/IsaacLab/usd_…/configuration/pelvis.tmp.usd@`, then `[Fatal] attempted member lookup on NULL TfRefPtr<UsdStage>` |
+
+### What each step taught, and what shipped
+
+**Acceptance belongs on the spec.** Job 327 killed the neat idea — reading the image's own
+`OMNI_KIT_ACCEPT_EULA` from PID 1 — because under SkyPilot there is no such PID 1. The gate's own
+message asks for "env: entries on the pod/SkyPilot task", so `sonic_accept_nvidia_eula` is a
+config key, **empty by default**, and `--accept-nvidia-eula` takes a *value* rather than being a
+bare flag, because a toolRef argv is always flag-plus-value and an empty positional would hand
+Typer an unexpected argument. Acceptance is the operator's to give; the harness reads it from
+`NPA_E2E_SONIC_ACCEPT_NVIDIA_EULA` rather than shipping an accepted spec.
+
+**The dependency gap is a list, not a package.** `lxml` then `open3d`: each surfaces only once
+the previous is satisfied and the trainer gets further, so the staging step iterates
+`GEAR_SONIC_RUNTIME_DEPS` and probes each. They cannot be baked into the image — the venv that
+needs them is built **at runtime**, after EULA acceptance, under a content-hashed
+`/opt/isaac-cache` path — so `PYTHONPATH` is the only seam that reaches it.
+
+### Why the two templates stay
+
+Job 330 dies inside Isaac Lab's own URDF→USD conversion of the G1 robot. Everything the
+workflow surface is responsible for is done: the stage runs on the vendor image, in the pod the
+engine provisioned, with the operator's acceptance, the real weights, and a working interpreter.
+What remains is an NVIDIA asset-pipeline failure that no change to a spec, a toolRef or the
+engine will move.
+
+So `sonic-train-standalone.yaml` and `sonic-locomotion-finetuning.yaml` keep their place in the
+tally, with the reason rewritten from "the launcher provisions its own infrastructure" — which is
+fixed — to what it actually is now. The engine work, its 15 unit tests, and all six live traces
+are recorded here so whoever picks this up starts at job 330 rather than at job 322.

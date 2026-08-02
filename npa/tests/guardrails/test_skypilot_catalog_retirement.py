@@ -29,15 +29,16 @@ REMAINING: dict[str, str] = {
     # --- no npa.workflow twin authored yet ---
     # --- twin exists but is NOT live-verified yet ---
     "sonic-locomotion-finetuning.yaml": (
-        "the LAUNCHER problem is fixed: `sonic train --runtime in-job` trains in the pod "
-        "instead of provisioning a Nebius Job from inside it (EVIDENCE.md \u00a7R42). Live job "
-        "323 ran the SONIC image's own /entrypoint.sh and reached NVIDIA's asset gate — "
-        "'Nothing has been downloaded' — which is an EULA/NGC credential question for the "
-        "image, not a workflow one. See EVIDENCE.md \u00a7R45"
+        "the LAUNCHER problem is SOLVED — `sonic train --runtime in-job` trains in the pod, on "
+        "the vendor image, with the operator's EULA acceptance carried on the spec. Six live "
+        "jobs took it from 'entrypoint not found' to Isaac Sim booting and converting the G1 "
+        "robot. Job 330 dies inside NVIDIA's own URDF->USD conversion "
+        "('Failed to open layer ... pelvis.tmp.usd'), which no spec, toolRef or engine change "
+        "will move. See EVIDENCE.md \u00a7R47"
     ),
     "sonic-train-standalone.yaml": (
-        "same as sonic-locomotion-finetuning: the launcher is fixed and the twin now reaches "
-        "the vendor trainer; what remains is the image's asset gate. See EVIDENCE.md \u00a7R45"
+        "same as sonic-locomotion-finetuning: everything the workflow surface owns is done; "
+        "what remains is NVIDIA's asset conversion. See EVIDENCE.md \u00a7R47"
     ),
     # --- RETIRED here: twin live-verified, see EVIDENCE.md -----------------------
     # cosmos3-reason.yaml     job 182            npa-wf-gpu-cosmos3-reason-af7ded35
