@@ -5,7 +5,6 @@ from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
 
-import yaml
 
 from npa.workbench import trigger as trigger_sdk
 from npa.workflows.sim_to_real_trigger import (
