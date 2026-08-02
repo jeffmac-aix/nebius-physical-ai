@@ -106,6 +106,26 @@ def build_sonic_train_body(
         f"export SONIC_HEADLESS={'True' if headless else 'False'}\n"
         f"export SONIC_MAX_ITERATIONS={str(max_iterations)!r}\n"
         f"export SONIC_ISAAC_LAB_VERSION={isaac_lab_version!r}\n"
+        # Carry the IMAGE's own EULA acceptance into this shell.
+        #
+        # The SONIC image declares OMNI_KIT_ACCEPT_EULA=YES / ISAACSIM_ACCEPT_EULA=YES as docker
+        # ENV, because accepting NVIDIA's terms is a build-time decision its publisher made.
+        # SkyPilot's run shell does not inherit docker ENV, so the entrypoint saw them unset and
+        # refused with "Nothing has been downloaded" (live job 323, EVIDENCE.md §R47).
+        #
+        # Read from /proc/1/environ — the container's own PID 1 — rather than exporting YES
+        # here: this forwards a decision the image already recorded, and an image that did NOT
+        # accept still gets refused, which is the whole point of the gate.
+        "for npa_eula in OMNI_KIT_ACCEPT_EULA ISAACSIM_ACCEPT_EULA ACCEPT_EULA; do\n"
+        '  if [ -z "$(printenv "$npa_eula" || true)" ] && [ -r /proc/1/environ ]; then\n'
+        '    npa_eula_value="$(tr \'\\0\' \'\\n\' < /proc/1/environ '
+        '| sed -n "s/^$npa_eula=//p" | head -1)"\n'
+        '    if [ -n "$npa_eula_value" ]; then\n'
+        '      export "$npa_eula=$npa_eula_value"\n'
+        '      echo "carried $npa_eula from the image" >&2\n'
+        "    fi\n"
+        "  fi\n"
+        "done\n"
         'if [ -x /entrypoint.sh ]; then /entrypoint.sh train; '
         'else echo "/entrypoint.sh not found in SONIC image" >&2; exit 127; fi\n'
         "sonic_rc=$?\n"
