@@ -546,7 +546,7 @@ def test_settings_url_is_none_for_a_registry_with_a_different_visibility_model()
     assert package_settings_url("cr.eu-north1.nebius.cloud/abc/npa-lerobot:0.5.1") is None
 
 
-def test_the_checklist_covers_exactly_the_packages_still_private(monkeypatch) -> None:
+def test_the_checklist_covers_exactly_the_packages_still_private() -> None:
     from npa.deploy import publish_public
 
     plan = build_publish_plan(target_registry="ghcr.io/example/workbench")
@@ -555,4 +555,23 @@ def test_the_checklist_covers_exactly_the_packages_still_private(monkeypatch) ->
     checklist = publish_public.visibility_checklist(failures)
 
     assert checklist.count("- [ ] ") == 2
-    assert plan[1].target_ref.rpartition(":")[0].partition("/")[2] not in checklist
+    assert publish_public.ghcr_owner_and_package(plan[1].target_ref)[1] not in checklist
+
+
+def test_the_checklist_labels_a_package_the_way_its_settings_page_does() -> None:
+    """The label must be the package name, not the whole reference, or the list does not
+    match the page it links to."""
+    from npa.deploy import publish_public
+    from npa.deploy.publish_public import PublishItem
+
+    item = PublishItem(
+        tool="lerobot",
+        source_ref="cr.eu-north1.nebius.cloud/abc/npa-lerobot:0.5.1",
+        target_ref="ghcr.io/nebius/nebius-physical-ai/npa-lerobot:0.5.1",
+    )
+
+    assert publish_public.visibility_checklist([(item, "HTTP 403")]) == (
+        "- [ ] [nebius-physical-ai/npa-lerobot]"
+        "(https://github.com/orgs/nebius/packages/container/"
+        "nebius-physical-ai%2Fnpa-lerobot/settings)"
+    )

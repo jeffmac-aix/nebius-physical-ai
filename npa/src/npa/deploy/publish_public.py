@@ -232,16 +232,12 @@ def verify_public(plan: list[PublishItem]) -> list[tuple[PublishItem, str]]:
     return failures
 
 
-def package_settings_url(target_ref: str, *, owner_type: str = "orgs") -> str | None:
-    """Deep link to the GHCR package settings page that owns ``target_ref``.
+def ghcr_owner_and_package(target_ref: str) -> tuple[str, str] | None:
+    """Split a GHCR reference into its owner and package name.
 
-    The visibility flip is the one step of a publish that cannot be automated -- GitHub
-    has no REST endpoint for it on organisation-owned packages -- so the least we can do
-    is not make someone hunt for each package in a list. GHCR nests the package name
-    under the repository (``ghcr.io/<owner>/<repo>/<image>`` is the package
-    ``<repo>/<image>``), and the settings path percent-encodes that slash.
-
-    Returns ``None`` for non-GHCR targets, which have their own visibility model.
+    GHCR nests the package under the repository: ``ghcr.io/<owner>/<repo>/<image>`` is
+    owner ``<owner>`` and package ``<repo>/<image>``. Returns ``None`` for any other
+    registry, which has its own naming and visibility model.
     """
     host, _, remainder = target_ref.partition("/")
     if host != "ghcr.io" or not remainder:
@@ -250,6 +246,21 @@ def package_settings_url(target_ref: str, *, owner_type: str = "orgs") -> str | 
     owner, _, package = path.partition("/")
     if not owner or not package:
         return None
+    return owner, package
+
+
+def package_settings_url(target_ref: str, *, owner_type: str = "orgs") -> str | None:
+    """Deep link to the GHCR package settings page that owns ``target_ref``.
+
+    The visibility flip is the one step of a publish that cannot be automated -- GitHub
+    has no REST endpoint for it on organisation-owned packages -- so the least we can do
+    is not make someone hunt for each package in a list. The settings path
+    percent-encodes the slash in the nested package name; a raw slash 404s.
+    """
+    parsed = ghcr_owner_and_package(target_ref)
+    if parsed is None:
+        return None
+    owner, package = parsed
     return (
         f"https://github.com/{owner_type}/{owner}/packages/container/"
         f"{urllib.parse.quote(package, safe='')}/settings"
@@ -260,9 +271,11 @@ def visibility_checklist(failures: list[tuple[PublishItem, str]]) -> str:
     """A markdown checklist of the packages still needing a manual visibility flip."""
     lines = []
     for item, _ in failures:
+        parsed = ghcr_owner_and_package(item.target_ref)
         url = package_settings_url(item.target_ref)
-        name = item.target_ref.rpartition(":")[0].partition("/")[2]
-        lines.append(f"- [ ] [{name}]({url})" if url else f"- [ ] {item.target_ref}")
+        # Label with the package name as the settings page shows it, so the list reads
+        # the same as the page it links to.
+        lines.append(f"- [ ] [{parsed[1]}]({url})" if parsed and url else f"- [ ] {item.target_ref}")
     return "\n".join(lines)
 
 
