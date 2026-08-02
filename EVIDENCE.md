@@ -3133,3 +3133,47 @@ Two templates arriving mid-sweep is the argument for the last step of this work 
 long as the directory exists, things land in it. Once the SONIC pair clears, the guardrail should
 invert from "these may remain" to "this directory must not exist", and the question stops being
 whether anyone remembered.
+
+## R50. The SONIC chain is green — the vendor's asset pipeline was never on the critical path
+
+Job **334**, `sonic-export-eval.yaml`, tier `multi`: **SUCCEEDED**, all three stages, 6m31s.
+
+The lead was #238's reference trainer. Six live jobs (§R47) had been spent getting the *vendor*
+trainer to run, and the wall was NVIDIA's own URDF→USD conversion of the G1 robot. But the twin
+does not need the vendor trainer to be a real twin — the fallback trains for real:
+
+```json
+{ "embodiment": "UNITREE_G1_SONIC", "action_dim": 23, "device": "cuda", "iterations": 40,
+  "initial_loss": 0.004570585375404335, "final_loss": 0.00007135790667689434 }
+```
+
+Forty iterations of gradient descent on the GPU, loss down **98.4%**, into a 231 KB
+`checkpoint.pt`. Export turned it into a 228 KB `sonic_policy.onnx` with its metadata sidecar,
+and eval scored it per episode on real dynamics:
+
+```json
+{ "backend": "reference", "episodes": [
+  { "episode_index": 0, "distance": 0.1596, "energy": 0.0261, "episode_return": 0.1583,
+    "fall": false, "steps": 32 } ] }
+```
+
+Every stage handed the next its S3 artifact — `training/checkpoint.pt` → `sonic_policy.onnx` →
+`eval.json` — which is the whole property the retired template chained inline in bash.
+
+### The failure before it is the one worth recording
+
+Job **333** failed in 2m17s with:
+
+```
+Invalid value for '--runtime': 'local' is not one of 'vm', 'container', 'serverless', 'in-job'
+```
+
+`in-job` is *this branch's* name for the runtime, which the merge with #238 replaced. The pod was
+running an npa source tree staged to S3 **before** that merge. Nothing in the harness noticed: the
+overlay syncs whatever is at the URI, and a stale tree is indistinguishable from a fresh one until
+a renamed flag makes it visible.
+
+That is a real gap in the live harness rather than a one-off. The overlay should carry the commit
+it was cut from and refuse to run against a tree older than the working copy — recorded here as
+follow-up work rather than fixed mid-run, since the fix belongs with the harness, not with this
+retirement.
