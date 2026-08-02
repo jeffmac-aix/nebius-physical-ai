@@ -449,9 +449,10 @@ SUBMIT_LIVE_MATRIX: tuple[SubmitLiveCase, ...] = (
         secret_envs=("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"),
         rotation_skip=True,
         skip_reason=(
-            "11-stage AV pipeline needs the raw-bdd100k demo dataset staged in "
-            "the run bucket and is the longest wall-clock twin; not a bounded "
-            "daily-rotation fit. Run manually with a staged dataset."
+            "11-stage AV pipeline and the longest wall-clock twin; not a bounded daily-rotation "
+            "fit. Run it manually with NPA_E2E_BDD100K_SYNTHETIC_ROWS to skip staging the real "
+            "dataset, and the LanceDB service deployed "
+            "(`npa workbench lancedb deploy --runtime kubernetes --namespace workbench`)."
         ),
         notes="11-stage AV pipeline; longest wall-clock.",
     ),
