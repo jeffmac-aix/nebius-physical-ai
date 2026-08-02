@@ -3221,3 +3221,47 @@ what the engine will run, not what a document says.
 The general lesson is worth keeping: **a test that reads a shipped artifact as a fixture quietly
 makes that artifact undeletable.** Every one of these could have been written against a fixture
 from the start at no cost.
+
+## R52. Four merges in, and the guardrails kept being the thing that noticed
+
+`main` moved four times during this work — #238, #234, #235, #229 — and every one of them
+touched something this PR had changed. The pattern is consistent enough to be worth stating
+plainly: **in each case the conflict was resolved by keeping whichever half was better, and in
+each case the thing that noticed a real problem was a test, not a reviewer.**
+
+| Merge | What it did to this work | Resolution |
+| --- | --- | --- |
+| #238 | solved the SONIC launcher in parallel as `--runtime local` | its implementation stays (it has a fallback this branch lacked); this branch's EULA acceptance goes on top. Its vLLM installer replaced this branch's inline pip; this branch's readiness preamble was kept over its fire-and-hope launch. Three regressions caught by guardrails (§R48) |
+| #234 | added a **new** raw template | caught on merge; listed with a reason (§R49) |
+| #235 | added another | same (§R49) |
+| #229 | rewrote the isaac-lab image and moved the prerequisites into a shared script | its Dockerfiles taken wholesale; the derived recipes keep both repair paths |
+
+### #229 is the interesting one, twice over
+
+Its rewrite fetches Isaac at run time and points `OMNI_USER_DIR` / `OMNI_LOG_DIR` at `/tmp` —
+**a better answer to the exact stall live job 271 found** than this branch's chowning of
+directories under `/isaac-sim`, and it arrived independently. Its version wins. The *derived*
+`Dockerfile.k8s-prereqs` recipes keep both halves, because a derived build cannot know whether
+it is repairing an image from the old NVIDIA base (where `/isaac-sim` holds the payload) or a
+new one.
+
+It also shipped a guardrail with the same shape as this PR's: every automated path that runs an
+Isaac image must carry the operator's EULA acceptance, or the image exits 78. It enforced that by
+scanning the **SkyPilot catalog** — which this branch had just emptied. The rule survived only
+because #229 had also written a *guard for the guard* (`assert len(_isaac_templates()) >= 10`),
+which failed loudly instead of letting the check pass over an empty set.
+
+The fix moves the rule onto the surface that remains. A spec reaches an Isaac image through its
+`toolRef`, not by naming an image, so asking every spec to declare two env vars would ask its
+author to know the renderer's routing table. The **renderer** knows it, so the renderer declares
+them — derived from its own `TOOL_REF_IMAGE_TOOL` map, empty unless the operator set them, so a
+task still fails closed with the actionable message and nothing in the repo accepts on anyone's
+behalf. A new Isaac toolRef is now covered the moment it is added, which the marker-scan never
+was.
+
+Two lessons worth keeping, both cheap:
+
+* **Write the guard for the guard.** #229's one-line `>= 10` is the only reason its EULA rule did
+  not quietly stop checking anything. This PR's tally test is the same shape.
+* **A rule belongs where the decision is made.** Scanning documents for a marker works until the
+  documents move; deriving the set from the code that routes the work does not.
