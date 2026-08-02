@@ -100,6 +100,10 @@ def test_query_escapes_a_value_containing_a_quote(client: TestClient) -> None:
 def test_query_rejects_a_field_name_that_is_not_a_plain_identifier(client: TestClient) -> None:
     """A facet API has no operators; accepting arbitrary SQL would make this an injection point."""
 
+    # Index first: a query against an unknown table returns empty before any predicate is built,
+    # which would make this pass for the wrong reason.
+    client.post("/index", json={"table": "dataset", "records": _records()})
+
     response = client.post(
         "/query", json={"table": "dataset", "filter": {"1=1 OR x": "y"}}
     )
@@ -115,10 +119,13 @@ def test_query_rejects_an_absurd_limit(client: TestClient) -> None:
 def test_the_paths_match_what_the_dataset_integration_posts() -> None:
     """Pin the contract itself, so the two halves cannot drift apart again."""
 
-    source = Path("npa/src/npa/workbench/dataset/integrations.py").read_text(encoding="utf-8")
+    repo_root = Path(__file__).resolve().parents[3]
+    source = (repo_root / "npa/src/npa/workbench/dataset/integrations.py").read_text(
+        encoding="utf-8"
+    )
 
     assert '_post(lancedb_endpoint, "/index"' in source
     assert '_post(lancedb_endpoint, "/query"' in source
-    server = Path("npa/src/npa/workbench/lancedb/server.py").read_text(encoding="utf-8")
+    server = (repo_root / "npa/src/npa/workbench/lancedb/server.py").read_text(encoding="utf-8")
     assert '@app.post("/index")' in server
     assert '@app.post("/query")' in server
