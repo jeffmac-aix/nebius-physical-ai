@@ -69,20 +69,28 @@ def test_gpu_submit_rotation_covers_all_twins_and_excludes_plan_only() -> None:
     assert cases, "expected at least one real-GPU-launching workflow twin"
     # Never rotate onto a plan-only stub (those never launch a GPU) or a
     # rotation_skip twin that cannot pass standalone today (each carries a
-    # skip_reason, e.g. sonic-eval needs a prior export; vlm-eval-single needs a
-    # vLLM server the render doesn't wire).
+    # skip_reason, e.g. sonic-train launches its own infrastructure from inside the pod).
     assert all(not c.plan_only for c in cases)
     assert all(not c.rotation_skip for c in cases)
     assert all(c.tier in {"gpu", "multi"} for c in cases)
     rotation = {c.spec for c in cases}
     # Verified-passing on real GPU (RTXPRO-6000) stay in the rotation.
-    for good in ("mjlab-eval.yaml", "cosmos3-reason.yaml", "tokenfactory-rollout-judge.yaml"):
+    #
+    # The three SONIC twins moved from the excluded list to this one. #236 skipped them for
+    # reasons this branch fixed rather than worked around: "SONIC ONNX export requires torch"
+    # is now covered by the npa[sonic] extra the renderer installs, and "needs a checkpoint.pt
+    # from a prior sonic-train" / "ONNX policy not found" by the synthesized checkpoint and
+    # ONNX fixtures the harness seeds. All three passed live (EVIDENCE.md §R10, §R14).
+    for good in (
+        "mjlab-eval.yaml",
+        "cosmos3-reason.yaml",
+        "sonic-export.yaml",
+        "sonic-eval.yaml",
+        "sonic-export-eval.yaml",
+    ):
         assert good in rotation, f"{good} should be in the rotation"
     # Twins that can't pass as a standalone submit today are excluded.
     for bad in (
-        "sonic-eval.yaml",
-        "sonic-export.yaml",
-        "sonic-export-eval.yaml",
         "sonic-train.yaml",
         "sonic-locomotion-finetuning.yaml",
         "vlm-eval-single.yaml",

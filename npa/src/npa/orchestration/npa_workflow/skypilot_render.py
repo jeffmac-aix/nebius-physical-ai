@@ -592,10 +592,10 @@ def render_run_preamble_for_tool(tool_ref: str, *, config: Mapping[str, Any]) ->
 
     if not tool_ref.startswith("workbench.vlm_eval"):
         return ""
-    if tool_ref.startswith("workbench.vlm_eval.benchmark"):
-        # From #236: the benchmark twin runs backend=stub against packaged fixtures, so
-        # starting a server would cost minutes of GPU time for nothing.
-        return ""
+    # #236 skipped the benchmark toolRef here, correctly for the twin it had: a `sample`
+    # fixture scored with backend=stub needs no server. This branch's benchmark twin scores a
+    # real labeled set on the self-hosted backend (EVIDENCE.md §R22), so the decision is made
+    # by the backend the spec asks for, below, rather than by the toolRef's name.
     backend = str(config.get("vlm_backend") or "").strip().lower()
     if backend not in {"self-hosted", "self_hosted"}:
         return ""
