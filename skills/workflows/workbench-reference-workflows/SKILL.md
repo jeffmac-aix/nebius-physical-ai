@@ -35,7 +35,6 @@ templates retire.
 - `bdd100k-pipeline.yaml`: BDD100K ingest, backfill, CLIP embedding,
   materialized views, training, and evaluation.
 - `cosmos3-text-to-image-inference.yaml`: H100 text-to-image smoke inference.
-- `dataset-ingest-curate.yaml`: dataset-of-record ingest and curation.
 - `sonic-train-standalone.yaml`: standalone SONIC training.
 - `sonic-locomotion-finetuning.yaml`: retargeting, SONIC, and MJLab flow.
 
@@ -58,6 +57,9 @@ These raw templates were retired once their `npa.workflow` spec had a live run
 - `vlm-eval.yaml`, `vlm-eval-benchmark.yaml` — self-hosted VLM scoring and the labeled
   sweep. The renderer now starts and health-checks the vLLM server the spec asks for, so
   no prebuilt serving image is needed.
+- `dataset-ingest-curate.yaml` — retired to `npa-workflows/dataset-ingest-curate.yaml`, whose
+  `register` stage reads back what `ingest` wrote to the in-cluster LanceDB service
+  (`npa workbench lancedb deploy --runtime kubernetes --namespace workbench`).
 - `sim-to-real-pipeline.yaml` / `sim-to-real-trigger.yaml` — retired. The pipeline ran the
   deprecated `npa.workflows.sim_to_real real-loop`; the maintained path is the staged engine's
   spec, `npa-workflows/sim2real-vlm-rl.yaml`, which is also what the watcher now submits.

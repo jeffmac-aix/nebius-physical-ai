@@ -42,7 +42,6 @@ REMAINING: dict[str, str] = {
         "installs npa --no-deps with a curated list, so the source overlay leaves the CLI "
         "without paramiko. See EVIDENCE.md \u00a7R39"
     ),
-    "dataset-ingest-curate.yaml": "twin exists but has no live-matrix coverage yet",
     # --- twin exists but is NOT live-verified yet ---
     "sonic-locomotion-finetuning.yaml": (
         "twin's retarget stage passes live (job 205) but its train stage asks the in-pod "
@@ -135,6 +134,11 @@ REMAINING: dict[str, str] = {
     #   new surface the home of a legacy path. The watch capability is NOT deprecated and was
     #   ported: npa.workflows.sim_to_real_trigger now submits npa-workflows/sim2real-vlm-rl.yaml.
     #   See EVIDENCE.md \u00a7R40.
+    #
+    # dataset-ingest-curate.yaml  job 317
+    #   npa-wf-cpu-dataset-ingest-curate-754816f0, all five stages SUCCEEDED including
+    #   `register`, which read 12 records back out of the in-cluster LanceDB service that
+    #   `ingest` had just written. See EVIDENCE.md \u00a7R41.
     #
     # Phase 2c: RELOCATED (not deleted) to npa/src/npa/workflows/byof/profiles/ —
     # they are BYOF resource profiles reached through byof.yaml's toolRef, not

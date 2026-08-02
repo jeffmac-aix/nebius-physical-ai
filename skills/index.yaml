@@ -185,9 +185,6 @@ skills:
       - type: npa_workflow_yaml
         paths:
           - npa/workflows/workbench/npa-workflows/dataset-ingest-curate.yaml
-      - type: workflow_yaml
-        paths:
-          - npa/src/npa/workflows/skypilot/dataset-ingest-curate.yaml
   - name: foxglove
     category: tools
     when_to_use: "Embed, operate, or debug the Foxglove viewer in the NPA agent: the @foxglove/embed TypeScript SDK, MCAP recordings, the npa-foxglove-embed container, and /api/foxglove/* endpoints."
