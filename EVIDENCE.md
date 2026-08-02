@@ -2919,3 +2919,32 @@ and — as eleven jobs showed — had never run. It is now `npa workbench cosmos
 with 23 unit tests, and its verification step is the part that matters: a framework that exits 0
 having written a truncated file is the failure worth catching, and it is caught by reading the
 image header rather than trusting the exit code.
+
+## R44. `bdd100k-pipeline.yaml` — the LanceDB wall is gone; a second service is not
+
+Recorded because the blocker changed, and the new one is specific.
+
+With the LanceDB service deployed (§R41), live job 321
+(`npa-wf-multi-bdd100k-pipeline-f1bbb96e`) got four stages further than any previous attempt:
+
+```
+ingest         SUCCEEDED   52s
+backfill-cpu   SUCCEEDED   1m05s
+backfill-clip  SUCCEEDED   1m30s   on RTXPRO-6000 — the GPU CLIP UDF, against the real service
+curate-views   SUCCEEDED   58s
+train-rider    FAILED      Cannot reach detection-training endpoint
+                           http://npa-detection-training.workbench.svc.cluster.local:8790
+```
+
+`backfill-clip` passing is its own finding: the first attempt (job 318) failed inside the service
+with `'BaseModelOutputWithPooling' object has no attribute 'norm'`. `get_image_features` returns
+a plain tensor in some transformers versions and a model-output object in others; the code
+assumed the first, and nothing pinned it because the tests only asserted the resulting vector's
+shape.
+
+**What remains is a second in-cluster service.** `npa workbench detection-training deploy`
+already targets Kubernetes with `rollout status` and pull-secret handling — it does not need the
+work LanceDB needed. On this cluster it reported `exceeded its progress deadline` and left no
+deployment in any namespace, which points at its `_resolve_kubeconfig(cluster_name=…)` selecting
+a different context than the one `kubectl` uses here. That is the next thing to chase, and it is
+an operational mismatch rather than a missing capability.
