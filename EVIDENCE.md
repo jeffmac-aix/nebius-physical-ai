@@ -2794,3 +2794,22 @@ recorded, so it reads as a named blocker rather than an untried spec.
 What did land and is verified offline: the tool, its tests, the HF-module and uv-module
 resolution (both of which fix a class of "installed it, still cannot find it"), the libstdc++
 probe, the cosmos3 k8s-prereqs recipe, and the correction that PATH ordering is Isaac-specific.
+
+## Retirement tally: 36 → 7
+
+```
+raw SkyPilot templates    36 -> 7      (ls npa/src/npa/workflows/skypilot/*.yaml | wc -l)
+```
+
+The seven that remain, and why each one does — no "not attempted" among them:
+
+| Template | Why it survives |
+| --- | --- |
+| `bdd100k-pipeline.yaml` | Runner ported; every stage passes the offline mock drive. A live run needs the LanceDB workbench service (§R16, §R26). |
+| `dataset-ingest-curate.yaml` | Four of five stages pass live; `register` needs the same LanceDB service (§R16). |
+| `sim-to-real-pipeline.yaml`, `sim-to-real-trigger.yaml` | Wrap `npa.workflows.sim_to_real`, which itself emits a DeprecationWarning pointing at the staged engine. Awaiting the decision on whether to retire the stack or implement its stubs. |
+| `sonic-locomotion-finetuning.yaml`, `sonic-train-standalone.yaml` | The launcher problem: the train stage asks the in-pod CLI to launch a Nebius serverless job (§R11). |
+| `cosmos3-text-to-image-inference.yaml` | Twin and tool exist and were driven live through nine jobs to 309; one dependency short (§R39). |
+
+Four of the seven are blocked on two decisions (LanceDB, the legacy stack) and one known
+engine problem (the launcher). The other three are one small fix each.
