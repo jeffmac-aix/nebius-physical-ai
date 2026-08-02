@@ -290,7 +290,8 @@ def test_sonic_export_and_eval_specs_invoke_the_real_cli_surfaces() -> None:
     # `--output` is the RESULT PATH; `--output-format` is the format.
     assert eval_argv[eval_argv.index("--output") + 1].endswith("/eval.json")
     assert eval_argv[eval_argv.index("--output-format") + 1] == "json"
-    assert eval_argv[eval_argv.index("--env") + 1] == "smoke"
+    # The env name comes from the spec's config, not a literal the test decides.
+    assert eval_argv[eval_argv.index("--env") + 1] == evaluate.config["env"]
 
     chained = load_spec(NPA_WORKFLOWS / "sonic-export-eval.yaml")
     steps = build_plan(chained, run_id="probe").steps

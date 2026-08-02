@@ -1018,6 +1018,13 @@ def _vllm_install_setup(model: str) -> str:
         "if importlib.util.find_spec('vllm') is None and not pip_install('vllm>=0.8.5'):\n"
         "    raise SystemExit('failed to install vllm for the self-hosted VLM backend')\n"
         "pip_install('hf_transfer')\n"
+        # vLLM's FlashInfer sampler JIT-compiles a CUDA extension on first use and shells out
+        # to `ninja`, which SkyPilot's default image does not ship: the server died during
+        # engine init with FileNotFoundError: 'ninja' (live job 214). The pip package provides
+        # the binary, so no apt or sudo is needed.
+        "import shutil\n"
+        "if shutil.which('ninja') is None:\n"
+        "    pip_install('ninja')\n"
         "os.environ.setdefault('HF_HUB_ENABLE_HF_TRANSFER', '1')\n"
         "try:\n"
         "    from huggingface_hub import snapshot_download\n"
@@ -1048,23 +1055,7 @@ def render_setup_for_tool(
     parts.append(render_pip_requirements_setup(tool_pip_requirements(tool_ref)))
     backend = str(config.get("vlm_backend") or "").strip().lower()
     if tool_ref.startswith("workbench.vlm_eval") and backend in {"self-hosted", "self_hosted"}:
-        parts.append(
-            "python3 - <<'PY'\n"
-            "import importlib.util\n"
-            "import shutil\n"
-            "import subprocess\n"
-            "import sys\n"
-            "\n"
-            "if importlib.util.find_spec('vllm') is None:\n"
-            "    subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'vllm>=0.8.5'])\n"
-            "# vLLM's FlashInfer sampler JIT-compiles a CUDA extension on first use and shells\n"
-            "# out to `ninja`, which SkyPilot's default image does not ship: the server died\n"
-            "# during engine init with FileNotFoundError: 'ninja' (live job 214). The pip\n"
-            "# package provides the binary, so no apt/sudo is needed.\n"
-            "if shutil.which('ninja') is None:\n"
-            "    subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'ninja'])\n"
-            "PY\n"
-        )
+        parts.append(_vllm_install_setup(self_hosted_vlm_model(config)))
     if tool_ref.startswith("workbench.sonic"):
         parts.append(_sonic_deps_setup())
     if tool_ref.startswith("workbench.token_factory"):
