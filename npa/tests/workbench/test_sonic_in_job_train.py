@@ -87,3 +87,33 @@ def test_the_shipped_specs_ask_for_it() -> None:
     for name in ("sonic-train.yaml", "sonic-locomotion-finetuning.yaml"):
         config = yaml.safe_load((specs / name).read_text(encoding="utf-8"))["config"]
         assert config["sonic_runtime"] == "in-job", name
+
+
+def test_the_body_carries_the_images_eula_acceptance_rather_than_asserting_it() -> None:
+    """Live job 323: the entrypoint refused with "Nothing has been downloaded".
+
+    The SONIC image declares OMNI_KIT_ACCEPT_EULA=YES / ISAACSIM_ACCEPT_EULA=YES as docker ENV,
+    because accepting NVIDIA's terms is a build-time decision its publisher made. SkyPilot's run
+    shell does not inherit docker ENV, so the gate saw them unset.
+
+    Reading /proc/1/environ forwards a decision the image already recorded. Exporting YES here
+    would assert acceptance on someone else's behalf, and an image that did NOT accept would
+    stop being refused — which is the whole point of the gate.
+    """
+
+    body = build_sonic_train_body(**_kwargs())
+
+    assert "/proc/1/environ" in body
+    for name in ("OMNI_KIT_ACCEPT_EULA", "ISAACSIM_ACCEPT_EULA"):
+        assert name in body, name
+    # Never asserted directly.
+    assert "OMNI_KIT_ACCEPT_EULA=YES" not in body
+    assert "ISAACSIM_ACCEPT_EULA=YES" not in body
+    # Only filled when this shell does not already have it.
+    assert 'printenv "$npa_eula"' in body
+
+
+def test_the_carry_runs_before_the_entrypoint() -> None:
+    body = build_sonic_train_body(**_kwargs())
+
+    assert body.index("/proc/1/environ") < body.index("/entrypoint.sh train")
