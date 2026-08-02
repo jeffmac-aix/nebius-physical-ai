@@ -147,6 +147,7 @@ def build_sonic_train_body(
         "  fi\n"
         "done\n"
         )
+        + (
         # `gear_sonic` imports lxml, and the Isaac venv the image builds AT RUNTIME (after EULA
         # acceptance, under a content-hashed /opt/isaac-cache path) does not contain it — live
         # job 328 got the real trainer running against nvidia/GEAR-SONIC weights and then died
@@ -161,6 +162,7 @@ def build_sonic_train_body(
         'if [ -d "$npa_sonic_deps" ]; then\n'
         '  export PYTHONPATH="$npa_sonic_deps${PYTHONPATH:+:$PYTHONPATH}"\n'
         "fi\n"
+        )
         + ('if [ -x /entrypoint.sh ]; then /entrypoint.sh train; '
         'else echo "/entrypoint.sh not found in SONIC image" >&2; exit 127; fi\n'
         "sonic_rc=$?\n"
