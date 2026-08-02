@@ -25,16 +25,6 @@ SKYPILOT_DIR = REPO_ROOT / "npa" / "src" / "npa" / "workflows" / "skypilot"
 #: Retirement tally: started at 36.
 REMAINING: dict[str, str] = {
     # --- loaded and launched by a shipped runner script ---
-    "bdd100k-pipeline.yaml": (
-        "runner PORTED and the LanceDB wall is gone: `npa workbench lancedb deploy --runtime "
-        "kubernetes` puts the service where a stage can reach it, and live job 321 got through "
-        "ingest, both backfills (including the GPU CLIP UDF) and curate-views. It now stops at "
-        "train-rider on a SECOND in-cluster service: "
-        "http://npa-detection-training.workbench.svc.cluster.local:8790. "
-        "`npa workbench detection-training deploy` exists and targets Kubernetes; on this "
-        "cluster it resolved a kubeconfig that produced no deployment, which is the next thing "
-        "to chase. See EVIDENCE.md \u00a7R44"
-    ),
     # --- referenced by a CLI/SDK path pointer or shipped data ---
     # --- no npa.workflow twin authored yet ---
     # --- twin exists but is NOT live-verified yet ---
@@ -145,6 +135,11 @@ REMAINING: dict[str, str] = {
     #   npa-wf-gpu-cosmos3-text-to-image-4286b9f4 SUCCEEDED in 5m37s: Cosmos3-Nano generated a
     #   960x960 image from the prompt and published it with its manifest. Eleven jobs and eight
     #   defects from the bash block it replaced. See EVIDENCE.md \u00a7R43.
+    #
+    # bdd100k-pipeline.yaml  job 326
+    #   npa-wf-multi-bdd100k-pipeline-763b2bdf: all ELEVEN stages SUCCEEDED against both
+    #   in-cluster services — LanceDB and detection-training — with three real GPU training
+    #   runs and three evals. See EVIDENCE.md \u00a7R46.
     #
     # Phase 2c: RELOCATED (not deleted) to npa/src/npa/workflows/byof/profiles/ —
     # they are BYOF resource profiles reached through byof.yaml's toolRef, not

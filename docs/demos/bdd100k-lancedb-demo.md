@@ -187,7 +187,7 @@ npa workbench fiftyone open
 Stage a BDD100K subset at `s3://<your-bucket>/raw-bdd100k/subset-demo/` with
 3-5k frames in standard BDD100K format, then re-run without the synthetic flag.
 Before a production run, switch the three training task label-map comment blocks
-in `npa/src/npa/workflows/skypilot/bdd100k-pipeline.yaml` from the synthetic map to the
+in `npa/workflows/workbench/npa-workflows/bdd100k-pipeline.yaml` from the synthetic map to the
 real BDD100K map:
 
 ```json

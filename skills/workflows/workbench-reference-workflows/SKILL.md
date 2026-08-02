@@ -32,7 +32,6 @@ This list is machine-checked against the directory by
 `npa/tests/guardrails/test_skypilot_catalog_retirement.py`, so it cannot drift as
 templates retire.
 
-- `bdd100k-pipeline.yaml`: BDD100K ingest, backfill, CLIP embedding,
   materialized views, training, and evaluation.
 - `sonic-train-standalone.yaml`: standalone SONIC training.
 - `sonic-locomotion-finetuning.yaml`: retargeting, SONIC, and MJLab flow.
@@ -59,6 +58,8 @@ These raw templates were retired once their `npa.workflow` spec had a live run
 - `cosmos3-text-to-image-inference.yaml` — retired to
   `npa-workflows/cosmos3-text-to-image.yaml`. The procedure it carried as bash inside an `envs:`
   block is now `npa workbench cosmos3 text-to-image`.
+- `bdd100k-pipeline.yaml` — retired to `npa-workflows/bdd100k-pipeline.yaml`. A live run needs
+  both in-cluster services (`lancedb` and `detection-training`) deployed first.
 - `dataset-ingest-curate.yaml` — retired to `npa-workflows/dataset-ingest-curate.yaml`, whose
   `register` stage reads back what `ingest` wrote to the in-cluster LanceDB service
   (`npa workbench lancedb deploy --runtime kubernetes --namespace workbench`).

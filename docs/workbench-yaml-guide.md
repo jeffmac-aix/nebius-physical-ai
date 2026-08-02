@@ -10,7 +10,7 @@ one task: the compute it needs, the environment it runs in, and the command it
 executes. Tasks call workbench tool HTTP endpoints via `curl`. SkyPilot
 orchestrates dependencies and schedules tasks on the Nebius MK8s cluster.
 
-The reference pipeline is `npa/src/npa/workflows/skypilot/bdd100k-pipeline.yaml`.
+The reference pipeline is `npa/workflows/workbench/npa-workflows/bdd100k-pipeline.yaml`.
 
 ## Pipeline Structure
 
@@ -282,7 +282,7 @@ Related docs:
 - `docs/workbench/getting-started.md`
 - `docs/demos/bdd100k-lancedb-demo.md`
 - `docs/workbench/cookbooks/bdd100k-pipeline.md`
-- `npa/src/npa/workflows/skypilot/bdd100k-pipeline.yaml`
+- `npa/workflows/workbench/npa-workflows/bdd100k-pipeline.yaml`
 
 ## Isaac Lab RL Training
 

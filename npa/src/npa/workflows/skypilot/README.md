@@ -94,7 +94,6 @@ All examples assume SkyPilot 0.12.2.
 
 | YAML | Description | Target | S3 I/O | HF rights | NGC entitlement |
 | --- | --- | --- | --- | --- | --- |
-| `bdd100k-pipeline.yaml` | Multi-stage BDD100K ingest, LanceDB backfill, materialized views, detector training, detector eval, and optional FiftyOne app. | Kubernetes CPU plus `H100:1` train/eval stages. | Reads `BDD100K_SOURCE_URI`; writes `PIPELINE_ROOT_URI`, `LANCE_URI`, `TRAIN_OUTPUT_URI`, and `EVAL_OUTPUT_URI` under `s3://<bucket>/bdd100k-pipeline/<run-id>/`. | None. BDD100K dataset access is separate from HF. | None for the workflow; registry access is still required for private images. |
 | `byof-solution-smoke-rtxpro-gpu.yaml` | BYOF solution-smoke GPU path for capability checks that require CUDA/EGL/Vulkan, such as ManiSkill or RoboCasa env creation. | Kubernetes `RTXPRO-6000-BLACKWELL-SERVER-EDITION:1`, `cpus: 4+`, `memory: 16+`. | Writes `npa_byof_summary.json`, repo listing, `nvidia_smi.txt`, smoke logs, and the named solution smoke artifact to `S3_OUTPUT_PREFIX`. | None. | Uses BYOF image built with `--base-profile ubuntu` or explicit GPU-capable `--base-image`. |
 | `skypilot-kubernetes-rtxpro.yaml` | SkyPilot **global config** (not a launch task): sets `imagePullSecrets` for Nebius registry on RTX PRO mk8s. Pass with `sky launch --config ...`. | Kubernetes context with `agent-sa` pull secret in `default`. | None. | None. | Registry pull secret must exist in the target namespace. |
 | `mjlab-eval.yaml` | Evaluates a SONIC checkpoint through the MJLab evaluation helper. | Kubernetes `H100:1`. | Reads `EVAL_INPUT_URI` and `SONIC_CHECKPOINT_URI`; writes `MJLAB_OUTPUT_URI`. | None. | Image-specific only; required if the selected image depends on NGC content. |
@@ -150,7 +149,6 @@ can fetch weights. Gated repos are marked **(gated — accept license)**.
 | `sonic-locomotion-finetuning.yaml` | `nvidia/GEAR-SONIC` **(gated — accept license)** | Fine-tune stage downloads the released checkpoint; the MuJoCo-eval stage consumes the S3 checkpoint and needs no HF access. |
 | `sim-to-real-pipeline.yaml` | `lerobot/pusht` (public dataset) | Default `LEROBOT_DATASET_REPO_ID`; default `VLM_EVAL_BACKEND=stub` pulls no VLM. |
 | `sim-to-real-trigger.yaml` | `lerobot/pusht` (public dataset) | Watches/retriggers `sim-to-real-pipeline.yaml`; same public dataset. |
-| `bdd100k-pipeline.yaml` | None | CLIP embeddings run inside the first-party LanceDB image; BDD100K dataset access is separate from HF. |
 | `mjlab-eval.yaml`, `retargeting.yaml` | None | Consume S3 artifacts; no HF download. |
 
 The self-contained Sim2Real runbook (`../sim2real/runbook.yaml`) defaults to

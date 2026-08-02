@@ -3,8 +3,17 @@
 **Workflow:** [bdd100k-pipeline.yaml](../../../npa/workflows/workbench/npa-workflows/bdd100k-pipeline.yaml)
 (`npa.workflow/v0.0.1`) — a readable stage graph of `toolRef`s. See
 [npa-workflow-guide.md](../npa-workflow-guide.md). `run_bdd100k_pipeline.py` renders that
-spec and submits it through SkyPilot; the raw `skypilot/bdd100k-pipeline.yaml` template it
-replaced is being retired and is no longer what the runner loads.
+spec and submits it through SkyPilot. The raw `skypilot/bdd100k-pipeline.yaml` template it
+replaced is retired.
+
+Two in-cluster services must be reachable before a live run, because three stages call them:
+
+```bash
+npa workbench lancedb deploy --runtime kubernetes --namespace workbench \
+  --storage-path s3://<your-bucket>/lancedb/
+npa workbench detection-training deploy --namespace workbench --gpu-type <h100|l40s|rtxpro6000> \
+  --output-path s3://<your-bucket>/detection-training/
+```
 
 > This pipeline reproduces LanceDB's autonomous-vehicle perception walkthrough on
 > Nebius Physical AI Workbench (adding a FiftyOne/Voxel51 review stage). See

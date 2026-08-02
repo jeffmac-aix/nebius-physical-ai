@@ -125,7 +125,6 @@ skills:
     smoke:
       - type: workflow_yaml
         paths:
-          - npa/src/npa/workflows/skypilot/bdd100k-pipeline.yaml
       - type: npa_workflow_yaml
         paths:
           - npa/workflows/workbench/npa-workflows/sim2real-vlm-rl.yaml
@@ -147,7 +146,6 @@ skills:
         contains: "workflow"
       - type: workflow_yaml
         paths:
-          - npa/src/npa/workflows/skypilot/bdd100k-pipeline.yaml
   - name: super-prompt-patterns
     category: atomic
     when_to_use: "Draft, execute, or review Codex super-prompts for this repository."
@@ -556,13 +554,13 @@ skills:
     smoke:
       - type: workflow_yaml
         paths:
-          - npa/src/npa/workflows/skypilot/bdd100k-pipeline.yaml
           - npa/workflows/workbench/npa-workflows/cosmos-fetch.yaml
           - npa/src/npa/workflows/byof/profiles/isaac-lab-rl-train.yaml
           - npa/src/npa/workflows/skypilot/sonic-train-standalone.yaml
       # Retired SkyPilot templates whose npa.workflow spec is now the reference.
       - type: npa_workflow_yaml
         paths:
+          - npa/workflows/workbench/npa-workflows/bdd100k-pipeline.yaml
           - npa/workflows/workbench/npa-workflows/cosmos3-text-to-image.yaml
           - npa/workflows/workbench/npa-workflows/sim2real-vlm-rl.yaml
           - npa/workflows/workbench/npa-workflows/isaac-lab-rl-sweep.yaml
