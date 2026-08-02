@@ -160,8 +160,9 @@ def test_sonic_locomotion_spec_runs_the_three_stages_in_order() -> None:
         "workbench.sonic.train",
         "workbench.mjlab.eval",
     ]
-    # Serial, in the engine's terms: each step waits on the one before it.
-    assert all(len(step.depends_on) <= 1 for step in steps)
+    # Serial, in the engine's terms: no step belongs to a `parallel:` fan-out group, so the
+    # scheduler launches them one wave at a time in this order.
+    assert [step.group for step in steps] == ["", "", ""]
 
 def test_retargeting_spec_invokes_the_real_cli_surface() -> None:
     """Replaces the retired retargeting template's raw-YAML assertions.
