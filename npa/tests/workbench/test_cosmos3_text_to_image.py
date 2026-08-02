@@ -361,3 +361,36 @@ def test_runtime_library_dir_is_empty_when_nothing_qualifies(tmp_path: Path) -> 
     (tmp_path / "libstdc++.so.6").write_bytes(b"GLIBCXX_3.4.25\x00")
 
     assert t2i.runtime_library_dir([tmp_path, tmp_path / "missing"]) == ""
+
+
+def test_only_libstdcxx_is_put_on_the_loader_path(tmp_path: Path, monkeypatch) -> None:
+    """Live job 319: `cuDNN version incompatibility ... conflicting cuDNN in LD_LIBRARY_PATH`.
+
+    A directory on LD_LIBRARY_PATH brings everything in it. The conda prefix that supplies a
+    modern libstdc++ also supplies an older cuDNN, and PyTorch refuses to run against a cuDNN
+    other than the one it bundles.
+    """
+
+    source_dir = tmp_path / "conda-lib"
+    source_dir.mkdir()
+    (source_dir / "libstdc++.so.6").write_bytes(b"GLIBCXX_3.4.29\x00")
+    (source_dir / "libcudnn.so.9").write_bytes(b"an older cudnn")
+
+    monkeypatch.setattr(t2i, "runtime_library_dir", lambda: str(source_dir))
+    monkeypatch.setattr(t2i, "_has_required_glibcxx", lambda path: "conda-lib" in str(path))
+
+    shim = t2i.link_runtime_library(tmp_path / "shim")
+
+    assert shim == str(tmp_path / "shim")
+    assert sorted(p.name for p in (tmp_path / "shim").iterdir()) == ["libstdc++.so.6"]
+    assert (tmp_path / "shim" / "libstdc++.so.6").resolve() == source_dir / "libstdc++.so.6"
+
+
+def test_nothing_is_added_when_the_host_libstdcxx_is_already_new_enough(tmp_path: Path, monkeypatch) -> None:
+    """Adding to the loader path when the host is fine is pure risk."""
+
+    monkeypatch.setattr(t2i, "runtime_library_dir", lambda: "/opt/conda/lib")
+    monkeypatch.setattr(t2i.Path, "is_file", lambda self: True)
+    monkeypatch.setattr(t2i, "_has_required_glibcxx", lambda path: True)
+
+    assert t2i.link_runtime_library(tmp_path / "shim") == ""

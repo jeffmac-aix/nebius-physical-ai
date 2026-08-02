@@ -204,6 +204,31 @@ def runtime_library_dir(candidates: Sequence[Path] | None = None) -> str:
     return ""
 
 
+def link_runtime_library(shim_dir: Path) -> str:
+    """Symlink a new-enough libstdc++ into ``shim_dir`` and return it, or "" if none is needed.
+
+    A directory on ``LD_LIBRARY_PATH`` brings everything in it. The conda prefix that supplies a
+    modern libstdc++ also supplies an older cuDNN, and PyTorch refuses to run against a cuDNN
+    other than the one it was built with. Linking the single library keeps the fix to the
+    problem it was for.
+    """
+
+    directory = runtime_library_dir()
+    if not directory:
+        return ""
+    source = Path(directory) / "libstdc++.so.6"
+    system = Path("/usr/lib/x86_64-linux-gnu/libstdc++.so.6")
+    if system.is_file() and _has_required_glibcxx(system):
+        # The host's own copy is fine; adding anything to the loader path is pure risk.
+        return ""
+    shim_dir.mkdir(parents=True, exist_ok=True)
+    link = shim_dir / "libstdc++.so.6"
+    if link.is_symlink() or link.exists():
+        link.unlink()
+    link.symlink_to(source)
+    return str(shim_dir)
+
+
 def uv_argv() -> list[str]:
     """Return an argv prefix for uv, preferring a module over a PATH lookup.
 
@@ -281,12 +306,15 @@ def generate(
 
     # The template cleared LD_LIBRARY_PATH here. Clearing it is right in spirit — the caller's
     # value is not the framework's — but it is not enough: transformer_engine needs a libstdc++
-    # newer than some hosts ship (live job 296). Point the loader at one when we can find it.
+    # newer than some hosts ship (live job 296). Point the loader at ONE library, not at the
+    # directory holding it: exporting the whole conda lib dir also put an older cuDNN ahead of
+    # the one PyTorch bundles, and the next run died with
+    # "cuDNN version incompatibility ... a conflicting cuDNN in LD_LIBRARY_PATH" (job 319).
     infer_env = dict(env)
-    library_dir = runtime_library_dir()
-    infer_env["LD_LIBRARY_PATH"] = library_dir
-    if library_dir:
-        print(f"cosmos3 text-to-image: LD_LIBRARY_PATH={library_dir}", flush=True)
+    shim_dir = link_runtime_library(output_dir / ".libstdcxx")
+    infer_env["LD_LIBRARY_PATH"] = shim_dir
+    if shim_dir:
+        print(f"cosmos3 text-to-image: LD_LIBRARY_PATH={shim_dir} (libstdc++ only)", flush=True)
     _run(
         inference_argv(
             input_json=input_json,
