@@ -690,9 +690,25 @@ def _service_env(*, input_path: str, output_path: str, auth_mode: str, token_env
 
 
 def _ensure_image_pull_secret(*, image: str, secret_name: str, namespace: str, kubeconfig: str) -> None:
+    """Put a usable pull secret in the namespace, minting one rather than copying a stale file.
+
+    `~/.docker/config.json` holds whatever token the operator last logged in with, and Nebius IAM
+    tokens expire — so a deploy that copies it can leave a Deployment whose kubelet gets
+    `401 Unauthorized` on its next restart. Minting is what the LanceDB deploy learned to do
+    (EVIDENCE.md §R41); doing it the same way here means one answer to the same question.
+    """
+
     registry = _image_registry(image)
     if not registry:
         return
+    from npa.workbench.service_kubernetes import ServiceKubernetesError, ensure_registry_secret
+
+    try:
+        ensure_registry_secret(secret_name, namespace, registry)
+        return
+    except ServiceKubernetesError:
+        # No mintable IAM identity here; fall back to whatever the operator is logged in as.
+        pass
     docker_config = _docker_auth_config(registry)
     payload = {
         "apiVersion": "v1",
