@@ -208,7 +208,7 @@ def build_pin_file(
         "# be substituted. Every OSS transitive dependency is baked at build time from PyPI",
         "# instead (see install_isaac_runtime_base.sh), which is what keeps --no-deps honest.",
         "#",
-        f"# Package set: isaacsim[all,extscache] + isaacsim-kernel + isaaclab (unabridged —",
+        "# Package set: isaacsim[all,extscache] + isaacsim-kernel + isaaclab (unabridged —",
         "# see the module docstring for why it is not trimmed).",
         f"# isaacsim  {isaac_sim_version}",
         f"# isaaclab  {isaac_lab_version}",
