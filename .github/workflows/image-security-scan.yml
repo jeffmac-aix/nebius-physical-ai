@@ -64,8 +64,11 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install test deps
-        run: python -m pip install pytest PyYAML
+      # npa/tests/conftest.py imports httpx and several npa modules, so the
+      # package itself has to be installed -- pytest + PyYAML alone abort
+      # collection. Mirrors the install in test.yml.
+      - name: Install npa with test deps
+        run: cd npa && pip install -e ".[dev]"
 
       - name: Payload-scanner classifier and packaging-guard mutation tests
         run: |
