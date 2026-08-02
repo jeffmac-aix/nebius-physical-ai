@@ -488,6 +488,10 @@ def render_self_hosted_vlm_preamble(config: Mapping[str, Any]) -> str:
     )
     return (
         "# Self-hosted VLM backend: serve the model this stage is about to call.\n"
+        # From #236: widen the CLIENT's readiness window too. The preamble health-checks
+        # before the command runs, so this is a second net rather than the only one, but a
+        # cold 7B load can still be finishing when the first request lands.
+        "export NPA_VLM_READY_TIMEOUT_S=1800\n"
         f"npa_vlm_model={shlex.quote(model)}\n"
         f"npa_vlm_port={shlex.quote(port)}\n"
         "npa_vlm_log=/tmp/npa-vlm-server.log\n"
@@ -588,18 +592,28 @@ def render_run_preamble_for_tool(tool_ref: str, *, config: Mapping[str, Any]) ->
 
     if not tool_ref.startswith("workbench.vlm_eval"):
         return ""
+    if tool_ref.startswith("workbench.vlm_eval.benchmark"):
+        # From #236: the benchmark twin runs backend=stub against packaged fixtures, so
+        # starting a server would cost minutes of GPU time for nothing.
+        return ""
     backend = str(config.get("vlm_backend") or "").strip().lower()
     if backend not in {"self-hosted", "self_hosted"}:
         return ""
     return render_self_hosted_vlm_preamble(config)
 
 
-def render_task_run_script(command: Sequence[str], preamble: str = "") -> str:
-    """Turn an argv list into a SkyPilot ``run:`` shell script."""
+def render_task_run_script(command: Sequence[str], *, preamble: str = "") -> str:
+    """Turn an argv list into a SkyPilot ``run:`` shell script.
+
+    ``preamble`` is shell inserted just before the command (after the npa
+    interpreter shim), e.g. to launch a self-hosted server the command connects
+    to.
+    """
 
     if not command:
         raise NpaWorkflowRenderError("cannot render empty command for SkyPilot task")
     quoted = " ".join(shlex.quote(str(part)) for part in command)
+    preamble_block = f"{preamble.rstrip(chr(10))}\n" if preamble.strip() else ""
     return (
         "set -euo pipefail\n"
         # Use unbraced $HOME/$PATH so SkyPilot placeholder lint stays clean.
@@ -675,7 +689,7 @@ def render_task_run_script(command: Sequence[str], preamble: str = "") -> str:
         "set -u\n"
         # Per-toolRef preamble (e.g. start a self-hosted model server) runs AFTER the
         # interpreter shim, so it uses the same python3 the command will.
-        f"{preamble}"
+        f"{preamble_block}"
         f"{quoted}\n"
     )
 

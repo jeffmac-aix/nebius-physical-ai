@@ -14,7 +14,7 @@ SkyPilot remains the execution engine, and `npa workbench workflow submit` still
 accepts a customer's own SkyPilot YAML — what is going away is the shipped catalog
 under `npa/src/npa/workflows/skypilot/`.
 
-- **Retired 14 templates**, each only after its spec reached a terminal `SUCCEEDED` on
+- **Retired 23 templates**, each only after its spec reached a terminal `SUCCEEDED` on
   real infrastructure (run ids in `EVIDENCE.md` §R2–R6, §R10, §R22): `cosmos3-reason.yaml`,
   `isaac-lab-rl-sweep.yaml`, `sonic-export.yaml`, `sonic-eval.yaml`,
   `sonic-export-eval.yaml`, `token-factory-caption.yaml`,
@@ -225,7 +225,87 @@ under `npa/src/npa/workflows/skypilot/`.
 - **Test fixtures:** `npa.workflows.sonic_fixture` + `scripts/stage-sonic-export-fixture.sh`
   build a real, tiny SONIC policy checkpoint **in-cluster**, so the SONIC twins are
   live-testable without NVIDIA's gated `GEAR-SONIC` weights.
+### Insights + agent: make "which runs used N gpus" answerable from real runs
 
+Found by operating the stack against live infra (8 real runs, 3 of them on 1/2/4
+RTX PRO 6000 GPUs) rather than by reading it.
+
+- **Submitted runs are resource-honest.** The insights `gpus` metric had no
+  producer: no cluster submit wrote an `npa.workflow.run.v1` manifest, and the
+  manifest the local `run-spec --persist-state` path did write carried no
+  `resources_profile`, so every run looked CPU-only no matter how many
+  accelerators it requested. Step records now carry `resources` +
+  `resources_profile` (local, executor-dispatched, and failure paths),
+  `persist_submitted_manifest()` writes the manifest after an accepted submit,
+  and the `--runtime` tier shares the ledger store so it lands `manifest.json`
+  next to `runtime.json`. Ingest refuses to emit `gpus` for a manifest with
+  status `planned` — a run that never executed must not report accelerators.
+- **The append-only store is safe for concurrent writers.** Appending used to
+  read-modify-write one object, so two overlapping ingests both reported success
+  while the later write silently dropped the earlier one's rows. Each append now
+  writes an immutable shard under `records.d/` / `edges.d/` and readers
+  concatenate the base object (legacy stores keep working) plus all shards.
+  Note: a reader older than sharding sees only the base object and silently
+  reports a truncated store — re-bootstrap deployed agents after upgrading.
+- **`failed_check_count` counts as a regression**, not an improvement
+  (`LOWER_IS_BETTER_HINTS` matched `failure`/`fail_`, never `failed_check_count`).
+- **The agent action loop survives reasoning-model output.** The cheap planner
+  tier emits `<think>` blocks containing JSON-looking snippets, and the greedy
+  `{.*}` fallback spanned trace + answer, aborting the turn with `no_plan` and
+  discarding observations already gathered. Traces are now stripped, candidates
+  come from a balanced-brace scan, one bounded corrective re-ask is allowed, and
+  a planner failure still answers from what the read-only tools returned — an
+  empty result set reports "no runs found" instead of a planner error.
+- **Oversized tool observations keep their structure.** A large query result used
+  to collapse into a string preview, leaving the planner with no readable run ids
+  (it invented a placeholder id, which the tool then rejected). Record-bearing
+  observations are downsampled field-wise instead.
+- **Final answers must name the observation field they quote.** Measured honestly:
+  this did *not* fix scalar selection (4/5 → 0/5 unfaithful on the phrasing
+  tested), but replies now cite their source field, which turns a silent wrong
+  answer into an auditable one. A verifier pass over the final answer is the
+  tracked follow-up.
+
+### Foxglove embedded viewer
+
+- Embedded the official [Foxglove TypeScript SDK](https://docs.foxglove.dev/docs/embed/typescript-sdk)
+  (`@foxglove/embed`, MIT) in the NPA agent: a new **Foxglove** viewer tab mounts the
+  real SDK from same-origin assets and drives it with the configured embed source,
+  organization slug, layout key and data source. The SDK is fetched from npm at
+  build/bootstrap time and verified against its pinned sha512 integrity digest;
+  nothing is vendored. When the assets or an embed source are missing,
+  `GET /api/foxglove/config` reports `available:false` with a reason and the pane
+  says so instead of rendering an empty viewer.
+- The pane picks a **viewer backend** at runtime, so it renders instead of showing a
+  config screen: the official Foxglove app when `NPA_FOXGLOVE_EMBED_SRC` is configured,
+  otherwise the self-hosted, Foxglove-compatible OSS viewer the agent already runs
+  (Lichtblick) — which plays the recording with no account at all — otherwise an
+  explained unavailable state. `NPA_FOXGLOVE_VIEWER_BACKEND` forces either backend.
+- `.mcap`, `.bag`, `.db3`, `.ulg` and `.ulog` artifacts classify as `mcap` and are
+  published twice from one load: same-origin for the in-page OSS viewer, and on an
+  unauthenticated, CORS-enabled, byte-range `/foxglove/data/` path (random file names,
+  pruned) for the cross-origin Foxglove app, which cannot send basic-auth credentials.
+- New agent endpoints: `GET /api/foxglove/config|status`,
+  `POST /api/foxglove/load-artifact|convert-run|live`, a grounded `foxglove_viewer`
+  chat intent, and deploy flags `--foxglove-embed-src`, `--foxglove-org-slug`,
+  `--foxglove-live-url`. **Describe this** on this pane sends viewer *state* only —
+  a cross-origin embed cannot be captured — and says so.
+- New workbench tool `npa workbench foxglove` (`convert-run`, `inspect`,
+  `install-sdk`, `config`) plus `npa.sdk.workbench.foxglove` and the
+  `workbench.foxglove.convert` toolRef: packs a run's real frames, metrics and logs
+  into MCAP using Foxglove well-known schemas (a JSON array of records becomes a
+  plottable time series). Frame clocks are recorded as `timestamps=synthetic-fps`
+  because run artifacts carry no capture time, and frames are encoded by the same
+  encoder the Lichtblick writer uses. Needs the new optional extra `npa[foxglove]`.
+- New container `npa-foxglove-embed` (caddy, `:8099`, non-root): serves the SDK, the
+  shared glue module, a standalone host page, and mounted recordings with CORS +
+  byte ranges. Registered in the packaging contract, image registry, supported-tool
+  versions, and the golden-eval manifest with a capability smoke that checks the
+  SDK, glue, range reads and the CORS preflight. `/data/` has no directory listing
+  and is not world-writable.
+- Fixed: a relative Lichtblick `ds.url` was never loaded by the viewer (its
+  `remote-file` source silently ignores relative URLs), so the recording URL is now
+  always pinned onto the browsed origin.
 ### npa.workflow: real parallel execution and a runtime orchestrator
 
 - **Parallel fan-out.** `npa.workflow/v0.0.1` specs can declare a `parallel:`
