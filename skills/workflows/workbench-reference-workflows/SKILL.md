@@ -38,8 +38,6 @@ templates retire.
 - `nurec-reconstruct.yaml`: single-pod NuRec/NRE neural reconstruction. Its
   npa.workflow twin of the same name runs each state in its own pod and hands
   artifacts over through S3.
-- `sonic-train-standalone.yaml`: standalone SONIC training.
-- `sonic-locomotion-finetuning.yaml`: retargeting, SONIC, and MJLab flow.
 
 ## Retired Templates
 

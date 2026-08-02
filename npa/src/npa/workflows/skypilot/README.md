@@ -96,8 +96,6 @@ All examples assume SkyPilot 0.12.2.
 | --- | --- | --- | --- | --- | --- |
 | `cosmos3-generate.yaml` | Runs a real Cosmos 3 omni-model generation (`text2image`, `image2image`, `text2video`, `image2video`, or `video2video`) in the `npa-cosmos3` image. | Kubernetes `H100:1`, `16+` CPUs, `128+` GB memory. | Reads `NPA_COSMOS3_PROMPT` and optionally `NPA_COSMOS3_INPUT_URI`; writes the artifact plus `generate.json` to `NPA_COSMOS3_OUTPUT_URI` (local-only when empty). | **Required.** The image bakes no weights, so the gated checkpoint (`NPA_COSMOS3_CHECKPOINT`, default `Cosmos3-Nano`) downloads on the node under your own HF license acceptance; pass `HF_TOKEN` as a secret env. | Optional by default; required when `NPA_COSMOS3_REQUIRE_NGC=1` or when rebuilding NGC-derived images. Registry access is needed for `NPA_COSMOS3_IMAGE`. |
 | `nurec-reconstruct.yaml` | NuRec/NRE neural reconstruction: fetch a real NCore V4 capture (deriving the `rig -> world` pose edge NRE requires), train 3DGUT Gaussians into a renderable USDZ, render rig-offset novel views, build `reports/sim2real.rrd`, and finalize. Runs inside the NGC NRE container. | Kubernetes `RTXPRO-6000-BLACKWELL-SERVER-EDITION:1` (or `L40S:1`) — RT cores are required, never H100/H200. | Reads `NPA_NUREC_DATASET` from Hugging Face; writes `ncore/`, `input/`, `reconstruction/`, `novel_views/`, and `reports/` under `NPA_NUREC_RUN_URI`. | Required for the selected `NPA_NUREC_DATASET`. The default `nvidia/PhysicalAI-NuRec-PPISP` is ungated CC-BY-4.0; the `PhysicalAI-Autonomous-Vehicles*` sets are gated and need their license accepted by the token owner. | Required. `nvcr.io/nvidia/nre/nre` needs an extra entitlement (402 for a standard key); the `-ga` GA repositories are pullable with a standard `NGC_API_KEY`. |
-| `sonic-locomotion-finetuning.yaml` | Retargets motion, fine-tunes SONIC, and runs MJLab evaluation. | Kubernetes CPU, `L40S:1` fine-tune, and `H100:1` eval stages. | Reads motion input and optional checkpoint URI; writes retargeted motion, `SONIC_TRAIN_OUTPUT_URI`, and `MJLAB_OUTPUT_URI`. | Required for the default `nvidia/GEAR-SONIC:sonic_release` checkpoint. | Required for SONIC/Isaac image entitlement when pulling or rebuilding NGC-derived images. |
-| `sonic-train-standalone.yaml` | Runs a standalone SONIC training smoke using docker-run payload mode. | Nebius `L40S:1`. | Requires `S3_ENDPOINT_URL` and `S3_BUCKET`; writes to `s3://<bucket>/<SONIC_OUTPUT_PREFIX>/`. | Required for the default `nvidia/GEAR-SONIC:sonic_release/last.pt` checkpoint. | Required for SONIC/Isaac image entitlement when pulling or rebuilding NGC-derived images. |
 
 ## Standalone Launch Commands
 
@@ -137,8 +135,6 @@ can fetch weights. Gated repos are marked **(gated — accept license)**.
 
 | Workflow YAML | Hugging Face repos to accept | Notes |
 | --- | --- | --- |
-| `sonic-train-standalone.yaml` | `nvidia/GEAR-SONIC` **(gated — accept license)** | Default `SONIC_CHECKPOINT=nvidia/GEAR-SONIC:sonic_release/last.pt`. |
-| `sonic-locomotion-finetuning.yaml` | `nvidia/GEAR-SONIC` **(gated — accept license)** | Fine-tune stage downloads the released checkpoint; the MuJoCo-eval stage consumes the S3 checkpoint and needs no HF access. |
 
 The self-contained Sim2Real runbook (`../sim2real/runbook.yaml`) defaults to
 dual self-hosted VLM eval: `nvidia/Cosmos-Reason2-8B` and

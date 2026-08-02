@@ -43,18 +43,6 @@ REMAINING: dict[str, str] = {
         "survive alongside it is #234's call, so it is listed rather than deleted. See "
         "EVIDENCE.md \u00a7R49"
     ),
-    "sonic-locomotion-finetuning.yaml": (
-        "the LAUNCHER problem is SOLVED — `sonic train --runtime in-job` trains in the pod, on "
-        "the vendor image, with the operator's EULA acceptance carried on the spec. Six live "
-        "jobs took it from 'entrypoint not found' to Isaac Sim booting and converting the G1 "
-        "robot. Job 330 dies inside NVIDIA's own URDF->USD conversion "
-        "('Failed to open layer ... pelvis.tmp.usd'), which no spec, toolRef or engine change "
-        "will move. See EVIDENCE.md \u00a7R47"
-    ),
-    "sonic-train-standalone.yaml": (
-        "same as sonic-locomotion-finetuning: everything the workflow surface owns is done; "
-        "what remains is NVIDIA's asset conversion. See EVIDENCE.md \u00a7R47"
-    ),
     # --- RETIRED here: twin live-verified, see EVIDENCE.md -----------------------
     # cosmos3-reason.yaml     job 182            npa-wf-gpu-cosmos3-reason-af7ded35
     # isaac-lab-rl-sweep.yaml jobs 185/186/187   npa-wf-multi-isaac-lab-rl-sweep-c4b86dc5
