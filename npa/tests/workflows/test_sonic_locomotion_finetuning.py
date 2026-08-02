@@ -271,7 +271,15 @@ def test_sonic_export_and_eval_specs_invoke_the_real_cli_surfaces() -> None:
     export = load_spec(NPA_WORKFLOWS / "sonic-export.yaml")
     assert export.name == "sonic-export"
     assert export.states["export-onnx"].tool_ref == "workbench.sonic.export"
-    export_argv = " ".join(build_plan(export, run_id="probe").steps[0].argv)
+    # #238 made the export twin self-contained by prepending a train stage, so find the export
+    # step by its toolRef rather than assuming it is first.
+    export_argv = " ".join(
+        next(
+            step.argv
+            for step in build_plan(export, run_id="probe").steps
+            if step.tool_ref == "workbench.sonic.export"
+        )
+    )
     assert "npa workbench sonic export" in export_argv
     assert "--checkpoint s3://" in export_argv and "--output s3://" in export_argv
 

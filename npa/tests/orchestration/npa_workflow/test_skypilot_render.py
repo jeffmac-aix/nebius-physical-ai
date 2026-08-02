@@ -99,8 +99,9 @@ def test_self_hosted_vlm_eval_run_starts_vllm_server() -> None:
     assert "export NPA_VLM_SELF_HOSTED_MODEL=Qwen/Qwen2-VL-2B-Instruct" in run
     # A server that dies during startup must fail the stage immediately with its
     # own log, not stall until the client's readiness window expires.
-    assert "vLLM server exited during startup" in run
-    assert "tail -n 60 /tmp/vllm-server.log" in run
+    assert "vLLM server exited before becoming ready" in run
+    # ... and prints the server's own log rather than leaving the operator to find it.
+    assert "npa_vlm_log" in run
     # No CUDA toolkit in the task image, so nothing may JIT-compile a kernel.
     assert "export VLLM_USE_FLASHINFER_SAMPLER=0" in run
     # Console scripts that vLLM's dependencies install (ninja, for the JIT paths)
