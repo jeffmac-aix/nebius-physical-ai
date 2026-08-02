@@ -15,6 +15,11 @@ The serverless golden eval found this the expensive way — a real submitted job
 which is correct behaviour and a useless test run. At that point none of the twelve
 SkyPilot task templates that use an Isaac image declared the variables either.
 
+Those templates are gone: the npa.workflow specs are the authoring surface now, and a spec
+reaches an Isaac image through its ``toolRef`` rather than by naming the image. So the rule
+follows the surface — the set is derived from the same toolRef-to-image map the renderer uses,
+which means a new Isaac toolRef is covered the moment it is added.
+
 The fix is emphatically NOT to hardcode ``YES`` anywhere in the repo: that would be us
 accepting on the operator's behalf, which is precisely what the re-architecture exists to
 avoid. Instead the variables are declared empty (so a task fails closed, with the
@@ -32,17 +37,45 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SKYPILOT_DIR = REPO_ROOT / "npa" / "src" / "npa" / "workflows" / "skypilot"
+NPA_WORKFLOWS = REPO_ROOT / "npa" / "workflows" / "workbench" / "npa-workflows"
 EULA_VARS = ("OMNI_KIT_ACCEPT_EULA", "ISAACSIM_ACCEPT_EULA")
 #: Images whose entrypoints reach Isaac through the bootstrap shim.
 ISAAC_IMAGE_MARKERS = ("npa-isaac-lab", "npa-sonic")
+#: Image keys in the renderer's toolRef map that resolve to an Isaac-based image.
+ISAAC_IMAGE_KEYS = ("isaac-lab", "sonic")
+
+
+def _isaac_tool_refs() -> tuple[str, ...]:
+    """toolRef prefixes the RENDERER routes at an Isaac image.
+
+    Derived rather than listed, so a new Isaac toolRef is covered the moment it is added.
+    """
+
+    from npa.orchestration.npa_workflow.skypilot_render import TOOL_REF_IMAGE_TOOL
+
+    return tuple(
+        prefix for prefix, key in TOOL_REF_IMAGE_TOOL.items() if key in ISAAC_IMAGE_KEYS
+    )
 
 
 def _isaac_templates() -> list[Path]:
-    return sorted(
+    """Raw templates that name an Isaac image, plus specs whose toolRefs route at one."""
+
+    paths = [
         path
         for path in SKYPILOT_DIR.glob("*.yaml")
         if any(marker in path.read_text(encoding="utf-8") for marker in ISAAC_IMAGE_MARKERS)
-    )
+    ]
+    prefixes = _isaac_tool_refs()
+    for path in NPA_WORKFLOWS.glob("*.yaml"):
+        document = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        refs = [
+            str((state or {}).get("toolRef") or "")
+            for state in (document.get("states") or {}).values()
+        ]
+        if any(ref == p or ref.startswith(p + ".") for ref in refs for p in prefixes):
+            paths.append(path)
+    return sorted(set(paths))
 
 
 def test_there_are_isaac_templates_to_check() -> None:
