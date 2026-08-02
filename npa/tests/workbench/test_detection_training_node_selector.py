@@ -120,15 +120,20 @@ def test_an_explicit_path_wins_over_a_profile() -> None:
     )
 
 
-def test_the_deploy_and_train_commands_agree_on_the_default() -> None:
-    """Two commands with different default clusters would deploy and then train elsewhere."""
+def test_every_command_taking_cluster_name_agrees_on_the_default() -> None:
+    """Two commands with different default clusters would deploy here and inspect elsewhere."""
 
     import inspect
 
-    from npa.cli.workbench.detection_training import deploy_cmd, train_cmd
+    from npa.cli.workbench import detection_training as dt
 
-    defaults = {
-        name: inspect.signature(cmd).parameters["cluster_name"].default.default
-        for name, cmd in (("deploy", deploy_cmd), ("train", train_cmd))
-    }
+    defaults = {}
+    for name in ("deploy_cmd", "list_cmd", "train_cmd", "status_cmd"):
+        command = getattr(dt, name, None)
+        if command is None:
+            continue
+        parameter = inspect.signature(command).parameters.get("cluster_name")
+        if parameter is not None:
+            defaults[name] = parameter.default.default
+    assert defaults, "expected at least one command to take --cluster-name"
     assert set(defaults.values()) == {""}, defaults
