@@ -2,16 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import yaml
-
 from npa.orchestration.npa_workflow import build_plan, load_spec, validate_spec
 from npa.orchestration.npa_workflow.catalog import TOOL_CATALOG, argv_for_tool
 
 ROOT = Path(__file__).resolve().parents[3]
 WORKFLOW = ROOT / "npa" / "workflows" / "workbench" / "npa-workflows" / "dataset-ingest-curate.yaml"
-SPEC = (
-    ROOT / "npa" / "workflows" / "workbench" / "npa-workflows" / "dataset-ingest-curate.yaml"
-)
 # The raw template is retired; the spec is the surface (EVIDENCE.md §R41).
 SKYPILOT = ROOT / "npa" / "src" / "npa" / "workflows" / "skypilot" / "dataset-ingest-curate.yaml"
 
@@ -67,7 +62,7 @@ def test_the_spec_runs_ingest_and_curate_and_registers_against_the_service() -> 
 
     from npa.orchestration.npa_workflow.spec import load_spec
 
-    spec = load_spec(SPEC)
+    spec = load_spec(WORKFLOW)
 
     # The default plan takes the gate's `reject` branch, so assert on the spec's states rather
     # than one traversal of them.
