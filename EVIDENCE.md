@@ -2971,3 +2971,51 @@ So the two SONIC templates stay, with a different reason than they had: not "the
 provisions its own infrastructure", which is fixed, but "a real SONIC training run needs the
 image's assets". The engine work, its tests, and both live traces are recorded here so the
 person who has the NGC entitlement can finish it in one run rather than rediscovering the path.
+
+## R46. `bdd100k-pipeline.yaml` retired (3 → 2) — eleven stages, two services
+
+The longest pipeline in the catalog, and the last one blocked on infrastructure. §R44 left it at
+`train-rider`, unable to reach a second in-cluster service. Three findings closed the gap, and
+the first two are the same defect wearing different clothes: **a command that silently targets
+somewhere other than where you are looking.**
+
+| Finding | What it looked like | What it was |
+| --- | --- | --- |
+| `rollout status` timed out; the deployment was in **no namespace** of the cluster being inspected | "apply reported *configured*, so where did it go?" | `--cluster-name` **defaulted** to `npa-workbench-eu-north1`, whose cached kubeconfig points at a different cluster. Every deploy had been landing there. Default is now the ambient kubeconfig — the cluster `kubectl` is already on. |
+| pod `Pending` forever after that | nothing in the output mentioned nodes | `--gpu-type` knew only `h100` and `l40s`; this cluster's GPU nodes are labelled `gpu-rtx6000`, so the selector matched nothing. The workbench's own GPU is now selectable, and the error lists what it knows instead of naming two. |
+| three trainings SUCCEEDED, then `eval-rider` failed with `invalid literal for int() with base 10: 'train'` | a puzzling type error | BDD100K stores **string** categories and one of them is literally `train` — the vehicle. Training took `--label-map`; eval did not, so its loader fell through to `int(raw)`. `EvalRequest.label_map` had existed all along **with no CLI flag to fill it**. |
+
+A fourth was not a defect at all: with 64 synthetic rows the `distant_person` view came out
+empty and training failed honestly with `detection dataset is empty`. 768 rows populate all
+three views. Worth stating rather than hiding — the fixture was too small, and the tool said so
+in the clearest possible terms.
+
+### Job 326 — `npa-wf-multi-bdd100k-pipeline-763b2bdf`, 11/11 SUCCEEDED, 15m16s
+
+```
+ingest          SUCCEEDED   57s
+backfill-cpu    SUCCEEDED   1m06s
+backfill-clip   SUCCEEDED   1m10s   RTXPRO-6000 — the GPU CLIP UDF, against the real service
+curate-views    SUCCEEDED   1m04s
+train-rider     SUCCEEDED   1m31s   RTXPRO-6000 ─┐
+train-nighttime SUCCEEDED   1m29s   RTXPRO-6000  ├─ three real training runs
+train-distant   SUCCEEDED   1m32s   RTXPRO-6000 ─┘
+eval-rider      SUCCEEDED   1m09s   eval-9b570bfc679c
+eval-nighttime  SUCCEEDED   1m02s   eval-316bbc3320f0
+eval-distant    SUCCEEDED   1m02s   eval-d64085b5cf6b
+review          SUCCEEDED     51s
+```
+
+The evals report `mAP: 0.0`, and that is the honest number: one epoch over 768 synthetic rows
+trains nothing. What the run proves is that **every stage invoked its real component and produced
+the artifact the spec declared** — including the numeric-metric guard, which exists precisely so
+a service answering 200 with a null mAP cannot be mistaken for success.
+
+Both services stay deployed for follow-up:
+
+```bash
+npa workbench lancedb deploy --runtime kubernetes --namespace workbench \
+  --storage-path s3://<bucket>/lancedb/
+npa workbench detection-training deploy --namespace workbench --gpu-type rtxpro6000 \
+  --output-path s3://<bucket>/detection-training/
+```
