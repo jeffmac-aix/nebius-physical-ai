@@ -251,11 +251,14 @@ def deploy_cmd(
     if runtime == LanceDBRuntime.kubernetes:
         from npa.workbench.lancedb.kubernetes import (
             DEFAULT_NAME,
+            MANAGED_PULL_SECRET,
             LanceDBKubernetesError,
             apply,
             build_manifests,
             destroy as destroy_kubernetes,
+            ensure_registry_secret,
             ensure_storage_secret,
+            registry_host,
             service_endpoint,
             wait_available,
         )
@@ -286,6 +289,12 @@ def deploy_cmd(
         secret_name = ""
         if resolved_storage.startswith("s3://"):
             secret_name = f"{service_name}-storage"
+        # A private registry needs a pull secret the kubelet can use on every restart, not just
+        # at deploy time. Mint one rather than borrowing a shared secret whose token expires.
+        pull_secrets = tuple(ref.strip() for ref in pull_secret.split(",") if ref.strip())
+        host = registry_host(image_ref)
+        if host and not pull_secrets:
+            pull_secrets = (MANAGED_PULL_SECRET,)
         manifests = build_manifests(
             name=service_name,
             namespace=target_namespace,
@@ -296,7 +305,7 @@ def deploy_cmd(
             token=os.environ.get(token_env, ""),
             storage_endpoint_url=endpoint_url,
             secret_name=secret_name,
-            image_pull_secrets=tuple(ref for ref in pull_secret.split(",") if ref.strip()),
+            image_pull_secrets=pull_secrets,
         )
         resolved_endpoint = service_endpoint(service_name, target_namespace, port)
         if dry_run:
@@ -316,6 +325,8 @@ def deploy_cmd(
             )
             return
         try:
+            if host and pull_secrets == (MANAGED_PULL_SECRET,):
+                ensure_registry_secret(MANAGED_PULL_SECRET, target_namespace, host)
             if secret_name:
                 ensure_storage_secret(secret_name, target_namespace, dict(storage_env()))
             apply(manifests)
