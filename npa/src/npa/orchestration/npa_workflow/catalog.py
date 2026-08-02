@@ -645,6 +645,13 @@ TOOL_CATALOG: dict[str, ToolEntry] = {
             "{{config.dataset_source}}",
             "--workflow-run",
             "{{run.id}}",
+            # Populate the query index as records land. Without this the `query` stage has
+            # nothing to find, which is what a live run showed the moment the LanceDB service
+            # became reachable at all (EVIDENCE.md §R41).
+            "--lancedb-endpoint",
+            "{{config.lancedb_endpoint}}",
+            "--lance-uri",
+            "{{config.lance_uri}}",
         ],
     ),
     "workbench.dataset.validate": ToolEntry(
