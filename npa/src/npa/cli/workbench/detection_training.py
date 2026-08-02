@@ -43,9 +43,16 @@ app = typer.Typer(
 DEFAULT_IMAGE = container_image_for_tool("detection-training", registry=DEFAULT_CONTAINER_REGISTRY)
 DEFAULT_NAME = "npa-detection-training"
 DEFAULT_NAMESPACE = "default"
+#: `--gpu-type` shorthand -> the `node.kubernetes.io/instance-type` label to select on.
+#: RTX PRO 6000 is here because it is what the workbench's own GPU cluster runs: without it a
+#: deploy defaulted to an l40s selector no node carries, the pod stayed Unschedulable, and the
+#: only symptom was `rollout status` timing out with nothing said about node labels
+#: (EVIDENCE.md §R46). `--node-selector-value` still overrides for anything not listed.
 GPU_NODE_SELECTORS = {
     "h100": "gpu-h100-sxm",
     "l40s": "gpu-l40s-d",
+    "rtx6000": "gpu-rtx6000",
+    "rtxpro6000": "gpu-rtx6000",
 }
 
 
@@ -110,7 +117,11 @@ def deploy_cmd(
 
     selector_value = node_selector_value.strip() or GPU_NODE_SELECTORS.get(gpu_type.strip().lower())
     if not selector_value:
-        fail("--gpu-type must be h100 or l40s unless --node-selector-value is provided")
+        fail(
+            "--gpu-type must be one of "
+            + ", ".join(sorted(GPU_NODE_SELECTORS))
+            + " unless --node-selector-value is provided"
+        )
     resolved_image = image.strip() or container_image_for_tool(
         "detection-training",
         registry=resolve_container_registry(project or None),
