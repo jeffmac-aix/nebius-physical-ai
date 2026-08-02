@@ -11,6 +11,7 @@ Options
 --help  Show this message and exit.
 Commands
 reason  Build the Cosmos3 reason stage manifest.
+text-to-image  Generate an image from a prompt with the Cosmos3 framework, and publish it.
 ```
 
 ## Options
