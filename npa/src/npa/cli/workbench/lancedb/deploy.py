@@ -257,10 +257,9 @@ def deploy_cmd(
         return
 
     if runtime == LanceDBRuntime.kubernetes:
-        from npa.workbench.lancedb.kubernetes import (
-            DEFAULT_NAME,
+        from npa.workbench.service_kubernetes import (
             MANAGED_PULL_SECRET,
-            LanceDBKubernetesError,
+            ServiceKubernetesError,
             apply,
             build_manifests,
             destroy as destroy_kubernetes,
@@ -271,7 +270,8 @@ def deploy_cmd(
             wait_available,
         )
 
-        service_name = container_name.strip() or DEFAULT_NAME
+        LanceDBKubernetesError = ServiceKubernetesError
+        service_name = container_name.strip() or "npa-lancedb"
         target_namespace = namespace.strip() or "default"
         if destroy:
             try:
@@ -309,8 +309,12 @@ def deploy_cmd(
             port=port,
             image=image_ref,
             storage_path=resolved_storage,
-            auth_mode=resolved_auth,
-            token=os.environ.get(token_env, ""),
+            service_env={
+                "LANCEDB_STORAGE_PATH": resolved_storage,
+                "LANCEDB_PORT": str(port),
+                "LANCEDB_AUTH_MODE": resolved_auth,
+                **({"LANCEDB_TOKEN": os.environ[token_env]} if os.environ.get(token_env) else {}),
+            },
             storage_endpoint_url=endpoint_url,
             secret_name=secret_name,
             image_pull_secrets=pull_secrets,

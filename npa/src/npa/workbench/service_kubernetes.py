@@ -1,13 +1,15 @@
-"""Deploy the LanceDB wrapper into Kubernetes, where workflow stages can reach it.
+"""Deploy a workbench service into Kubernetes, where workflow stages can reach it.
 
-`npa workbench lancedb deploy` could put LanceDB on a local docker daemon, on a managed VM, or
-register LanceDB Cloud. None of those help a workflow stage: a stage runs in a pod, and a pod
-cannot reach ``http://localhost:8686`` on an operator's laptop. That gap is why two templates
-could not retire — `bdd100k-pipeline` and `dataset-ingest-curate` both have a stage that writes
-to LanceDB, and it failed live with ``[Errno -2] Name or service not known`` (EVIDENCE §R16).
+Workbench services could be put on a local docker daemon, on a managed VM, or registered as a
+hosted endpoint. None of those helps a workflow stage: a stage runs in a pod, and a pod cannot
+reach ``http://localhost:8686`` on an operator's laptop. That gap is why templates could not
+retire — `dataset-ingest-curate` writes to LanceDB and `bdd100k-pipeline` calls
+detection-training, and both failed live with ``[Errno -2] Name or service not known``
+(EVIDENCE §R16, §R41).
 
 A Deployment plus a ClusterIP Service gives the cluster a stable DNS name, which is what a spec
-can put in its config and what every pod in the namespace can resolve.
+can put in its config and what every pod in the namespace can resolve. Written once and shared,
+because the second service needed exactly the same five fixes as the first.
 """
 
 from __future__ import annotations
@@ -22,17 +24,15 @@ from typing import Any
 #: its own objects.
 MANAGED_BY_LABEL = {"app.kubernetes.io/managed-by": "npa", "app.kubernetes.io/part-of": "npa-workbench"}
 
-DEFAULT_NAME = "npa-lancedb"
 DEFAULT_NAMESPACE = "default"
-DEFAULT_PORT = 8686
 
 #: Secret env names copied from the operator's environment into the pod. LanceDB needs them to
 #: read and write an s3:// storage path.
 STORAGE_SECRET_ENVS = ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY")
 
 
-class LanceDBKubernetesError(RuntimeError):
-    """Raised when the in-cluster LanceDB service cannot be deployed or inspected."""
+class ServiceKubernetesError(RuntimeError):
+    """Raised when an in-cluster workbench service cannot be deployed or inspected."""
 
 
 @dataclass(frozen=True)
@@ -69,13 +69,12 @@ def service_endpoint(name: str, namespace: str, port: int) -> str:
 
 def build_manifests(
     *,
-    name: str = DEFAULT_NAME,
+    name: str,
     namespace: str = DEFAULT_NAMESPACE,
-    port: int = DEFAULT_PORT,
+    port: int,
     image: str,
-    storage_path: str,
-    auth_mode: str = "none",
-    token: str = "",
+    service_env: dict[str, str],
+    storage_path: str = "",
     storage_endpoint_url: str = "",
     secret_name: str = "",
     image_pull_secrets: tuple[str, ...] = (),
@@ -88,18 +87,13 @@ def build_manifests(
     """
 
     if not image.strip():
-        raise LanceDBKubernetesError("an image reference is required")
-    if not storage_path.strip():
-        raise LanceDBKubernetesError("a storage path is required")
+        raise ServiceKubernetesError("an image reference is required")
+
 
     labels = {"app": name, **MANAGED_BY_LABEL}
     env: list[dict[str, Any]] = [
-        {"name": "LANCEDB_STORAGE_PATH", "value": storage_path},
-        {"name": "LANCEDB_PORT", "value": str(port)},
-        {"name": "LANCEDB_AUTH_MODE", "value": auth_mode},
+        {"name": key, "value": value} for key, value in sorted(service_env.items())
     ]
-    if token:
-        env.append({"name": "LANCEDB_TOKEN", "value": token})
     if storage_endpoint_url:
         env.append({"name": "AWS_ENDPOINT_URL", "value": storage_endpoint_url})
         env.append({"name": "NEBIUS_S3_ENDPOINT", "value": storage_endpoint_url})
@@ -115,7 +109,7 @@ def build_manifests(
             )
 
     container: dict[str, Any] = {
-        "name": "lancedb",
+        "name": name,
         "image": image,
         "imagePullPolicy": "IfNotPresent",
         "ports": [{"containerPort": port, "name": "http"}],
@@ -164,7 +158,7 @@ def build_manifests(
 
 
 #: Name of the pull secret this module maintains when the image lives in a private registry.
-MANAGED_PULL_SECRET = "npa-lancedb-registry"
+MANAGED_PULL_SECRET = "npa-registry"
 
 
 def ensure_registry_secret(
@@ -187,7 +181,7 @@ def ensure_registry_secret(
     try:
         token = mint_nebius_registry_token()
     except Exception as exc:  # pragma: no cover - depends on the operator's IAM setup
-        raise LanceDBKubernetesError(
+        raise ServiceKubernetesError(
             f"could not mint a registry token for {registry}: {exc}"
         ) from exc
 
@@ -208,12 +202,12 @@ def ensure_registry_secret(
         ]
     )
     if built.returncode != 0:
-        raise LanceDBKubernetesError(
+        raise ServiceKubernetesError(
             f"could not build the registry secret: {(built.stderr or built.stdout).strip()}"
         )
     applied = run(["apply", "-f", "-"], stdin=built.stdout)
     if applied.returncode != 0:
-        raise LanceDBKubernetesError(
+        raise ServiceKubernetesError(
             f"could not apply the registry secret: {(applied.stderr or applied.stdout).strip()}"
         )
 
@@ -252,7 +246,7 @@ def apply(
     payload = json.dumps({"apiVersion": "v1", "kind": "List", "items": manifests})
     result = run(["apply", "-f", "-"], stdin=payload)
     if result.returncode != 0:
-        raise LanceDBKubernetesError(
+        raise ServiceKubernetesError(
             f"kubectl apply failed ({result.returncode}): {(result.stderr or result.stdout).strip()}"
         )
     return (result.stdout or "").strip()
@@ -286,7 +280,7 @@ def wait_available(
         timeout=timeout_seconds + 30,
     )
     if result.returncode != 0:
-        raise LanceDBKubernetesError(
+        raise ServiceKubernetesError(
             f"LanceDB deployment {name} did not roll out within {timeout_seconds}s: "
             f"{(result.stderr or result.stdout).strip()}"
         )
@@ -307,7 +301,7 @@ def destroy(name: str, namespace: str, *, runner: Any = None) -> str:
         ]
     )
     if result.returncode != 0:
-        raise LanceDBKubernetesError(
+        raise ServiceKubernetesError(
             f"kubectl delete failed ({result.returncode}): {(result.stderr or result.stdout).strip()}"
         )
     return (result.stdout or "").strip()
@@ -324,7 +318,7 @@ def ensure_storage_secret(
 
     missing = [key for key in STORAGE_SECRET_ENVS if not credentials.get(key)]
     if missing:
-        raise LanceDBKubernetesError(
+        raise ServiceKubernetesError(
             "LanceDB needs object-store credentials to serve an s3:// storage path; missing "
             + ", ".join(missing)
         )
@@ -344,12 +338,12 @@ def ensure_storage_secret(
         ]
     )
     if result.returncode != 0:
-        raise LanceDBKubernetesError(
+        raise ServiceKubernetesError(
             f"could not build the LanceDB storage secret: {(result.stderr or result.stdout).strip()}"
         )
     applied = run(["apply", "-f", "-"], stdin=result.stdout)
     if applied.returncode != 0:
-        raise LanceDBKubernetesError(
+        raise ServiceKubernetesError(
             f"could not apply the LanceDB storage secret: "
             f"{(applied.stderr or applied.stdout).strip()}"
         )

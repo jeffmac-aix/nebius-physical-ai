@@ -14,13 +14,16 @@ import subprocess
 
 import pytest
 
-from npa.workbench.lancedb import kubernetes as k8s
+from npa.workbench import service_kubernetes as k8s
 
 
 def _manifests(**overrides):
     kwargs = {
+        "name": "npa-lancedb",
+        "port": 8686,
         "image": "registry.example/npa-lancedb:1.2.3",
         "storage_path": "s3://bucket/lancedb/",
+        "service_env": {"LANCEDB_STORAGE_PATH": "s3://bucket/lancedb/"},
         "secret_name": "npa-lancedb-storage",
         "storage_endpoint_url": "https://storage.example.com",
     }
@@ -91,10 +94,10 @@ def test_image_pull_secrets_are_wired_when_given() -> None:
 
 
 def test_build_rejects_a_missing_image_or_storage_path() -> None:
-    with pytest.raises(k8s.LanceDBKubernetesError, match="image reference"):
-        k8s.build_manifests(image="", storage_path="s3://bucket/x/")
-    with pytest.raises(k8s.LanceDBKubernetesError, match="storage path"):
-        k8s.build_manifests(image="img", storage_path="  ")
+    with pytest.raises(k8s.ServiceKubernetesError, match="image reference"):
+        k8s.build_manifests(name="x", port=1, image="", service_env={})
+    with pytest.raises(k8s.ServiceKubernetesError, match="image reference"):
+        k8s.build_manifests(name="x", port=1, image="   ", service_env={})
 
 
 def test_apply_sends_one_list_document_and_surfaces_failure() -> None:
@@ -113,7 +116,7 @@ def test_apply_sends_one_list_document_and_surfaces_failure() -> None:
     def broken(args, stdin=None, timeout=300):
         return subprocess.CompletedProcess(args, 1, stdout="", stderr="nope")
 
-    with pytest.raises(k8s.LanceDBKubernetesError, match="nope"):
+    with pytest.raises(k8s.ServiceKubernetesError, match="nope"):
         k8s.apply(_manifests(), runner=broken)
 
 
@@ -141,7 +144,7 @@ def test_wait_reports_the_timeout_it_used() -> None:
     def never(args, stdin=None, timeout=300):
         return subprocess.CompletedProcess(args, 1, stdout="", stderr="timed out")
 
-    with pytest.raises(k8s.LanceDBKubernetesError, match="within 30s"):
+    with pytest.raises(k8s.ServiceKubernetesError, match="within 30s"):
         k8s.wait_available("npa-lancedb", "default", timeout_seconds=30, runner=never)
 
 
@@ -159,7 +162,7 @@ def test_destroy_targets_only_npa_managed_objects() -> None:
 
 
 def test_the_storage_secret_refuses_to_be_created_empty() -> None:
-    with pytest.raises(k8s.LanceDBKubernetesError, match="AWS_SECRET_ACCESS_KEY"):
+    with pytest.raises(k8s.ServiceKubernetesError, match="AWS_SECRET_ACCESS_KEY"):
         k8s.ensure_storage_secret(
             "npa-lancedb-storage",
             "default",
