@@ -3064,3 +3064,37 @@ So `sonic-train-standalone.yaml` and `sonic-locomotion-finetuning.yaml` keep the
 tally, with the reason rewritten from "the launcher provisions its own infrastructure" — which is
 fixed — to what it actually is now. The engine work, its 15 unit tests, and all six live traces
 are recorded here so whoever picks this up starts at job 330 rather than at job 322.
+
+## R48. Converging with #238, which solved the same launcher problem in parallel
+
+`main` landed #238 while this branch was live-testing the SONIC launcher, and it fixed the same
+thing under a different name: `--runtime local` where this branch had `--runtime in-job`. Two
+runtimes for one idea is worse than either, so they are now one.
+
+**#238's implementation is the one that stays.** It has something this branch's did not: when the
+vendor entrypoint is absent it falls back to a real reference locomotion trainer with gradient
+descent, so a stage produces a checkpoint instead of failing. That is strictly better.
+
+**What this branch contributes to it** is the piece six live jobs found and #238 could not have
+known about, because it never got past the image boundary: the SONIC image's own trainer
+**refuses** to download Isaac Sim / Isaac Lab until NVIDIA's terms are accepted, and SkyPilot's
+pod does not inherit the image's docker ENV. Without acceptance, `--runtime local` does not fail —
+it quietly runs the *reference* trainer instead of the vendor one, which is a worse outcome than
+an error and is invisible from the exit code.
+
+So `--accept-nvidia-eula` and `sonic_accept_nvidia_eula` sit on #238's runtime, empty by default.
+
+The merge also cost three regressions, each caught by a guardrail this branch had added rather
+than by review:
+
+* `sonic-locomotion-finetuning` declared `report.json` / `manifest.json` where the tools write
+  `mjlab_eval.json` / `retargeting_result.json` — `test_spec_declared_outputs` said so by name.
+* `sonic/train`'s `spec_gap` still pinned `max_iterations`, which #238's toolRef now reaches.
+* `workbench.sonic` still hinted `NGC_API_KEY`, which the local trainer does not use and which
+  would have skipped the twins rather than run them.
+
+Where the two branches overlapped elsewhere, the better half won on the merits rather than by
+seniority: #238's vLLM installer (uv resolution plus a weight pre-fetch during setup) replaced
+this branch's inline pip, keeping the `ninja` step live job 214 needed; this branch's readiness
+preamble was kept over #238's fire-and-hope launch, and gained #238's `NPA_VLM_SELF_HOSTED_MODEL`
+export so the client asks for the model that was actually started.
