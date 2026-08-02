@@ -58,6 +58,33 @@ def _p(cli_param: str, sdk_param: str, cli_flag: str, yaml_env: str = "") -> Par
 #               the ones worth closing, tool by tool, with a live run each.
 #
 SPEC_GAP_REASONS: dict[str, dict[str, str]] = {
+    "workflow/trigger/run": {
+        # Where to watch and what has already been seen: driver state, not a stage input.
+        "s3_endpoint": "infra",
+        "s3_bucket": "infra",
+        "s3_prefix": "infra",
+        "watermark_uri": "infra",
+        # Which spec to submit, and how — the driver's own launch settings.
+        "pipeline_yaml": "infra",
+        "pipeline_bucket": "infra",
+        "pipeline_s3_prefix": "infra",
+        "pipeline_input_data_uri": "infra",
+        "pipeline_render_only": "boolean",
+        "task_cloud": "infra",
+        "controller_backend": "infra",
+        "gpu": "infra",
+        "gpu_failover": "infra",
+        "submit_timeout": "knob",
+    },
+    "workflow/trigger/watch": {
+        "s3_endpoint": "infra",
+        "s3_bucket": "infra",
+        "s3_prefix": "infra",
+        # Loop shape: how often to look and when to stop. A stage runs once.
+        "poll_interval": "knob",
+        "max_polls": "knob",
+        "max_launches": "knob",
+    },
     "sonic/train": {
         "sample_data": "boolean",
         "headless": "boolean",
@@ -313,6 +340,22 @@ CONTRACTS: tuple[CapabilityContract, ...] = (
         sdk_attr="run_once",
         spec_path=SPECS / "sim2real-vlm-rl.yaml",
         tool_ref="workbench.cosmos2.transfer",
+        spec_gap=(
+            "s3_endpoint",
+            "s3_bucket",
+            "s3_prefix",
+            "watermark_uri",
+            "pipeline_yaml",
+            "pipeline_bucket",
+            "pipeline_s3_prefix",
+            "pipeline_input_data_uri",
+            "pipeline_render_only",
+            "task_cloud",
+            "controller_backend",
+            "gpu",
+            "gpu_failover",
+            "submit_timeout",
+        ),
         params=(
             _p("s3_endpoint", "s3_endpoint", "--s3-endpoint", "NPA_TRIGGER_S3_ENDPOINT"),
             _p("s3_bucket", "s3_bucket", "--s3-bucket", "NPA_TRIGGER_S3_BUCKET"),
@@ -363,6 +406,14 @@ CONTRACTS: tuple[CapabilityContract, ...] = (
         sdk_attr="watch",
         spec_path=SPECS / "sim2real-vlm-rl.yaml",
         tool_ref="workbench.cosmos2.transfer",
+        spec_gap=(
+            "s3_endpoint",
+            "s3_bucket",
+            "s3_prefix",
+            "poll_interval",
+            "max_polls",
+            "max_launches",
+        ),
         params=(
             _p("s3_endpoint", "s3_endpoint", "--s3-endpoint", "NPA_TRIGGER_S3_ENDPOINT"),
             _p("s3_bucket", "s3_bucket", "--s3-bucket", "NPA_TRIGGER_S3_BUCKET"),
@@ -386,8 +437,14 @@ def test_current_three_tier_contracts_are_coherent() -> None:
     assert not failures, "\n".join(failures)
 
 
-def test_legacy_yaml_tier_only_shrinks() -> None:
-    """Every capability should reach the npa.workflow tier; pin the stragglers."""
+def test_no_contract_remains_on_the_legacy_yaml_tier() -> None:
+    """The tier is empty, so the rule flips from "only shrinks" to "must stay empty".
+
+    `LEGACY_YAML_TIER` was the shrinking list of capabilities whose third tier was a raw
+    SkyPilot YAML's `envs:`. It is now empty: every contract points at an npa.workflow spec and
+    a toolRef. Re-adding a `yaml_path` would put a capability back on a surface this work
+    removed, so it fails here rather than being pinned as a straggler.
+    """
 
     actual = {contract.name for contract in CONTRACTS if contract.yaml_path is not None}
     assert actual == LEGACY_YAML_TIER, (
@@ -513,24 +570,27 @@ def test_contract_catches_a_missing_third_tier() -> None:
     assert any("declares no third tier" in failure for failure in failures), failures
 
 
-def test_legacy_yaml_tier_still_catches_a_deleted_env(tmp_path: Path) -> None:
-    """The legacy path must keep proving it can fail while any contract uses it."""
+def test_the_legacy_yaml_tier_still_fails_loudly_if_anything_returns_to_it(
+    tmp_path: Path,
+) -> None:
+    """No contract uses the legacy tier any more, so its check is exercised synthetically.
+
+    Deleting the last user of a validation path is how that path quietly rots. This keeps the
+    env-based check honest for the day someone adds a `yaml_path` back.
+    """
 
     import yaml
 
-    from npa.guardrails.skypilot import load_yaml_documents
-
     contract = _contract("workflow/trigger/run")
-    assert contract.yaml_path is not None
-    docs = load_yaml_documents(REPO_ROOT / contract.yaml_path)
-    envs = dict(docs[0]["envs"])
-    envs.pop("NPA_TRIGGER_S3_BUCKET")
-    docs[0]["envs"] = envs
-    broken_yaml = tmp_path / "broken.yaml"
-    broken_yaml.write_text(yaml.safe_dump_all(docs, sort_keys=False), encoding="utf-8")
+    legacy_yaml = tmp_path / "legacy.yaml"
+    legacy_yaml.write_text(
+        yaml.safe_dump({"name": "legacy", "envs": {"NPA_TRIGGER_S3_ENDPOINT": "x"}}),
+        encoding="utf-8",
+    )
 
     failures = validate_contract(
-        replace(contract, yaml_path=broken_yaml), repo_root=Path("/")
+        replace(contract, spec_path=None, tool_ref="", spec_gap=(), yaml_path=legacy_yaml),
+        repo_root=Path("/"),
     )
 
     assert any("YAML env missing: NPA_TRIGGER_S3_BUCKET" in f for f in failures), failures
