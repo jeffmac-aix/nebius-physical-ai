@@ -37,7 +37,13 @@ REMAINING: dict[str, str] = {
     "sim-to-real-trigger.yaml": "three-tier contract (legacy YAML tier)",
     "sonic-train-standalone.yaml": "three-tier contract + standalone-policy guardrail",
     # --- no npa.workflow twin authored yet ---
-    "cosmos3-text-to-image-inference.yaml": "no twin; raw-sky e2e test targets it",
+    "cosmos3-text-to-image-inference.yaml": (
+        "TWIN EXISTS and its capability is now real npa code "
+        "(npa workbench cosmos3 text-to-image), driven live through nine jobs to 309, which "
+        "reached the framework's own inference. One dependency short: the cosmos3 image "
+        "installs npa --no-deps with a curated list, so the source overlay leaves the CLI "
+        "without paramiko. See EVIDENCE.md \u00a7R39"
+    ),
     "dataset-ingest-curate.yaml": "twin exists but has no live-matrix coverage yet",
     # --- twin exists but is NOT live-verified yet ---
     "sonic-locomotion-finetuning.yaml": (
