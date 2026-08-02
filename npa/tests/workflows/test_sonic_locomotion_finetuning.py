@@ -295,13 +295,17 @@ def test_sonic_export_and_eval_specs_invoke_the_real_cli_surfaces() -> None:
 
     chained = load_spec(NPA_WORKFLOWS / "sonic-export-eval.yaml")
     steps = build_plan(chained, run_id="probe").steps
+    # #238 made the chain self-contained by prepending a train stage, so the export twin can
+    # run as a standalone submit instead of needing a checkpoint from somewhere else.
     assert [step.tool_ref for step in steps] == [
+        "workbench.sonic.train",
         "workbench.sonic.export",
         "workbench.sonic.eval",
     ]
     # The eval stage consumes exactly what the export stage produced: both argv lists
     # carry the SAME resolved ONNX URI, so the chain cannot silently drift apart.
-    export_step, eval_step = steps
+    export_step = next(s for s in steps if s.tool_ref == "workbench.sonic.export")
+    eval_step = next(s for s in steps if s.tool_ref == "workbench.sonic.eval")
     produced = export_step.argv[export_step.argv.index("--output") + 1]
     consumed = eval_step.argv[eval_step.argv.index("--onnx") + 1]
     assert produced.startswith("s3://") and produced.endswith("/sonic_policy.onnx")

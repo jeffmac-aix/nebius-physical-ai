@@ -126,8 +126,9 @@ def test_setup_installs_ninja_for_the_jit_compiler(monkeypatch: pytest.MonkeyPat
     )
 
     setup = [doc for doc in yaml.safe_load_all(text) if doc][1]["setup"]
-    assert "'pip', 'install', 'vllm>=0.8.5'" in setup
-    assert "'pip', 'install', 'ninja'" in setup
+    # #238's installer resolves with uv first and falls back to pip; both forms name the pin.
+    assert "vllm>=0.8.5" in setup
+    assert "pip_install('ninja')" in setup
     # Only when it is missing: workbench images may already ship a toolchain.
     assert "shutil.which('ninja') is None" in setup
 
