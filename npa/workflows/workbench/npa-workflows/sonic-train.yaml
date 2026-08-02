@@ -9,7 +9,11 @@ metadata:
 config:
   bucket: example-bucket
   prefix: "runs/{{run.id}}/sonic-train"
-  sonic_runtime: serverless
+  # in-job, not serverless: a stage is already running on a GPU the workflow engine
+  # provisioned. Asking the in-pod CLI to provision a Nebius Job from there fails with
+  # "--runtime serverless requires --project-id" and, given one, would have the workflow
+  # launch infrastructure the engine is already responsible for (EVIDENCE.md §R42).
+  sonic_runtime: in-job
   checkpoint_uri: "nvidia/GEAR-SONIC"
   data_uri: "s3://{{config.bucket}}/{{config.prefix}}/data/"
   training_uri: "s3://{{config.bucket}}/{{config.prefix}}/training/"

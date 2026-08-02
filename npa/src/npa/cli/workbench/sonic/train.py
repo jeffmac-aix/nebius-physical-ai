@@ -50,6 +50,40 @@ def build_sonic_serverless_train_command(
 ) -> str:
     """Build the remote command for a real SONIC serverless train job."""
 
+    return remote_bash(
+        build_sonic_train_body(
+            checkpoint=checkpoint,
+            data_path=data_path,
+            sample_data=sample_data,
+            embodiment=embodiment,
+            num_envs=num_envs,
+            headless=headless,
+            max_iterations=max_iterations,
+            isaac_lab_version=isaac_lab_version,
+            training_config=training_config,
+        )
+    )
+
+
+def build_sonic_train_body(
+    *,
+    checkpoint: str,
+    data_path: str,
+    sample_data: bool,
+    embodiment: str,
+    num_envs: int,
+    headless: bool,
+    max_iterations: int,
+    isaac_lab_version: str,
+    training_config: TrainingConfig | None = None,
+) -> str:
+    """The training script itself: find the image's python, set SONIC_*, run its entrypoint.
+
+    Shared by the serverless and in-job runtimes on purpose. Two runtimes with two training
+    scripts would be two trainers; the only thing that differs between them is who provides the
+    machine.
+    """
+
     config = training_config or TrainingConfig()
     local_dir = "/tmp/npa-sonic-train"
     upload = build_serverless_output_upload_cmd(local_dir, "")
@@ -78,7 +112,92 @@ def build_sonic_serverless_train_command(
         f"{upload}\n"
         'exit "$sonic_rc"'
     )
-    return remote_bash(body)
+    return body
+
+
+def build_sonic_in_job_train_script(
+    *,
+    checkpoint: str,
+    data_path: str,
+    sample_data: bool,
+    embodiment: str,
+    num_envs: int,
+    headless: bool,
+    max_iterations: int,
+    isaac_lab_version: str,
+    output_path: str,
+    training_config: TrainingConfig | None = None,
+) -> str:
+    """The same training body the serverless path sends remotely, to run right here.
+
+    Identical on purpose: an in-job run that diverged from the serverless one would be a second
+    implementation of training, and the point is that the SONIC image's own `/entrypoint.sh
+    train` is the trainer in both cases. What changes is who provisions the machine — with
+    `in-job` it is the workflow engine, which already has one.
+    """
+
+    body = build_sonic_train_body(
+        checkpoint=checkpoint,
+        data_path=data_path,
+        sample_data=sample_data,
+        embodiment=embodiment,
+        num_envs=num_envs,
+        headless=headless,
+        max_iterations=max_iterations,
+        isaac_lab_version=isaac_lab_version,
+        training_config=training_config,
+    )
+    return f"export NPA_OUTPUT_PATH={output_path!r}\n{body}"
+
+
+def _run_in_job_train(
+    *,
+    checkpoint: str,
+    data_path: str,
+    sample_data: bool,
+    embodiment: str,
+    num_envs: int,
+    headless: bool,
+    max_iterations: int,
+    isaac_lab_version: str,
+    output_path: str,
+    output_format: OutputFormat,
+    training_config: TrainingConfig,
+) -> None:
+    """Run SONIC training in this pod and report where the checkpoint went."""
+
+    import subprocess
+
+    if not output_path.strip():
+        fail("--runtime in-job needs --output-path (or --checkpoint-s3-uri) to publish to")
+    script = build_sonic_in_job_train_script(
+        checkpoint=checkpoint,
+        data_path=data_path,
+        sample_data=sample_data,
+        embodiment=embodiment,
+        num_envs=num_envs,
+        headless=headless,
+        max_iterations=max_iterations,
+        isaac_lab_version=isaac_lab_version,
+        output_path=output_path,
+        training_config=training_config,
+    )
+    completed = subprocess.run(["bash", "-c", script], text=True)
+    if completed.returncode != 0:
+        fail(f"SONIC in-job training failed with exit code {completed.returncode}")
+    output(
+        {
+            "status": "completed",
+            "runtime": "in-job",
+            "checkpoint": checkpoint,
+            "embodiment": embodiment,
+            "num_envs": num_envs,
+            "max_iterations": max_iterations,
+            "output_path": output_path,
+            "training_config": training_config.public_dict(),
+        },
+        output_format,
+    )
 
 
 def _run_serverless_train(
@@ -287,6 +406,21 @@ def train_cmd(
     data_path = training_config.data_path
     effective_sample_data = sample_data or not data_path
     checkpoint_output_path = resolve_checkpoint_s3_uri(training_config, output_path)
+    if runtime_value == "in-job":
+        _run_in_job_train(
+            checkpoint=checkpoint,
+            data_path=data_path,
+            sample_data=effective_sample_data,
+            embodiment=embodiment_tag,
+            num_envs=num_envs,
+            headless=headless,
+            max_iterations=max_iterations,
+            isaac_lab_version=isaac_lab_version,
+            output_path=checkpoint_output_path,
+            output_format=output_format,
+            training_config=training_config,
+        )
+        return
     if runtime_value == "serverless":
         _run_serverless_train(
             checkpoint=checkpoint,

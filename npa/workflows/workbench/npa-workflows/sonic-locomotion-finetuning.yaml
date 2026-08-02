@@ -11,7 +11,11 @@ config:
   prefix: "runs/{{run.id}}/sonic-locomotion"
   embodiment: unitree-g1
   source_format: auto
-  sonic_runtime: serverless
+  # in-job, not serverless: a stage is already running on a GPU the workflow engine
+  # provisioned. Asking the in-pod CLI to provision a Nebius Job from there fails with
+  # "--runtime serverless requires --project-id" and, given one, would have the workflow
+  # launch infrastructure the engine is already responsible for (EVIDENCE.md §R42).
+  sonic_runtime: in-job
   suite: locomotion
   episodes: "8"
   checkpoint_uri: "nvidia/GEAR-SONIC"
