@@ -32,24 +32,38 @@ SKYPILOT_HOSTED_IMAGES = ("cosmos3-reason", "isaac-lab", "lerobot", "sonic")
 ISAAC_BASED_IMAGES = ("isaac-lab", "sonic")
 
 
-#: The four ingredients a SkyPilot-hosted image needs, established by bisecting
-#: derived images against a live Kubernetes GPU cluster. Missing any one of them makes
-#: provisioning fail with `container not found ("ray-node")`.
+#: What every SkyPilot-hosted image needs, established by bisecting derived images against a
+#: live Kubernetes GPU cluster. Missing any one makes provisioning fail with
+#: `container not found ("ray-node")`, which names none of them.
 REQUIRED_INGREDIENTS = (
     ("python3", "SkyPilot's k8s runtime bootstrap needs a system python3"),
     ("rsync", "SkyPilot syncs files with rsync"),
     ("NOPASSWD", "SkyPilot's in-pod setup shells out to sudo without a password"),
-    ("ENV PATH=/usr/bin:$PATH", "the system interpreter must precede a vendor python"),
+)
+
+#: NOT universal, despite being required wherever it applies. An Isaac image's default python3
+#: is a kit interpreter that cannot import its own site-packages outside python.sh, so the
+#: system one has to win. Forcing the same ordering on an image whose OWN python carries npa
+#: breaks it: cosmos3-reason failed setup with "npa is not importable after setup" (job 307).
+PATH_ORDERING_INGREDIENT = (
+    "ENV PATH=/usr/bin:$PATH",
+    "an Isaac kit python cannot import its own site-packages, so the system one must precede it",
 )
 
 
+def _ingredients_for(tool: str) -> tuple[tuple[str, str], ...]:
+    if tool in ISAAC_BASED_IMAGES:
+        return REQUIRED_INGREDIENTS + (PATH_ORDERING_INGREDIENT,)
+    return REQUIRED_INGREDIENTS
+
+
 @pytest.mark.parametrize("tool", SKYPILOT_HOSTED_IMAGES)
-@pytest.mark.parametrize(("token", "why"), REQUIRED_INGREDIENTS)
-def test_dockerfile_has_skypilot_runtime_prerequisites(tool: str, token: str, why: str) -> None:
+def test_dockerfile_has_skypilot_runtime_prerequisites(tool: str) -> None:
     dockerfile = DOCKER_ROOT / tool / "Dockerfile"
     assert dockerfile.is_file(), dockerfile
     text = dockerfile.read_text(encoding="utf-8")
-    assert token in text, f"{tool}: {why}"
+    for token, why in _ingredients_for(tool):
+        assert token in text, f"{tool}: {why}"
 
 
 @pytest.mark.parametrize("tool", SKYPILOT_HOSTED_IMAGES)
@@ -100,13 +114,7 @@ def test_derived_prereq_dockerfile_matches_the_shipped_one(tool: str) -> None:
     derived = DOCKER_ROOT / tool / "Dockerfile.k8s-prereqs"
     assert derived.is_file(), derived
     text = derived.read_text(encoding="utf-8")
-    for token in (
-        "python3",
-        "rsync",
-        "NOPASSWD",
-        "ENV PATH=/usr/bin:$PATH",
-        "ARG BASE_IMAGE",
-    ):
+    for token, _why in (*_ingredients_for(tool), ("ARG BASE_IMAGE", "derived build")):
         assert token in text, f"{tool}: derived prereq Dockerfile is missing {token!r}"
     if tool in ISAAC_BASED_IMAGES:
         assert "usermod -aG isaac-sim" in text, (

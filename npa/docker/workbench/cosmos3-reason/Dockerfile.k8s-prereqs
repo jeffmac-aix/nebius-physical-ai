@@ -33,8 +33,12 @@ RUN apt-get update \
 # text-to-image stage clones the framework and syncs an environment before it can generate.
 RUN mkdir -p /home/ubuntu && chown -R ubuntu:ubuntu /home/ubuntu
 
-# SkyPilot's bootstrap must find the SYSTEM interpreter first.
-ENV PATH=/usr/bin:$PATH
+# NOTE: deliberately NOT `ENV PATH=/usr/bin:$PATH`. The Isaac images need that, because their
+# default python3 is a kit interpreter that cannot import its own site-packages outside
+# python.sh. Here the opposite holds: this image's own python is the one carrying npa and its
+# dependencies, and forcing the bare system python in front of it made setup fail with
+# "npa is not importable after setup" (live job 307). SkyPilot needs a system python3 to EXIST,
+# not to be first.
 
 USER ubuntu
 ENTRYPOINT ["/bin/bash"]
