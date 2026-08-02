@@ -35,7 +35,7 @@ Primary NPA files:
 | Human CLI commands for real workflows | `npa/src/npa/cli/cosmos/__init__.py` |
 | SDK compatibility exports | `npa/src/npa/workbench/cosmos/__init__.py`, `npa/src/npa/sdk/workbench/cosmos.py` |
 | Fetch workflow | `npa/workflows/workbench/npa-workflows/cosmos-fetch.yaml` |
-| Text-to-image H100 smoke workflow | `npa/src/npa/workflows/skypilot/cosmos3-text-to-image-inference.yaml` |
+| Text-to-image H100 smoke workflow | `npa/workflows/workbench/npa-workflows/cosmos3-text-to-image.yaml` |
 | Unit tests for access, fetch, inference YAML, and skill artifacts | `npa/tests/workbench/test_cosmos3_access.py` |
 | CLI tests for `check` and `fetch` | `npa/tests/cli/test_cosmos3_cli.py` |
 
@@ -57,7 +57,7 @@ The only retained Cosmos3 SkyPilot YAMLs are real executable workflows:
 
 - `npa-workflows/cosmos-fetch.yaml`
 - `cosmos3-generate.yaml`
-- `cosmos3-text-to-image-inference.yaml`
+- `npa-workflows/cosmos3-text-to-image.yaml` (the raw template it replaced is retired)
 
 Do not restore `cosmos3-setup.yaml`, `cosmos3-codebase-nav.yaml`,
 `cosmos3-env-troubleshoot.yaml`, or `cosmos3-post-training.yaml` as skill

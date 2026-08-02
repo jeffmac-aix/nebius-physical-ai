@@ -35,7 +35,7 @@ Real NPA setup surfaces are:
   runtime cache.
 - `npa/workflows/workbench/npa-workflows/cosmos-fetch.yaml` for a workflow fetch
   workflow that runs those real commands.
-- `npa/src/npa/workflows/skypilot/cosmos3-text-to-image-inference.yaml` for
+- `npa/workflows/workbench/npa-workflows/cosmos3-text-to-image.yaml` for
   the H100 text-to-image smoke workflow.
 
 ## Setup Flow
