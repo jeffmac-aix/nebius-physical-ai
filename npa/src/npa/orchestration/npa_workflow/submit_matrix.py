@@ -189,15 +189,11 @@ SUBMIT_LIVE_MATRIX: tuple[SubmitLiveCase, ...] = (
         "gpu",
         secret_envs=("HF_TOKEN", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"),
         image_tool="cosmos3-reason",
-        plan_only=True,
         notes=(
-            "Driven live to job 309, which is why the tool exists at all: fetch, uv sync and "
-            "inference all reached the framework. Blocked one step short — the cosmos3 image "
-            "installs npa with a curated --no-deps dependency list, so overlaying a newer npa "
-            "leaves the CLI's import chain short of `paramiko`. Needs either that dependency "
-            "in the image or a with-deps fallback for the source overlay; the twin's template "
-            "is not retired until it runs. Also needs the Cosmos image rather than SkyPilot's "
-            "default: transformer_engine links against glibc >= 2.32 (job 301)."
+            "Clones the Cosmos framework, syncs its uv environment, downloads Cosmos3-Nano and "
+            "generates an image. Needs the Cosmos image rather than SkyPilot's default: "
+            "transformer_engine links against glibc >= 2.32 (job 301), which no LD_LIBRARY_PATH "
+            "can supply."
         ),
     ),
     SubmitLiveCase(
