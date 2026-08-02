@@ -265,14 +265,21 @@ def wait_available(
     timeout_seconds: int = 300,
     runner: Any = None,
 ) -> None:
-    """Block until the Deployment reports Available, or say why it did not."""
+    """Block until THIS rollout's pods are serving, or say why they are not.
+
+    `kubectl wait --for=condition=Available` is the obvious choice and the wrong one: during a
+    rolling update it is satisfied by the OLD ReplicaSet's healthy pod. A deploy that shipped a
+    broken image reported "running" while the new pod sat in CrashLoopBackOff, and the next live
+    run failed against the old code with no sign anything was wrong (EVIDENCE.md §R41).
+    `rollout status` waits for the new ReplicaSet specifically.
+    """
 
     run = runner or _kubectl
     result = run(
         [
-            "wait",
+            "rollout",
+            "status",
             f"--namespace={namespace}",
-            "--for=condition=Available",
             f"--timeout={timeout_seconds}s",
             f"deployment/{name}",
         ],
@@ -280,7 +287,7 @@ def wait_available(
     )
     if result.returncode != 0:
         raise LanceDBKubernetesError(
-            f"LanceDB deployment {name} did not become available within {timeout_seconds}s: "
+            f"LanceDB deployment {name} did not roll out within {timeout_seconds}s: "
             f"{(result.stderr or result.stdout).strip()}"
         )
 

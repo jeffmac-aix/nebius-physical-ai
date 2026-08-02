@@ -117,7 +117,27 @@ def test_apply_sends_one_list_document_and_surfaces_failure() -> None:
         k8s.apply(_manifests(), runner=broken)
 
 
-def test_wait_available_reports_the_timeout_it_used() -> None:
+def test_wait_uses_rollout_status_not_condition_available() -> None:
+    """Live: a deploy shipped a broken image and reported "running".
+
+    `--for=condition=Available` is satisfied by the OLD ReplicaSet's healthy pod during a
+    rolling update, so the new pod crash-looped unnoticed and the next run failed against the
+    old code. `rollout status` waits for the new ReplicaSet.
+    """
+
+    seen: dict[str, object] = {}
+
+    def ok(args, stdin=None, timeout=300):
+        seen["args"] = args
+        return subprocess.CompletedProcess(args, 0, stdout="rolled out", stderr="")
+
+    k8s.wait_available("npa-lancedb", "default", runner=ok)
+
+    assert seen["args"][:2] == ["rollout", "status"]  # type: ignore[index]
+    assert "--for=condition=Available" not in seen["args"]  # type: ignore[operator]
+
+
+def test_wait_reports_the_timeout_it_used() -> None:
     def never(args, stdin=None, timeout=300):
         return subprocess.CompletedProcess(args, 1, stdout="", stderr="timed out")
 
