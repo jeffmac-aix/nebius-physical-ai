@@ -36,6 +36,14 @@ from npa.workbench.training_config import (
 import typer
 
 
+#: Values that count as "the operator said yes".
+_AFFIRMATIVE = frozenset({"1", "y", "yes", "true", "accept", "accepted"})
+
+
+def _is_affirmative(value: str) -> bool:
+    return value.strip().lower() in _AFFIRMATIVE
+
+
 def build_sonic_serverless_train_command(
     *,
     checkpoint: str,
@@ -406,13 +414,14 @@ def train_cmd(
         "--image-variant",
         help="SONIC image manifest variant. Defaults from --gpu-type.",
     ),
-    accept_nvidia_eula: bool = typer.Option(
-        False,
+    accept_nvidia_eula: str = typer.Option(
+        "",
         "--accept-nvidia-eula",
         help=(
-            "Accept NVIDIA's Omniverse / Isaac Sim / Software licence terms so `--runtime "
-            "in-job` may download Isaac Sim and Isaac Lab onto the machine. Off by default: "
-            "acceptance is the operator's to give, never the tool's to assume."
+            "Set to yes to accept NVIDIA's Omniverse / Isaac Sim / Software licence terms so "
+            "`--runtime in-job` may download Isaac Sim and Isaac Lab onto the machine. Empty by "
+            "default: acceptance is the operator's to give, never the tool's to assume. A VALUE "
+            "rather than a bare flag so a spec can carry it as a config key."
         ),
     ),
     gpu_type: str = typer.Option("l40s", "--gpu-type", help="GPU type for serverless Jobs."),
@@ -465,7 +474,7 @@ def train_cmd(
             isaac_lab_version=isaac_lab_version,
             output_path=checkpoint_output_path,
             output_format=output_format,
-            accept_nvidia_eula=accept_nvidia_eula,
+            accept_nvidia_eula=_is_affirmative(accept_nvidia_eula),
             training_config=training_config,
         )
         return

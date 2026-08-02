@@ -1367,6 +1367,7 @@ TOOL_CATALOG: dict[str, ToolEntry] = {
             # NVIDIA's terms are the operator's to accept. `--runtime in-job` downloads Isaac
             # Sim and Isaac Lab onto the machine, and the SONIC entrypoint refuses until this
             # is set (live job 327, EVIDENCE.md §R47). A spec is where a reviewer can see it.
+            "--accept-nvidia-eula",
             "{{config.sonic_accept_nvidia_eula}}",
             "--checkpoint",
             "{{config.checkpoint_uri}}",

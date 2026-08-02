@@ -151,3 +151,16 @@ def test_the_shipped_specs_do_not_accept_on_the_operators_behalf() -> None:
     for name in ("sonic-train.yaml", "sonic-locomotion-finetuning.yaml"):
         config = yaml.safe_load((specs / name).read_text(encoding="utf-8"))["config"]
         assert config["sonic_accept_nvidia_eula"] == "", name
+
+
+def test_acceptance_is_a_value_so_a_spec_can_carry_it() -> None:
+    """A bare boolean flag cannot be expressed by a toolRef argv, which is always flag+value."""
+
+    from npa.cli.workbench.sonic.train import _is_affirmative
+    from npa.orchestration.npa_workflow.catalog import TOOL_CATALOG
+
+    argv = [str(part) for part in TOOL_CATALOG["workbench.sonic.train"].argv_template]
+    assert argv[argv.index("--accept-nvidia-eula") + 1] == "{{config.sonic_accept_nvidia_eula}}"
+
+    assert _is_affirmative("yes") and _is_affirmative(" YES ") and _is_affirmative("1")
+    assert not _is_affirmative("") and not _is_affirmative("no") and not _is_affirmative("later")

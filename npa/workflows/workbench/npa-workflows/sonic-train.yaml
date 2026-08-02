@@ -16,7 +16,7 @@ config:
   sonic_runtime: in-job
   # NVIDIA's Omniverse / Isaac Sim / Software licence terms. `--runtime in-job` downloads Isaac
   # Sim and Isaac Lab onto the machine, and the SONIC entrypoint refuses until this is given.
-  # Empty means NOT accepted; set it to --accept-nvidia-eula to accept.
+  # Empty means NOT accepted; set it to `yes` to accept.
   sonic_accept_nvidia_eula: ""
   checkpoint_uri: "nvidia/GEAR-SONIC"
   data_uri: "s3://{{config.bucket}}/{{config.prefix}}/data/"
