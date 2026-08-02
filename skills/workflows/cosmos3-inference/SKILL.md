@@ -27,7 +27,7 @@ For environment errors, use
 The retained NPA Cosmos3 inference workflow is:
 
 ```text
-npa/src/npa/workflows/skypilot/cosmos3-text-to-image-inference.yaml
+npa/workflows/workbench/npa-workflows/cosmos3-text-to-image.yaml
 ```
 
 It is a real H100 text-to-image smoke workflow. It clones the Cosmos framework,
