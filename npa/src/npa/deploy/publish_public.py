@@ -11,7 +11,7 @@ This tool is license-guarded: it only ever copies tools reported by
 That set is currently empty. It used to hold ``isaac-lab``, ``sonic`` and ``groot``
 (plus the derived ``sonic-mujoco``), which baked NVIDIA Omniverse Kit; those images
 were re-architected to fetch Isaac Sim / Isaac Lab at first run under the operator's
-own EULA acceptance, so all 19 workbench images are now publishable. The refusal is
+own EULA acceptance, so every workbench image is now publishable. The refusal is
 kept, and tested against a synthetic restricted tool, for the next runtime we cannot
 ship.
 
@@ -19,6 +19,11 @@ Example (dry run first, then execute):
 
     python -m npa.deploy.publish_public --target ghcr.io/nebius/nebius-physical-ai --dry-run
     python -m npa.deploy.publish_public --target ghcr.io/nebius/nebius-physical-ai
+
+The copy path preflights the source registry first and verifies the result after, so a
+stale credential fails before anything is written and a copy cannot report success while
+nothing is publicly pullable. Making the packages public is the one step that cannot be
+automated (see ``package_settings_url``); the verification prints a click-through list.
 """
 
 from __future__ import annotations
@@ -29,6 +34,7 @@ import shutil
 import subprocess
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 
@@ -83,6 +89,55 @@ def build_publish_plan(
 
 
 # --------------------------------------------------------------------------------------
+# Source preflight
+#
+# `crane auth login` writes a config file and exits 0 for ANY token -- it never contacts
+# the registry -- so a stale NEBIUS_CR_TOKEN looks like a successful login and only
+# surfaces as a failed copy. And `crane copy` is a per-image subprocess with no
+# transaction around the set, so the Nth image failing leaves N-1 packages already
+# created. Reading every source manifest first turns both of those into one fast,
+# read-only failure before anything is written.
+# --------------------------------------------------------------------------------------
+
+_PREFLIGHT_TIMEOUT_SECONDS = 60
+
+
+def _crane_manifest_readable(ref: str, *, timeout: float = _PREFLIGHT_TIMEOUT_SECONDS) -> tuple[bool, str]:
+    """Whether ``ref`` can be read with the ambient registry credentials."""
+    crane = shutil.which("crane")
+    if not crane:
+        raise RuntimeError("crane not found on PATH; install go-containerregistry crane")
+    try:
+        completed = subprocess.run(
+            [crane, "manifest", ref],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return False, f"timed out after {timeout:g}s"
+    if completed.returncode == 0:
+        return True, "ok"
+    # crane puts the registry's reason on stderr; keep the last line, which is the
+    # useful one (UNAUTHORIZED vs MANIFEST_UNKNOWN distinguishes a dead token from a
+    # tag that was never pushed, and those need different fixes).
+    detail = (completed.stderr or completed.stdout or "").strip().splitlines()
+    return False, detail[-1] if detail else f"crane exited {completed.returncode}"
+
+
+def preflight_sources(plan: list[PublishItem]) -> list[tuple[PublishItem, str]]:
+    """Return the plan items whose SOURCE image cannot be read, with the reason."""
+    failures: list[tuple[PublishItem, str]] = []
+    for item in plan:
+        ok, detail = _crane_manifest_readable(item.source_ref)
+        print(f"  {item.source_ref}  {'ok' if ok else f'UNREADABLE — {detail}'}")
+        if not ok:
+            failures.append((item, detail))
+    return failures
+
+
+# --------------------------------------------------------------------------------------
 # Anonymous pullability
 #
 # Pushing to GHCR is NOT the same as publishing. A newly created container package is
@@ -92,9 +147,10 @@ def build_publish_plan(
 # packages: it is a manual step in the package's settings UI, and it is one-way (a public
 # package cannot be made private again).
 #
-# Without the check below, `publish_public` copies 19 images, exits 0, and reports success
-# while nothing is actually publicly pullable -- a silent false success on the one action
-# in this repo that cannot be undone. So the publish path verifies the outcome it claims.
+# Without the check below, `publish_public` copies every image, exits 0, and reports
+# success while nothing is actually publicly pullable -- a silent false success on the one
+# action in this repo that cannot be undone. So the copy path in main() runs this
+# verification inline and fails on it.
 # --------------------------------------------------------------------------------------
 
 _ANON_TIMEOUT_SECONDS = 30
@@ -176,6 +232,40 @@ def verify_public(plan: list[PublishItem]) -> list[tuple[PublishItem, str]]:
     return failures
 
 
+def package_settings_url(target_ref: str, *, owner_type: str = "orgs") -> str | None:
+    """Deep link to the GHCR package settings page that owns ``target_ref``.
+
+    The visibility flip is the one step of a publish that cannot be automated -- GitHub
+    has no REST endpoint for it on organisation-owned packages -- so the least we can do
+    is not make someone hunt for each package in a list. GHCR nests the package name
+    under the repository (``ghcr.io/<owner>/<repo>/<image>`` is the package
+    ``<repo>/<image>``), and the settings path percent-encodes that slash.
+
+    Returns ``None`` for non-GHCR targets, which have their own visibility model.
+    """
+    host, _, remainder = target_ref.partition("/")
+    if host != "ghcr.io" or not remainder:
+        return None
+    path = remainder.rpartition(":")[0] or remainder
+    owner, _, package = path.partition("/")
+    if not owner or not package:
+        return None
+    return (
+        f"https://github.com/{owner_type}/{owner}/packages/container/"
+        f"{urllib.parse.quote(package, safe='')}/settings"
+    )
+
+
+def visibility_checklist(failures: list[tuple[PublishItem, str]]) -> str:
+    """A markdown checklist of the packages still needing a manual visibility flip."""
+    lines = []
+    for item, _ in failures:
+        url = package_settings_url(item.target_ref)
+        name = item.target_ref.rpartition(":")[0].partition("/")[2]
+        lines.append(f"- [ ] [{name}]({url})" if url else f"- [ ] {item.target_ref}")
+    return "\n".join(lines)
+
+
 def _crane_copy(item: PublishItem) -> None:
     crane = shutil.which("crane")
     if not crane:
@@ -207,6 +297,24 @@ def main(argv: list[str] | None = None) -> int:
             "publish proves it actually published."
         ),
     )
+    parser.add_argument(
+        "--preflight",
+        action="store_true",
+        help=(
+            "Do not copy. Read every SOURCE manifest with the ambient registry credentials "
+            "and exit non-zero if any is unreadable. Proves the source token works (crane "
+            "auth login does not) and that every pinned tag exists, before anything is "
+            "written. The copy path runs this automatically."
+        ),
+    )
+    parser.add_argument(
+        "--checklist",
+        action="store_true",
+        help=(
+            "With --verify-public, also print a markdown checklist of package settings "
+            "links for the targets that are not public yet (for a job summary)."
+        ),
+    )
     args = parser.parse_args(argv)
 
     if not (args.target or "").strip():
@@ -235,28 +343,81 @@ def main(argv: list[str] | None = None) -> int:
         print("\nVerifying anonymous (unauthenticated) pullability:")
         failures = verify_public(plan)
         if failures:
-            print(
-                f"\n{len(failures)} of {len(plan)} image(s) are NOT publicly pullable.\n"
-                "Pushing to GHCR does not publish: a new container package is private, and a\n"
-                "package linked to a repository inherits the repository's access permissions\n"
-                "but NOT its visibility. GitHub offers no REST API to change visibility for\n"
-                "organisation-owned packages, so this is a one-time MANUAL step per package:\n"
-                "  https://github.com/orgs/<org>/packages -> <package> -> Package settings\n"
-                "  -> Danger Zone -> Change visibility -> Public\n"
-                "Note it is irreversible: a public package cannot be made private again.",
-                file=sys.stderr,
-            )
+            _explain_private_packages(failures, total=len(plan))
+            if args.checklist:
+                print("\n" + visibility_checklist(failures))
             return 1
         print(f"\nAll {len(plan)} image(s) are publicly pullable.")
         return 0
 
+    if args.preflight:
+        print("\nPreflighting source images (authenticated read, nothing written):")
+        return 1 if _preflight_or_explain(plan) else 0
+
     if args.dry_run:
         print("(dry run — nothing copied)")
         return 0
+
+    print("\nPreflighting source images (authenticated read, nothing written):")
+    if _preflight_or_explain(plan):
+        return 1
     for item in plan:
         _crane_copy(item)
-    print("done")
+    print(f"\nCopied {len(plan)} image(s).")
+
+    # Copying is not publishing, so do not stop here and report success. Verifying
+    # inline means the operator learns the real state -- and gets the click-through
+    # list for the one step that cannot be automated -- from the command that did
+    # the copy, rather than from a separate invocation they have to know to run.
+    print("\nVerifying anonymous (unauthenticated) pullability:")
+    failures = verify_public(plan)
+    if failures:
+        _explain_private_packages(failures, total=len(plan), after_copy=True)
+        print("\n" + visibility_checklist(failures))
+        return 1
+    print(f"\nAll {len(plan)} image(s) are publicly pullable.")
     return 0
+
+
+def _preflight_or_explain(plan: list[PublishItem]) -> bool:
+    """Run the source preflight; explain and return True if it failed."""
+    failures = preflight_sources(plan)
+    if not failures:
+        return False
+    print(
+        f"\n{len(failures)} of {len(plan)} source image(s) could not be read; nothing was "
+        "copied.\n"
+        "UNAUTHORIZED means the source registry credential is missing or expired — mint a\n"
+        "fresh one and log in again:\n"
+        "  nebius iam get-access-token | crane auth login <registry-host> -u iam "
+        "--password-stdin\n"
+        "MANIFEST_UNKNOWN means the pinned tag is not in the source registry — build and\n"
+        "push that image, or correct its pin, before publishing.",
+        file=sys.stderr,
+    )
+    return True
+
+
+def _explain_private_packages(
+    failures: list[tuple[PublishItem, str]], *, total: int, after_copy: bool = False
+) -> None:
+    lead = (
+        "The copy succeeded, but pushing to GHCR does not publish."
+        if after_copy
+        else "Pushing to GHCR does not publish."
+    )
+    print(
+        f"\n{len(failures)} of {total} image(s) are NOT publicly pullable.\n"
+        f"{lead} A new container package is private, and a\n"
+        "package linked to a repository inherits the repository's access permissions\n"
+        "but NOT its visibility. GitHub offers no REST API to change visibility for\n"
+        "organisation-owned packages, so this is a MANUAL step per package:\n"
+        "  Package settings -> Danger Zone -> Change visibility -> Public\n"
+        "It is one-time — visibility persists across later pushes to the same package —\n"
+        "and irreversible: a public package cannot be made private again.\n"
+        "Direct links below (user-owned packages live under /users/ instead of /orgs/).",
+        file=sys.stderr,
+    )
 
 
 if __name__ == "__main__":

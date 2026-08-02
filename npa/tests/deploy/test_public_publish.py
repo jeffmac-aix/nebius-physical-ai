@@ -437,3 +437,122 @@ def test_a_token_endpoint_refusal_is_reported_as_a_verdict_not_a_glitch(monkeypa
     assert not ok
     assert "private or does not exist yet" in detail
     assert "could not obtain" not in detail
+
+
+# --------------------------------------------------------------------------------------
+# Source preflight and the manual-visibility click-through
+#
+# The copy loop is a sequence of independent `crane copy` subprocesses with no transaction
+# around it, and `crane auth login` never contacts the registry, so both a dead credential
+# and a missing pinned tag used to surface as "image 7 of 22 failed" with six packages
+# already created. These pin the read-only failure that now happens first.
+# --------------------------------------------------------------------------------------
+
+
+def test_the_copy_path_writes_nothing_when_a_source_is_unreadable(monkeypatch, capsys) -> None:
+    from npa.deploy import publish_public
+
+    def explode(item) -> None:  # pragma: no cover - must not run
+        raise AssertionError(f"nothing may be copied after a failed preflight: {item.target_ref}")
+
+    monkeypatch.setattr(publish_public, "_crane_copy", explode)
+    monkeypatch.setattr(
+        publish_public,
+        "_crane_manifest_readable",
+        lambda ref, **_: (False, "UNAUTHORIZED: authentication required"),
+    )
+
+    rc = publish_public.main(["--target", "ghcr.io/example/workbench"])
+
+    assert rc == 1
+    assert "nothing was copied" in capsys.readouterr().err
+
+
+def test_preflight_reports_the_registrys_own_reason(monkeypatch) -> None:
+    """UNAUTHORIZED (dead token) and MANIFEST_UNKNOWN (absent tag) need different fixes."""
+    from npa.deploy import publish_public
+
+    class FakeCompleted:
+        returncode = 1
+        stdout = ""
+        stderr = "Error: fetching manifest\nMANIFEST_UNKNOWN: manifest unknown"
+
+    monkeypatch.setattr(publish_public.shutil, "which", lambda _: "/usr/bin/crane")
+    monkeypatch.setattr(publish_public.subprocess, "run", lambda *a, **k: FakeCompleted())
+
+    ok, detail = publish_public._crane_manifest_readable("cr.example/abc/npa-lerobot:1.0")
+
+    assert not ok
+    assert detail == "MANIFEST_UNKNOWN: manifest unknown"
+
+
+def test_the_preflight_flag_never_copies(monkeypatch) -> None:
+    from npa.deploy import publish_public
+
+    def explode(item) -> None:  # pragma: no cover - must not run
+        raise AssertionError(f"--preflight must not copy {item.target_ref}")
+
+    monkeypatch.setattr(publish_public, "_crane_copy", explode)
+    monkeypatch.setattr(publish_public, "_crane_manifest_readable", lambda ref, **_: (True, "ok"))
+
+    assert publish_public.main(["--target", "ghcr.io/example/workbench", "--preflight"]) == 0
+
+
+def test_a_successful_copy_still_fails_while_the_packages_are_private(monkeypatch, capsys) -> None:
+    """Copying every image and exiting 0 would be the silent false success we guard against."""
+    from npa.deploy import publish_public
+
+    copied: list[str] = []
+    monkeypatch.setattr(publish_public, "_crane_manifest_readable", lambda ref, **_: (True, "ok"))
+    monkeypatch.setattr(publish_public, "_crane_copy", lambda item: copied.append(item.target_ref))
+    monkeypatch.setattr(publish_public, "anonymous_pull_ok", lambda ref, **_: (False, "HTTP 403"))
+
+    rc = publish_public.main(["--target", "ghcr.io/example/workbench"])
+    captured = capsys.readouterr()
+
+    assert rc == 1
+    assert copied, "the copy itself must still have happened"
+    assert "The copy succeeded" in captured.err, "must not read as a failed copy"
+    # The click-through list is the whole point: no hunting for 20-odd packages by hand.
+    assert "/packages/container/" in captured.out
+
+
+def test_a_copy_exits_zero_only_once_the_packages_are_public(monkeypatch) -> None:
+    from npa.deploy import publish_public
+
+    monkeypatch.setattr(publish_public, "_crane_manifest_readable", lambda ref, **_: (True, "ok"))
+    monkeypatch.setattr(publish_public, "_crane_copy", lambda item: None)
+    monkeypatch.setattr(publish_public, "anonymous_pull_ok", lambda ref, **_: (True, "HTTP 200"))
+
+    assert publish_public.main(["--target", "ghcr.io/example/workbench"]) == 0
+
+
+def test_settings_url_encodes_the_repository_nested_package_name() -> None:
+    from npa.deploy.publish_public import package_settings_url
+
+    url = package_settings_url("ghcr.io/nebius/nebius-physical-ai/npa-lerobot:0.5.1")
+
+    # GHCR package name is "<repo>/<image>"; the slash is percent-encoded in the path, and
+    # a raw slash here silently 404s.
+    assert url == (
+        "https://github.com/orgs/nebius/packages/container/"
+        "nebius-physical-ai%2Fnpa-lerobot/settings"
+    )
+
+
+def test_settings_url_is_none_for_a_registry_with_a_different_visibility_model() -> None:
+    from npa.deploy.publish_public import package_settings_url
+
+    assert package_settings_url("cr.eu-north1.nebius.cloud/abc/npa-lerobot:0.5.1") is None
+
+
+def test_the_checklist_covers_exactly_the_packages_still_private(monkeypatch) -> None:
+    from npa.deploy import publish_public
+
+    plan = build_publish_plan(target_registry="ghcr.io/example/workbench")
+    failures = [(plan[0], "HTTP 403"), (plan[2], "HTTP 403")]
+
+    checklist = publish_public.visibility_checklist(failures)
+
+    assert checklist.count("- [ ] ") == 2
+    assert plan[1].target_ref.rpartition(":")[0].partition("/")[2] not in checklist

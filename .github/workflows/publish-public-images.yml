@@ -89,6 +89,15 @@ jobs:
             echo "${{ secrets.NEBIUS_CR_TOKEN }}" | crane auth login "$host" -u iam --password-stdin
           done
 
+      # `crane auth login` writes a config file and exits 0 for any string -- it never
+      # contacts the registry -- so the step above proves nothing about NEBIUS_CR_TOKEN.
+      # This reads every source manifest, which fails in seconds on an expired token or a
+      # pin that was never pushed, rather than partway through the copy loop with some
+      # packages already created.
+      - name: Preflight the source registry credential and every pinned tag
+        if: ${{ inputs.dry_run == false }}
+        run: python -m npa.deploy.publish_public --target "${{ steps.target.outputs.value }}" --preflight
+
       # Last line of defence before an irreversible action. publish_public trusts the
       # packaging contract, which is a statement about the Dockerfiles; this checks the
       # actual images the canonical tags resolve to right now.
@@ -124,44 +133,46 @@ jobs:
             exit 1
           fi
 
-      - name: Publish
-        if: ${{ inputs.dry_run == false }}
-        run: python -m npa.deploy.publish_public --target "${{ steps.target.outputs.value }}"
-
       # Pushing is not publishing. A new GHCR container package is PRIVATE, and a package
       # linked to a repository inherits that repository's access permissions but NOT its
       # visibility -- so even a public repo yields private packages. GitHub exposes no REST
       # API to change visibility for organisation-owned packages, so it cannot be automated
       # here; it is a one-time manual step per package, and it is irreversible.
       #
-      # Without this check the job would copy every image, exit 0 and look successful while
-      # nothing was actually publicly pullable. It fails the run instead, and prints the
-      # exact UI path to fix it.
-      - name: Verify the published images are anonymously pullable
+      # publish_public copies and then verifies inline, so this step fails when the copy
+      # worked but nothing is publicly pullable. That is the expected outcome of the FIRST
+      # publish; the summary below turns it into a click-through list.
+      - name: Publish and verify
         if: ${{ inputs.dry_run == false }}
-        run: python -m npa.deploy.publish_public --target "${{ steps.target.outputs.value }}" --verify-public
+        run: python -m npa.deploy.publish_public --target "${{ steps.target.outputs.value }}"
 
-      - name: Explain what to do if verification failed
+      - name: Write the visibility checklist to the job summary
         if: ${{ failure() && inputs.dry_run == false }}
         run: |
           cat >> "$GITHUB_STEP_SUMMARY" <<'MD'
           ## Images copied, but not yet public
 
-          The copy succeeded; the packages are **private**, which is GHCR's default for a
-          newly created package. This cannot be automated — GitHub has no REST API to set
-          visibility for organisation-owned packages.
+          If the failing step was **Publish and verify**, the copy succeeded and the packages
+          are **private** — GHCR's default for a newly created package. This cannot be
+          automated: GitHub has no REST API to set visibility for organisation-owned
+          packages.
 
-          One-time, per package, by someone with admin on the package:
-
-          1. <https://github.com/orgs/nebius/packages>
-          2. Select the package (e.g. `npa-lerobot`) → **Package settings**
-          3. **Danger Zone** → **Change visibility** → **Public**
+          Open each link below, then **Danger Zone → Change visibility → Public**. It is
+          one-time (visibility persists across later pushes to the same package).
 
           > **This is irreversible.** A public package cannot be made private again, and
           > deleting a tag does not undo publication. Confirm the redistribution
           > classification before doing it — see `docs/workbench/container-packaging.md`.
 
-          Then re-run this workflow with `dry_run=false` to re-verify, or run locally:
+          MD
+          # Only the packages that are still private, so the list shrinks as they are flipped.
+          python -m npa.deploy.publish_public \
+            --target "${{ steps.target.outputs.value }}" \
+            --verify-public --checklist 2>/dev/null \
+            | grep '^- \[ \]' >> "$GITHUB_STEP_SUMMARY" || true
+          cat >> "$GITHUB_STEP_SUMMARY" <<'MD'
+
+          Re-run this workflow with `dry_run=false` to re-verify, or run locally:
 
           ```
           npa/.venv/bin/python -m npa.deploy.publish_public --verify-public

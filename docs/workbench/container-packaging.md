@@ -230,8 +230,8 @@ pullable by anyone) is therefore to **mirror to a public-capable registry** —
 GHCR (`ghcr.io`, the default), Docker Hub, or Quay.
 
 Only the `public`-classified subset may be mirrored. Use the license-guarded
-publisher, which copies exactly `publicly_publishable_tools()` (**19 images** — every
-workbench image, now that the Isaac images fetch Isaac at run time) and hard-refuses
+publisher, which copies exactly `publicly_publishable_tools()` (every workbench
+image, now that the Isaac images fetch Isaac at run time) and hard-refuses
 anything still classified `restricted`:
 
 ```bash
@@ -239,6 +239,22 @@ anything still classified `restricted`:
 python -m npa.deploy.publish_public --dry-run
 python -m npa.deploy.publish_public --target ghcr.io/<org>/<repo>
 ```
+
+The copy path is bracketed by two checks it runs itself. Before writing anything it
+reads every **source** manifest, because `crane auth login` writes a config file and
+exits 0 for any string without ever contacting the registry — so a stale credential
+would otherwise surface partway through the copy loop with some packages already
+created. `UNAUTHORIZED` means the token is dead, `MANIFEST_UNKNOWN` means the pinned
+tag was never pushed. Run it alone with `--preflight`, and mint a fresh source token
+with:
+
+```bash
+nebius iam get-access-token | crane auth login cr.eu-north1.nebius.cloud -u iam --password-stdin
+```
+
+In CI that token is the `NEBIUS_CR_TOKEN` repository secret (GHCR push uses the
+built-in `GITHUB_TOKEN`). It is short-lived, so re-mint it rather than assuming the
+stored value still works; the preflight step fails in seconds if it doesn't.
 
 or the `Publish public images` GitHub Actions workflow (manual dispatch,
 dry-run by default). **Consumers in any tenant** then pull the OSS images by
@@ -256,37 +272,46 @@ public repo yields private packages. GitHub exposes **no REST API** to change vi
 organisation-owned packages (only user-owned ones), so this step cannot be automated. It is
 manual, per package, and one-way.
 
-The publish workflow therefore verifies the outcome it claims rather than reporting success
-on a copy:
+A copy therefore verifies the outcome it claims instead of reporting success on the
+push, and the same check runs standalone:
 
 ```bash
 # checks every planned target over the UNAUTHENTICATED path; non-zero if any is private
 python -m npa.deploy.publish_public --verify-public
 ```
 
-As of writing, all 19 report `NOT PUBLIC` because nothing has ever been pushed to the
-mirror — `ghcr.io/nebius/nebius-physical-ai` does not exist yet. GHCR creates a package on
-first push; there is no registry to provision in advance.
+As of writing every image reports `NOT PUBLIC` because nothing has ever been pushed to
+the mirror — `ghcr.io/nebius/nebius-physical-ai` does not exist yet. GHCR creates a
+package on first push; there is no registry to provision in advance.
 
-To make a package public, someone with admin on it must:
+To make a package public, someone with admin on it opens that package's settings and
+uses **Danger Zone → Change visibility → Public**. `--verify-public --checklist` prints
+a direct link per package that is still private, and the publish workflow writes the
+same list into its job summary, so this is a row of clicks rather than a hunt through
+<https://github.com/orgs/nebius/packages>:
 
-1. Open <https://github.com/orgs/nebius/packages>
-2. Select the package (e.g. `npa-lerobot`) → **Package settings**
-3. **Danger Zone** → **Change visibility** → **Public**
+```
+https://github.com/orgs/<org>/packages/container/<repo>%2F<image>/settings
+```
+
+The flip is **one-time per package**, not per release: visibility persists across later
+pushes of new tags to an existing package. So the manual cost is paid once at
+onboarding, and adding a new image later costs one more flip.
 
 > **This is irreversible.** A public package cannot be made private again, and deleting a
 > tag does not undo publication — treat a mistaken publish as an incident, not a revert.
 > Confirm the `redistribution` classification of every image in the plan first.
 
-Two related notes:
-
-- `crane copy` transfers manifests unchanged, so it cannot add an
-  `org.opencontainers.image.source` label. Published packages will therefore be
-  org-scoped and unlinked from the repo. Adding that label to each Dockerfile would make
-  packages link automatically (and inherit repo access permissions), but it requires
-  rebuilding every image, so it is deliberately not done here.
-- The workflow needs a `NEBIUS_CR_TOKEN` secret to *read* from the Nebius source registry.
-  GHCR push uses the built-in `GITHUB_TOKEN`.
+Why this one step cannot be automated: GitHub's Packages REST API exposes list, delete
+and restore only, and the visibility `PATCH` that exists for *user*-owned packages has
+no organisation equivalent — it 404s for any token type, including GitHub App tokens.
+A package linked to a repository inherits that repository's access *permissions* but
+[explicitly not its
+visibility](https://docs.github.com/en/packages/learn-github-packages/configuring-a-packages-access-control-and-visibility),
+so a public repo does not yield public packages either. Note also that `crane copy`
+transfers manifests unchanged, so it cannot add an `org.opencontainers.image.source`
+label; linking every package to the repo automatically would mean rebuilding every
+image, which is deliberately not done here.
 
 Never add a `restricted` image to a public target. Nothing is currently classified
 that way, and `publish_public` refuses anything that is, as defence in depth around the
