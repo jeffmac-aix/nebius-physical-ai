@@ -164,3 +164,27 @@ def test_acceptance_is_a_value_so_a_spec_can_carry_it() -> None:
 
     assert _is_affirmative("yes") and _is_affirmative(" YES ") and _is_affirmative("1")
     assert not _is_affirmative("") and not _is_affirmative("no") and not _is_affirmative("later")
+
+
+def test_lxml_is_staged_on_the_import_path_for_gear_sonic() -> None:
+    """Live job 328: the real trainer ran and died on `No module named 'lxml'`.
+
+    `gear_sonic` imports it, and the Isaac venv the image builds AT RUNTIME — under a
+    content-hashed /opt/isaac-cache path, after EULA acceptance — does not contain it. That venv
+    does not exist when this script starts, so PYTHONPATH is the only seam: it is inherited by
+    whatever interpreter the entrypoint ends up creating (EVIDENCE §R47).
+    """
+
+    body = build_sonic_train_body(**_kwargs())
+
+    assert "import lxml" in body
+    assert "--target" in body
+    assert 'export PYTHONPATH="$npa_sonic_deps' in body
+    # Staged before the entrypoint, which is what creates the venv that needs it.
+    assert body.index("npa_sonic_deps") < body.index("/entrypoint.sh train")
+
+
+def test_staging_lxml_is_skipped_when_it_is_already_importable() -> None:
+    body = build_sonic_train_body(**_kwargs())
+
+    assert "if ! \"$NPA_PYTHON_BIN\" -c 'import lxml'" in body
