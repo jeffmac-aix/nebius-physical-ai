@@ -563,12 +563,11 @@ skills:
           - npa/workflows/workbench/npa-workflows/cosmos-fetch.yaml
           - npa/src/npa/workflows/skypilot/cosmos3-text-to-image-inference.yaml
           - npa/src/npa/workflows/byof/profiles/isaac-lab-rl-train.yaml
-          - npa/src/npa/workflows/skypilot/sim-to-real-pipeline.yaml
-          - npa/src/npa/workflows/skypilot/sim-to-real-trigger.yaml
           - npa/src/npa/workflows/skypilot/sonic-train-standalone.yaml
       # Retired SkyPilot templates whose npa.workflow spec is now the reference.
       - type: npa_workflow_yaml
         paths:
+          - npa/workflows/workbench/npa-workflows/sim2real-vlm-rl.yaml
           - npa/workflows/workbench/npa-workflows/isaac-lab-rl-sweep.yaml
           - npa/workflows/workbench/npa-workflows/cosmos3-reason.yaml
           - npa/workflows/workbench/npa-workflows/mjlab-eval.yaml
