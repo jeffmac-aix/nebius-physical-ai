@@ -180,3 +180,29 @@ def test_the_registry_secret_is_minted_not_borrowed(monkeypatch) -> None:
     assert "--docker-server=cr.example.com" in create
     assert "--docker-password=fresh-token" in create
     assert calls[1][:3] == ["apply", "-f", "-"]
+
+
+def test_auto_auth_is_none_when_no_token_is_configured(monkeypatch) -> None:
+    """Live: `auto` meant `token`, no token existed, and /health answered 500 forever.
+
+    The readiness probe could never pass, so the Deployment never became Available and the
+    deploy timed out with no hint about why. A ClusterIP Service is not reachable off-cluster,
+    so `auto` means "token if the operator supplied one".
+    """
+
+    from npa.cli.workbench.lancedb.deploy import _auth_mode_for
+    from npa.cli.workbench.lancedb.helpers import DEFAULT_TOKEN_ENV, LanceDBRuntime
+
+    monkeypatch.delenv(DEFAULT_TOKEN_ENV, raising=False)
+    assert _auth_mode_for(LanceDBRuntime.kubernetes, "auto") == "none"
+
+    monkeypatch.setenv(DEFAULT_TOKEN_ENV, "s3cr3t")
+    assert _auth_mode_for(LanceDBRuntime.kubernetes, "auto") == "token"
+
+
+def test_explicit_token_mode_is_still_honoured(monkeypatch) -> None:
+    from npa.cli.workbench.lancedb.deploy import _auth_mode_for
+    from npa.cli.workbench.lancedb.helpers import DEFAULT_TOKEN_ENV, LanceDBRuntime
+
+    monkeypatch.delenv(DEFAULT_TOKEN_ENV, raising=False)
+    assert _auth_mode_for(LanceDBRuntime.kubernetes, "token") == "token"

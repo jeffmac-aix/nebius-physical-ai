@@ -38,7 +38,15 @@ def _is_secret_env(key: str) -> bool:
 def _auth_mode_for(runtime: LanceDBRuntime, auth_mode: str) -> str:
     value = auth_mode.strip().lower()
     if value == "auto":
-        return "none" if runtime == LanceDBRuntime.container else "token"
+        if runtime == LanceDBRuntime.container:
+            return "none"
+        if runtime == LanceDBRuntime.kubernetes:
+            # `auto` means "token if the operator supplied one". A ClusterIP Service is not
+            # internet-reachable, and defaulting to token without a token deployed a service
+            # whose /health answered `{"detail":"LANCEDB_TOKEN is not configured"}` forever —
+            # a readiness probe that can never pass (live, EVIDENCE.md §R41).
+            return "token" if os.environ.get(DEFAULT_TOKEN_ENV, "").strip() else "none"
+        return "token"
     if value not in {"none", "token"}:
         fail("--auth-mode must be one of auto, none, or token")
     if value == "none" and runtime in {LanceDBRuntime.vm, LanceDBRuntime.byovm}:
@@ -324,6 +332,11 @@ def deploy_cmd(
                 text=f"LanceDB would be deployed to {resolved_endpoint}",
             )
             return
+        if resolved_auth == "token" and not os.environ.get(token_env, "").strip():
+            fail(
+                f"--auth-mode token needs a token: set {token_env} before deploying, or pass "
+                "--auth-mode none for a ClusterIP service that is not reachable off-cluster."
+            )
         try:
             if host and pull_secrets == (MANAGED_PULL_SECRET,):
                 ensure_registry_secret(MANAGED_PULL_SECRET, target_namespace, host)
