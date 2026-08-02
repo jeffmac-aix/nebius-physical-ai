@@ -2948,3 +2948,26 @@ work LanceDB needed. On this cluster it reported `exceeded its progress deadline
 deployment in any namespace, which points at its `_resolve_kubeconfig(cluster_name=…)` selecting
 a different context than the one `kubectl` uses here. That is the next thing to chase, and it is
 an operational mismatch rather than a missing capability.
+
+## R45. The SONIC launcher problem is fixed; the remaining gate is the vendor's
+
+`workbench.sonic.train` asked for `--runtime serverless` and failed live with
+`SONIC --runtime serverless requires --project-id` (§R11) — a workflow stage trying to
+provision infrastructure the workflow engine had already provisioned for it.
+
+Two live jobs traced the fix to the vendor's own front door:
+
+| Job | Reached | Stopped by |
+| --- | --- | --- |
+| 322 | the training body ran | `/entrypoint.sh not found in SONIC image` — **the runtime worked**; the live case had not asked for the vendor image, so it ran on SkyPilot's default one. |
+| 323 | the SONIC image's own `/entrypoint.sh train` | NVIDIA's asset gate: a licence notice followed by `Nothing has been downloaded. See docs/workbench/container-packaging.md.` |
+
+Job 323 is the useful one. The stage got all the way into the vendor trainer, on the vendor
+image, in the pod the workflow engine had already provisioned — which is exactly what `in-job`
+was for. What stops it now is an **EULA/NGC credential question about the image**, not a
+workflow question, and it is the same gate an operator would hit running that container by hand.
+
+So the two SONIC templates stay, with a different reason than they had: not "the launcher
+provisions its own infrastructure", which is fixed, but "a real SONIC training run needs the
+image's assets". The engine work, its tests, and both live traces are recorded here so the
+person who has the NGC entitlement can finish it in one run rather than rediscovering the path.

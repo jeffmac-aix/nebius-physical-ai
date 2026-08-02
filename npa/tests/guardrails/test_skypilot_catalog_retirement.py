@@ -36,13 +36,18 @@ REMAINING: dict[str, str] = {
         "to chase. See EVIDENCE.md \u00a7R44"
     ),
     # --- referenced by a CLI/SDK path pointer or shipped data ---
-    "sonic-train-standalone.yaml": "three-tier contract + standalone-policy guardrail",
     # --- no npa.workflow twin authored yet ---
     # --- twin exists but is NOT live-verified yet ---
     "sonic-locomotion-finetuning.yaml": (
-        "twin's retarget stage passes live (job 205) but its train stage asks the in-pod "
-        "CLI to launch a Nebius SERVERLESS job (nested infrastructure) and fails with "
-        "'--runtime serverless requires --project-id'; see EVIDENCE.md \u00a7R11"
+        "the LAUNCHER problem is fixed: `sonic train --runtime in-job` trains in the pod "
+        "instead of provisioning a Nebius Job from inside it (EVIDENCE.md \u00a7R42). Live job "
+        "323 ran the SONIC image's own /entrypoint.sh and reached NVIDIA's asset gate — "
+        "'Nothing has been downloaded' — which is an EULA/NGC credential question for the "
+        "image, not a workflow one. See EVIDENCE.md \u00a7R45"
+    ),
+    "sonic-train-standalone.yaml": (
+        "same as sonic-locomotion-finetuning: the launcher is fixed and the twin now reaches "
+        "the vendor trainer; what remains is the image's asset gate. See EVIDENCE.md \u00a7R45"
     ),
     # --- RETIRED here: twin live-verified, see EVIDENCE.md -----------------------
     # cosmos3-reason.yaml     job 182            npa-wf-gpu-cosmos3-reason-af7ded35
