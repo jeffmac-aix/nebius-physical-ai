@@ -38,7 +38,7 @@ RUN mkdir -p /tmp/hf_home/cosmos-reason2 /tmp/hf_home/cosmos-reason2-2b \
       "transformers>=4.51,<5" \
     && python -m pip install --no-deps -e /opt/npa \
     && python -m py_compile /opt/npa/src/npa/workflows/sim2real_loop.py \
-    && chown -R ubuntu:ubuntu /workspace /tmp/hf_home /opt/npa/src /opt/npa/pyproject.toml
+    && chown -R ubuntu:ubuntu /workspace /tmp/hf_home /opt/npa
 
 # --- Schedulable-on-Kubernetes prerequisites -----------------------------------
 #
