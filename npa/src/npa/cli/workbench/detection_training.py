@@ -75,7 +75,14 @@ def emit(payload: dict[str, Any], *, output: OutputFormat, text: str | None = No
 
 def deploy_cmd(
     project: str = typer.Option("", "--project", "-p", help="Project alias used to resolve container_registry."),
-    cluster_name: str = typer.Option("npa-workbench-eu-north1", "--cluster-name", help="NPA cluster profile name for cached kubeconfig."),
+    cluster_name: str = typer.Option(
+        "",
+        "--cluster-name",
+        help=(
+            "NPA cluster profile whose cached kubeconfig to use. Empty (the default) uses the "
+            "ambient kubeconfig, i.e. the cluster `kubectl` is already pointed at."
+        ),
+    ),
     kubeconfig: str = typer.Option("", "--kubeconfig", help="Kubeconfig path override."),
     image: str = typer.Option("", "--image", help=f"Container image to deploy. Defaults to {DEFAULT_IMAGE}."),
     name: str = typer.Option(DEFAULT_NAME, "--name", help="Kubernetes deployment/service name."),
@@ -505,7 +512,14 @@ def list_cmd(
     service: bool = typer.Option(False, "--service", help="Call a deployed service endpoint."),
     endpoint: str = typer.Option("", "--endpoint", help="Detection-training service endpoint."),
     token_env: str = typer.Option(DEFAULT_TOKEN_ENV, "--token-env", help="Environment variable containing service token."),
-    cluster_name: str = typer.Option("npa-workbench-eu-north1", "--cluster-name", help="NPA cluster profile name for cached kubeconfig."),
+    cluster_name: str = typer.Option(
+        "",
+        "--cluster-name",
+        help=(
+            "NPA cluster profile whose cached kubeconfig to use. Empty (the default) uses the "
+            "ambient kubeconfig, i.e. the cluster `kubectl` is already pointed at."
+        ),
+    ),
     kubeconfig: str = typer.Option("", "--kubeconfig", help="Kubeconfig path override."),
     namespace: str = typer.Option(DEFAULT_NAMESPACE, "--namespace", help="Kubernetes namespace for local listing."),
     output: OutputFormat = typer.Option(OutputFormat.text, "--output", help="Output format."),
@@ -824,6 +838,16 @@ def _kubectl(
 
 
 def _resolve_kubeconfig(*, cluster_name: str, kubeconfig: str) -> str:
+    """Which kubeconfig to talk to, in order of explicitness.
+
+    `--cluster-name` used to DEFAULT to a specific profile, so every deploy quietly targeted
+    whichever cluster that cached kubeconfig pointed at — not the one the operator's `kubectl`
+    was on. Live, that produced the least helpful failure available: `kubectl apply` reported
+    "deployment configured", `rollout status` timed out, and the deployment was in no namespace
+    of the cluster being inspected, because it had been created on a different one
+    (EVIDENCE.md §R46).
+    """
+
     if kubeconfig.strip():
         return kubeconfig.strip()
     if not cluster_name.strip():

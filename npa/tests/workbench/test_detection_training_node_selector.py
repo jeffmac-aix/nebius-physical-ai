@@ -85,3 +85,50 @@ def test_a_bare_image_name_needs_no_pull_secret(monkeypatch) -> None:
     dt._ensure_image_pull_secret(
         image="npa-detection-training:1", secret_name="s", namespace="n", kubeconfig=""
     )
+
+
+def test_the_ambient_kubeconfig_is_the_default(tmp_path, monkeypatch) -> None:
+    """`--cluster-name` used to default to a profile, silently targeting another cluster.
+
+    Live, that gave the least helpful failure available: `kubectl apply` reported "deployment
+    configured", `rollout status` timed out, and the deployment existed in no namespace of the
+    cluster being inspected — because it was on a different one (EVIDENCE §R46).
+    """
+
+    from npa.cli.workbench.detection_training import _resolve_kubeconfig
+
+    assert _resolve_kubeconfig(cluster_name="", kubeconfig="") == ""
+
+
+def test_an_explicit_profile_is_still_honoured(tmp_path, monkeypatch) -> None:
+    from npa.cli.workbench import detection_training as dt
+
+    cached = tmp_path / ".npa" / "clusters" / "some-cluster" / "kubeconfig"
+    cached.parent.mkdir(parents=True)
+    cached.write_text("apiVersion: v1")
+    monkeypatch.setattr(dt.Path, "home", staticmethod(lambda: tmp_path))
+
+    assert dt._resolve_kubeconfig(cluster_name="some-cluster", kubeconfig="") == str(cached)
+
+
+def test_an_explicit_path_wins_over_a_profile() -> None:
+    from npa.cli.workbench.detection_training import _resolve_kubeconfig
+
+    assert (
+        _resolve_kubeconfig(cluster_name="some-cluster", kubeconfig="/tmp/kc")
+        == "/tmp/kc"
+    )
+
+
+def test_the_deploy_and_train_commands_agree_on_the_default() -> None:
+    """Two commands with different default clusters would deploy and then train elsewhere."""
+
+    import inspect
+
+    from npa.cli.workbench.detection_training import deploy_cmd, train_cmd
+
+    defaults = {
+        name: inspect.signature(cmd).parameters["cluster_name"].default.default
+        for name, cmd in (("deploy", deploy_cmd), ("train", train_cmd))
+    }
+    assert set(defaults.values()) == {""}, defaults
