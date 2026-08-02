@@ -2754,3 +2754,43 @@ clip — photoreal output synthesised from a depth control spec:
 Two of the three engine fixes here (the `npa` shim, the PYTHONPATH precedence) apply to every
 vendor image, not just this one, and both replace a class of failure that presents as "the tool
 does not have this command" while the tool plainly does.
+
+## R39. `cosmos3-text-to-image-inference.yaml` — the tool exists, the template stays (7 remain)
+
+This is the one place in this phase where the work landed and the retirement did not, so it is
+worth being exact about what was proven and what was not.
+
+The template carried the whole capability as bash: roughly a hundred lines of shell and heredoc'd
+python inside an `envs:` block, including the inference command itself as a multi-line
+environment variable that `run:` executed with `bash -lc "${NPA_COSMOS3_INFER_COMMAND}"`. Nothing
+about it was reachable from the CLI or the SDK, and nothing about it was tested. It is now
+`npa.workbench.cosmos.text_to_image` behind `npa workbench cosmos3 text-to-image`, with the
+framework's inference invoked as an argv rather than an interpolated string, and 14 unit tests —
+mostly around verification, which is what stands between "exit 0" and an image.
+
+### What the cluster taught, in order
+
+| Job | Reached | Stopped by |
+| --- | --- | --- |
+| 289 | tool ran | `'Cosmos3FetchResult' object has no attribute 'source_dir'` — wrong field, and no `ok` check, so a genuinely failed fetch would have surfaced as an AttributeError with the cause discarded |
+| 290 | fetch | `[Errno 2] No such file or directory: 'huggingface-cli'`, seconds after installing it: console scripts land in whichever scripts dir pip chose. Now resolved as `python -m huggingface_hub…` |
+| 291 | HF download | `[Errno 2] ... 'uv'`. SkyPilot's default image ships a uv in its own runtime dir — on setup's PATH, not the command's. Now probed and invoked as a module |
+| 296 | uv sync, into inference | `libstdc++.so.6: version GLIBCXX_3.4.29 not found` for transformer_engine. Now finds a libstdc++ that exports the symbol by reading the library |
+| 301 | same, one layer down | `libc.so.6: version GLIBC_2.32 not found`. glibc is the host C library; no `LD_LIBRARY_PATH` substitutes for it. The stage needs a modern base — which in production it already resolves (`workbench.cosmos3` → `npa-cosmos3-reason`); the harness had been clearing workbench images |
+| 304 | nothing | `container not found ("ray-node")` — the cosmos3 image was not SkyPilot-schedulable. Added its k8s-prereqs recipe |
+| 307 | setup | `npa is not importable after setup`. Forcing `/usr/bin` first put a bare system python ahead of the one carrying npa. **PATH ordering is an Isaac requirement, not a universal one**, and the guardrail now says so instead of demanding it everywhere |
+| 308 | setup | `[Errno 13] Permission denied: '/opt/npa/venv/bin/npa'`; `--user` is not a fallback inside a virtualenv. The runtime user now owns the environment it runs from |
+| 309 | setup, then the CLI | `ModuleNotFoundError: No module named 'paramiko'` |
+
+### Why it stays
+
+Job 309 is one dependency short. The cosmos3 image installs npa with a curated `--no-deps` list,
+so overlaying a newer npa leaves the CLI's import chain missing `paramiko`. The fix is either
+that dependency in the image or a with-deps fallback for the source overlay — the same
+two-attempt rule the vendor-interpreter install already uses. Both are small; neither is
+verified, so **the template is not deleted.** The live case is `plan_only` with that reason
+recorded, so it reads as a named blocker rather than an untried spec.
+
+What did land and is verified offline: the tool, its tests, the HF-module and uv-module
+resolution (both of which fix a class of "installed it, still cannot find it"), the libstdc++
+probe, the cosmos3 k8s-prereqs recipe, and the correction that PATH ordering is Isaac-specific.

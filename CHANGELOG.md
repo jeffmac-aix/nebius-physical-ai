@@ -171,6 +171,14 @@ under `npa/src/npa/workflows/skypilot/`.
   remote `--checkpoint-path`: a local path, an `s3://` prefix or a Hugging Face model id, because
   a stage's pod starts empty. Note LeRobot >= 0.6 requires the processor format, so a
   pre-0.6 public policy such as `lerobot/diffusion_pusht` needs migrating first.
+- **`npa workbench cosmos3 text-to-image`** turns the retired-in-spirit
+  `cosmos3-text-to-image-inference.yaml` bash block into a real command: fetch, uv sync, run the
+  framework's inference as an argv, verify the image, publish it with a manifest. Its template is
+  NOT yet retired — see EVIDENCE.md §R39 for the one remaining blocker.
+- **Hugging Face and uv are resolved as modules, not PATH lookups**, so "installed it, still
+  cannot find it" stops being a failure mode.
+- **PATH ordering (`/usr/bin` first) is an Isaac requirement, not a universal one.** Forcing it
+  on an image whose own python carries npa breaks setup.
 - **`npa` is shimmed to the recorded interpreter**, like `python3` already was, so a vendor
   image's baked console script cannot run a stale CLI against a fresh library.
 - **The staged npa source goes ahead of a baked one on `PYTHONPATH`.** A source tree on
