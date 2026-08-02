@@ -117,3 +117,37 @@ def test_the_carry_runs_before_the_entrypoint() -> None:
     body = build_sonic_train_body(**_kwargs())
 
     assert body.index("/proc/1/environ") < body.index("/entrypoint.sh train")
+
+
+def test_acceptance_is_off_by_default() -> None:
+    """Acceptance is the operator's to give, never the tool's to assume."""
+
+    body = build_sonic_train_body(**_kwargs())
+
+    assert "export OMNI_KIT_ACCEPT_EULA=YES" not in body
+    assert "export ISAACSIM_ACCEPT_EULA=YES" not in body
+
+
+def test_acceptance_is_exported_when_the_operator_gives_it() -> None:
+    """Live job 327: the /proc/1 carry found nothing, because SkyPilot's pod replaces PID 1.
+
+    The gate's own message asks for env entries on the pod or SkyPilot task, so the spec carries
+    the operator's acceptance and the body exports it (EVIDENCE §R47).
+    """
+
+    body = build_sonic_train_body(accept_nvidia_eula=True, **_kwargs())
+
+    assert "export OMNI_KIT_ACCEPT_EULA=YES" in body
+    assert "export ISAACSIM_ACCEPT_EULA=YES" in body
+    assert body.index("OMNI_KIT_ACCEPT_EULA=YES") < body.index("/entrypoint.sh train")
+
+
+def test_the_shipped_specs_do_not_accept_on_the_operators_behalf() -> None:
+    from pathlib import Path
+
+    import yaml
+
+    specs = Path(__file__).resolve().parents[3] / "npa/workflows/workbench/npa-workflows"
+    for name in ("sonic-train.yaml", "sonic-locomotion-finetuning.yaml"):
+        config = yaml.safe_load((specs / name).read_text(encoding="utf-8"))["config"]
+        assert config["sonic_accept_nvidia_eula"] == "", name

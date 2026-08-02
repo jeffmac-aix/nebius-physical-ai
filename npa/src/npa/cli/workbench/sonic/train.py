@@ -75,6 +75,7 @@ def build_sonic_train_body(
     headless: bool,
     max_iterations: int,
     isaac_lab_version: str,
+    accept_nvidia_eula: bool = False,
     training_config: TrainingConfig | None = None,
 ) -> str:
     """The training script itself: find the image's python, set SONIC_*, run its entrypoint.
@@ -116,6 +117,17 @@ def build_sonic_train_body(
         # Read from /proc/1/environ — the container's own PID 1 — rather than exporting YES
         # here: this forwards a decision the image already recorded, and an image that did NOT
         # accept still gets refused, which is the whole point of the gate.
+        + (
+            # The operator's own acceptance, carried from the spec. The gate's message asks for
+            # exactly this ("or as env: entries on the pod/SkyPilot task"), and a spec is where
+            # a reviewer can see who accepted what.
+            "export OMNI_KIT_ACCEPT_EULA=YES\n"
+            "export ISAACSIM_ACCEPT_EULA=YES\n"
+            "export ACCEPT_EULA=Y\n"
+            if accept_nvidia_eula
+            else ""
+        )
+        + (
         "for npa_eula in OMNI_KIT_ACCEPT_EULA ISAACSIM_ACCEPT_EULA ACCEPT_EULA; do\n"
         '  if [ -z "$(printenv "$npa_eula" || true)" ] && [ -r /proc/1/environ ]; then\n'
         '    npa_eula_value="$(tr \'\\0\' \'\\n\' < /proc/1/environ '
@@ -126,11 +138,13 @@ def build_sonic_train_body(
         "    fi\n"
         "  fi\n"
         "done\n"
-        'if [ -x /entrypoint.sh ]; then /entrypoint.sh train; '
+        )
+        + ('if [ -x /entrypoint.sh ]; then /entrypoint.sh train; '
         'else echo "/entrypoint.sh not found in SONIC image" >&2; exit 127; fi\n'
         "sonic_rc=$?\n"
         f"{upload}\n"
         'exit "$sonic_rc"'
+        )
     )
     return body
 
@@ -146,6 +160,7 @@ def build_sonic_in_job_train_script(
     max_iterations: int,
     isaac_lab_version: str,
     output_path: str,
+    accept_nvidia_eula: bool = False,
     training_config: TrainingConfig | None = None,
 ) -> str:
     """The same training body the serverless path sends remotely, to run right here.
@@ -165,6 +180,7 @@ def build_sonic_in_job_train_script(
         headless=headless,
         max_iterations=max_iterations,
         isaac_lab_version=isaac_lab_version,
+        accept_nvidia_eula=accept_nvidia_eula,
         training_config=training_config,
     )
     return f"export NPA_OUTPUT_PATH={output_path!r}\n{body}"
@@ -182,6 +198,7 @@ def _run_in_job_train(
     isaac_lab_version: str,
     output_path: str,
     output_format: OutputFormat,
+    accept_nvidia_eula: bool,
     training_config: TrainingConfig,
 ) -> None:
     """Run SONIC training in this pod and report where the checkpoint went."""
@@ -200,6 +217,7 @@ def _run_in_job_train(
         max_iterations=max_iterations,
         isaac_lab_version=isaac_lab_version,
         output_path=output_path,
+        accept_nvidia_eula=accept_nvidia_eula,
         training_config=training_config,
     )
     completed = subprocess.run(["bash", "-c", script], text=True)
@@ -388,6 +406,15 @@ def train_cmd(
         "--image-variant",
         help="SONIC image manifest variant. Defaults from --gpu-type.",
     ),
+    accept_nvidia_eula: bool = typer.Option(
+        False,
+        "--accept-nvidia-eula",
+        help=(
+            "Accept NVIDIA's Omniverse / Isaac Sim / Software licence terms so `--runtime "
+            "in-job` may download Isaac Sim and Isaac Lab onto the machine. Off by default: "
+            "acceptance is the operator's to give, never the tool's to assume."
+        ),
+    ),
     gpu_type: str = typer.Option("l40s", "--gpu-type", help="GPU type for serverless Jobs."),
     gpu_count: int = typer.Option(1, "--gpu-count", help="GPU count for serverless Jobs."),
     gpu_preset: str = typer.Option("", "--gpu-preset", help="Nebius GPU preset override."),
@@ -438,6 +465,7 @@ def train_cmd(
             isaac_lab_version=isaac_lab_version,
             output_path=checkpoint_output_path,
             output_format=output_format,
+            accept_nvidia_eula=accept_nvidia_eula,
             training_config=training_config,
         )
         return

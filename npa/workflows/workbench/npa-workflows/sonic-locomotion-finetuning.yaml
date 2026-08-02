@@ -16,6 +16,10 @@ config:
   # "--runtime serverless requires --project-id" and, given one, would have the workflow
   # launch infrastructure the engine is already responsible for (EVIDENCE.md §R42).
   sonic_runtime: in-job
+  # NVIDIA's Omniverse / Isaac Sim / Software licence terms. `--runtime in-job` downloads Isaac
+  # Sim and Isaac Lab onto the machine, and the SONIC entrypoint refuses until this is given.
+  # Empty means NOT accepted; set it to --accept-nvidia-eula to accept.
+  sonic_accept_nvidia_eula: ""
   suite: locomotion
   episodes: "8"
   checkpoint_uri: "nvidia/GEAR-SONIC"
