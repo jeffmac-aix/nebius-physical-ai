@@ -1,0 +1,282 @@
+"""Deploy the LanceDB wrapper into Kubernetes, where workflow stages can reach it.
+
+`npa workbench lancedb deploy` could put LanceDB on a local docker daemon, on a managed VM, or
+register LanceDB Cloud. None of those help a workflow stage: a stage runs in a pod, and a pod
+cannot reach ``http://localhost:8686`` on an operator's laptop. That gap is why two templates
+could not retire — `bdd100k-pipeline` and `dataset-ingest-curate` both have a stage that writes
+to LanceDB, and it failed live with ``[Errno -2] Name or service not known`` (EVIDENCE §R16).
+
+A Deployment plus a ClusterIP Service gives the cluster a stable DNS name, which is what a spec
+can put in its config and what every pod in the namespace can resolve.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+from dataclasses import dataclass, field
+from typing import Any
+
+#: Everything this module creates carries it, so `--destroy` can find its own objects and only
+#: its own objects.
+MANAGED_BY_LABEL = {"app.kubernetes.io/managed-by": "npa", "app.kubernetes.io/part-of": "npa-workbench"}
+
+DEFAULT_NAME = "npa-lancedb"
+DEFAULT_NAMESPACE = "default"
+DEFAULT_PORT = 8686
+
+#: Secret env names copied from the operator's environment into the pod. LanceDB needs them to
+#: read and write an s3:// storage path.
+STORAGE_SECRET_ENVS = ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY")
+
+
+class LanceDBKubernetesError(RuntimeError):
+    """Raised when the in-cluster LanceDB service cannot be deployed or inspected."""
+
+
+@dataclass(frozen=True)
+class KubernetesDeployment:
+    """What a deploy produced, and how to reach it."""
+
+    name: str
+    namespace: str
+    port: int
+    image: str
+    endpoint: str
+    storage_path: str
+    status: str
+    manifests: list[dict[str, Any]] = field(default_factory=list)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "runtime": "kubernetes",
+            "name": self.name,
+            "namespace": self.namespace,
+            "port": self.port,
+            "image": self.image,
+            "endpoint": self.endpoint,
+            "storage_path": self.storage_path,
+            "status": self.status,
+        }
+
+
+def service_endpoint(name: str, namespace: str, port: int) -> str:
+    """The in-cluster DNS name a pod in any namespace can resolve."""
+
+    return f"http://{name}.{namespace}.svc.cluster.local:{port}"
+
+
+def build_manifests(
+    *,
+    name: str = DEFAULT_NAME,
+    namespace: str = DEFAULT_NAMESPACE,
+    port: int = DEFAULT_PORT,
+    image: str,
+    storage_path: str,
+    auth_mode: str = "none",
+    token: str = "",
+    storage_endpoint_url: str = "",
+    secret_name: str = "",
+    image_pull_secrets: tuple[str, ...] = (),
+    replicas: int = 1,
+) -> list[dict[str, Any]]:
+    """Return the Deployment and Service documents, as data rather than a template string.
+
+    Data because it is testable: a rendered YAML string can only be checked by parsing it back,
+    and the interesting assertions here are about probe wiring and where credentials come from.
+    """
+
+    if not image.strip():
+        raise LanceDBKubernetesError("an image reference is required")
+    if not storage_path.strip():
+        raise LanceDBKubernetesError("a storage path is required")
+
+    labels = {"app": name, **MANAGED_BY_LABEL}
+    env: list[dict[str, Any]] = [
+        {"name": "LANCEDB_STORAGE_PATH", "value": storage_path},
+        {"name": "LANCEDB_PORT", "value": str(port)},
+        {"name": "LANCEDB_AUTH_MODE", "value": auth_mode},
+    ]
+    if token:
+        env.append({"name": "LANCEDB_TOKEN", "value": token})
+    if storage_endpoint_url:
+        env.append({"name": "AWS_ENDPOINT_URL", "value": storage_endpoint_url})
+        env.append({"name": "NEBIUS_S3_ENDPOINT", "value": storage_endpoint_url})
+    if secret_name:
+        # From a Secret, never from the manifest: a deploy should not leave keys in
+        # `kubectl get deploy -o yaml` for everyone with read access on the namespace.
+        for key in STORAGE_SECRET_ENVS:
+            env.append(
+                {
+                    "name": key,
+                    "valueFrom": {"secretKeyRef": {"name": secret_name, "key": key}},
+                }
+            )
+
+    container: dict[str, Any] = {
+        "name": "lancedb",
+        "image": image,
+        "imagePullPolicy": "IfNotPresent",
+        "ports": [{"containerPort": port, "name": "http"}],
+        "env": env,
+        # Readiness gates the Service's endpoints, so a stage never resolves the DNS name to a
+        # pod that is still opening its storage.
+        "readinessProbe": {
+            "httpGet": {"path": "/health", "port": port},
+            "initialDelaySeconds": 5,
+            "periodSeconds": 5,
+            "failureThreshold": 12,
+        },
+        "livenessProbe": {
+            "httpGet": {"path": "/health", "port": port},
+            "initialDelaySeconds": 30,
+            "periodSeconds": 30,
+            "failureThreshold": 6,
+        },
+    }
+
+    pod_spec: dict[str, Any] = {"containers": [container]}
+    if image_pull_secrets:
+        pod_spec["imagePullSecrets"] = [{"name": ref} for ref in image_pull_secrets]
+
+    deployment = {
+        "apiVersion": "apps/v1",
+        "kind": "Deployment",
+        "metadata": {"name": name, "namespace": namespace, "labels": labels},
+        "spec": {
+            "replicas": replicas,
+            "selector": {"matchLabels": {"app": name}},
+            "template": {"metadata": {"labels": labels}, "spec": pod_spec},
+        },
+    }
+    service = {
+        "apiVersion": "v1",
+        "kind": "Service",
+        "metadata": {"name": name, "namespace": namespace, "labels": labels},
+        "spec": {
+            "type": "ClusterIP",
+            "selector": {"app": name},
+            "ports": [{"name": "http", "port": port, "targetPort": port}],
+        },
+    }
+    return [deployment, service]
+
+
+def _kubectl(args: list[str], *, stdin: str | None = None, timeout: int = 300) -> subprocess.CompletedProcess[str]:
+    binary = os.environ.get("NPA_KUBECTL_BIN") or "kubectl"
+    return subprocess.run(
+        [binary, *args],
+        input=stdin,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=False,
+    )
+
+
+def apply(
+    manifests: list[dict[str, Any]],
+    *,
+    runner: Any = None,
+) -> str:
+    """Apply the manifests, returning kubectl's output."""
+
+    run = runner or _kubectl
+    payload = json.dumps({"apiVersion": "v1", "kind": "List", "items": manifests})
+    result = run(["apply", "-f", "-"], stdin=payload)
+    if result.returncode != 0:
+        raise LanceDBKubernetesError(
+            f"kubectl apply failed ({result.returncode}): {(result.stderr or result.stdout).strip()}"
+        )
+    return (result.stdout or "").strip()
+
+
+def wait_available(
+    name: str,
+    namespace: str,
+    *,
+    timeout_seconds: int = 300,
+    runner: Any = None,
+) -> None:
+    """Block until the Deployment reports Available, or say why it did not."""
+
+    run = runner or _kubectl
+    result = run(
+        [
+            "wait",
+            f"--namespace={namespace}",
+            "--for=condition=Available",
+            f"--timeout={timeout_seconds}s",
+            f"deployment/{name}",
+        ],
+        timeout=timeout_seconds + 30,
+    )
+    if result.returncode != 0:
+        raise LanceDBKubernetesError(
+            f"LanceDB deployment {name} did not become available within {timeout_seconds}s: "
+            f"{(result.stderr or result.stdout).strip()}"
+        )
+
+
+def destroy(name: str, namespace: str, *, runner: Any = None) -> str:
+    """Remove the Deployment and Service this module created."""
+
+    run = runner or _kubectl
+    result = run(
+        [
+            "delete",
+            f"--namespace={namespace}",
+            "--ignore-not-found",
+            "deployment,service",
+            "-l",
+            f"app={name},app.kubernetes.io/managed-by=npa",
+        ]
+    )
+    if result.returncode != 0:
+        raise LanceDBKubernetesError(
+            f"kubectl delete failed ({result.returncode}): {(result.stderr or result.stdout).strip()}"
+        )
+    return (result.stdout or "").strip()
+
+
+def ensure_storage_secret(
+    secret_name: str,
+    namespace: str,
+    credentials: dict[str, str],
+    *,
+    runner: Any = None,
+) -> None:
+    """Create or update the Secret holding the object-store keys."""
+
+    missing = [key for key in STORAGE_SECRET_ENVS if not credentials.get(key)]
+    if missing:
+        raise LanceDBKubernetesError(
+            "LanceDB needs object-store credentials to serve an s3:// storage path; missing "
+            + ", ".join(missing)
+        )
+    run = runner or _kubectl
+    literals = [f"--from-literal={key}={credentials[key]}" for key in STORAGE_SECRET_ENVS]
+    result = run(
+        [
+            "create",
+            "secret",
+            "generic",
+            secret_name,
+            f"--namespace={namespace}",
+            *literals,
+            "--dry-run=client",
+            "-o",
+            "json",
+        ]
+    )
+    if result.returncode != 0:
+        raise LanceDBKubernetesError(
+            f"could not build the LanceDB storage secret: {(result.stderr or result.stdout).strip()}"
+        )
+    applied = run(["apply", "-f", "-"], stdin=result.stdout)
+    if applied.returncode != 0:
+        raise LanceDBKubernetesError(
+            f"could not apply the LanceDB storage secret: "
+            f"{(applied.stderr or applied.stdout).strip()}"
+        )
