@@ -76,7 +76,7 @@ def test_readiness_gates_the_service_endpoints() -> None:
 
     assert container["readinessProbe"]["httpGet"]["path"] == "/health"
     assert container["livenessProbe"]["httpGet"]["path"] == "/health"
-    assert container["readinessProbe"]["httpGet"]["port"] == k8s.DEFAULT_PORT
+    assert container["readinessProbe"]["httpGet"]["port"] == 8686
 
 
 def test_everything_created_is_labelled_so_destroy_can_find_only_its_own() -> None:
