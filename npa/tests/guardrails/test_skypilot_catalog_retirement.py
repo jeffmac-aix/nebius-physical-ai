@@ -32,9 +32,7 @@ REMAINING: dict[str, str] = {
         "service, which is not deployed (EVIDENCE.md \u00a7R16, \u00a7R26); docs still "
         "cite it as the raw-YAML authoring reference"
     ),
-    "sim-to-real-pipeline.yaml": "npa/scripts/run_sim_to_real_pipeline.py DEFAULT_YAML",
     # --- referenced by a CLI/SDK path pointer or shipped data ---
-    "sim-to-real-trigger.yaml": "three-tier contract (legacy YAML tier)",
     "sonic-train-standalone.yaml": "three-tier contract + standalone-policy guardrail",
     # --- no npa.workflow twin authored yet ---
     "cosmos3-text-to-image-inference.yaml": (
@@ -129,6 +127,14 @@ REMAINING: dict[str, str] = {
     #   The template held a GPU to print `"status": "contract_ready"`. Its twin ran the real
     #   Cosmos-Transfer2.5 model for 14m23s and published a 3.9 MB augmented clip plus the
     #   manifest that says how it was made. See EVIDENCE.md \u00a7R38.
+    #
+    # sim-to-real-pipeline.yaml / sim-to-real-trigger.yaml  (no live run, deliberately)
+    #   Retired rather than ported: the pipeline stage ran
+    #   `python -m npa.workflows.sim_to_real real-loop`, and that module raises a
+    #   DeprecationWarning pointing at the staged sim2real engine. A twin would have made the
+    #   new surface the home of a legacy path. The watch capability is NOT deprecated and was
+    #   ported: npa.workflows.sim_to_real_trigger now submits npa-workflows/sim2real-vlm-rl.yaml.
+    #   See EVIDENCE.md \u00a7R40.
     #
     # Phase 2c: RELOCATED (not deleted) to npa/src/npa/workflows/byof/profiles/ —
     # they are BYOF resource profiles reached through byof.yaml's toolRef, not
