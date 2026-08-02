@@ -13,6 +13,11 @@ config:
   source_format: auto
   # Train inside this workflow's own GPU stage; see sonic-train.yaml.
   sonic_runtime: local
+  # NVIDIA's Omniverse / Isaac Sim / Software licence terms. `--runtime local` runs the SONIC
+  # image's own trainer when present, and that trainer refuses to download Isaac Sim / Isaac Lab
+  # until this is given — without it the run falls back to the reference trainer.
+  # Empty means NOT accepted; set it to `yes` to accept.
+  sonic_accept_nvidia_eula: ""
   train_iterations: "40"
   suite: locomotion
   episodes: "8"
