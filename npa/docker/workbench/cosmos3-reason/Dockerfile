@@ -40,6 +40,26 @@ RUN mkdir -p /tmp/hf_home/cosmos-reason2 /tmp/hf_home/cosmos-reason2-2b \
     && python -m py_compile /opt/npa/src/npa/workflows/sim2real_loop.py \
     && chown -R ubuntu:ubuntu /workspace /tmp/hf_home /opt/npa/src /opt/npa/pyproject.toml
 
+# --- Schedulable-on-Kubernetes prerequisites -----------------------------------
+#
+# SkyPilot's Kubernetes runtime bootstrap execs into the container and needs a system python3,
+# rsync, and passwordless sudo. Without them provisioning never starts and the only symptom is
+#   KubernetesError: Failed to get ssh user for pod ...: container not found ("ray-node")
+# which says nothing about what is missing (live job 304). The runtime user also needs a
+# writable HOME, because `npa workbench cosmos3 text-to-image` clones the Cosmos framework and
+# lets uv build an environment there before it can generate anything.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+         python3 python3-venv python3-pip rsync curl openssh-client sudo netcat-openbsd \
+    && rm -rf /var/lib/apt/lists/* \
+    && printf 'ubuntu ALL=(ALL) NOPASSWD:ALL\n' > /etc/sudoers.d/99-npa-runtime-user \
+    && chmod 0440 /etc/sudoers.d/99-npa-runtime-user \
+    && mkdir -p /home/ubuntu && chown -R ubuntu:ubuntu /home/ubuntu \
+    && python3 --version
+
+# SkyPilot's bootstrap must find the SYSTEM interpreter first.
+ENV PATH=/usr/bin:$PATH
+
 USER ubuntu
 
 ENTRYPOINT ["python", "-m", "npa.workflows.sim2real_loop"]
