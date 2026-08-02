@@ -91,68 +91,6 @@ RUN install -d -m 0755 -o "${NPA_RUNTIME_USER}" -g "${NPA_RUNTIME_USER}" \
       /opt/npa/docker/workbench/isaac-lab/smoke_env.py \
       /opt/npa/docker/workbench/isaac-lab/smoke_functional.py
 
-expected_lab = os.environ["ISAAC_LAB_VERSION"]
-actual_lab = metadata.version("isaaclab")
-if actual_lab != expected_lab:
-    raise RuntimeError(f"expected isaaclab {expected_lab}, found {actual_lab}")
-if not Path("/isaac-sim/python.sh").is_file():
-    raise RuntimeError("official Isaac Sim Python interpreter not found at /isaac-sim/python.sh")
-print(f"ISAAC_LAB_BUILD_VERSION_OK isaaclab={actual_lab} isaac_sim_python=/isaac-sim/python.sh")
-PY
-
-RUN id -u ubuntu >/dev/null 2>&1 || useradd -m -s /bin/bash -u 1000 ubuntu \
-    && chown -R ubuntu:ubuntu /opt/npa/docker/workbench/isaac-lab /workspace/isaaclab/npa-runs
-
-# --- Schedulable-on-Kubernetes prerequisites -----------------------------------
-#
-# Without these the image cannot host a SkyPilot task at all: provisioning dies with
-#   KubernetesError: Failed to get ssh user for pod ...: container not found ("ray-node")
-# because the container exits during SkyPilot's runtime bootstrap. Verified on
-# npa-rtxpro-mk8s by bisecting a derived image one ingredient at a time; ALL FOUR are
-# required, and the last two are the ones that are easy to miss:
-#
-#   1. a system python3 (+ rsync/curl/ssh client) - the NVIDIA base ships none, only
-#      /isaac-sim/python.sh;
-#   2. /isaac-sim readable by the runtime user - it is mode 750 isaac-sim:isaac-sim, so
-#      the user joins that GROUP (a recursive chown/chmod would rewrite multi-GB layers);
-#   3. passwordless sudo for the runtime user - SkyPilot's in-pod setup shells out to
-#      sudo, and Debian's default %sudo rule prompts for a password (this alone kept a
-#      non-root image failing while an otherwise identical root image worked);
-#   4. the system interpreter FIRST on PATH - otherwise python3 resolves to Isaac's kit
-#      interpreter, which cannot import its own site-packages outside python.sh.
-#
-# Training is unaffected: `npa workbench isaac-lab train` and npa.workflows.rl_sweep
-# still run through ISAAC_LAB_PYTHON (/isaac-sim/python.sh). The image stays non-root.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-         python3 python3-venv python3-pip rsync curl openssh-client sudo netcat-openbsd \
-    && rm -rf /var/lib/apt/lists/* \
-    && (getent group isaac-sim >/dev/null 2>&1 && usermod -aG isaac-sim ubuntu || true) \
-    && printf 'ubuntu ALL=(ALL) NOPASSWD:ALL\n' > /etc/sudoers.d/99-npa-runtime-user \
-    && chmod 0440 /etc/sudoers.d/99-npa-runtime-user \
-    && python3 --version
-
-# Kit needs writable data/cache/log directories, and the runtime user does not have them.
-#
-# /isaac-sim is mode 750 isaac-sim:isaac-sim, `kit/data` and `kit/logs` do not exist, and
-# `kit/cache` is root-owned 0755 — so as `ubuntu` the app cannot create or write any of them.
-# Isaac still BOOTS: it logs
-#     [Error] [omni.kit.app.plugin] failed to open file
-#         '/isaac-sim/kit/data/Kit/Isaac-Sim/5.1/user.config.json' - unable to save the dictionary
-#     [Error] [omni.kvdb.plugin] Unexpected key-value database error
-#     [Warning] [omni.kit.material.library.material_library] get_mdl_list_async: mdl_list_cache
-#         is not complete
-# and then never renders a frame. Live job 271 sat at 170% CPU for 45 minutes past
-# "Completed setting up the environment" with an empty output directory, which reads like a slow
-# simulation and is actually a stalled one.
-#
-# Three empty directories, so the layer is tiny. Nothing else about the image changes: it stays
-# non-root, and this does not touch the multi-GB payload under /isaac-sim.
-RUN if [ -d /isaac-sim ]; then \
-      mkdir -p /isaac-sim/kit/data /isaac-sim/kit/logs /isaac-sim/kit/cache \
-      && chown -R ubuntu:ubuntu /isaac-sim/kit/data /isaac-sim/kit/logs /isaac-sim/kit/cache; \
-    fi
-
 # SkyPilot's Kubernetes bootstrap must find the SYSTEM interpreter (python3.10 here), not
 # the Isaac venv's python3.11, which cannot import its own site-packages when invoked
 # outside the venv. Isaac work always goes through ISAAC_LAB_PYTHON.

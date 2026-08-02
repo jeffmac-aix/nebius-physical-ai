@@ -187,6 +187,9 @@ def test_derived_prereq_dockerfile_matches_the_shipped_one(tool: str) -> None:
                 f"{tool}: {kit_dir} must exist and belong to the runtime user, or Kit stalls"
             )
         assert "chown -R ubuntu:ubuntu /isaac-sim/kit/data" in text
+        # Newer bases fetch Isaac at run time and keep Kit's state in /tmp instead, so a
+        # derived recipe must carry that mechanism too: it cannot know which base it repairs.
+        assert "OMNI_USER_DIR" in text and "OMNI_LOG_DIR" in text
 
 
 def test_in_cluster_build_script_is_executable_and_generic() -> None:

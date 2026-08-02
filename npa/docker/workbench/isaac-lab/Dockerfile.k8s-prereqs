@@ -26,10 +26,6 @@
 #   4. the system interpreter FIRST on PATH - otherwise python3 resolves to the Isaac
 #      interpreter, which cannot import its own site-packages outside its venv.
 #
-#
-# A FIFTH is required to RENDER rather than merely to schedule: writable Kit data/cache/log
-# directories (see below, live job 271).
-#
 # Isaac work is unaffected: it always runs through ISAAC_LAB_PYTHON
 # (/isaac-sim/python.sh). The image stays non-root.
 ARG BASE_IMAGE
@@ -46,28 +42,26 @@ RUN apt-get update \
     && chmod 0440 /etc/sudoers.d/99-npa-runtime-user \
     && python3 --version
 
-# Kit needs writable data/cache/log directories, and the runtime user does not have them.
+# SkyPilot's bootstrap must find the SYSTEM interpreter, not the Isaac venv's python3.11.
+# Kit must be able to WRITE, which is a separate thing from being schedulable. On an image
+# built from the OLD NVIDIA base, /isaac-sim holds the payload and `kit/data`/`kit/logs` do not
+# exist while `kit/cache` is root-owned — so as `ubuntu` the app cannot create or write any of
+# them. Isaac still BOOTS, logs
+#     [Error] [omni.kit.app.plugin] failed to open file '.../user.config.json'
+# and then never renders a frame: live job 271 sat at 170% CPU for 45 minutes with an empty
+# output directory, which reads like a slow simulation and is a stalled one.
 #
-# /isaac-sim is mode 750 isaac-sim:isaac-sim, `kit/data` and `kit/logs` do not exist, and
-# `kit/cache` is root-owned 0755 — so as `ubuntu` the app cannot create or write any of them.
-# Isaac still BOOTS: it logs
-#     [Error] [omni.kit.app.plugin] failed to open file
-#         '/isaac-sim/kit/data/Kit/Isaac-Sim/5.1/user.config.json' - unable to save the dictionary
-#     [Error] [omni.kvdb.plugin] Unexpected key-value database error
-#     [Warning] [omni.kit.material.library.material_library] get_mdl_list_async: mdl_list_cache
-#         is not complete
-# and then never renders a frame. Live job 271 sat at 170% CPU for 45 minutes past
-# "Completed setting up the environment" with an empty output directory, which reads like a slow
-# simulation and is actually a stalled one.
-#
-# Three empty directories, so the layer is tiny. Nothing else about the image changes: it stays
-# non-root, and this does not touch the multi-GB payload under /isaac-sim.
+# Both halves are applied because a derived build does not know which base it is repairing:
+# the directories (a tiny layer, guarded by `-d /isaac-sim`) and the env vars newer images use
+# to keep Kit's state in /tmp instead.
 RUN if [ -d /isaac-sim ]; then \
       mkdir -p /isaac-sim/kit/data /isaac-sim/kit/logs /isaac-sim/kit/cache \
       && chown -R ubuntu:ubuntu /isaac-sim/kit/data /isaac-sim/kit/logs /isaac-sim/kit/cache; \
-    fi
+    fi \
+    && install -d -m 0755 -o ubuntu -g ubuntu /tmp/isaac-sim-cache /tmp/isaac-sim-cache/logs
+ENV OMNI_USER_DIR=/tmp/isaac-sim-cache \
+    OMNI_LOG_DIR=/tmp/isaac-sim-cache/logs
 
-# SkyPilot's bootstrap must find the SYSTEM interpreter, not the Isaac venv's python3.11.
 ENV PATH=/usr/bin:$PATH
 
 WORKDIR /workspace/isaaclab
