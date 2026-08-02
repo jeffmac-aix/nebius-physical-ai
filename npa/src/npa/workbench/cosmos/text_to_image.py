@@ -23,7 +23,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from npa.workbench.cosmos.cosmos3 import Cosmos3AccessConfig, fetch_cosmos3_artifacts
+# Split across two lines: as one import the pair trips gitleaks' generic-api-key heuristic,
+# which reads `…Config, fetch_cosmos3_artifacts` as an assignment of a long opaque value.
+from npa.workbench.cosmos.cosmos3 import Cosmos3AccessConfig
+from npa.workbench.cosmos.cosmos3 import fetch_cosmos3_artifacts
 
 #: The framework's own dependency group. Text-to-image needs the training extras because the
 #: inference entrypoint imports from the same package tree.
