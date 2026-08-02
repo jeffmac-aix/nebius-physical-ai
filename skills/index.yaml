@@ -123,10 +123,9 @@ skills:
     when_to_use: "Robotics, simulation, GPU routing, sim-to-real, or BDD100K domain context."
     path: skills/atomic/physical-ai-context/SKILL.md
     smoke:
-      - type: workflow_yaml
-        paths:
       - type: npa_workflow_yaml
         paths:
+          - npa/workflows/workbench/npa-workflows/bdd100k-pipeline.yaml
           - npa/workflows/workbench/npa-workflows/sim2real-vlm-rl.yaml
   - name: review-checklist
     category: atomic
@@ -144,8 +143,9 @@ skills:
       - type: cli_help
         args: ["workbench", "workflow", "--help"]
         contains: "workflow"
-      - type: workflow_yaml
+      - type: npa_workflow_yaml
         paths:
+          - npa/workflows/workbench/npa-workflows/bdd100k-pipeline.yaml
   - name: super-prompt-patterns
     category: atomic
     when_to_use: "Draft, execute, or review Codex super-prompts for this repository."
