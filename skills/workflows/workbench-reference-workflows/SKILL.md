@@ -33,6 +33,8 @@ This list is machine-checked against the directory by
 templates retire.
 
   materialized views, training, and evaluation.
+- `cosmos3-generate.yaml`: single-task Cosmos 3 omni-model generation in the
+  `npa-cosmos3` image. Its npa.workflow twin of the same name is the declarative form.
 - `nurec-reconstruct.yaml`: single-pod NuRec/NRE neural reconstruction. Its
   npa.workflow twin of the same name runs each state in its own pod and hands
   artifacts over through S3.

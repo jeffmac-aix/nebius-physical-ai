@@ -389,6 +389,9 @@ skills:
       - type: npa_workflow_yaml
         paths:
           - npa/workflows/workbench/npa-workflows/cosmos3-text-to-image.yaml
+      # The raw SkyPilot task is not an npa.workflow spec, so it is smoked as one.
+      - type: workflow_yaml
+        paths:
           - npa/src/npa/workflows/skypilot/cosmos3-generate.yaml
       - type: cli_help
         args: ["workbench", "cosmos3", "generate", "--help"]
