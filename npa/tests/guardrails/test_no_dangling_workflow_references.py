@@ -95,8 +95,13 @@ def test_a_spec_never_declares_itself_as_its_own_skypilot_twin() -> None:
     specs = REPO_ROOT / "npa/workflows/workbench/npa-workflows"
     offenders = []
     for spec in sorted(specs.glob("*.yaml")):
-        match = re.search(r"^\s*skypilotTwin:\s*(\S+)\s*$", spec.read_text(encoding="utf-8"), re.M)
-        if match and Path(match.group(1)).name == spec.name:
+        text = spec.read_text(encoding="utf-8")
+        named = re.findall(r"^\s*skypilotTwin:\s*(\S+)\s*$", text, re.M)
+        # The plural form exists too, for a spec that absorbed more than one template — and it
+        # is the one a singular-only regex quietly walks past.
+        for block in re.findall(r"^[ \t]*skypilotTwins:\n((?:[ \t]*-[ \t]*\S+\n)+)", text, re.M):
+            named.extend(re.findall(r"-[ \t]*(\S+)", block))
+        if any(Path(value).name == spec.name for value in named):
             offenders.append(spec.name)
     assert not offenders, f"specs declaring themselves as their own twin: {offenders}"
 
