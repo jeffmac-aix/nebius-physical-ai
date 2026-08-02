@@ -3098,3 +3098,28 @@ seniority: #238's vLLM installer (uv resolution plus a weight pre-fetch during s
 this branch's inline pip, keeping the `ninja` step live job 214 needed; this branch's readiness
 preamble was kept over #238's fire-and-hope launch, and gained #238's `NPA_VLM_SELF_HOSTED_MODEL`
 export so the client asks for the model that was actually started.
+
+## R49. The retirement guardrail caught a new raw template on merge
+
+Merging `main` a second time brought #234, which added
+`npa/src/npa/workflows/skypilot/nurec-reconstruct.yaml` — a **new** raw template in the directory
+this PR is emptying. Nothing in review flagged it; `test_skypilot_catalog_retirement` did, by
+name and with the remedy:
+
+```
+new raw SkyPilot task YAML(s) appeared in the retiring catalog: ['nurec-reconstruct.yaml'].
+Author an npa.workflow/v0.0.1 spec under npa/workflows/workbench/npa-workflows/ instead;
+if a raw template is genuinely required, add it to REMAINING with a reason.
+```
+
+That is the guardrail working as designed, and it is worth recording because it is the first
+time it has fired against something other than this branch's own work.
+
+It is **not** simply an un-ported template. #234 shipped both forms deliberately, and they are
+different execution shapes: the npa.workflow spec runs each state in its own pod and hands
+artifacts over through S3, while the raw task is single-pod and shares `/tmp` between stages.
+The spec already carries a live-matrix case.
+
+So it is listed in `REMAINING` with that reason rather than deleted. Whether the single-pod
+variant should survive alongside its spec is #234's call to make, not this PR's to make silently
+— but the tally now says it exists and why, which is the whole point of a machine-checked list.

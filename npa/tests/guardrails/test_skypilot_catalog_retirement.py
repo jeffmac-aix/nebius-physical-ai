@@ -28,6 +28,16 @@ REMAINING: dict[str, str] = {
     # --- referenced by a CLI/SDK path pointer or shipped data ---
     # --- no npa.workflow twin authored yet ---
     # --- twin exists but is NOT live-verified yet ---
+    # --- arrived AFTER this sweep, via #234 ---
+    "nurec-reconstruct.yaml": (
+        "added by #234 while this retirement was in flight, and caught here on merge rather "
+        "than in review, which is what this guardrail is for. It is NOT simply a twinned "
+        "template: the npa.workflow spec of the same name runs each state in its OWN pod and "
+        "hands artifacts over through S3, while this one is a SINGLE-POD task whose stages "
+        "share /tmp. The spec has a live-matrix case; whether the single-pod variant should "
+        "survive alongside it is #234's call, so it is listed rather than deleted. See "
+        "EVIDENCE.md \u00a7R49"
+    ),
     "sonic-locomotion-finetuning.yaml": (
         "the LAUNCHER problem is SOLVED — `sonic train --runtime in-job` trains in the pod, on "
         "the vendor image, with the operator's EULA acceptance carried on the spec. Six live "
