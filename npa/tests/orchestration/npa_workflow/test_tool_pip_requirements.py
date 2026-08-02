@@ -273,3 +273,24 @@ def test_the_npa_console_script_is_shimmed_to_the_recorded_interpreter(
     assert "from npa.cli.main import app_entry" in run_script
     # Both shims come from the same recorded interpreter.
     assert run_script.count('"$npa_python"') >= 2
+
+
+def test_the_source_overlay_installs_dependencies_when_the_cli_will_not_load() -> None:
+    """Live job 309: `ModuleNotFoundError: No module named 'paramiko'` after a clean overlay.
+
+    An image that installs npa with its own curated `--no-deps` list leaves the overlay short
+    of whatever that list omitted. `--no-deps` is still the right FIRST attempt — the overlay
+    is the same distribution the image already has, and resolving its requirements can move a
+    pinned vendor stack (job 253's torch-ABI break) — but it cannot be the only one.
+    """
+
+    from npa.orchestration.npa_workflow.skypilot_render import default_npa_setup
+
+    setup = default_npa_setup()
+
+    first = setup.index("npa_pip_install -e /tmp/npa-src-overlay --no-deps")
+    guard = setup.index("import npa.cli.main")
+    second = setup.index("npa_pip_install -e /tmp/npa-src-overlay\n")
+    assert first < guard < second, "the with-deps attempt must be guarded and come second"
+    # `import npa` is not the right probe: it succeeded in job 309. The command tree is.
+    assert "python3 -c 'import npa.cli.main'" in setup

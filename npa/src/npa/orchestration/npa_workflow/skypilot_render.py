@@ -811,7 +811,20 @@ def default_npa_setup() -> str:
         "        break\n"
         "    token = resp.get('NextContinuationToken')\n"
         "PY\n"
+        # --no-deps FIRST: the overlay is the same distribution the image already has, so
+        # resolving its requirements would only risk moving a pinned vendor stack.
         "  npa_pip_install -e /tmp/npa-src-overlay --no-deps\n"
+        # ... and WITH deps if the CLI still will not import. An image that installed npa with
+        # its own curated `--no-deps` list leaves the overlay short of whatever that list
+        # omitted: live job 309 died on `No module named 'paramiko'` after a clean overlay of a
+        # tree that declares paramiko as a dependency. Probe the CLI, not `import npa` — npa
+        # imported fine there; it was the command tree that could not load. Same
+        # safe-then-sufficient order as the vendor-interpreter install.
+        "  if ! python3 -c 'import npa.cli.main' >/dev/null 2>&1; then\n"
+        "    echo 'npa CLI is not importable after the overlay; installing its dependencies'"
+        " >&2\n"
+        "    npa_pip_install -e /tmp/npa-src-overlay\n"
+        "  fi\n"
         # The overlay is the freshest tree, so it is the one worth putting on the import path.
         "  npa_record_src_root /tmp/npa-src-overlay\n"
         "fi\n"
