@@ -49,7 +49,9 @@ SECRET_ENV_HINTS: dict[str, tuple[str, ...]] = {
     # before it will generate anything. Live job 286 got all the way into examples/inference.py
     # and died on `hf download nvidia/Cosmos-Guardrail1` with no token.
     "workbench.cosmos2": ("HF_TOKEN",),
-    "workbench.sonic": ("HF_TOKEN", "NGC_API_KEY"),
+    # No NGC_API_KEY: `--runtime local` trains in the stage and pulls nothing from NGC, and
+    # hinting a secret the cases do not carry skips the twins instead of running them (#238).
+    "workbench.sonic": ("HF_TOKEN",),
     "workbench.groot": ("HF_TOKEN", "NGC_API_KEY"),
 }
 

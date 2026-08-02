@@ -48,7 +48,9 @@ states:
     toolRef: workbench.retargeting.run
     resources: cpu
     outputs:
-      - uri: "{{config.retargeted_uri}}manifest.json"
+      # `retargeting run` writes retargeting_result.json; declaring manifest.json made the
+      # stage SUCCEED while the declared artifact did not exist (test_spec_declared_outputs).
+      - uri: "{{config.retargeted_uri}}retargeting_result.json"
     next: train
 
   train:
@@ -66,5 +68,6 @@ states:
     toolRef: workbench.mjlab.eval
     resources: gpu
     outputs:
-      - uri: "{{config.mjlab_uri}}report.json"
+      # `mjlab eval` writes mjlab_eval.json, not report.json.
+      - uri: "{{config.mjlab_uri}}mjlab_eval.json"
     terminal: true

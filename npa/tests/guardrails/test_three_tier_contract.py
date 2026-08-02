@@ -93,7 +93,6 @@ SPEC_GAP_REASONS: dict[str, dict[str, str]] = {
         "image_variant": "infra",
         "embodiment": "knob",
         "num_envs": "knob",
-        "max_iterations": "knob",
     },
     "sonic/export": {
         "normalize": "knob",
@@ -150,7 +149,6 @@ CONTRACTS: tuple[CapabilityContract, ...] = (
             "embodiment",
             "num_envs",
             "headless",
-            "max_iterations",
             "image",
             "gpu_type",
             "image_variant",
