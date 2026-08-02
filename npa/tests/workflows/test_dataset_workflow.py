@@ -90,7 +90,7 @@ def _resolved_argv(spec, state: str) -> list[str]:
 
     from npa.orchestration.npa_workflow.catalog import TOOL_CATALOG
 
-    tool_ref = spec.states[state]["toolRef"]
+    tool_ref = spec.states[state].tool_ref
     resolved: list[str] = []
     for part in TOOL_CATALOG[tool_ref].argv_template:
         text = str(part)
