@@ -36,6 +36,16 @@ from npa.workbench.training_config import (
 import typer
 
 
+#: Modules `gear_sonic` imports that the Isaac venv the image builds at runtime does not carry.
+#: Found one live failure at a time — lxml in job 328, open3d in job 329 — because each only
+#: surfaces once the previous one is satisfied and the trainer gets further. Listed as
+#: (import name, pip name) so the probe skips work that is already done.
+GEAR_SONIC_RUNTIME_DEPS: tuple[tuple[str, str], ...] = (
+    ("lxml", "lxml"),
+    ("open3d", "open3d"),
+)
+
+
 #: Values that count as "the operator said yes".
 _AFFIRMATIVE = frozenset({"1", "y", "yes", "true", "accept", "accepted"})
 
@@ -155,10 +165,14 @@ def build_sonic_train_body(
         # this script starts, so it cannot be pip-installed into directly; PYTHONPATH is
         # inherited by whatever interpreter the entrypoint ends up creating.
         "npa_sonic_deps=/tmp/npa-sonic-deps\n"
-        'if ! "$NPA_PYTHON_BIN" -c \'import lxml\' >/dev/null 2>&1; then\n'
-        '  "$NPA_PYTHON_BIN" -m pip install -q --target "$npa_sonic_deps" lxml '
-        "|| echo 'warning: could not stage lxml for gear_sonic' >&2\n"
-        "fi\n"
+        + "".join(
+            f'if ! "$NPA_PYTHON_BIN" -c \'import {module}\' >/dev/null 2>&1; then\n'
+            f'  "$NPA_PYTHON_BIN" -m pip install -q --target "$npa_sonic_deps" {package} '
+            f"|| echo 'warning: could not stage {package} for gear_sonic' >&2\n"
+            "fi\n"
+            for module, package in GEAR_SONIC_RUNTIME_DEPS
+        )
+        +
         'if [ -d "$npa_sonic_deps" ]; then\n'
         '  export PYTHONPATH="$npa_sonic_deps${PYTHONPATH:+:$PYTHONPATH}"\n'
         "fi\n"

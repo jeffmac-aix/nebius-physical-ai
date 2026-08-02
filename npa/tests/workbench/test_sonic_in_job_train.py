@@ -178,6 +178,7 @@ def test_lxml_is_staged_on_the_import_path_for_gear_sonic() -> None:
     body = build_sonic_train_body(**_kwargs())
 
     assert "import lxml" in body
+    assert "import open3d" in body
     assert "--target" in body
     assert 'export PYTHONPATH="$npa_sonic_deps' in body
     # Staged before the entrypoint, which is what creates the venv that needs it.
@@ -188,3 +189,16 @@ def test_staging_lxml_is_skipped_when_it_is_already_importable() -> None:
     body = build_sonic_train_body(**_kwargs())
 
     assert "if ! \"$NPA_PYTHON_BIN\" -c 'import lxml'" in body
+
+
+def test_every_declared_runtime_dep_is_probed_and_staged() -> None:
+    """One live failure at a time: each module only surfaces once the previous is satisfied."""
+
+    from npa.cli.workbench.sonic.train import GEAR_SONIC_RUNTIME_DEPS
+
+    body = build_sonic_train_body(**_kwargs())
+
+    assert GEAR_SONIC_RUNTIME_DEPS, "expected at least one known gap"
+    for module, package in GEAR_SONIC_RUNTIME_DEPS:
+        assert f"import {module}" in body, module
+        assert f'--target "$npa_sonic_deps" {package}' in body, package
