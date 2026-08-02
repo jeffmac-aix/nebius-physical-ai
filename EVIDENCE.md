@@ -3265,3 +3265,43 @@ Two lessons worth keeping, both cheap:
   not quietly stop checking anything. This PR's tally test is the same shape.
 * **A rule belongs where the decision is made.** Scanning documents for a marker works until the
   documents move; deriving the set from the code that routes the work does not.
+
+## R53. The pointers the deletions left behind
+
+Deleting thirty templates was the easy part. What slipped through every review — mine included —
+was the *references* to them, and a mechanical sweep at the end found eleven files still pointing
+at something that was no longer there.
+
+Three kinds, in increasing order of how badly they would have failed someone:
+
+1. **Dead documentation links.** Four `cosmos3-*` skills sent readers to
+   `skypilot/cosmos3-text-to-image-inference.yaml`, retired in §R43. A reader follows the
+   pointer, finds nothing, and has no way to know what replaced it.
+
+2. **Dangling machine-readable metadata.** Eight specs carried a `skypilotTwin` naming a deleted
+   file, and one carried a `skypilotTwins` **list** of two — a plural form a singular-only regex
+   walks straight past, which is how it survived the first pass.
+
+3. **A self-referential field, and an executable snippet.** Two specs declared *themselves* as
+   their own `skypilotTwin`. That is not a harmless tautology: it is the fingerprint of my own
+   bulk path-repoint, which rewrote the field's value along with every other mention of the old
+   path. And `cosmos3-env-troubleshoot` shipped a Python snippet that opened the path and read
+   `doc["envs"]` — a key an npa.workflow spec does not have. Repointing the path alone would
+   have left it broken in a quieter way, so the snippet body was fixed to the spec's shape.
+
+None of this fails a build, breaks a test, or shows up as anything but a plausible line in a
+diff. It fails a human, later. So the rule is now mechanical
+(`test_no_dangling_workflow_references.py`): a shipped file may not name a workflow path that
+does not exist, across `skills/`, `docs/`, `scripts/` and the specs, in Markdown, YAML, Python
+and shell — Python and shell included precisely because a broken path inside a runnable snippet
+is the most expensive kind. `EVIDENCE.md`, `CHANGELOG.md` and `DESIGN.md` are exempt: describing
+what is gone is their job.
+
+The guard carries two guards of its own, the habit §R52 argued for: one asserting the regex can
+actually fail, and one asserting the corpus is non-empty (360 files today). A scan that silently
+matches nothing passes everything.
+
+One false positive was worth the fix it forced: the self-reference check first compared
+*basenames*, and flagged `cosmos3-generate.yaml` — whose spec correctly names the raw template of
+the same name in a different directory. A spec and the template it replaced usually share a
+filename; only the full path distinguishes a real self-reference from a normal one.
