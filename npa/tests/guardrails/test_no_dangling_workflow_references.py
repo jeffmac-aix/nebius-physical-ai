@@ -101,7 +101,10 @@ def test_a_spec_never_declares_itself_as_its_own_skypilot_twin() -> None:
         # is the one a singular-only regex quietly walks past.
         for block in re.findall(r"^[ \t]*skypilotTwins:\n((?:[ \t]*-[ \t]*\S+\n)+)", text, re.M):
             named.extend(re.findall(r"-[ \t]*(\S+)", block))
-        if any(Path(value).name == spec.name for value in named):
+        # Compare full paths, not basenames: a spec and the raw template it replaced usually
+        # SHARE a filename and differ only by directory, which is correct and common.
+        own = spec.relative_to(REPO_ROOT).as_posix()
+        if any(value.strip().lstrip("./") == own for value in named):
             offenders.append(spec.name)
     assert not offenders, f"specs declaring themselves as their own twin: {offenders}"
 
