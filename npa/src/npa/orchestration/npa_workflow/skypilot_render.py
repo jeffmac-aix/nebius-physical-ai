@@ -781,6 +781,38 @@ def self_hosted_vlm_model(config: Mapping[str, Any]) -> str:
     return str(raw).split(",")[0].strip()
 
 
+#: NVIDIA's gate on the Isaac workbench images. They ship no Isaac Sim / Isaac Lab and fetch it
+#: on first run, refusing with exit 78 unless BOTH are YES.
+ISAAC_EULA_VARS = ("OMNI_KIT_ACCEPT_EULA", "ISAACSIM_ACCEPT_EULA")
+#: Image keys in TOOL_REF_IMAGE_TOOL that resolve to an Isaac-based image.
+ISAAC_IMAGE_TOOLS = frozenset({"isaac-lab", "sonic"})
+
+
+def routes_at_an_isaac_image(tool_ref: str) -> bool:
+    """Whether the renderer sends this toolRef's stage to an Isaac-based image."""
+
+    return tool_image_key(tool_ref) in ISAAC_IMAGE_TOOLS
+
+
+def isaac_eula_envs(tool_ref: str) -> dict[str, str]:
+    """Declare NVIDIA's acceptance gate for an Isaac stage, EMPTY unless the operator set it.
+
+    Declared rather than omitted so the task documents what it needs and **fails closed** with
+    the actionable message instead of an unexplained exit 78. Never defaulted to YES: accepting
+    NVIDIA's terms is the operator's act, not the repo's.
+
+    This lives in the renderer rather than in each spec because a spec reaches an Isaac image
+    through its ``toolRef``, not by naming an image — so a spec author cannot reasonably be
+    expected to know the routing, and a new Isaac toolRef is covered the moment it is added.
+    """
+
+    if not routes_at_an_isaac_image(tool_ref):
+        return {}
+    import os as _os
+
+    return {var: str(_os.environ.get(var) or "").strip() for var in ISAAC_EULA_VARS}
+
+
 def default_npa_setup() -> str:
     """Ensure the ``npa`` CLI is available on the SkyPilot worker.
 
@@ -1194,6 +1226,7 @@ def build_skypilot_task_doc(
         envs["AWS_ENDPOINT_URL"] = options.aws_endpoint_url
     if image:
         envs["NPA_TASK_IMAGE"] = image.removeprefix("docker:")
+    envs.update(isaac_eula_envs(str(scheduler_task.get("tool_ref") or "")))
     # Opt-in passthrough: when set at submit, propagate Cosmos input-conditioning
     # knobs to stage pods so the augment conditions on the run's real input clip
     # (edge control) instead of the bundled example. Unset by default → no change.
