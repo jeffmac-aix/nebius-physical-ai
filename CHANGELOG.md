@@ -7,7 +7,7 @@ a versioned heading when a release is cut.
 
 ## Unreleased
 
-### Retiring the raw SkyPilot task catalog (36 → 2 templates)
+### Retiring the raw SkyPilot task catalog (36 → 0 templates (of the 36; two arrived mid-sweep from #234/#235))
 
 `npa.workflow/v0.0.1` specs are becoming the only workflow authoring surface.
 SkyPilot remains the execution engine, and `npa workbench workflow submit` still

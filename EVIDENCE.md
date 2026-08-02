@@ -3177,3 +3177,47 @@ That is a real gap in the live harness rather than a one-off. The overlay should
 it was cut from and refuse to run against a tree older than the working copy — recorded here as
 follow-up work rather than fixed mid-run, since the fix belongs with the harness, not with this
 retirement.
+
+## R51. Both SONIC templates retired — this sweep's catalog is empty
+
+| Twin | Job | Time | What ran |
+| --- | --- | --- | --- |
+| `sonic-train.yaml` | 335 | 2m09s | 40 iterations of gradient descent on an RTX PRO 6000 |
+| `sonic-locomotion-finetuning.yaml` | 336 | 5m00s | retarget → train → mjlab |
+| `sonic-export-eval.yaml` | 334 | 6m31s | train → export → eval |
+
+Nothing decorative in the finetuning chain. Retargeting ran SONIC's **own**
+`gear_sonic/data_process/convert_soma_csv_to_motion_lib.py` from the upstream checkout and wrote
+a 17 KB `motion_lib.pkl`; mjlab reported `"backend": "mjlab"`, `"dry_run": false`, eight episodes,
+against the `checkpoint.pt` the train stage had just written.
+
+With that, every template this sweep set out to retire is gone. The two files left in
+`npa/src/npa/workflows/skypilot/` both arrived **during** the sweep, from #234 and #235 (§R49).
+
+### The tests that were holding the templates hostage
+
+Deleting the two files broke fifteen tests, and the split between them is the more interesting
+half of this entry.
+
+**Twelve exercise the submit *wrapper*** — registry auth, VM resource defaults by GPU target,
+spot, docker-payload mode, `${PLACEHOLDER}` substitution. That behaviour is **not** being
+retired: `npa workbench workflow submit` still accepts a customer's own SkyPilot YAML, and it
+must keep working. They simply used a *shipped* template as their fixture, so a product decision
+about the catalog looked like a test failure. They now read frozen copies under
+`npa/tests/fixtures/skypilot/`, which says the wrapper's contract is independent of the catalog —
+the whole reason the catalog can go.
+
+One guardrail was in the same trap, and worse: `test_workflow_image_extraction_finds_skypilot_images`
+asserted that `npa-sonic` appeared among the shipped templates' images, so **the image checker's
+own test** was a reason the SONIC templates could not be retired. It now pins the extractor
+against a fixture, and a second test keeps whatever remains in the catalog readable — including
+the empty case this work is heading for.
+
+**Three asserted the template's own shape** (`execution: serial`, task names, `image_id` blocks).
+Those are exactly what this PR replaces. A spec-level test now asserts the three toolRefs in
+order with no `parallel:` group, which is a stronger claim than the one it replaces: it describes
+what the engine will run, not what a document says.
+
+The general lesson is worth keeping: **a test that reads a shipped artifact as a fixture quietly
+makes that artifact undeletable.** Every one of these could have been written against a fixture
+from the start at no cost.
