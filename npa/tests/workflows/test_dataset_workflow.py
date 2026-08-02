@@ -65,25 +65,39 @@ def test_the_spec_runs_ingest_and_curate_and_registers_against_the_service() -> 
     LanceDB service that `ingest` had written to (EVIDENCE.md §R41).
     """
 
-    from npa.orchestration.npa_workflow.interpreter import build_plan
     from npa.orchestration.npa_workflow.spec import load_spec
 
     spec = load_spec(SPEC)
-    plan = build_plan(spec, run_id="dataset-test")
-    steps = {step.state: step for step in plan.steps if step.argv}
 
-    assert {"ingest", "validate", "quality-gate", "curate", "register"} <= set(steps)
+    # The default plan takes the gate's `reject` branch, so assert on the spec's states rather
+    # than one traversal of them.
+    assert {"ingest", "validate", "quality-gate", "curate", "register"} <= set(spec.states)
     # CPU throughout: the pipeline moves metadata, it does not render.
-    for step in steps.values():
-        assert "accelerators" not in spec.resources[step.resources], step.state
+    for profile in spec.resources.values():
+        assert "accelerators" not in profile, profile
 
-    ingest = steps["ingest"].argv
-    register = steps["register"].argv
-    # Index on the way in, query the same table on the way out — the round trip job 317 proved.
     endpoint = spec.config["lancedb_endpoint"]
+    ingest = _resolved_argv(spec, "ingest")
+    register = _resolved_argv(spec, "register")
+    # Index on the way in, query the same table on the way out — the round trip job 317 proved.
     assert ingest[ingest.index("--lancedb-endpoint") + 1] == endpoint
     assert register[register.index("--lancedb-endpoint") + 1] == endpoint
     assert register[register.index("--lance-table") + 1] == spec.config["dataset_id"]
+
+
+def _resolved_argv(spec, state: str) -> list[str]:
+    """Resolve one state's toolRef argv against the spec's config."""
+
+    from npa.orchestration.npa_workflow.catalog import TOOL_CATALOG
+
+    tool_ref = spec.states[state]["toolRef"]
+    resolved: list[str] = []
+    for part in TOOL_CATALOG[tool_ref].argv_template:
+        text = str(part)
+        for key, value in spec.config.items():
+            text = text.replace("{{config.%s}}" % key, str(value))
+        resolved.append(text)
+    return resolved
 
 
 def test_the_retired_dataset_template_is_gone() -> None:
