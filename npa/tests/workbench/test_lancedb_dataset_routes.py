@@ -129,3 +129,55 @@ def test_the_paths_match_what_the_dataset_integration_posts() -> None:
     server = (repo_root / "npa/src/npa/workbench/lancedb/server.py").read_text(encoding="utf-8")
     assert '@app.post("/index")' in server
     assert '@app.post("/query")' in server
+
+
+# ------------------------------------------------- the caller's half of the contract
+
+
+def test_unset_facets_are_not_sent_as_equality_predicates() -> None:
+    """Live: a query returned 0 records from a table that held three matching rows.
+
+    The caller builds a predicate with every facet it knows about, set or not. Sent verbatim
+    that asks the index for `modality = '' AND min_quality = 'None'`, which matches nothing.
+    """
+
+    from npa.workbench.dataset.integrations import equality_facets
+
+    assert equality_facets(
+        {
+            "event": "cut_in",
+            "location": "san_francisco",
+            "modality": "",
+            "quality_metric": "completeness",
+            "min_quality": None,
+        }
+    ) == {"event": "cut_in", "location": "san_francisco"}
+
+
+def test_a_quality_threshold_is_applied_to_the_rows_not_pushed_into_the_facet_api(monkeypatch) -> None:
+    from npa.workbench.dataset import integrations
+
+    sent: dict[str, object] = {}
+
+    def fake_post(endpoint, path, *, payload, token_env, timeout):
+        sent.update(payload)
+        return {
+            "records": [
+                {"record_id": "a", "completeness": 0.9},
+                {"record_id": "b", "completeness": 0.2},
+            ]
+        }
+
+    monkeypatch.setattr(integrations, "_post", fake_post)
+
+    records = integrations.query_lancedb(
+        lancedb_endpoint="http://svc:8686",
+        filter_predicate={"event": "cut_in", "quality_metric": "completeness", "min_quality": 0.5},
+        limit=10,
+        table="fleet-dataset",
+    )
+
+    # A threshold has no equality form, so it never reaches the endpoint.
+    assert sent["filter"] == {"event": "cut_in"}
+    assert sent["table"] == "fleet-dataset"
+    assert [record["record_id"] for record in records] == ["a"]

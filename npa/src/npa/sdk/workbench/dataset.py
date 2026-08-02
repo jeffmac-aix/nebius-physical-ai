@@ -157,6 +157,8 @@ def query(
     min_quality: float | None = None,
     limit: int = DEFAULT_QUERY_LIMIT,
     lancedb_endpoint: str = "",
+    lance_table: str = "",
+    lance_uri: str = "",
     mode: str | None = None,
     service: bool = False,
     endpoint: str = "",
@@ -173,6 +175,8 @@ def query(
         min_quality=min_quality,
         limit=limit,
         lancedb_endpoint=lancedb_endpoint,
+        lance_table=lance_table,
+        lance_uri=lance_uri,
     )
     if _resolve_mode(mode=mode, service=service):
         params = {k: v for k, v in request.model_dump(mode="json").items() if v not in ("", None)}

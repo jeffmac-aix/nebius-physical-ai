@@ -714,6 +714,12 @@ TOOL_CATALOG: dict[str, ToolEntry] = {
             "{{config.location_of_interest}}",
             "--lancedb-endpoint",
             "{{config.lancedb_endpoint}}",
+            # Ingest writes one table per dataset id; a query that does not name it reads the
+            # service's default and finds nothing (EVIDENCE.md §R41).
+            "--lance-table",
+            "{{config.dataset_id}}",
+            "--lance-uri",
+            "{{config.lance_uri}}",
         ],
     ),
     "workbench.dataset.write_quality_decision": ToolEntry(
