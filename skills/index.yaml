@@ -356,7 +356,7 @@ skills:
           - npa/workflows/workbench/npa-workflows/scenario-gen-smoke.yaml
   - name: skypilot-workflows
     category: tools
-    when_to_use: "SkyPilot workflow authoring, runner scripts, limitations, and cleanup."
+    when_to_use: "How the engine renders and submits SkyPilot from an npa.workflow spec: invocation, 0.12.2 limits, JobGroups, num_nodes, runner scripts, cleanup. Not authoring — see author-npa-workflow."
     path: skills/tools/skypilot-workflows/SKILL.md
     smoke:
       - type: cli_help
