@@ -72,8 +72,14 @@ states:
       - uri: "{{config.trigger_uri}}"
         schema: npa.lerobot.dataset.v1
     outputs:
-      - uri: "{{config.augment_uri}}shard-a/manifest.json"
-        schema: npa.sim2real.augment.v1
+      # DEFECT, recorded rather than disguised: both shards pass the SAME
+      # {{config.augment_uri}} as --output-uri, because the toolRef reads one config key —
+      # so they write the same index.json and the second clobbers the first. Declaring
+      # shard-a/manifest.json hid two problems at once: the wrong filename, and a
+      # "fan-out" that yields one shard of data. Expressing per-shard outputs needs a
+      # per-shard config token; until then this blueprint stays plan-only. EVIDENCE.md §R55.
+      - uri: "{{config.augment_uri}}index.json"
+        schema: npa.sim2real.augmented_frames.v1
 
   synth-shard-b:
     description: Cosmos Transfer 2.5 synthetic shard B — perturb seed episodes on GPU.
@@ -83,8 +89,14 @@ states:
       - uri: "{{config.trigger_uri}}"
         schema: npa.lerobot.dataset.v1
     outputs:
-      - uri: "{{config.augment_uri}}shard-b/manifest.json"
-        schema: npa.sim2real.augment.v1
+      # DEFECT, recorded rather than disguised: both shards pass the SAME
+      # {{config.augment_uri}} as --output-uri, because the toolRef reads one config key —
+      # so they write the same index.json and the second clobbers the first. Declaring
+      # shard-b/manifest.json hid two problems at once: the wrong filename, and a
+      # "fan-out" that yields one shard of data. Expressing per-shard outputs needs a
+      # per-shard config token; until then this blueprint stays plan-only. EVIDENCE.md §R55.
+      - uri: "{{config.augment_uri}}index.json"
+        schema: npa.sim2real.augmented_frames.v1
 
   merge-index:
     description: Merge shard outputs into a single synthetic-frame index for curation.

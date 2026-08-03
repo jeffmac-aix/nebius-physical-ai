@@ -53,8 +53,10 @@ states:
       - uri: "{{config.trigger_uri}}"
         schema: npa.token_factory.scene.v1
     outputs:
-      - uri: "{{config.augment_uri}}manifest.json"
-        schema: npa.sim2real.augment.v1
+      # `cosmos2 transfer` writes index.json (schema augmented_frames.v1) at its
+      # --output-uri; it does not write manifest.json. See EVIDENCE.md §R55.
+      - uri: "{{config.augment_uri}}index.json"
+        schema: npa.sim2real.augmented_frames.v1
     next: refine
 
   refine:
