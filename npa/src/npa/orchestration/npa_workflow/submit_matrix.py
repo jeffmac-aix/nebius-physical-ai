@@ -542,6 +542,136 @@ SUBMIT_LIVE_MATRIX: tuple[SubmitLiveCase, ...] = (
         plan_only=True,
         notes="Delegates to run_byof_repo.py; covered by byof live e2e.",
     ),
+    # --- Phase 4.1 backfill: every shipped spec carries a matrix entry ---
+    #
+    # A spec with no entry is not "passing", it is unobserved — and an unobserved spec is how
+    # a catalog rots. Each of these says either "this runs live" or exactly why it cannot,
+    # because a skip_reason a reviewer can check is worth more than an untested spec.
+    #
+    # The six BYOF specs share one reason: a single state that delegates to run_byof_repo.py,
+    # which BUILDS AND PUSHES a multi-GB image before it runs anything. That is an onboarding
+    # flow, not a workflow submit, and it already has its own live coverage in
+    # tests/e2e/test_byof_onboarding_live_e2e.py. Submitting them here would rebuild those
+    # images on every rotation to prove something the onboarding test already proves.
+    SubmitLiveCase(
+        "byof-maniskill.yaml",
+        "multi",
+        plan_only=True,
+        notes="BYOF onboarding flow; see byof.yaml and test_byof_onboarding_live_e2e.py.",
+    ),
+    SubmitLiveCase(
+        "byof-mujoco-playground.yaml",
+        "multi",
+        plan_only=True,
+        notes="BYOF onboarding flow; see byof.yaml and test_byof_onboarding_live_e2e.py.",
+    ),
+    SubmitLiveCase(
+        "byof-robocasa.yaml",
+        "multi",
+        plan_only=True,
+        notes="BYOF onboarding flow; see byof.yaml and test_byof_onboarding_live_e2e.py.",
+    ),
+    SubmitLiveCase(
+        "byof-openpi.yaml",
+        "multi",
+        plan_only=True,
+        notes="BYOF onboarding flow; see byof.yaml and test_byof_onboarding_live_e2e.py.",
+    ),
+    SubmitLiveCase(
+        "byof-droid-policy-learning.yaml",
+        "multi",
+        plan_only=True,
+        notes="BYOF onboarding flow; see byof.yaml and test_byof_onboarding_live_e2e.py.",
+    ),
+    SubmitLiveCase(
+        "byof-open-dreamer.yaml",
+        "multi",
+        plan_only=True,
+        notes="BYOF onboarding flow; see byof.yaml and test_byof_onboarding_live_e2e.py.",
+    ),
+    SubmitLiveCase(
+        "sim2real-two-step.yaml",
+        "multi",
+        secret_envs=("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "HF_TOKEN"),
+        notes=(
+            "Cosmos2 augment then a raw env shard. Both toolRefs are real and both have run "
+            "live elsewhere (cosmos2.transfer in EVIDENCE.md \u00a7R38, raw_shard in \u00a7R27), "
+            "so this is a genuine live case rather than a plan-only one."
+        ),
+    ),
+    SubmitLiveCase(
+        "sim2real-two-step-agent.yaml",
+        "multi",
+        secret_envs=("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "HF_TOKEN"),
+        notes="Agent-authored sibling of sim2real-two-step; same two real toolRefs.",
+    ),
+    SubmitLiveCase(
+        "cosmos-synth-fanout-curation.yaml",
+        "multi",
+        secret_envs=("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "HF_TOKEN"),
+        plan_only=True,
+        notes=(
+            "Its curate stage is workbench.fiftyone.launch_app, which the catalog marks "
+            "stub=True, so a live run would prove the two Cosmos stages and then assert "
+            "nothing about the third. Flip to live when the FiftyOne toolRef is real."
+        ),
+    ),
+    SubmitLiveCase(
+        "sim2real-gpu-cross-region-agent.yaml",
+        "multi",
+        plan_only=True,
+        notes=(
+            "Three of its five toolRefs are stub=True (sim2real.policy_rollouts, "
+            "heldout_eval, finalize), and it is the one spec still on "
+            "apiVersion npa.workflow/v0.0.1-beta. Live coverage would be theatre."
+        ),
+    ),
+    SubmitLiveCase(
+        "adversarial-scenario-hardening.yaml",
+        "multi",
+        secret_envs=("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"),
+        rotation_skip=True,
+        skip_reason=(
+            "No stubs left — the workbench.rl.policy_train argv drift that used to make this "
+            "plan-only is fixed (it passes --num-envs/--override now). What keeps it out of "
+            "the BOUNDED rotation is wall clock: seven states including a real Isaac Lab "
+            "training and evaluation. Run it manually."
+        ),
+    ),
+    SubmitLiveCase(
+        "hardening-with-insights.yaml",
+        "multi",
+        secret_envs=("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"),
+        rotation_skip=True,
+        skip_reason=(
+            "adversarial-scenario-hardening plus two insights stages: nine states, same real "
+            "Isaac Lab training, same wall-clock reason. Run it manually."
+        ),
+    ),
+    SubmitLiveCase(
+        "av-night-scene-hardening.yaml",
+        "multi",
+        secret_envs=("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"),
+        rotation_skip=True,
+        skip_reason=(
+            "Ten states over BOTH in-cluster workbench services (npa-lancedb:8686 and "
+            "npa-detection-training:8790). A standalone submit cannot bring those up; deploy "
+            "them first with `npa workbench lancedb deploy --runtime kubernetes` and "
+            "`npa workbench detection-training deploy`, then run it manually. Same structural "
+            "reason as bdd100k-pipeline."
+        ),
+    ),
+    SubmitLiveCase(
+        "cosmos3-generate.yaml",
+        "gpu",
+        secret_envs=("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "HF_TOKEN"),
+        rotation_skip=True,
+        skip_reason=(
+            "Arrived with #235 after this matrix was built. A real Cosmos 3 generation "
+            "downloads a gated checkpoint onto the node and runs a diffusion job, which is "
+            "not a bounded rotation fit; #235 owns its live verification."
+        ),
+    ),
     SubmitLiveCase(
         "rl-policy-training-sim-success.yaml",
         "multi",
