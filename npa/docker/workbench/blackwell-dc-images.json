@@ -226,26 +226,32 @@
     {
       "name": "npa-cosmos",
       "dockerfile": "cosmos/Dockerfile",
-      "verdict": "port",
-      "validation": "pending-hardware",
-      "torch": "2.6.0+cu126",
+      "verdict": "ready",
+      "validation": "validated",
+      "torch": "2.7.0+cu128",
       "source_compiled_extensions": [
-        "flash-attn 2.6.3+cu126",
-        "natten 0.21.0+cu126"
+        "flash-attn 2.7.3+cu128.torch27 (NVIDIA prebuilt wheel)",
+        "natten 0.21.0+cu128.torch27 (NVIDIA prebuilt wheel)",
+        "transformer-engine 1.13.0+cu128.torch27 (NVIDIA prebuilt wheel)"
       ],
-      "port_blocker": "Measured arch set of the published npa-cosmos:1.0.9 image is sm_50..sm_90 with no sm_100, confirming cu126 caps at Hopper. Neither the torch wheel nor the prebuilt flash-attn/natten wheels carry sm_100. Needs cu128 torch plus matching cu128 Blackwell flash-attn/natten wheels from nvidia-cosmos/cosmos-dependencies.",
-      "upstream_tracking": "https://github.com/nvidia-cosmos/cosmos-dependencies",
-      "smoke": "Predict2 inference exercising the natten and flash-attn kernels",
-      "notes": "A Blackwell nightly is reported to exist upstream; confirm the cu128 wheel set publishes sm_100 before attempting the bump.",
-      "measured_torch": "2.6.0+cu126",
+      "upstream_tracking": "NVIDIA cosmos-dependencies v1.2.0 release and versioned index: https://github.com/nvidia-cosmos/cosmos-dependencies/releases/tag/v1.2.0 and https://nvidia-cosmos.github.io/cosmos-dependencies/v1.2.0/cu128_torch27/simple (checked 2026-08-03)",
+      "smoke": "Predict2 NeighborhoodAttention module using a shipped Video2World NATTEN configuration plus a flash-attn forward checked against torch SDPA",
+      "notes": "The complete upstream cu128/torch-2.7 wheel set carries sm_100 and both custom-kernel paths passed on physical B200. Checkpoint-backed Video2World remains unverified because the available Hugging Face identity received HTTP 403 for NVIDIA's gated model. Predict2 v1.0.9 rejects capability 10.3 in software before dispatch (its allowlist contains only 90 and 100), so the B300 cell remains blocked despite same-major sm_100 SASS forward compatibility.",
+      "published_tag": "cu128-torch27-sm100-1.0.9-20260803T002017Z",
+      "published_digest": "sha256:a7d2ba85ea4ad2d2036f6f8575b4e7a801d3f98ff202f6eb575329f1af9a41dd",
+      "published_registries": [
+        "primary",
+        "mirror"
+      ],
+      "measured_torch": "2.7.0+cu128",
       "measured_arch_list": [
-        "sm_50",
-        "sm_60",
-        "sm_70",
         "sm_75",
         "sm_80",
         "sm_86",
-        "sm_90"
+        "sm_90",
+        "sm_100",
+        "sm_120",
+        "compute_120"
       ]
     },
     {
@@ -518,6 +524,18 @@
       "published_tag": "2.5.1-skypilot-ready-20260801T053000Z",
       "published_digest": "sha256:8ce55c18108810be3c84155f846325f053a1f21113ed0f5d7dad3c9d2831d7a4"
     },
+    "npa-cosmos": {
+      "hardware_run": "Validated the published cu128/torch-2.7 image on a physical NVIDIA B200 (capability (10,0)) on 2026-08-03. torch._C._cuda_getArchFlags() reported native sm_100. flash-attn 2.7.3 matched torch SDPA at max absolute error 0.0009765625, and the exact Predict2 v1.0.9 NeighborhoodAttention module ran the first shipped 2B Video2World NATTEN configuration with output shape (1,256,4,128) before ALL_COSMOS_CU128_KERNEL_VALIDATION_PASSED. Full checkpoint-backed Video2World was attempted but remains unverified because Hugging Face returned HTTP 403 for the gated model.",
+      "validated_gpus": {
+        "B200": {
+          "platform": "gpu-b200-sxm",
+          "capability": "10.0",
+          "result": "ALL_COSMOS_CU128_KERNEL_VALIDATION_PASSED"
+        }
+      },
+      "published_tag": "cu128-torch27-sm100-1.0.9-20260803T002017Z",
+      "published_digest": "sha256:a7d2ba85ea4ad2d2036f6f8575b4e7a801d3f98ff202f6eb575329f1af9a41dd"
+    },
     "npa-lancedb": {
       "hardware_run": "The published npa-lancedb:0.30.3 image was placed on physical B200 on 2026-08-03, but its real CLIP embedding smoke failed before a valid embedding because the current transformers model returned BaseModelOutputWithPooling where the image code calls .norm(). The cell remains pending; no arch-only pass was substituted for the required capability smoke."
     },
@@ -576,6 +594,15 @@
       "upstream_tracking": "https://github.com/Dao-AILab/flash-attention - flash-attn-4 CuTe TMA path assumes a datacenter architecture",
       "mitigation": "gpu_capability_smoke.py --allow-no-tma records this as a known gap on non-TMA parts and still fails on datacenter parts, where a TMA failure would be real. Callers on sm_120 should use torch SDPA.",
       "positive_control": "The same image on a real NVIDIA H100 80GB HBM3 node (capability (9,0), which has TMA) runs flash_attn_func successfully with max abs error 0.00186 against torch SDPA. Same wheel, same flash-attn build, same CUTLASS pin - only the architecture differs. That isolates the cause to TMA availability and shows the kernel path itself is sound."
+    },
+    "cosmos_predict2_b300_allowlist": {
+      "summary": "Cosmos Predict2 v1.0.9 rejects B300 capability 10.3 before kernel dispatch even though its cu128 torch wheel carries forward-compatible sm_100 SASS.",
+      "evidence": "The exact upstream v1.0.9 source at commit 8112a684a3ab589eabd04ed62a2f20ec7df5b96a defines ALLOWED_COMPUTE_CAPS as [90, 100]. B200 custom-kernel validation passed; no B300 Predict2 capability result is claimed.",
+      "affects": [
+        "npa-cosmos on sm_103"
+      ],
+      "upstream_tracking": "https://github.com/nvidia-cosmos/cosmos-predict2",
+      "mitigation": "Route this pinned Predict2 release to B200 or H100. Retest B300 only after upstream admits compute capability 103 and run the same real NATTEN and flash-attn smokes."
     }
   },
   "measurement_note": "measured_arch_list is torch._C._cuda_getArchFlags() read from the published image on 2026-08-02/03. It is the wheel's fixed fat-binary arch set, so it decides which GPUs the image can execute on regardless of TORCH_CUDA_ARCH_LIST. Reproduce with npa/scripts/validate_blackwell_image.sh <image> --target b200."

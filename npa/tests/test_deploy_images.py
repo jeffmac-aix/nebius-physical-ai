@@ -113,7 +113,8 @@ def test_byo_workflow_images_have_pushed_defaults(monkeypatch) -> None:
 
     assert (
         default_vlm_image()
-        == "cr.eu-north1.nebius.cloud/e00cm0vc6t09m0z5gw/npa-cosmos:1.0.9"
+        == "cr.eu-north1.nebius.cloud/e00cm0vc6t09m0z5gw/"
+        "npa-cosmos:cu128-torch27-sm100-1.0.9-20260803T002017Z"
     )
     assert (
         default_workbench_image()

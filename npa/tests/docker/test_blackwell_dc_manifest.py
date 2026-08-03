@@ -172,8 +172,8 @@ def test_published_tags_are_additive_and_arch_labelled(entries: list[dict]) -> N
     for entry in published:
         tag = entry["published_tag"]
         name = entry["name"]
-        assert tag.startswith("cuda13-b300-"), (
-            f"{name} tag {tag!r} is outside the tag families in tags.yaml"
+        assert tag.startswith(("cuda13-b300-", "cu128-torch27-sm100-")), (
+            f"{name} tag {tag!r} is outside the published Blackwell tag families"
         )
         assert re.search(r"-\d{8}T\d{6}Z$", tag), (
             f"{name} tag {tag!r} has no UTC stamp, so a rebuild would overwrite it"

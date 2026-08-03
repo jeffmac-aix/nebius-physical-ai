@@ -78,6 +78,31 @@ Known constraints:
   export contract.
 - EGL/DRI-dependent visual-generation/rendering paths remain deferred.
 
+## Predict2 CUDA Wheel Contract
+
+The `npa-cosmos` Predict2 1.0.9 image uses NVIDIA's complete v1.2.0
+`cu128_torch27` wheel set: torch 2.7.0, torchvision 0.22.0, flash-attn 2.7.3,
+NATTEN 0.21.0, and Transformer Engine 1.13.0. Keep these as one ABI-locked
+unit. Do not bump torch alone, and do not replace either custom-kernel wheel
+with a source build during an image refresh.
+
+Predict2 1.0.9's package metadata still pins triton 3.2.0 for its former torch
+2.6 stack, while torch 2.7 requires triton 3.3.0. Install Predict2 itself with
+`--no-deps`, exclude torch/torchvision/triton and the three NVIDIA kernel
+packages from its derived dependency closure, and constrain every subsequent
+resolver pass to torch 2.7.0, torchvision 0.22.0, and triton 3.3.0. Otherwise a
+later broad dependency can silently replace the selected cu128 stack.
+
+An architecture import check is insufficient. A release validation must read
+`torch._C._cuda_getArchFlags()` and find `sm_100`, then execute both custom
+kernels on B200 or B300: a real flash-attn forward and the exact pinned
+Predict2 `NeighborhoodAttention` module with one of the model's shipped NATTEN
+configurations. Run checkpoint-backed Video2World with `--natten` whenever the
+operator has access to NVIDIA's gated checkpoint. If access is denied, record
+that generation as unverified with the HTTP evidence; the model-module kernel
+smoke is valid kernel-compatibility evidence, but it is not a generated-video
+result.
+
 ## Sim2Real VLM (self-hosted Reason2 + Reason3)
 
 Sim2Real stage 8 evaluates rollouts with **two** workbench-hosted Cosmos Reason

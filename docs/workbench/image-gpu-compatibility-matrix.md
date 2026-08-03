@@ -46,9 +46,9 @@ Two compatibility rules govern every cell:
 | `npa-genesis` | `…-0.4.6-…-20260803T000551Z` | 2.9.0+cu130 | `sm_75 sm_80 sm_86 sm_90 sm_100 sm_120` + `compute_120` PTX | yes |
 | `npa-envgen` / `npa-reference-policy` / `npa-lerobot-vlm-rl` / `npa-loop-eval` | `…-20260803T000551Z` | inherited 2.9.0+cu130 | `sm_75 sm_80 sm_86 sm_90 sm_100 sm_120` + `compute_120` PTX | yes |
 | `npa-sonic` | `…-0.1.2-k8s-runtime-…-20260803T012052Z` | 2.9.0+cu130 | `sm_75 sm_80 sm_86 sm_90 sm_100 sm_120` + `compute_120` PTX | yes |
-| `npa-cosmos` | `1.0.9` | 2.6.0+cu126 | `sm_50 sm_60 sm_70 sm_75 sm_80 sm_86 sm_90` | **no** |
+| `npa-cosmos` | `cu128-torch27-sm100-1.0.9-20260803T002017Z` | 2.7.0+cu128 | `sm_75 sm_80 sm_86 sm_90 sm_100 sm_120` + `compute_120` PTX | yes |
 
-The remaining `no` row is why `npa-cosmos` needs its separate cu128 port: the old cu126 wheel stops at Hopper. The rebuilt Genesis/sim2real/SONIC images now have a correct torch arch set, but their datacenter verdicts remain blocked on Taichi or the NVIDIA Isaac vendor stack; a wheel arch list does not override a real upstream runtime blocker. Not measured yet: `npa-workbench-cuda-base` (covered through its children), `npa-cosmos2-transfer`, `npa-isaac-lab`, and `npa-groot`.
+The old `npa-cosmos:1.0.9` cu126 image stopped at Hopper. Its additive cu128/torch-2.7 replacement now carries `sm_100`, and the custom kernels passed on B200. Predict2 v1.0.9 still has a separate software allowlist that rejects L40S, RTX PRO 6000, and B300 before dispatch, so wheel coverage alone does not make those cells supported. The rebuilt Genesis/sim2real/SONIC images likewise have a correct torch arch set while their datacenter verdicts remain blocked on Taichi or the NVIDIA Isaac vendor stack. Not measured yet: `npa-workbench-cuda-base` (covered through its children), `npa-isaac-lab`, and `npa-groot`.
 
 ## Compatibility matrix
 
@@ -63,7 +63,7 @@ The remaining `no` row is why `npa-cosmos` needs its separate cu128 port: the ol
 | `npa-cosmos3` | supported | supported | supported | supported | supported |
 | `npa-cosmos3-reason` | supported | supported | **verified** [13] | **verified** [12] | supported |
 | `npa-cosmos2-transfer` | supported | supported | supported | **verified** [9] | supported |
-| `npa-cosmos` | supported | supported | **no SASS** | **no SASS** | **no SASS** |
+| `npa-cosmos` | blocked (Predict2 allowlist) | supported | blocked (Predict2 allowlist) | **verified** [19] | blocked (Predict2 allowlist) |
 | `npa-genesis` | supported | supported | **verified** [14] | blocked (Taichi) | blocked (Taichi) |
 | `npa-envgen` | supported | supported | **verified** [15] | blocked (Taichi) | blocked (Taichi) |
 | `npa-reference-policy` | supported | supported | **verified** [16] | blocked (Taichi) | blocked (Taichi) |
@@ -85,7 +85,7 @@ The remaining `no` row is why `npa-cosmos` needs its separate cu128 port: the ol
 **verified** — run on that GPU with a real capability smoke; see [Verified runs](#verified-runs).
 **supported** — the toolchain can execute there, but no capability run on that GPU has been recorded.
 **no SASS** — measured wheel does not carry the architecture; the image cannot run there until it is ported.
-**blocked** — an upstream dependency does not support the architecture. Reason and tracking link per image in the manifest's `blocked_reason` / `upstream_tracking`.
+**blocked** — an upstream dependency does not support the architecture. Reason and tracking link are in the manifest's per-image fields or `known_gaps`.
 **CPU** — CPU-only image. It runs on a host with any of these GPUs; only node-pool scheduling matters.
 
 ### Rendering is not portable across these columns
@@ -118,12 +118,13 @@ Managed-Kubernetes nodes were placed successfully for both B200 in us-central1 a
 | 16 | 2026-08-03 | rebuilt `npa-reference-policy` `…-20260803T000551Z` | RTX PRO 6000 (`sm_120`) | validators and a real reference-policy rollout in a generated environment | PASS |
 | 17 | 2026-08-03 | rebuilt `npa-lerobot-vlm-rl` `…-20260803T000551Z` | RTX PRO 6000 (`sm_120`) | validators and a real VLM-guided RL step in Genesis | PASS |
 | 18 | 2026-08-03 | rebuilt `npa-loop-eval` `…-20260803T000551Z` | RTX PRO 6000 (`sm_120`) | validators and a scored two-environment Franka pick-place rollout | PASS; rollout ran at 29.23 FPS |
+| 19 | 2026-08-03 | `npa-cosmos:cu128-torch27-sm100-1.0.9-20260803T002017Z` | NVIDIA B200 (`sm_100`) | measured wheel arches, flash-attn 2.7.3 forward vs torch SDPA, and the exact Predict2 v1.0.9 `NeighborhoodAttention` module using the first shipped 2B Video2World NATTEN configuration | `ALL_COSMOS_CU128_KERNEL_VALIDATION_PASSED`; flash-attn max abs error 0.0009765625; NATTEN output `(1, 256, 4, 128)` |
 
 Runs 1, 2, 5, 6, and 8 used [`npa/scripts/blackwell-gpu-validation-job.yaml`](../../npa/scripts/blackwell-gpu-validation-job.yaml). Each does three checks, so a pass means something: the target architecture must pass *with native SASS* (including same-major `sm_100` coverage for `sm_103`), a different CUDA major must **fail** (proving the checker cannot hand out a false "Blackwell ready" on the wrong GPU family), and then the capability smoke runs real kernels.
 
 The job runs non-root with dropped capabilities and a read-only root filesystem. flash-attn-4's CuTe kernels JIT-compile at runtime, so `HOME` and every torch/CUDA cache point at a scratch `emptyDir`; the H100 run above confirms the kernel still compiles and executes under those constraints.
 
-The original READY-set images were also tested before rebuild. `npa-lancedb:0.30.3` remains unverified because its published CLIP smoke fails on a current transformers return type; the superseded `npa-lerobot:0.5.1` failed a torchcodec/FFmpeg mismatch, and the superseded Cosmos3 Reason image lacked the functional smoke module. The rebuilt SONIC image passes its native-SASS controls and reaches real environment construction after fixing two undeclared upstream dependencies, but both cold and warm fine-tune attempts fail inside Isaac's runtime-fetched URDF extension while opening a temporary pelvis USD layer, before a checkpoint. Those failures are recorded in `validation_evidence`; they were not converted into verified cells.
+The original READY-set images were also tested before rebuild. `npa-lancedb:0.30.3` remains unverified because its published CLIP smoke fails on a current transformers return type; the superseded `npa-lerobot:0.5.1` failed a torchcodec/FFmpeg mismatch, and the superseded Cosmos3 Reason image lacked the functional smoke module. The rebuilt SONIC image passes its native-SASS controls and reaches real environment construction after fixing two undeclared upstream dependencies, but both cold and warm fine-tune attempts fail inside Isaac's runtime-fetched URDF extension while opening a temporary pelvis USD layer, before a checkpoint. Those failures are recorded in `validation_evidence`; they were not converted into verified cells. The Cosmos kernel run is not a generated-video claim: checkpoint-backed Video2World was attempted but remains unverified because the available Hugging Face identity received HTTP 403 for NVIDIA's gated checkpoint.
 
 ## The import check that lied
 
