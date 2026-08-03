@@ -3305,3 +3305,56 @@ One false positive was worth the fix it forced: the self-reference check first c
 *basenames*, and flagged `cosmos3-generate.yaml` — whose spec correctly names the raw template of
 the same name in a different directory. A spec and the template it replaced usually share a
 filename; only the full path distinguishes a real self-reference from a normal one.
+
+## R54. The documentation was still teaching the surface this work retired
+
+The plan's last unblocked item, and the one easiest to skip: the docs. Three files were still
+describing raw SkyPilot task authoring as the way to build a pipeline, months after it stopped
+being true and days after it stopped being possible.
+
+**`docs/workbench-yaml-guide.md`** opened with "A Workbench pipeline is a SkyPilot
+multi-document YAML file", described `---` task documents with `envs:`/`run:`/`curl`/`jq`, and
+named `npa-workflows/bdd100k-pipeline.yaml` as its reference throughout — a file that is a spec
+with `states:` and `toolRef:`. Anyone following the guide opened the reference and found
+something entirely different from what they had just read.
+
+Its worst section was the one a new contributor reaches last: **"Adding a New Pipeline"**, whose
+first instruction was "Start from a multi-document SkyPilot YAML file." That is now the one thing
+a guardrail will reject.
+
+Rewritten around the spec — `config`/`resources`/`states`, declared fan-out, `num_nodes`, and the
+real thirteen state names, which is what `workflow status` reports. What was still true is kept:
+service endpoints, S3 conventions, durable state, and the label-map rationale, which now also
+records *why* eval needed its own flag — BDD100K has a category literally called `train`, the
+vehicle, so `int('train')` is what a missing label map looks like at runtime (§R46).
+
+**`skills/tools/skypilot-workflows/SKILL.md`** was reframed from authoring to what it is now: how
+the engine renders and submits — JobGroups, task-level `num_nodes`, per-toolRef setup, run
+preambles, the Isaac EULA gate — plus the traps that actually cost live jobs.
+
+**`skills/workflows/workbench-reference-workflows/SKILL.md`** had a contradiction worth naming:
+its Three-Tier Contract still read "SkyPilot YAML is the executable source of truth", which the
+retirement directly refutes. That tier is the spec plus its toolRef argv now. It also carried an
+orphaned list fragment from one of my own earlier edits — a regex that removed a bullet's first
+line and left the rest behind.
+
+### Two things caught by running rather than reading
+
+* The new spec-parse check in the tmux runners failed on its first execution:
+  `sim2real-gpu-cross-region-agent.yaml` ships `v0.0.1-beta` deliberately, and I had written an
+  equality check on `apiVersion`. Relaxed to a prefix, which is what was actually meant.
+* Quoting matters in front matter: `Not for authoring: pipelines are…` made a `SKILL.md`
+  unparseable, and `test_skills_index` said so within seconds. Swept all 55 skills for the same
+  defect; only that one.
+
+### The runners were one deletion away from passing vacuously
+
+`npa-workflow-real-infra-tmux.sh` and its two siblings parsed every file in the retiring
+directory and asserted `docs[0]["name"]`. With the catalog nearly empty that was already close to
+meaningless — and the day the directory is deleted, `root.glob("*.yaml")` would return nothing,
+the loop would not execute, and the script would print `skypilot parse OK (0 files)` and pass.
+
+They now walk the 54 specs and **refuse to run** against a corpus smaller than twenty. Verified
+in both directions: `spec parse OK (54 files)` against the repo, and exit 1 with
+`found 0 files` against an empty tree. That is the same guard-the-guard habit §R52 argued for,
+applied to the thing that would have hidden the next regression.
