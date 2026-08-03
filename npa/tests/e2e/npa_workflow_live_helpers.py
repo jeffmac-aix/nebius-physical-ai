@@ -188,6 +188,36 @@ def seed_live_workflow_inputs(
             )
         return
 
+    if spec_name in {"sim2real-two-step.yaml", "sim2real-two-step-agent.yaml"}:
+        try:
+            from PIL import Image, ImageDraw
+        except ImportError as exc:  # pragma: no cover
+            pytest.fail(f"Pillow required to seed sim2real frames: {exc}")
+        # The augment stage runs the REAL Cosmos-Transfer2.5 model over frames it finds
+        # under the spec's trigger prefix, and fails closed when there are none:
+        #   "no source images found under 's3://.../lerobot-pusht/'"
+        # That prefix is the spec's own `trigger_uri`, NOT the run marker every other
+        # fixture uses, so it has to be built the same way the spec builds it.
+        prefix = f"sim2real-triggers/{run_id}/lerobot-pusht"
+        for index in range(3):
+            image = Image.new("RGB", (320, 240), (225, 225, 220))
+            draw = ImageDraw.Draw(image)
+            # A pusher and a puck, moved a little per frame: enough structure for the
+            # transfer to condition on rather than a flat field.
+            draw.rectangle([0, 190, 320, 240], fill=(140, 120, 95))
+            draw.rectangle([40 + index * 24, 120, 88 + index * 24, 168], fill=(60, 90, 200))
+            draw.ellipse([180, 130, 232, 182], fill=(200, 60, 60))
+            buf = BytesIO()
+            image.save(buf, format="PNG")
+            client.put_object(
+                Bucket=bucket,
+                Key=f"{prefix}/frame_{index:03d}.png",
+                Body=buf.getvalue(),
+                ContentType="image/png",
+            )
+        print(f"[seed] 3 sim2real frames -> s3://{bucket}/{prefix}/")
+        return
+
     if spec_name in {"sonic-export.yaml", "sonic-export-eval.yaml"}:
         # `npa workbench sonic export` needs a loadable torch policy checkpoint. We do
         # not vendor NVIDIA's gated nvidia/GEAR-SONIC weights, so the operator stages a
