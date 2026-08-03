@@ -1,15 +1,19 @@
 ---
 name: workbench-reference-workflows
-description: Use when working on NPA reference SkyPilot YAMLs, runner scripts, cookbooks, or customer-adaptable pipeline implementations.
+description: Use when working on NPA reference workflows (npa.workflow specs), runner scripts, cookbooks, or customer-adaptable pipeline implementations, or when checking what a retired SkyPilot template became.
 ---
 
 # Workbench Reference Workflows
 
-> The supported, customer-facing catalog is the `npa.workflow` spec set under
-> `npa/workflows/workbench/npa-workflows/`. The raw SkyPilot task YAMLs below are
-> internal runtime templates relocated to `npa/src/npa/workflows/skypilot/`; they
-> back the `run_*.py` wrappers and SkyPilot-only capabilities, and must not be
-> re-added to the shown `npa/workflows/workbench/` catalog (guardrail-enforced).
+> The catalog is the `npa.workflow` spec set under
+> `npa/workflows/workbench/npa-workflows/`. It is the **only** authoring surface: the raw
+> SkyPilot task catalog is retired, and the two templates still listed below arrived from
+> other PRs while that retirement was in flight. Do not add more — a guardrail
+> (`test_skypilot_catalog_retirement.py`) fails on new raw templates, and it has already
+> caught two.
+>
+> SkyPilot remains the execution engine, and `npa workbench workflow submit` still accepts a
+> customer's own SkyPilot YAML. What went away is the shipped catalog, not the capability.
 
 ## When To Use
 
@@ -18,21 +22,28 @@ artifact contracts, and customer-adaptable pipeline implementations.
 
 ## Procedure
 
-1. Start from the checked-in SkyPilot YAML under
-   `npa/src/npa/workflows/skypilot/`.
-2. Keep the runner thin. Python runners should materialize config, call the
-   workflow submission helper, and report artifacts; they should not duplicate
-   YAML orchestration logic.
-3. Keep all input and output paths configurable and run-scoped through S3.
-4. Validate YAML parsing and command help locally before live submission.
+1. Start from the closest `npa.workflow` spec under
+   `npa/workflows/workbench/npa-workflows/`, and reuse a `toolRef` from
+   `npa/src/npa/orchestration/npa_workflow/catalog.py` rather than adding a tool.
+2. Keep the runner thin. A `run_*.py` wrapper materializes config, calls the submission
+   helper, and reports artifacts; it does not re-implement the stage graph, which is the
+   spec's job.
+3. Keep all input and output paths configurable and run-scoped through S3, and never
+   repo-relative — a stage runs in a pod with no checkout
+   (`test_spec_paths_are_not_repo_relative.py`).
+4. Declare `outputs:` where the tool actually writes. Ask its `*_result_uri_for()` helper;
+   a stage that succeeds while its declared artifact does not exist is this repo's most
+   expensive failure mode, and it happened eleven times.
+5. Validate offline before submitting: `npa workbench workflow validate-spec`, then
+   `plan-spec --run-id preview` for the wave shape without touching a cluster.
 
 ## Current Reference YAMLs
 
 This list is machine-checked against the directory by
 `npa/tests/guardrails/test_skypilot_catalog_retirement.py`, so it cannot drift as
-templates retire.
+templates retire. Both entries arrived from other PRs during the retirement; neither is a
+survivor of the original catalog.
 
-  materialized views, training, and evaluation.
 - `cosmos3-generate.yaml`: single-task Cosmos 3 omni-model generation in the
   `npa-cosmos3` image. Its npa.workflow twin of the same name is the declarative form.
 - `nurec-reconstruct.yaml`: single-pod NuRec/NRE neural reconstruction. Its
@@ -41,9 +52,10 @@ templates retire.
 
 ## Retired Templates
 
-These raw templates were retired once their `npa.workflow` spec had a live run
-(run ids in `EVIDENCE.md`). Use the spec under
-`npa/workflows/workbench/npa-workflows/`:
+Thirty templates, each retired only after its `npa.workflow` spec reached a terminal
+`SUCCEEDED` on real infrastructure (run ids in `EVIDENCE.md`). This list is the lookup table
+for "what happened to X" — use the spec of the same name under
+`npa/workflows/workbench/npa-workflows/` unless an entry says otherwise:
 
 - `isaac-lab-rl-sweep.yaml` — parallel GPU sweep (`--runtime`).
 - `cosmos3-reason.yaml` — Cosmos3 reason-stage manifest.
@@ -100,6 +112,12 @@ These raw templates were retired once their `npa.workflow` spec had a live run
 - `sim-to-real-loop.yaml` — the rollout-SET loop. Retired via a new tool capability
   (`npa workbench vlm-eval loop`), because nothing else produced
   `task_success_report.json`; the spec is `npa-workflows/vlm-eval-loop.yaml`.
+- `sonic-train-standalone.yaml`, `sonic-locomotion-finetuning.yaml` — SONIC training. Their
+  twins train in the stage's own pod (`sonic train --runtime local`) instead of provisioning
+  a Nebius Job from inside one. The vendor trainer runs when the image provides it and the
+  operator has accepted NVIDIA's terms (`sonic_accept_nvidia_eula`, empty by default);
+  otherwise a reference locomotion trainer fits a real policy on the job's GPU, which is what
+  made the twins verifiable without NVIDIA's asset pipeline.
 - `isaac-lab-cosmos-sdg-burst-smoke.yaml` — **relocated**, not retired: a single-task input to
   `npa burst submit-yaml`, now at `npa/src/npa/burst/examples/`. Burst is scoped to one
   executable task, so there is no plan or stage graph for a spec to describe.
@@ -118,8 +136,10 @@ The remaining templates are pinned in
   such as `npa workbench mjlab workflow` or `npa workbench retargeting workflow`.
 - SDK: route through shared workflow submission helpers rather than shelling out
   from business logic.
-- YAML: SkyPilot YAML is the executable source of truth for workflow order,
-  resources, environment, and artifact paths.
+- Workflow: the `npa.workflow` **spec** is the executable source of truth for stage order,
+  resources, configuration, and artifact paths. This tier used to be a SkyPilot `envs:`
+  block; it moved with the retirement, and `CapabilityContract` now records `spec_path` +
+  `tool_ref`, with a `spec_gap` listing any CLI parameter the toolRef argv cannot reach.
 
 ## Gotchas
 
@@ -127,8 +147,11 @@ The remaining templates are pinned in
   values and comments for alternatives.
 - `sky jobs launch` has no dry-run flag in the pinned path. Use local YAML
   parsing, command help, and mock-endpoint tests before live submission.
-- Keep orchestration in YAML for SONIC locomotion; do not add a Python runner
-  that re-implements the DAG.
+- Keep orchestration in the spec for SONIC locomotion; do not add a Python runner that
+  re-implements the DAG.
+- A toolRef argv is always flag-plus-value, so a capability a spec must carry cannot be a
+  bare boolean flag — `sonic train --accept-nvidia-eula` takes a value for exactly this
+  reason.
 
 ## Verify
 
