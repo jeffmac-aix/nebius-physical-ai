@@ -158,7 +158,7 @@ print('scheduler tasks', len(r['scheduler']['tasks']))
     FAILED=1
   fi
 
-  echo "--- [6/6] BDD100K + skypilot parse ---"
+  echo "--- [6/6] BDD100K + npa.workflow spec parse ---"
   if ! "${PY}" -m pytest npa/tests/workflows/test_bdd100k_pipeline.py -q --timeout=120; then
     FAILED=1
   fi
@@ -166,11 +166,33 @@ print('scheduler tasks', len(r['scheduler']['tasks']))
 from pathlib import Path
 import yaml
 
-root = Path("npa/src/npa/workflows/skypilot")
-for path in sorted(root.glob("*.yaml")):
-    docs = [d for d in yaml.safe_load_all(path.read_text(encoding="utf-8")) if d is not None]
-    assert docs and docs[0].get("name"), path.name
-print(f"skypilot parse OK ({len(list(root.glob('*.yaml')))} files)")
+# The shipped raw SkyPilot task catalog is retired, so this walks the SPECS instead. It
+# validates the surface pipelines are actually written on, and it does not go quietly
+# vacuous the day the last raw template is deleted.
+root = Path("npa/workflows/workbench/npa-workflows")
+paths = sorted(root.glob("*.yaml"))
+if len(paths) < 20:
+    raise SystemExit(f"expected the spec catalog, found {len(paths)} files under {root}")
+failed = []
+for path in paths:
+    try:
+        doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+        if not isinstance(doc, dict):
+            failed.append(f"{path.name}: not a mapping")
+            continue
+        # Prefix, not equality: sim2real-gpu-cross-region-agent ships v0.0.1-beta on
+        # purpose. What is being checked is "this is a spec at all", not the exact revision.
+        if not str(doc.get("apiVersion") or "").startswith("npa.workflow/"):
+            failed.append(f"{path.name}: apiVersion={doc.get('apiVersion')!r}")
+        if not (doc.get("metadata") or {}).get("name"):
+            failed.append(f"{path.name}: no metadata.name")
+        if not doc.get("states"):
+            failed.append(f"{path.name}: no states")
+    except Exception as exc:
+        failed.append(f"{path.name}: {exc}")
+if failed:
+    raise SystemExit("parse failures: " + ", ".join(failed))
+print(f"npa.workflow spec parse OK ({len(paths)} files)")
 PY
     FAILED=1
   fi

@@ -14,6 +14,9 @@ NPA="${REPO}/npa/.venv/bin/npa"
 export NPA_INTEGRATION_E2E=1
 
 NPA_SPECS="${REPO}/npa/workflows/workbench/npa-workflows"
+# Retiring: only the templates that arrived from other PRs mid-sweep remain here, and the
+# directory is scheduled for deletion. Counted, not walked, so the banner stays honest
+# whether it holds two files or none.
 SKY_SPECS="${REPO}/npa/src/npa/workflows/skypilot"
 
 LOG="/tmp/npa-all-yaml-infra-$(date -u +%Y%m%dT%H%M%SZ).log"
@@ -22,7 +25,7 @@ exec > >(tee -a "$LOG") 2>&1
 echo "=== ALL workflow YAML infra matrix log=${LOG} ==="
 echo "branch: $(git branch --show-current) @ $(git rev-parse --short HEAD)"
 echo "npa.workflow specs: $(find "${NPA_SPECS}" -maxdepth 1 -name '*.yaml' | wc -l)"
-echo "skypilot specs: $(find "${SKY_SPECS}" -maxdepth 1 -name '*.yaml' | wc -l)"
+echo "raw skypilot templates remaining: $(find "${SKY_SPECS}" -maxdepth 1 -name '*.yaml' 2>/dev/null | wc -l)"
 
 round=1
 while true; do
@@ -139,23 +142,38 @@ YAML
     fi
   done
 
-  echo "--- [3/7] skypilot YAML parse (all files) ---"
+  echo "--- [3/7] npa.workflow spec parse (all files) ---"
   if ! "${PY}" - <<'PY'; then
 from pathlib import Path
 import yaml
 
-root = Path("npa/src/npa/workflows/skypilot")
+# The shipped raw SkyPilot task catalog is retired, so this walks the SPECS instead. It
+# validates the surface pipelines are actually written on, and it does not go quietly
+# vacuous the day the last raw template is deleted.
+root = Path("npa/workflows/workbench/npa-workflows")
+paths = sorted(root.glob("*.yaml"))
+if len(paths) < 20:
+    raise SystemExit(f"expected the spec catalog, found {len(paths)} files under {root}")
 failed = []
-for path in sorted(root.glob("*.yaml")):
+for path in paths:
     try:
-        docs = [d for d in yaml.safe_load_all(path.read_text(encoding="utf-8")) if d is not None]
-        if not docs or not docs[0].get("name"):
-            failed.append(path.name)
+        doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+        if not isinstance(doc, dict):
+            failed.append(f"{path.name}: not a mapping")
+            continue
+        # Prefix, not equality: sim2real-gpu-cross-region-agent ships v0.0.1-beta on
+        # purpose. What is being checked is "this is a spec at all", not the exact revision.
+        if not str(doc.get("apiVersion") or "").startswith("npa.workflow/"):
+            failed.append(f"{path.name}: apiVersion={doc.get('apiVersion')!r}")
+        if not (doc.get("metadata") or {}).get("name"):
+            failed.append(f"{path.name}: no metadata.name")
+        if not doc.get("states"):
+            failed.append(f"{path.name}: no states")
     except Exception as exc:
         failed.append(f"{path.name}: {exc}")
 if failed:
     raise SystemExit("parse failures: " + ", ".join(failed))
-print(f"skypilot parse OK ({len(list(root.glob('*.yaml')))} files)")
+print(f"npa.workflow spec parse OK ({len(paths)} files)")
 PY
     FAILED=1
   fi
