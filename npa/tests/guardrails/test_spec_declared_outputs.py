@@ -38,6 +38,10 @@ RESULT_URI_TOOLS: dict[str, tuple[str, str]] = {
         "--output",
         "npa.workbench.vlm_eval:benchmark_result_uri_for",
     ),
+    "workbench.cosmos2.transfer": (
+        "--output-uri",
+        "npa.workbench.cosmos.transfer:augmented_frames_index_uri_for",
+    ),
     "workbench.mjlab.eval": ("--output-path", "npa.workbench.mjlab:result_uri_for"),
     "workbench.sonic.eval": ("--output", "npa.workbench.sonic.eval:result_uri_for"),
     "workbench.token_factory.caption": (

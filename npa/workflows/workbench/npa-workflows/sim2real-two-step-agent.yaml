@@ -37,8 +37,10 @@ states:
     toolRef: workbench.cosmos2.transfer
     resources: gpu
     outputs:
-      - uri: "{{config.augment_uri}}manifest.json"
-        schema: npa.sim2real.augment.v1
+      # `cosmos2 transfer` without --execute writes index.json, not manifest.json, and its
+      # schema is augmented_frames.v1. Live job 339 SUCCEEDED declaring the wrong one.
+      - uri: "{{config.augment_uri}}index.json"
+        schema: npa.sim2real.augmented_frames.v1
     next: envgen
 
   envgen:

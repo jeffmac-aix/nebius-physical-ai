@@ -500,6 +500,21 @@ _IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".bmp", ".ppm", ".webp"}
 _PERTURBATIONS = ("lighting", "contrast", "color", "blur")
 
 
+#: What :func:`reference_augment_frames` writes beside the augmented frames. Named so a
+#: spec's ``outputs:`` can be checked against it rather than guessed at — live job 339
+#: declared ``manifest.json`` here and SUCCEEDED while writing ``index.json``, which is the
+#: failure mode ``test_spec_declared_outputs`` exists to make impossible.
+AUGMENTED_FRAMES_INDEX = "index.json"
+#: Schema of that document.
+AUGMENTED_FRAMES_SCHEMA = "npa.sim2real.augmented_frames.v1"
+
+
+def augmented_frames_index_uri_for(output_uri: str) -> str:
+    """Where the reference augment path writes its index for ``output_uri``."""
+
+    return output_uri.rstrip("/") + "/" + AUGMENTED_FRAMES_INDEX
+
+
 def _apply_perturbation(image: Any, perturbation: str, *, seed: int) -> Any:
     """Apply one deterministic, real image transform (a perturbation ControlNet
     would drive in the full model; here a genuine PIL transform, not a no-op)."""
@@ -608,10 +623,10 @@ def reference_augment_frames(
                 )
                 frame_no += 1
 
-        (out_dir / "index.json").write_text(
+        (out_dir / AUGMENTED_FRAMES_INDEX).write_text(
             json.dumps(
                 {
-                    "schema": "npa.sim2real.augmented_frames.v1",
+                    "schema": AUGMENTED_FRAMES_SCHEMA,
                     "run_id": run_id,
                     "frame_count": frame_no,
                     "frames": index,
@@ -640,6 +655,9 @@ def reference_augment_frames(
 
 
 __all__ = [
+    "AUGMENTED_FRAMES_INDEX",
+    "AUGMENTED_FRAMES_SCHEMA",
+    "augmented_frames_index_uri_for",
     "cosmos_transfer_available",
     "cosmos_transfer_repo",
     "ensure_env",
