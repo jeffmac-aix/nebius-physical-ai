@@ -108,7 +108,7 @@ flowchart TB
 | `cosmos` | `1.0.9` | container-smoke | version; model load; single inference (safety on) | required | gpu-gated |
 | `cosmos2-transfer` | `2.5.1-golden-eval-smoke-*` | container-smoke | venv torch; CUDA; GPU matmul probe | required | gpu-gated |
 | `cosmos3` | `1.2.2-cu130` | container-smoke | real Cosmos 3 text2image generation; decodable image; guardrails on | required | gpu-gated |
-| `cosmos3-reason` | `3.0.1-genuine-sm120` | container-smoke | CUDA; Reason cache wiring | optional | blocked-on-upstream |
+| `cosmos3-reason` | `cuda13-b300-3.0.1-sm80-sm90-sm100-sm103-sm120-20260803T000551Z` | container-smoke | CUDA; real Reason VLM pass | optional | gpu-gated |
 | `sonic` | `0.1.2` | entrypoint-smoke | `/entrypoint.sh smoke`; GPU proofs; JSON artifact | required | gpu-gated |
 | `retargeting` | `0.1.1` | container-smoke | validate_motion_lib on synthetic motion | none | ready |
 | `fiftyone` | `1.15.0` | container-smoke | import+version; CLI; app config (env smoke) | none | ready |
@@ -116,7 +116,7 @@ flowchart TB
 | `detection-training` | `bdd100k-golden-eval-smoke-*` | server-smoke | server start; `/health`; `/system-info` | optional | ready |
 | `envgen` | `0.1.2` | container-smoke | raw envgen JSONL; Genesis CUDA step | optional | gpu-gated |
 | `reference-policy` | `0.1.2` | container-smoke | policy contract (envgen functional delegate) | optional | gpu-gated |
-| `loop-eval` | `0.1.3-genuine-sm120` | container-smoke | CUDA; FrankaPickPlace rollout step | optional | gpu-gated |
+| `loop-eval` | `cuda13-b300-0.1.3-sm80-sm90-sm100-sm103-sm120-20260803T000551Z` | container-smoke | CUDA; FrankaPickPlace rollout step | optional | gpu-gated |
 | `rerun-viewer` | `0.31.4` | build-import | rerun SDK import + version | none | ready |
 | `foxglove-embed` | `0.58.0` | server-smoke | health + pinned SDK version; real `@foxglove/embed` (FoxgloveViewer + embed handshake); NPA glue module; host page; `/data` 206 byte range; Range CORS preflight | none | ready |
 

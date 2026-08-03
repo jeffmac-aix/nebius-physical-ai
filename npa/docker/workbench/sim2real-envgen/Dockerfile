@@ -1,4 +1,4 @@
-ARG BASE_IMAGE=npa-genesis:0.4.6-sm80-sm90-sm120-latest
+ARG BASE_IMAGE=npa-genesis:0.4.6-sm80-sm90-sm100-sm103-sm120-latest
 FROM ${BASE_IMAGE}
 
 LABEL npa.tool="envgen"

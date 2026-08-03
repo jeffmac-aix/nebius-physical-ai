@@ -74,19 +74,23 @@ def test_non_sonic_workbench_images_resolve_from_supported_tools() -> None:
     )
     assert (
         container_image_for_tool("cosmos3-reason")
-        == "cr.eu-north1.nebius.cloud/e00cm0vc6t09m0z5gw/npa-cosmos3-reason:3.0.1-genuine-sm120"
+        == "cr.eu-north1.nebius.cloud/e00cm0vc6t09m0z5gw/npa-cosmos3-reason:"
+        "cuda13-b300-3.0.1-sm80-sm90-sm100-sm103-sm120-20260803T000551Z"
     )
     assert (
         container_image_for_tool("envgen")
-        == "cr.eu-north1.nebius.cloud/e00cm0vc6t09m0z5gw/npa-envgen:0.1.2"
+        == "cr.eu-north1.nebius.cloud/e00cm0vc6t09m0z5gw/npa-envgen:"
+        "cuda13-b300-0.1.2-sm80-sm90-sm100-sm103-sm120-20260803T000551Z"
     )
     assert (
         container_image_for_tool("reference-policy")
-        == "cr.eu-north1.nebius.cloud/e00cm0vc6t09m0z5gw/npa-reference-policy:0.1.2"
+        == "cr.eu-north1.nebius.cloud/e00cm0vc6t09m0z5gw/npa-reference-policy:"
+        "cuda13-b300-0.1.2-sm80-sm90-sm100-sm103-sm120-20260803T000551Z"
     )
     assert (
         container_image_for_tool("loop-eval")
-        == "cr.eu-north1.nebius.cloud/e00cm0vc6t09m0z5gw/npa-loop-eval:0.1.3-genuine-sm120"
+        == "cr.eu-north1.nebius.cloud/e00cm0vc6t09m0z5gw/npa-loop-eval:"
+        "cuda13-b300-0.1.3-sm80-sm90-sm100-sm103-sm120-20260803T000551Z"
     )
 
 
@@ -113,7 +117,8 @@ def test_byo_workflow_images_have_pushed_defaults(monkeypatch) -> None:
     )
     assert (
         default_workbench_image()
-        == "cr.eu-north1.nebius.cloud/e00cm0vc6t09m0z5gw/npa-genesis:0.4.6"
+        == "cr.eu-north1.nebius.cloud/e00cm0vc6t09m0z5gw/npa-genesis:"
+        "cuda13-b300-0.4.6-sm80-sm90-sm100-sm103-sm120-20260803T000551Z"
     )
 
 

@@ -105,6 +105,12 @@ Use additive tags that name the architectures
 verdict in `npa/docker/workbench/blackwell-dc-images.json`. Background:
 `docs/workbench/blackwell-datacenter-image-compatibility.md`.
 
+The moving alias for that contract is
+`cuda13-b300-sm80-sm90-sm100-sm103-sm120-latest`. Do not repoint the older
+`cuda13-b300-sm80-sm90-sm120-latest` alias: an alias whose name omits
+`sm_100`/`sm_103` would misdescribe the widened image. Migrate consumers to the
+new alias and retain the old one only where historical evidence refers to it.
+
 ## Gotchas
 
 - Do not commit concrete registry IDs or private image digests from a live

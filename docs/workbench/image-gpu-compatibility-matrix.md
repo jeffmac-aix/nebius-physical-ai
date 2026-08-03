@@ -2,7 +2,7 @@
 
 Every Workbench container image against every Nebius GPU platform, and — separately — which of those cells has actually been run on real hardware.
 
-**Last measured:** 2026-08-02
+**Last measured:** 2026-08-03
 
 Two things are deliberately kept apart here, because conflating them is how "Blackwell ready" claims go wrong:
 
@@ -37,37 +37,38 @@ Two compatibility rules govern every cell:
 
 | Image | Tag measured | Torch / CUDA | Measured SASS set | Covers `sm_100`? |
 | --- | --- | --- | --- | --- |
-| `npa-base` | `cuda13-b300-sm80-sm90-sm100-sm103-sm120-20260802T181419Z` | 2.9.0+cu130 | `sm_75 sm_80 sm_86 sm_90 sm_100 sm_120` + `compute_120` PTX | yes |
-| `npa-lerobot` | `0.5.1` | 2.12.1+cu130 | `sm_75 sm_80 sm_86 sm_90 sm_100 sm_120` | yes |
+| `npa-base` | `cuda13-b300-sm80-sm90-sm100-sm103-sm120-20260802T234708Z` | 2.9.0+cu130 | `sm_75 sm_80 sm_86 sm_90 sm_100 sm_120` + `compute_120` PTX | yes |
+| `npa-lerobot` | `…-0.5.1-…-20260803T000551Z` | 2.9.0+cu130 | `sm_75 sm_80 sm_86 sm_90 sm_100 sm_120` + `compute_120` PTX | yes |
 | `npa-lerobot-policy` | `0.1.1` | 2.12.1+cu130 | `sm_75 sm_80 sm_86 sm_90 sm_100 sm_120` | yes |
 | `npa-lancedb` | `0.30.3` | 2.12.1+cu130 | `sm_75 sm_80 sm_86 sm_90 sm_100 sm_120` | yes |
 | `npa-detection-training` | `bdd100k-golden-eval-smoke-20260614T210000Z` | 2.12.1+cu130 | `sm_75 sm_80 sm_86 sm_90 sm_100 sm_120` | yes |
-| `npa-cosmos3-reason` | `3.0.1-genuine-sm120` | 2.9.0+cu130 | `sm_75 sm_80 sm_86 sm_90 sm_100 sm_120` + `compute_120` PTX | yes |
-| `npa-loop-eval` | `0.1.3-genuine-sm120` | 2.9.0+cu130 | `sm_75 sm_80 sm_86 sm_90 sm_100 sm_120` + `compute_120` PTX | yes |
-| `npa-genesis` | `0.4.6` | 2.6.0+cu124 | `sm_50 sm_60 sm_70 sm_75 sm_80 sm_86 sm_90` | **no** |
+| `npa-cosmos3-reason` | `…-3.0.1-…-20260803T000551Z` | 2.9.0+cu130 | `sm_75 sm_80 sm_86 sm_90 sm_100 sm_120` + `compute_120` PTX | yes |
+| `npa-genesis` | `…-0.4.6-…-20260803T000551Z` | 2.9.0+cu130 | `sm_75 sm_80 sm_86 sm_90 sm_100 sm_120` + `compute_120` PTX | yes |
+| `npa-envgen` / `npa-reference-policy` / `npa-lerobot-vlm-rl` / `npa-loop-eval` | `…-20260803T000551Z` | inherited 2.9.0+cu130 | `sm_75 sm_80 sm_86 sm_90 sm_100 sm_120` + `compute_120` PTX | yes |
+| `npa-sonic` | `…-0.1.2-k8s-runtime-…-20260803T012052Z` | 2.9.0+cu130 | `sm_75 sm_80 sm_86 sm_90 sm_100 sm_120` + `compute_120` PTX | yes |
 | `npa-cosmos` | `1.0.9` | 2.6.0+cu126 | `sm_50 sm_60 sm_70 sm_75 sm_80 sm_86 sm_90` | **no** |
 
-The two `no` rows are the whole reason `npa-cosmos` is a port and the default `npa-genesis` needs moving off cu124: cu124 and cu126 stop at Hopper. Not measured yet: `npa-workbench-cuda-base` (covered through its children), `npa-cosmos2-transfer`, `npa-isaac-lab`, `npa-sonic`, `npa-groot`, and the remaining sim2real chain.
+The remaining `no` row is why `npa-cosmos` needs its separate cu128 port: the old cu126 wheel stops at Hopper. The rebuilt Genesis/sim2real/SONIC images now have a correct torch arch set, but their datacenter verdicts remain blocked on Taichi or the NVIDIA Isaac vendor stack; a wheel arch list does not override a real upstream runtime blocker. Not measured yet: `npa-workbench-cuda-base` (covered through its children), `npa-cosmos2-transfer`, `npa-isaac-lab`, and `npa-groot`.
 
 ## Compatibility matrix
 
 | Image | L40S `sm_89` | H100 / H200 `sm_90` | RTX PRO 6000 `sm_120` | B200 `sm_100` | B300 `sm_103` |
 | --- | --- | --- | --- | --- | --- |
-| `npa-base` | supported | **verified** [1] | **verified** [2] | supported | **verified** [3] |
+| `npa-base` | supported | **verified** [1] | **verified** [2] | **verified** [5] | **verified** [6] |
 | `npa-workbench-cuda-base` | supported | supported | supported | supported | supported |
-| `npa-lerobot` | supported | supported | supported | supported | **verified** [4] |
+| `npa-lerobot` | supported | **verified** [11] | supported | **verified** [10] | **verified** [4] |
 | `npa-lerobot-policy` | supported | supported | supported | supported | supported |
 | `npa-lancedb` | supported | supported | supported | supported | supported |
-| `npa-detection-training` | supported | supported | supported | supported | supported |
+| `npa-detection-training` | supported | supported | supported | **verified** [7] | supported |
 | `npa-cosmos3` | supported | supported | supported | supported | supported |
-| `npa-cosmos3-reason` | supported | supported | supported | supported | supported |
-| `npa-cosmos2-transfer` | supported | supported | supported | supported | supported |
+| `npa-cosmos3-reason` | supported | supported | **verified** [13] | **verified** [12] | supported |
+| `npa-cosmos2-transfer` | supported | supported | supported | **verified** [9] | supported |
 | `npa-cosmos` | supported | supported | **no SASS** | **no SASS** | **no SASS** |
-| `npa-genesis` | supported | supported | **no SASS** | **no SASS** | **no SASS** |
-| `npa-envgen` | supported | supported | blocked | blocked | blocked |
-| `npa-reference-policy` | supported | supported | blocked | blocked | blocked |
-| `npa-loop-eval` | supported | supported | blocked | blocked | blocked |
-| `npa-lerobot-vlm-rl` | supported | supported | blocked | blocked | blocked |
+| `npa-genesis` | supported | supported | **verified** [14] | blocked (Taichi) | blocked (Taichi) |
+| `npa-envgen` | supported | supported | **verified** [15] | blocked (Taichi) | blocked (Taichi) |
+| `npa-reference-policy` | supported | supported | **verified** [16] | blocked (Taichi) | blocked (Taichi) |
+| `npa-loop-eval` | supported | supported | **verified** [18] | blocked (Taichi) | blocked (Taichi) |
+| `npa-lerobot-vlm-rl` | supported | supported | **verified** [17] | blocked (Taichi) | blocked (Taichi) |
 | `npa-isaac-lab` | supported | supported (headless) | supported | blocked | blocked |
 | `npa-sonic` | supported | supported (headless) | supported | blocked | blocked |
 | `npa-sonic-mujoco` | supported | supported (headless) | supported | blocked | blocked |
@@ -91,9 +92,9 @@ The two `no` rows are the whole reason `npa-cosmos` is a port and the default `n
 
 Isaac Lab and SONIC rasterized rendering needs RT cores. L40S and RTX PRO 6000 have them; H100, H200, B200, and B300 do not. The "supported (headless)" cells above mean state-based training only. `npa.workbench.sonic.routing` enforces this and rejects a render workload routed to a datacenter part.
 
-### Why the Blackwell datacenter column is mostly not "verified"
+### Blackwell datacenter hardware status
 
-B200 and B300 instances could not be placed in this tenant during validation: serverless jobs submit but their instance cycles `STARTING → STOPPED`, in both us-central1 (B200) and uk-south1 (B300), and a VM deploy failed earlier on the tenant's public IPv4 quota. That is capacity, not the images. The manifest records the blocker and the command to finish each cell.
+Managed-Kubernetes nodes were placed successfully for both B200 in us-central1 and B300 in uk-south1 on 2026-08-03. The temporary nodes enabled the first current-hardware validation runs below. Cells remain merely **supported** unless that exact image completed its real capability smoke; hardware availability alone does not flip a cell.
 
 ## Verified runs
 
@@ -103,10 +104,26 @@ B200 and B300 instances could not be placed in this tenant during validation: se
 | 2 | 2026-08-02 | `npa-base` `…-20260802T181419Z` | RTX PRO 6000 Blackwell Server Edition (`sm_120`) | same three checks | `ALL_GPU_VALIDATION_PASSED`; flash-attn recorded as the known TMA gap |
 | 3 | 2026-05-14 | `npa-base` cuda13-b300 | 8× B300 (`sm_103`), driver 580.126.09 | torch import, device capability `(10, 3)`, flash-attn-4 forward pass, NCCL init | PASS — [B300 validation matrix](../b300-validation-matrix.md) |
 | 4 | 2026-05-14 | `npa-lerobot` cuda13-b300 | B300 (`sm_103`) | ACT on `lerobot/pusht_image`, batch 8, 100 steps | PASS, 71 s wall — [B300 validation matrix](../b300-validation-matrix.md) |
+| 5 | 2026-08-03 | `npa-base` `…-20260802T181419Z` | NVIDIA B200 (`sm_100`), driver 580.159.04 | positive native-SASS check, negative `sm_120` cross-major check, bf16 matmul, torch SDPA, flash-attn-4 CuTe forward vs SDPA | capability `(10, 0)`, `sass_covered=True`, cross-major check failed as required, flash-attn max abs error 0.00206, `ALL_GPU_VALIDATION_PASSED` |
+| 6 | 2026-08-03 | `npa-base` `…-20260802T181419Z` | NVIDIA B300 SXM6 AC (`sm_103`) | positive same-major SASS check, negative `sm_120` cross-major check, bf16 matmul, torch SDPA, flash-attn-4 CuTe forward vs SDPA | capability `(10, 3)`, `sm_100` SASS covered `sm_103`, cross-major check failed as required, flash-attn max abs error 0.00206, `ALL_GPU_VALIDATION_PASSED` |
+| 7 | 2026-08-03 | `npa-detection-training:bdd100k-golden-eval-smoke-20260614T210000Z` | NVIDIA B200 (`sm_100`) | real Faster R-CNN forward, backward, and optimizer step on synthetic detector data | `DETECTOR_TRAIN_STEP_PASSED`; classifier, box-regression, objectness, and RPN losses produced |
+| 8 | 2026-08-03 | `npa-base` `…-20260802T234708Z` | NVIDIA B300 SXM6 AC (`sm_103`) | repeated positive same-major SASS check, negative `sm_120` cross-major check, bf16 matmul, torch SDPA, and flash-attn-4 CuTe forward on the rebuilt/published image | capability `(10, 3)`, `sm_100` SASS covered `sm_103`, flash-attn max abs error 0.00206, `ALL_GPU_VALIDATION_PASSED` |
+| 9 | 2026-08-03 | `npa-cosmos2-transfer:2.5.1-skypilot-ready-20260801T053000Z` | NVIDIA B200 (`sm_100`) | real depth-conditioned video-to-video transfer, including two 35-step generation passes and prompt/video guardrails | PASS; generated `robot_depth.mp4` (3,891,548 bytes) |
+| 10 | 2026-08-03 | rebuilt `npa-lerobot` `…-20260803T000551Z` | NVIDIA B200 (`sm_100`) | base and child native-SASS checks, datacenter flash-attn-4 CuTe kernel, then official ACT PushT: 50 training steps, checkpoint, and one evaluation episode | PASS; 5/5 functional checks and flash-attn max abs error 0.00206 |
+| 11 | 2026-08-03 | same rebuilt `npa-lerobot` | NVIDIA H100 (`sm_90`) | same ACT train→checkpoint→evaluation smoke plus native H100 SASS and flash-attn | PASS; 5/5 functional checks and flash-attn max abs error 0.00186 |
+| 12 | 2026-08-03 | rebuilt `npa-cosmos3-reason` `…-20260803T000551Z` | NVIDIA B200 (`sm_100`) | base validators plus a real gated `nvidia/Cosmos-Reason2-8B` VLM reason pass over two frames | PASS; datacenter flash-attn kernel passed and the VLM emitted a completed judgment |
+| 13 | 2026-08-03 | same rebuilt `npa-cosmos3-reason` | RTX PRO 6000 (`sm_120`) | native SASS/base controls plus the same real VLM reason pass | PASS; expected non-TMA flash-attn gap recorded, real VLM inference completed |
+| 14 | 2026-08-03 | rebuilt `npa-genesis` `…-20260803T000551Z` | RTX PRO 6000 (`sm_120`) | native SASS/base controls, raw environment generation, Genesis CUDA scene construction, and a physics step | PASS; `gs.cuda` on the physical GPU |
+| 15 | 2026-08-03 | rebuilt `npa-envgen` `…-20260803T000551Z` | RTX PRO 6000 (`sm_120`) | validators, real environment generation, and Genesis CUDA step | PASS |
+| 16 | 2026-08-03 | rebuilt `npa-reference-policy` `…-20260803T000551Z` | RTX PRO 6000 (`sm_120`) | validators and a real reference-policy rollout in a generated environment | PASS |
+| 17 | 2026-08-03 | rebuilt `npa-lerobot-vlm-rl` `…-20260803T000551Z` | RTX PRO 6000 (`sm_120`) | validators and a real VLM-guided RL step in Genesis | PASS |
+| 18 | 2026-08-03 | rebuilt `npa-loop-eval` `…-20260803T000551Z` | RTX PRO 6000 (`sm_120`) | validators and a scored two-environment Franka pick-place rollout | PASS; rollout ran at 29.23 FPS |
 
-Runs 1 and 2 used [`npa/scripts/blackwell-gpu-validation-job.yaml`](../../npa/scripts/blackwell-gpu-validation-job.yaml) against already-deployed Kubernetes GPU pools. Each does three checks, so a pass means something: the target architecture must pass *with native SASS*, a different CUDA major must **fail** (proving the checker cannot hand out a false "Blackwell ready" on the wrong GPU family), and then the capability smoke runs real kernels.
+Runs 1, 2, 5, 6, and 8 used [`npa/scripts/blackwell-gpu-validation-job.yaml`](../../npa/scripts/blackwell-gpu-validation-job.yaml). Each does three checks, so a pass means something: the target architecture must pass *with native SASS* (including same-major `sm_100` coverage for `sm_103`), a different CUDA major must **fail** (proving the checker cannot hand out a false "Blackwell ready" on the wrong GPU family), and then the capability smoke runs real kernels.
 
 The job runs non-root with dropped capabilities and a read-only root filesystem. flash-attn-4's CuTe kernels JIT-compile at runtime, so `HOME` and every torch/CUDA cache point at a scratch `emptyDir`; the H100 run above confirms the kernel still compiles and executes under those constraints.
+
+The original READY-set images were also tested before rebuild. `npa-lancedb:0.30.3` remains unverified because its published CLIP smoke fails on a current transformers return type; the superseded `npa-lerobot:0.5.1` failed a torchcodec/FFmpeg mismatch, and the superseded Cosmos3 Reason image lacked the functional smoke module. The rebuilt SONIC image passes its native-SASS controls and reaches real environment construction after fixing two undeclared upstream dependencies, but both cold and warm fine-tune attempts fail inside Isaac's runtime-fetched URDF extension while opening a temporary pelvis USD layer, before a checkpoint. Those failures are recorded in `validation_evidence`; they were not converted into verified cells.
 
 ## The import check that lied
 
