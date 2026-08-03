@@ -1,6 +1,6 @@
 ---
 name: skypilot-workflows
-description: Use when running or debugging how the engine renders and submits SkyPilot from an npa.workflow spec — the invocation path, SkyPilot 0.12.2 limits, JobGroups, num_nodes, and the runner scripts. Not for authoring: pipelines are npa.workflow specs (see author-npa-workflow).
+description: "Use when running or debugging how the engine renders and submits SkyPilot from an npa.workflow spec — the invocation path, SkyPilot 0.12.2 limits, JobGroups, num_nodes, and the runner scripts. Not for authoring: pipelines are npa.workflow specs (see author-npa-workflow)."
 ---
 
 # SkyPilot Workflows
