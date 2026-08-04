@@ -45,8 +45,9 @@ Only explicit operator CIDRs can reach public UDP `3478`; UDP
 `47999-48015`, the
 GPU pod, and the GPU node remain private. The UI forces
 `iceTransportPolicy=relay` for that session. TURN long-term authentication,
-a one-user/one-allocation quota, and the exact security-group rule prevent the
-public control relay from acting as an open proxy. The agent and cluster may
+one session-scoped user with a bounded 16-allocation quota, and the exact
+security-group rule prevent the public control relay from acting as an open
+proxy. The agent and cluster may
 remain in separate VPCs because their only cross-VPC path is the pod-initiated
 WSS backhaul; no GPU-node ingress or host port is required. The
 backhaul script, agent auth, certificate hash, and nonce are mounted into the

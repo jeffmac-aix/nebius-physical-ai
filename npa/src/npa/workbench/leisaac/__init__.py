@@ -22,6 +22,7 @@ MEDIA_PORT = 47998
 TURN_PORT = 3478
 TURN_RELAY_PORT = 47999
 TURN_RELAY_MAX_PORT = 48015
+TURN_ALLOCATION_QUOTA = 16
 TURN_IMAGE = (
     "docker.io/coturn/coturn@"
     "sha256:747ffd6c11fffad8c9c344a116d45f1365ee69a3e3af6475ce5c49e1024848f5"
@@ -316,8 +317,8 @@ user={run_id}:{turn_credential(session_nonce)}
 fingerprint
 lt-cred-mech
 stale-nonce=600
-total-quota=1
-user-quota=1
+total-quota={TURN_ALLOCATION_QUOTA}
+user-quota={TURN_ALLOCATION_QUOTA}
 no-tcp
 no-tls
 no-dtls
