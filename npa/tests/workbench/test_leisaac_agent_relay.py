@@ -19,6 +19,7 @@ from npa.workbench.leisaac.agent_relay import (
 from npa.workbench.leisaac.reverse_client import (
     Client,
     WebSocketConnection,
+    _pod_ipv4,
     load_config as load_client_config,
 )
 
@@ -164,7 +165,7 @@ def test_private_client_uses_one_connected_media_socket_per_udp_flow(monkeypatch
             created.append(self)
 
         def connect(self, address: tuple[str, int]) -> None:
-            assert address == ("127.0.0.1", 47998)
+            assert address == ("10.96.34.76", 47998)
 
         def send(self, payload: bytes) -> None:
             self.sent.append(payload)
@@ -184,6 +185,10 @@ def test_private_client_uses_one_connected_media_socket_per_udp_flow(monkeypatch
 
     monkeypatch.setattr(socket, "socket", FakeSocket)
     monkeypatch.setattr(
+        "npa.workbench.leisaac.reverse_client._pod_ipv4",
+        lambda: "10.96.34.76",
+    )
+    monkeypatch.setattr(
         "npa.workbench.leisaac.reverse_client.threading.Thread", FakeThread
     )
     client = Client({})
@@ -194,6 +199,20 @@ def test_private_client_uses_one_connected_media_socket_per_udp_flow(monkeypatch
     assert len(created) == 2
     assert created[0].sent == [b"first", b"again"]  # type: ignore[attr-defined]
     assert created[1].sent == [b"second"]  # type: ignore[attr-defined]
+
+
+def test_private_client_resolves_only_non_loopback_private_pod_ipv4(monkeypatch) -> None:
+    monkeypatch.setattr(socket, "gethostname", lambda: "leisaac-pod")
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (socket.AF_INET, socket.SOCK_DGRAM, 0, "", ("127.0.0.1", 0)),
+            (socket.AF_INET, socket.SOCK_DGRAM, 0, "", ("10.96.34.76", 0)),
+        ],
+    )
+
+    assert _pod_ipv4() == "10.96.34.76"
 
 
 def test_agent_uses_native_private_udp_per_browser_flow(monkeypatch) -> None:

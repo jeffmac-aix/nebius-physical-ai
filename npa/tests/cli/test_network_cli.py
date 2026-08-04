@@ -18,7 +18,6 @@ def _instance(
     vm_id: str = "computeinstance-test",
     project_id: str = "project-test",
     public_ip: str = "203.0.113.10/32",
-    private_ip: str = "10.96.0.21/32",
     security_groups: list[str] | None = None,
 ) -> dict[str, Any]:
     groups = security_groups if security_groups is not None else ["sg-test"]
@@ -38,7 +37,6 @@ def _instance(
             "network_interfaces": [
                 {
                     "name": "eth0",
-                    "ip_address": {"address": private_ip},
                     "public_ip_address": {"address": public_ip},
                 }
             ],
@@ -121,17 +119,6 @@ def _mock_nebius(
 
 def _create_calls(calls: list[list[str]]) -> list[list[str]]:
     return [call for call in calls if call[:3] == ["vpc", "security-rule", "create"]]
-
-
-def test_resolve_instance_network_context_includes_provider_private_ip(mocker) -> None:
-    from npa.clients.network import resolve_instance_network_context
-
-    _mock_nebius(mocker)
-
-    context = resolve_instance_network_context("computeinstance-test")
-
-    assert context.public_ip == "203.0.113.10/32"
-    assert context.private_ip == "10.96.0.21/32"
 
 
 def test_network_ensure_ingress_success_with_vm(mocker) -> None:

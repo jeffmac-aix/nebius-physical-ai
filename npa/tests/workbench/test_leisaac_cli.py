@@ -7,8 +7,6 @@ from typer.testing import CliRunner
 
 from npa.cli.workbench.leisaac import (
     _delete_resources,
-    _deployment_node_context,
-    _deployment_node_internal_ip,
     _install_agent_relay,
     _put_manifest,
     _wait_ready,
@@ -84,111 +82,6 @@ def test_delete_resources_addresses_each_kubernetes_kind_explicitly(monkeypatch)
     ]
 
 
-def test_deployment_media_target_resolves_exact_ready_private_node(monkeypatch) -> None:
-    responses = iter(
-        (
-            {
-                "items": [
-                    {
-                        "spec": {"nodeName": "rt-node"},
-                        "status": {
-                            "phase": "Running",
-                            "containerStatuses": [{"ready": True}, {"ready": True}],
-                        },
-                    }
-                ]
-            },
-            {
-                "status": {
-                    "addresses": [
-                        {"type": "Hostname", "address": "rt-node"},
-                        {"type": "InternalIP", "address": "10.96.0.22"},
-                    ]
-                }
-            },
-        )
-    )
-    monkeypatch.setattr(
-        "npa.cli.workbench.leisaac._kubectl",
-        lambda *_args, **_kwargs: SimpleNamespace(
-            returncode=0, stdout=json.dumps(next(responses)), stderr=""
-        ),
-    )
-
-    assert (
-        _deployment_node_internal_ip("cluster", "leisaac", "leisaac-live")
-        == "10.96.0.22"
-    )
-
-
-def test_deployment_media_target_returns_exact_node_identity(monkeypatch) -> None:
-    responses = iter(
-        (
-            {
-                "items": [
-                    {
-                        "spec": {"nodeName": "computeinstance-rt-node"},
-                        "status": {
-                            "phase": "Running",
-                            "containerStatuses": [{"ready": True}, {"ready": True}],
-                        },
-                    }
-                ]
-            },
-            {"status": {"addresses": [{"type": "InternalIP", "address": "10.96.0.22"}]}},
-        )
-    )
-    monkeypatch.setattr(
-        "npa.cli.workbench.leisaac._kubectl",
-        lambda *_args, **_kwargs: SimpleNamespace(
-            returncode=0, stdout=json.dumps(next(responses)), stderr=""
-        ),
-    )
-
-    assert _deployment_node_context("cluster", "leisaac", "leisaac-live") == (
-        "computeinstance-rt-node",
-        "10.96.0.22",
-    )
-
-
-def test_deployment_media_target_ignores_ready_pod_already_terminating(
-    monkeypatch,
-) -> None:
-    ready = {
-        "metadata": {},
-        "spec": {"nodeName": "computeinstance-current"},
-        "status": {
-            "phase": "Running",
-            "containerStatuses": [{"ready": True}, {"ready": True}],
-        },
-    }
-    terminating = {
-        "metadata": {"deletionTimestamp": "2026-08-04T07:30:00Z"},
-        "spec": {"nodeName": "computeinstance-old"},
-        "status": {
-            "phase": "Running",
-            "containerStatuses": [{"ready": True}, {"ready": True}],
-        },
-    }
-    responses = iter(
-        (
-            {"items": [terminating, ready]},
-            {"status": {"addresses": [{"type": "InternalIP", "address": "10.96.0.23"}]}},
-        )
-    )
-    monkeypatch.setattr(
-        "npa.cli.workbench.leisaac._kubectl",
-        lambda *_args, **_kwargs: SimpleNamespace(
-            returncode=0, stdout=json.dumps(next(responses)), stderr=""
-        ),
-    )
-
-    assert _deployment_node_context("cluster", "leisaac", "leisaac-live") == (
-        "computeinstance-current",
-        "10.96.0.23",
-    )
-
-
 def test_install_relay_creates_required_agent_directories() -> None:
     class CaptureSSH:
         command = ""
@@ -202,8 +95,6 @@ def test_install_relay_creates_required_agent_directories() -> None:
         ssh,
         run_id="live-relay",
         session_nonce="a" * 64,
-        media_target_host="10.96.0.22",
-        media_target_port=47998,
     )
 
     assert "sudo install -d -m 0755 /etc/npa /opt/npa-agent" in ssh.command
@@ -250,14 +141,7 @@ def _patch_launch(monkeypatch):
     ssh = object()
     monkeypatch.setattr(
         "npa.cli.workbench.leisaac._agent_relay_context",
-        lambda *_args: (
-            "vm-agent",
-            "8.8.4.4",
-            "10.96.0.21",
-            ssh,
-            "npa",
-            "secret",
-        ),
+        lambda *_args: ("vm-agent", "8.8.4.4", ssh, "npa", "secret"),
     )
     storage = {
         "bucket": "bucket",
@@ -289,10 +173,6 @@ def _patch_launch(monkeypatch):
         "npa.cli.workbench.leisaac._agent_certificate_sha256", lambda _ip: "f" * 64
     )
     monkeypatch.setattr("npa.cli.workbench.leisaac._wait_ready", lambda *_args: None)
-    monkeypatch.setattr(
-        "npa.cli.workbench.leisaac._deployment_node_context",
-        lambda *_args: ("computeinstance-rt-node", "10.96.0.22"),
-    )
     monkeypatch.setattr(
         "npa.cli.workbench.leisaac._relay_status",
         lambda *_args: {
@@ -391,14 +271,7 @@ def test_launch_agent_relay_wires_private_cluster_public_agent_and_manifest(monk
     assert "public_agent_url: https://8.8.4.4/" in result.output
     assert applied[0]["spec"]["type"] == "ClusterIP"
     assert applied[1]["kind"] == "Secret"
-    assert applied[2]["kind"] == "Deployment"
-    assert applied[-1]["kind"] == "Service"
-    assert applied[-1]["metadata"]["annotations"][
-        "npa.nebius.com/private-media-node"
-    ] == "computeinstance-rt-node"
-    assert applied[-1]["metadata"]["annotations"][
-        "npa.nebius.com/private-media-source"
-    ] == "10.96.0.21/32"
+    assert applied[-1]["kind"] == "Deployment"
     assert ingress_calls == [
         {
             "vm_id": "vm-agent",
@@ -407,19 +280,11 @@ def test_launch_agent_relay_wires_private_cluster_public_agent_and_manifest(monk
             "tool": "leisaac-relay",
             "protocol": "UDP",
         },
-        {
-            "vm_id": "computeinstance-rt-node",
-            "ports": (47998,),
-            "source": "10.96.0.21/32",
-            "tool": "leisaac-relay-private-media",
-            "protocol": "UDP",
-        },
     ]
     assert install_calls[0][0] == (ssh,)
     assert install_calls[0][1]["session_nonce"] == "a" * 64
     assert install_calls[0][1].get("media_target_host", "") == ""
-    assert install_calls[1][1]["media_target_host"] == "10.96.0.22"
-    assert install_calls[1][1]["media_target_port"] == 47998
+    assert len(install_calls) == 1
     assert manifests[0]["transport"] == "agent-relay"
     assert manifests[0]["signal_host"] == "127.0.0.1"
     assert manifests[0]["media_host"] == "8.8.4.4"
@@ -465,8 +330,6 @@ def test_destroy_uses_service_metadata_to_remove_only_its_agent_relay(monkeypatc
                 "npa.nebius.com/agent-project": "rtxpro",
                 "npa.nebius.com/agent-name": "agent",
                 "npa.nebius.com/source-ranges": "8.8.8.8/32",
-                "npa.nebius.com/private-media-node": "computeinstance-rt-node",
-                "npa.nebius.com/private-media-source": "10.96.0.21/32",
             }
         }
     }
@@ -479,14 +342,7 @@ def test_destroy_uses_service_metadata_to_remove_only_its_agent_relay(monkeypatc
     ssh = object()
     monkeypatch.setattr(
         "npa.cli.workbench.leisaac._agent_relay_context",
-        lambda *_args: (
-            "vm-agent",
-            "8.8.4.4",
-            "10.96.0.21",
-            ssh,
-            "npa",
-            "secret",
-        ),
+        lambda *_args: ("vm-agent", "8.8.4.4", ssh, "npa", "secret"),
     )
     relay_removals = []
     ingress_removals = []
@@ -519,11 +375,7 @@ def test_destroy_uses_service_metadata_to_remove_only_its_agent_relay(monkeypatc
 
     assert result.exit_code == 0, result.output
     assert relay_removals == [((ssh,), {"run_id": "live-relay"})]
-    assert len(ingress_removals) == 2
     assert ingress_removals[0][0] == ("vm-agent",)
     assert ingress_removals[0][1]["source"] == "8.8.8.8/32"
     assert ingress_removals[0][1]["protocol"] == "UDP"
-    assert ingress_removals[1][0] == ("computeinstance-rt-node",)
-    assert ingress_removals[1][1]["source"] == "10.96.0.21/32"
-    assert ingress_removals[1][1]["tool"] == "leisaac-relay-private-media"
     assert k8s_removals == [("cluster", "leisaac", "leisaac-live-relay")]

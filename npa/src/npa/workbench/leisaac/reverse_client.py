@@ -22,6 +22,25 @@ MAX_FRAME = 4 * 1024 * 1024
 MAX_UDP_FLOWS = 64
 
 
+def _pod_ipv4() -> str:
+    """Resolve this pod's non-loopback IPv4 for WebRTC's server-facing peer."""
+
+    for _family, _kind, _protocol, _canonname, sockaddr in socket.getaddrinfo(
+        socket.gethostname(), 0, family=socket.AF_INET, type=socket.SOCK_DGRAM
+    ):
+        address = ipaddress.ip_address(sockaddr[0])
+        if (
+            address.version == 4
+            and address.is_private
+            and not address.is_loopback
+            and not address.is_link_local
+            and not address.is_unspecified
+            and not address.is_multicast
+        ):
+            return address.compressed
+    raise ValueError("LeIsaac relay client could not resolve its private pod IPv4")
+
+
 def load_config(path: str | Path) -> dict[str, Any]:
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     host = ipaddress.ip_address(str(data.get("agent_host") or ""))
@@ -150,6 +169,7 @@ class Client:
         self.streams: dict[int, socket.socket] = {}
         self.media_lock = threading.Lock()
         self.media: dict[int, socket.socket] = {}
+        self.media_target = (_pod_ipv4(), 47998)
 
     def send(self, kind: int, stream_id: int, payload: bytes = b"") -> None:
         connection = self.connection
@@ -200,7 +220,7 @@ class Client:
             if len(self.media) >= MAX_UDP_FLOWS:
                 raise ConnectionError("too many browser UDP flows")
             media = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            media.connect(("127.0.0.1", 47998))
+            media.connect(self.media_target)
             self.media[stream_id] = media
         threading.Thread(
             target=self.read_media,

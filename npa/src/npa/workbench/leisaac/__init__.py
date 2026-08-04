@@ -64,34 +64,6 @@ def validate_public_ip(value: str, label: str) -> str:
     return address.compressed
 
 
-def validate_private_ipv4(value: str, label: str) -> str:
-    try:
-        address = ipaddress.ip_address(str(value or "").strip())
-    except ValueError as exc:
-        raise LeIsaacConfigError(f"{label} must be an IP address") from exc
-    if (
-        address.version != 4
-        or not address.is_private
-        or address.is_loopback
-        or address.is_link_local
-        or address.is_unspecified
-        or address.is_multicast
-    ):
-        raise LeIsaacConfigError(f"{label} must be a private IPv4 address")
-    return address.compressed
-
-
-def validate_private_source_range(value: str, label: str) -> str:
-    try:
-        network = ipaddress.ip_network(str(value or "").strip(), strict=True)
-    except ValueError as exc:
-        raise LeIsaacConfigError(f"{label} must be an exact private IPv4 /32") from exc
-    if network.version != 4 or network.prefixlen != 32:
-        raise LeIsaacConfigError(f"{label} must be an exact private IPv4 /32")
-    validate_private_ipv4(str(network.network_address), label)
-    return network.with_prefixlen
-
-
 def validate_source_ranges(values: list[str] | tuple[str, ...]) -> list[str]:
     result: list[str] = []
     for raw in values:
@@ -212,8 +184,6 @@ def relay_service_manifest(
     agent_project: str = "",
     agent_name: str = "",
     source_ranges: list[str] | tuple[str, ...] = (),
-    private_media_node: str = "",
-    private_media_source: str = "",
 ) -> dict[str, Any]:
     """Build one private ClusterIP service for an agent-relayed session.
 
@@ -240,17 +210,6 @@ def relay_service_manifest(
     }
     if not agent_project or not agent_name:
         raise LeIsaacConfigError("agent relay requires an agent project and name")
-    if bool(private_media_node) != bool(private_media_source):
-        raise LeIsaacConfigError(
-            "private media cleanup metadata requires both node and source"
-        )
-    if private_media_node:
-        annotations["npa.nebius.com/private-media-node"] = validate_run_id(
-            private_media_node
-        )
-        annotations["npa.nebius.com/private-media-source"] = (
-            validate_private_source_range(private_media_source, "private media source")
-        )
     return {
         "apiVersion": "v1",
         "kind": "Service",
@@ -387,7 +346,6 @@ def deployment_manifest(
                         "name": "media",
                         "containerPort": MEDIA_PORT,
                         "protocol": "UDP",
-                        **({"hostPort": MEDIA_PORT} if relay_client_secret else {}),
                     },
                 ],
                 "env": [
