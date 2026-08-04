@@ -221,6 +221,38 @@ function runId() {
       });
     });
     cy.wait(3000);
+    cy.window().then((win) => {
+      cy.get("#leisaacVideo", { timeout: 60000 }).should(($video) => {
+        const video = $video[0];
+        const canvas = win.document.createElement("canvas");
+        canvas.width = 160;
+        canvas.height = 90;
+        const context = canvas.getContext("2d", { willReadFrequently: true });
+        context.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+        let minimum = 255;
+        let maximum = 0;
+        let total = 0;
+        for (let index = 0; index < pixels.length; index += 4) {
+          const luma = Math.round(
+            (pixels[index] * 0.2126) +
+            (pixels[index + 1] * 0.7152) +
+            (pixels[index + 2] * 0.0722)
+          );
+          minimum = Math.min(minimum, luma);
+          maximum = Math.max(maximum, luma);
+          total += luma;
+        }
+        const frame = {
+          minimum,
+          maximum,
+          mean: Math.round(total / (pixels.length / 4)),
+        };
+        const peerDiagnostic = JSON.stringify(win.__LEISAAC_LIVE_PEERS__ || []);
+        expect(maximum - minimum, `rendered frame variance; frame=${JSON.stringify(frame)}; peers=${peerDiagnostic}`).to.be.greaterThan(12);
+        expect(frame.mean, "rendered frame mean luma").to.be.greaterThan(3);
+      });
+    });
     cy.screenshot("02-public-leisaac-live-stream", { capture: "viewport" });
 
     cy.get("#leisaacStreamHost")
