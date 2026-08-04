@@ -120,6 +120,8 @@ function runId() {
           candidates: [],
           errors: [],
           tracks: [],
+          inbound: [],
+          candidatePairs: [],
         };
         win.__LEISAAC_LIVE_PEERS__.push(diagnostic);
         const update = () => {
@@ -148,9 +150,47 @@ function runId() {
           update();
         });
         peer.addEventListener("track", (event) => {
-          diagnostic.tracks.push(String((event.track && event.track.kind) || "unknown"));
+          diagnostic.tracks.push({
+            kind: String((event.track && event.track.kind) || "unknown"),
+            muted: Boolean(event.track && event.track.muted),
+            readyState: String((event.track && event.track.readyState) || ""),
+            streams: Number((event.streams && event.streams.length) || 0),
+          });
           update();
         });
+        const statsTimer = win.setInterval(async () => {
+          if (peer.connectionState === "closed") {
+            win.clearInterval(statsTimer);
+            return;
+          }
+          try {
+            const stats = await peer.getStats();
+            diagnostic.inbound = [];
+            diagnostic.candidatePairs = [];
+            stats.forEach((report) => {
+              if (report.type === "inbound-rtp") {
+                diagnostic.inbound.push({
+                  kind: String(report.kind || report.mediaType || ""),
+                  bytesReceived: Number(report.bytesReceived || 0),
+                  packetsReceived: Number(report.packetsReceived || 0),
+                  framesDecoded: Number(report.framesDecoded || 0),
+                });
+              }
+              if (report.type === "candidate-pair" && (report.nominated || report.state === "succeeded")) {
+                diagnostic.candidatePairs.push({
+                  state: String(report.state || ""),
+                  nominated: Boolean(report.nominated),
+                  bytesSent: Number(report.bytesSent || 0),
+                  bytesReceived: Number(report.bytesReceived || 0),
+                  localCandidateId: String(report.localCandidateId || ""),
+                  remoteCandidateId: String(report.remoteCandidateId || ""),
+                });
+              }
+            });
+          } catch (_error) {
+            // A peer may close while the diagnostic snapshot is in flight.
+          }
+        }, 2000);
         return peer;
       }
       InspectablePeerConnection.prototype = NativePeerConnection.prototype;
