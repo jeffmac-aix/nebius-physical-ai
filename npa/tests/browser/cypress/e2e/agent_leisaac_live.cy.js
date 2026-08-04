@@ -100,6 +100,7 @@ function runId() {
       }
       win.WebSocket = AuthenticatedWebSocket;
       const NativePeerConnection = win.RTCPeerConnection;
+      win.__LEISAAC_LIVE_PEERS__ = [];
       function InspectablePeerConnection(configuration, constraints) {
         const config = configuration || {};
         win.__LEISAAC_LIVE_PEER_CONFIG__ = {
@@ -110,7 +111,47 @@ function runId() {
             hasCredential: Boolean(server.credential),
           })),
         };
-        return new NativePeerConnection(configuration, constraints);
+        const peer = new NativePeerConnection(configuration, constraints);
+        const diagnostic = {
+          connectionState: peer.connectionState,
+          iceConnectionState: peer.iceConnectionState,
+          iceGatheringState: peer.iceGatheringState,
+          signalingState: peer.signalingState,
+          candidates: [],
+          errors: [],
+          tracks: [],
+        };
+        win.__LEISAAC_LIVE_PEERS__.push(diagnostic);
+        const update = () => {
+          diagnostic.connectionState = peer.connectionState;
+          diagnostic.iceConnectionState = peer.iceConnectionState;
+          diagnostic.iceGatheringState = peer.iceGatheringState;
+          diagnostic.signalingState = peer.signalingState;
+        };
+        [
+          "connectionstatechange",
+          "iceconnectionstatechange",
+          "icegatheringstatechange",
+          "signalingstatechange",
+        ].forEach((eventName) => peer.addEventListener(eventName, update));
+        peer.addEventListener("icecandidate", (event) => {
+          const candidate = String((event.candidate && event.candidate.candidate) || "");
+          if (candidate) diagnostic.candidates.push(candidate.replace(/\s+/g, " "));
+          update();
+        });
+        peer.addEventListener("icecandidateerror", (event) => {
+          diagnostic.errors.push({
+            code: Number(event.errorCode || 0),
+            text: String(event.errorText || ""),
+            url: String(event.url || "").replace(/[^:]+:[^@]+@/, "REDACTED@"),
+          });
+          update();
+        });
+        peer.addEventListener("track", (event) => {
+          diagnostic.tracks.push(String((event.track && event.track.kind) || "unknown"));
+          update();
+        });
+        return peer;
       }
       InspectablePeerConnection.prototype = NativePeerConnection.prototype;
       Object.setPrototypeOf(InspectablePeerConnection, NativePeerConnection);
@@ -130,11 +171,14 @@ function runId() {
       "contain.text",
       "keyboard teleoperation active"
     );
-    cy.get("#leisaacVideo", { timeout: 120000 }).should(($video) => {
-      const video = $video[0];
-      expect(video.readyState, "decoded video readyState").to.be.at.least(2);
-      expect(video.videoWidth, "decoded video width").to.be.greaterThan(640);
-      expect(video.videoHeight, "decoded video height").to.be.greaterThan(360);
+    cy.window().then((win) => {
+      cy.get("#leisaacVideo", { timeout: 120000 }).should(($video) => {
+        const video = $video[0];
+        const peerDiagnostic = JSON.stringify(win.__LEISAAC_LIVE_PEERS__ || []);
+        expect(video.readyState, `decoded video readyState; peers=${peerDiagnostic}`).to.be.at.least(2);
+        expect(video.videoWidth, "decoded video width").to.be.greaterThan(640);
+        expect(video.videoHeight, "decoded video height").to.be.greaterThan(360);
+      });
     });
     cy.wait(3000);
     cy.screenshot("02-public-leisaac-live-stream", { capture: "viewport" });
