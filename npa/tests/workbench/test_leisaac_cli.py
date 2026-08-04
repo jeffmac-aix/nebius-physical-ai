@@ -8,7 +8,9 @@ from typer.testing import CliRunner
 from npa.cli.workbench.leisaac import (
     _delete_resources,
     _install_agent_relay,
+    _install_agent_turn,
     _put_manifest,
+    _relay_peer_public_ip,
     _wait_ready,
     app,
 )
@@ -102,6 +104,50 @@ def test_install_relay_creates_required_agent_directories() -> None:
     assert "openssl req -x509" not in ssh.command
 
 
+def test_install_turn_uses_session_config_and_fixed_public_mapping() -> None:
+    class CaptureSSH:
+        command = ""
+
+        def run_or_raise(self, command, **_kwargs):
+            self.command = command
+            return 0, "", ""
+
+    ssh = CaptureSSH()
+    _install_agent_turn(
+        ssh,
+        run_id="live-relay",
+        session_nonce="a" * 64,
+        public_ip="8.8.4.4",
+    )
+
+    assert "command -v turnserver" in ssh.command
+    assert "external-ip=8.8.4.4/%s" in ssh.command
+    assert "install -o root -g turnserver -m 0640" in ssh.command
+    assert "coturn is missing; bootstrap the NPA agent" in ssh.command
+    assert "a" * 64 not in ssh.command
+
+
+def test_relay_peer_resolution_waits_for_authenticated_global_egress(monkeypatch) -> None:
+    class PeerSSH:
+        responses = iter(
+            [
+                (22, "", "not connected"),
+                (0, '{"connected":true,"peer_public_ip":"9.9.9.9"}\n', ""),
+            ]
+        )
+
+        def run(self, _command):
+            return next(self.responses)
+
+    sleeps = []
+    monkeypatch.setattr(
+        "npa.cli.workbench.leisaac.time.sleep", lambda seconds: sleeps.append(seconds)
+    )
+
+    assert _relay_peer_public_ip(PeerSSH()) == "9.9.9.9"
+    assert sleeps == [2]
+
+
 def _args() -> list[str]:
     return [
         "launch",
@@ -174,6 +220,14 @@ def _patch_launch(monkeypatch):
     )
     monkeypatch.setattr("npa.cli.workbench.leisaac._wait_ready", lambda *_args: None)
     monkeypatch.setattr(
+        "npa.cli.workbench.leisaac._relay_peer_public_ip", lambda _ssh: "9.9.9.9"
+    )
+    turn_install_calls = []
+    monkeypatch.setattr(
+        "npa.cli.workbench.leisaac._install_agent_turn",
+        lambda *args, **kwargs: turn_install_calls.append((args, kwargs)),
+    )
+    monkeypatch.setattr(
         "npa.cli.workbench.leisaac._relay_status",
         lambda *_args: {
             "state": "ready",
@@ -203,7 +257,7 @@ def _patch_launch(monkeypatch):
             "gpu": "NVIDIA-RTX-PRO-6000-Blackwell-Server-Edition",
         },
     )
-    return applied, ingress_calls, install_calls, manifests, ssh
+    return applied, ingress_calls, install_calls, turn_install_calls, manifests, ssh
 
 
 def test_agent_relay_manifest_uses_selected_agent_storage_not_shell_endpoint(monkeypatch) -> None:
@@ -262,7 +316,9 @@ def test_agent_relay_manifest_rejects_storage_scope_mismatch() -> None:
 
 
 def test_launch_agent_relay_wires_private_cluster_public_agent_and_manifest(monkeypatch) -> None:
-    applied, ingress_calls, install_calls, manifests, ssh = _patch_launch(monkeypatch)
+    applied, ingress_calls, install_calls, turn_install_calls, manifests, ssh = (
+        _patch_launch(monkeypatch)
+    )
 
     result = runner.invoke(app, _args())
 
@@ -271,13 +327,23 @@ def test_launch_agent_relay_wires_private_cluster_public_agent_and_manifest(monk
     assert "public_agent_url: https://8.8.4.4/" in result.output
     assert applied[0]["spec"]["type"] == "ClusterIP"
     assert applied[1]["kind"] == "Secret"
-    assert applied[-1]["kind"] == "Deployment"
+    assert applied[2]["kind"] == "Deployment"
+    assert applied[-1]["metadata"]["annotations"][
+        "npa.nebius.com/turn-peer-source"
+    ] == "9.9.9.9/32"
     assert ingress_calls == [
         {
             "vm_id": "vm-agent",
-            "ports": (47998,),
+            "ports": (3478,),
             "source": "8.8.8.8/32",
-            "tool": "leisaac-relay",
+            "tool": "leisaac-turn-control",
+            "protocol": "UDP",
+        },
+        {
+            "vm_id": "vm-agent",
+            "ports": (47999,),
+            "source": "9.9.9.9/32",
+            "tool": "leisaac-turn-media",
             "protocol": "UDP",
         },
     ]
@@ -285,6 +351,16 @@ def test_launch_agent_relay_wires_private_cluster_public_agent_and_manifest(monk
     assert install_calls[0][1]["session_nonce"] == "a" * 64
     assert install_calls[0][1].get("media_target_host", "") == ""
     assert len(install_calls) == 1
+    assert turn_install_calls == [
+        (
+            (ssh,),
+            {
+                "run_id": "live-relay",
+                "session_nonce": "a" * 64,
+                "public_ip": "8.8.4.4",
+            },
+        )
+    ]
     assert manifests[0]["transport"] == "agent-relay"
     assert manifests[0]["signal_host"] == "127.0.0.1"
     assert manifests[0]["media_host"] == "8.8.4.4"
@@ -293,17 +369,22 @@ def test_launch_agent_relay_wires_private_cluster_public_agent_and_manifest(monk
 def test_failed_agent_relay_launch_removes_partial_relay_ingress_and_kubernetes(
     monkeypatch,
 ) -> None:
-    _applied, _ingress, _install, _manifests, _ssh = _patch_launch(monkeypatch)
+    _applied, _ingress, _install, _turn, _manifests, _ssh = _patch_launch(monkeypatch)
     monkeypatch.setattr(
-        "npa.cli.workbench.leisaac._install_agent_relay",
+        "npa.cli.workbench.leisaac._install_agent_turn",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("install failed")),
     )
     removed_relay = []
+    removed_turn = []
     removed_ingress = []
     removed_kubernetes = []
     monkeypatch.setattr(
         "npa.cli.workbench.leisaac._remove_agent_relay",
         lambda *args, **kwargs: removed_relay.append((args, kwargs)),
+    )
+    monkeypatch.setattr(
+        "npa.cli.workbench.leisaac._remove_agent_turn",
+        lambda *args, **kwargs: removed_turn.append((args, kwargs)),
     )
     monkeypatch.setattr(
         "npa.cli.workbench.leisaac.remove_exact_npa_ingress_for_instance",
@@ -319,6 +400,7 @@ def test_failed_agent_relay_launch_removes_partial_relay_ingress_and_kubernetes(
     assert result.exit_code == 1
     assert "install failed" in result.output
     assert removed_relay
+    assert removed_turn
     assert removed_ingress
     assert removed_kubernetes == [("cluster", "leisaac", "leisaac-live-relay")]
 
@@ -330,6 +412,7 @@ def test_destroy_uses_service_metadata_to_remove_only_its_agent_relay(monkeypatc
                 "npa.nebius.com/agent-project": "rtxpro",
                 "npa.nebius.com/agent-name": "agent",
                 "npa.nebius.com/source-ranges": "8.8.8.8/32",
+                "npa.nebius.com/turn-peer-source": "9.9.9.9/32",
             }
         }
     }
@@ -345,11 +428,16 @@ def test_destroy_uses_service_metadata_to_remove_only_its_agent_relay(monkeypatc
         lambda *_args: ("vm-agent", "8.8.4.4", ssh, "npa", "secret"),
     )
     relay_removals = []
+    turn_removals = []
     ingress_removals = []
     k8s_removals = []
     monkeypatch.setattr(
         "npa.cli.workbench.leisaac._remove_agent_relay",
         lambda *args, **kwargs: relay_removals.append((args, kwargs)),
+    )
+    monkeypatch.setattr(
+        "npa.cli.workbench.leisaac._remove_agent_turn",
+        lambda *args, **kwargs: turn_removals.append((args, kwargs)),
     )
     monkeypatch.setattr(
         "npa.cli.workbench.leisaac.remove_exact_npa_ingress_for_instance",
@@ -375,7 +463,12 @@ def test_destroy_uses_service_metadata_to_remove_only_its_agent_relay(monkeypatc
 
     assert result.exit_code == 0, result.output
     assert relay_removals == [((ssh,), {"run_id": "live-relay"})]
-    assert ingress_removals[0][0] == ("vm-agent",)
-    assert ingress_removals[0][1]["source"] == "8.8.8.8/32"
-    assert ingress_removals[0][1]["protocol"] == "UDP"
+    assert turn_removals == [((ssh,), {"run_id": "live-relay"})]
+    assert [item[1]["source"] for item in ingress_removals] == [
+        "8.8.8.8/32",
+        "9.9.9.9/32",
+    ]
+    assert [item[1]["ports"] for item in ingress_removals] == [(3478,), (47999,)]
+    assert all(item[0] == ("vm-agent",) for item in ingress_removals)
+    assert all(item[1]["protocol"] == "UDP" for item in ingress_removals)
     assert k8s_removals == [("cluster", "leisaac", "leisaac-live-relay")]

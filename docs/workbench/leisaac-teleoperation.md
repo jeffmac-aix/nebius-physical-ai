@@ -17,12 +17,13 @@ digest-pinned image, then verifies the live service's matching nonce
 attestation. Any absent, stale, malformed, unreachable, mismatched, or
 non-ready session leaves the tab absent. Switching runs repeats this check.
 
-The browser receives no service credential, nonce, or internal endpoint.
-Signaling is relayed through the agent's authenticated same-origin
+The browser receives no service nonce, agent credential, or internal endpoint.
+For an agent-relayed session, its authenticated, no-store status request does
+receive one derived, session-scoped TURN credential. Signaling is relayed
+through the agent's authenticated same-origin
 `/api/leisaac/signal` WebSocket. The NVIDIA browser client JavaScript is also
 proxied through an authenticated route and must match the agent's exact pinned
-SHA-256 before it can execute. WebRTC media uses only the session's
-public UDP `47998` endpoint.
+SHA-256 before it can execute.
 
 Two transport modes preserve that browser contract. `public-load-balancer`
 source-restricts status/client TCP `8080`, signaling TCP `49100`, and UDP media
@@ -33,14 +34,18 @@ pod initiates an authenticated WSS backhaul through nginx `443` to it. The
 backhaul uses the agent's existing basic-auth credential, pins the public HTTPS
 certificate SHA-256, and authenticates again with a random session nonce. The
 relay binds status to `127.0.0.1:48080`, signaling to `127.0.0.1:49100`, and
-media to fixed public UDP `47998`; its raw backhaul socket is loopback-only at
-`127.0.0.1:48081`. Status, signaling, and browser media use the authenticated
-WSS backhaul, so the agent and GPU cluster may remain in separate private VPCs
-and no GPU-node ingress is required. The relay preserves each browser ICE flow
-as a separate pod-side connected UDP socket. Those sockets address the stream
-server through the pod's validated non-loopback private IPv4 rather than
-publishing a node host port. Public media UDP is opened only on the agent and
-only for explicit operator CIDRs. The
+its raw backhaul socket to `127.0.0.1:48081`. The sidecar also reports its
+validated public egress IPv4 through a loopback-only control endpoint. Status
+and signaling use the authenticated WSS backhaul. Media uses the browser and
+upstream NVIDIA client's standard WebRTC path through a session-scoped coturn
+service on the public agent: allocation requests reach UDP `3478` only from
+explicit operator CIDRs, and the single relay port UDP `47999` accepts media
+only from the observed GPU egress `/32`. The UI forces `iceTransportPolicy` to
+`relay` for that session. TURN long-term authentication, a one-user/one-allocation
+quota, and the exact security-group rules prevent the public relay from acting
+as an open proxy. Because the GPU sends media outbound to the TURN allocation,
+the agent and cluster may remain in separate VPCs and no GPU-node ingress or
+host port is required. The
 backhaul script, agent auth, certificate hash, and nonce are mounted into the
 pod through a Kubernetes Secret. The UI and TCP APIs remain behind nginx HTTPS
 and basic authentication; port `8787`, `8080`, `49100`, cluster ports, and the
@@ -133,7 +138,10 @@ npa workbench leisaac launch \
 
 `agent-relay` resolves the agent IP from live provider state and refuses a
 stale saved address, missing SSH key or agent auth, unrestricted source range, TLS
-certificate mismatch, invalid session nonce, or a second active relay session. Use
+certificate mismatch, invalid session nonce, invalid GPU public egress address,
+missing coturn package, or a second active relay/TURN session. The supported
+agent bootstrap installs coturn but does not start or expose it until a LeIsaac
+session has passed live attestation. Use
 `--transport public-load-balancer` only when dedicated Kubernetes public IPv4
 allocations are intended; in that mode repeat `--source-range` for the agent
 and operator because the agent reaches the status/signaling load balancer.
@@ -158,7 +166,8 @@ npa workbench leisaac destroy --run-id leisaac-teleop-example --context YOUR_KUB
 Destroy removes only that run's transient Deployment and Services. For an
 agent-relayed run it reads the owning agent and source CIDRs from Kubernetes
 metadata, stops only the matching relay unit, and deletes only the matching
-NPA-managed public agent UDP rule. It preserves the S3
+relay and TURN units, and deletes only the matching NPA-managed UDP `3478` and
+`47999` rules. It preserves the S3
 manifest/log/evidence record.
 Once the service is gone, live health fails and the agent UI removes the tab
 even if the historical manifest still exists.

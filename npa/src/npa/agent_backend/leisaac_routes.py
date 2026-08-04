@@ -99,17 +99,28 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
     """Register the LeIsaac capability, client-module, and signaling routes."""
 
     @app.get("/leisaac/status")
-    def leisaac_status(request: Request, run_id: str = "") -> dict:
+    def leisaac_status(request: Request, run_id: str = "") -> Any:
         if str(request.headers.get("x-forwarded-proto") or "").lower() != "https":
-            return status_payload(
+            payload = status_payload(
                 None,
                 reason="LeIsaac teleoperation requires the public HTTPS agent endpoint.",
             )
-        manifest, reason = _resolve(deps, run_id)
-        if not manifest:
-            return status_payload(None, reason=reason)
-        health, reason = _health(deps, manifest)
-        return status_payload(manifest, health, reason=reason)
+        else:
+            manifest, reason = _resolve(deps, run_id)
+            if not manifest:
+                payload = status_payload(None, reason=reason)
+            else:
+                health, reason = _health(deps, manifest)
+                payload = status_payload(manifest, health, reason=reason)
+        return deps.response(
+            content=json.dumps(payload),
+            status_code=200,
+            media_type="application/json",
+            headers={
+                "Cache-Control": "private, no-store",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
 
     @app.get(LEISAAC_CLIENT_MODULE_PATH.removeprefix("/api"))
     def leisaac_client_module(run_id: str = "") -> Any:

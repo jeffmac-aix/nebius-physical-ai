@@ -1808,7 +1808,7 @@ server {{
     )
     setup_script = f"""set -euo pipefail
 sudo apt-get update
-sudo DEBIAN_FRONTEND=noninteractive apt-get install -y nginx apache2-utils python3-venv python3-pip curl unzip ca-certificates
+sudo DEBIAN_FRONTEND=noninteractive apt-get install -y nginx apache2-utils python3-venv python3-pip curl unzip ca-certificates coturn
 if ! command -v nebius >/dev/null 2>&1; then
   curl -fsSL https://storage.eu-north1.nebius.cloud/cli/install.sh | bash
 fi

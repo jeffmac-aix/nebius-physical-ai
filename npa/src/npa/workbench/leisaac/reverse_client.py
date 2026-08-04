@@ -13,6 +13,7 @@ import ssl
 import struct
 import threading
 import time
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +40,17 @@ def _pod_ipv4() -> str:
         ):
             return address.compressed
     raise ValueError("LeIsaac relay client could not resolve its private pod IPv4")
+
+
+def _public_ipv4() -> str:
+    request = urllib.request.Request(
+        "https://api.ipify.org", headers={"User-Agent": "npa-leisaac-relay/0.4.0"}
+    )
+    with urllib.request.urlopen(request, timeout=10) as response:  # noqa: S310 - fixed HTTPS URL
+        address = ipaddress.ip_address(response.read(64).decode("ascii").strip())
+    if address.version != 4 or not address.is_global:
+        raise ValueError("LeIsaac relay client did not resolve a public IPv4")
+    return address.compressed
 
 
 def load_config(path: str | Path) -> dict[str, Any]:
@@ -170,6 +182,7 @@ class Client:
         self.media_lock = threading.Lock()
         self.media: dict[int, socket.socket] = {}
         self.media_target = (_pod_ipv4(), 47998)
+        self.peer_public_ip = _public_ipv4()
 
     def send(self, kind: int, stream_id: int, payload: bytes = b"") -> None:
         connection = self.connection
@@ -313,7 +326,17 @@ class Client:
         while True:
             try:
                 self.connection = self.connect()
-                self.send(HELLO, 0, str(self.config["session_nonce"]).encode("ascii"))
+                self.send(
+                    HELLO,
+                    0,
+                    json.dumps(
+                        {
+                            "nonce": str(self.config["session_nonce"]),
+                            "peer_public_ip": self.peer_public_ip,
+                        },
+                        separators=(",", ":"),
+                    ).encode("ascii"),
+                )
                 while True:
                     self.handle(*_receive_frame(self.connection))
             except (ConnectionError, EOFError, OSError, ssl.SSLError, ValueError):

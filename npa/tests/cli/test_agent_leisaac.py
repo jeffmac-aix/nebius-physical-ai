@@ -16,6 +16,8 @@ from npa.agent_backend.leisaac import (
     LEISAAC_MEDIA_PORT,
     LEISAAC_SIGNAL_PORT,
     LEISAAC_TASK,
+    LEISAAC_TURN_PORT,
+    LEISAAC_TURN_RELAY_PORT,
     normalize_manifest,
     selected_run_id,
     status_payload,
@@ -36,6 +38,8 @@ def _manifest(**overrides):
         "signal_port": LEISAAC_SIGNAL_PORT,
         "media_host": "1.1.1.1",
         "media_port": LEISAAC_MEDIA_PORT,
+        "turn_port": LEISAAC_TURN_PORT,
+        "turn_relay_port": LEISAAC_TURN_RELAY_PORT,
         "service_url": "http://8.8.8.8:8080",
         "session_nonce": "a" * 64,
         "created_at": now.isoformat(),
@@ -135,6 +139,8 @@ def test_agent_relay_manifest_accepts_only_fixed_loopback_tcp_contract() -> None
         {"service_url": "http://127.0.0.1:8080"},
         {"service_url": "http://127.0.0.2:48080"},
         {"service_url": "http://169.254.169.254:48080"},
+        {"turn_port": 80},
+        {"turn_relay_port": 65535},
     ):
         relay_values = {
             "transport": "agent-relay",
@@ -176,6 +182,34 @@ def test_live_health_attestation_gates_secret_free_status() -> None:
     serialized = repr(payload)
     assert manifest["session_nonce"] not in serialized
     assert manifest["service_url"] not in serialized
+
+
+def test_agent_relay_status_returns_only_derived_session_turn_credential() -> None:
+    manifest = _normalized(
+        transport="agent-relay",
+        signal_host="127.0.0.1",
+        service_url="http://127.0.0.1:48080",
+    )
+    health = {
+        "state": "ready",
+        "gpu": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+        "started_at": "2026-08-04T00:00:00Z",
+    }
+
+    payload = status_payload(manifest, health)
+
+    assert payload["transport"] == "agent-relay"
+    assert payload["ice_transport_policy"] == "relay"
+    assert payload["ice_servers"] == [
+        {
+            "urls": ["turn:1.1.1.1:3478?transport=udp"],
+            "username": "leisaac-live-1",
+            "credential": hashlib.sha256(
+                ("npa-leisaac-turn:" + "a" * 64).encode()
+            ).hexdigest(),
+        }
+    ]
+    assert manifest["session_nonce"] not in repr(payload)
 
 
 def test_health_nonce_or_readiness_mismatch_suppresses_tab() -> None:
@@ -278,6 +312,7 @@ def test_authenticated_backend_routes_gate_status_and_proxy_client(monkeypatch) 
     )
     assert status.status_code == 200
     assert status.json()["available"] is True
+    assert status.headers["cache-control"] == "private, no-store"
     module = client.get(
         "/leisaac/client/index.js", params={"run_id": raw_manifest["run_id"]}
     )

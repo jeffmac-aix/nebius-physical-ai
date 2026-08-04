@@ -4,12 +4,15 @@ The live session manifest is an artifact emitted by ``npa workbench leisaac``.
 It is intentionally treated as untrusted input here: media must be public,
 direct TCP endpoints must be public, relay TCP endpoints must be exact
 loopback addresses, ports are fixed to the Isaac Sim 5.1 WebRTC contract, and
-no credential is returned to the browser. The browser sees only the public UDP
-media endpoint and same-origin, authenticated agent routes.
+the browser sees only public media endpoints and same-origin, authenticated
+agent routes. Agent-relayed sessions return one derived, ephemeral TURN
+credential from the authenticated no-store status route; the relay nonce and
+agent credentials are never returned.
 """
 
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import re
 from datetime import datetime, timezone
@@ -23,6 +26,8 @@ LEISAAC_SIGNAL_PORT = 49100
 LEISAAC_MEDIA_PORT = 47998
 LEISAAC_SERVICE_PORT = 8080
 LEISAAC_RELAY_SERVICE_PORT = 48080
+LEISAAC_TURN_PORT = 3478
+LEISAAC_TURN_RELAY_PORT = 47999
 LEISAAC_TRANSPORT_LOAD_BALANCER = "public-load-balancer"
 LEISAAC_TRANSPORT_AGENT_RELAY = "agent-relay"
 LEISAAC_TASK = "LeIsaac-SO101-PickOrange-v0"
@@ -157,6 +162,11 @@ def normalize_manifest(
         return None, "LeIsaac session has an unsupported signaling port"
     if _integer(data.get("media_port")) != LEISAAC_MEDIA_PORT:
         return None, "LeIsaac session has an unsupported media port"
+    if transport == LEISAAC_TRANSPORT_AGENT_RELAY and (
+        _integer(data.get("turn_port")) != LEISAAC_TURN_PORT
+        or _integer(data.get("turn_relay_port")) != LEISAAC_TURN_RELAY_PORT
+    ):
+        return None, "LeIsaac session has an unsupported TURN contract"
     service_url = _service_url(data.get("service_url"), signal_host, transport)
     if not service_url:
         return None, "LeIsaac session service endpoint is invalid"
@@ -190,6 +200,8 @@ def normalize_manifest(
         "signal_port": LEISAAC_SIGNAL_PORT,
         "media_host": media_host,
         "media_port": LEISAAC_MEDIA_PORT,
+        "turn_port": _integer(data.get("turn_port")) or 0,
+        "turn_relay_port": _integer(data.get("turn_relay_port")) or 0,
         "service_url": service_url,
         "session_nonce": nonce.lower(),
         "expires_at": (
@@ -235,7 +247,7 @@ def status_payload(
     *,
     reason: str = "",
 ) -> dict:
-    """Build the secret-free payload consumed by the agent UI."""
+    """Build the authenticated, no-store payload consumed by the agent UI."""
 
     if not manifest or not health:
         return {
@@ -243,10 +255,11 @@ def status_payload(
             "reason": reason or "No usable LeIsaac session is selected.",
         }
     run_id = str(manifest["run_id"])
-    return {
+    payload = {
         "available": True,
         "reason": "",
         "run_id": run_id,
+        "transport": manifest["transport"],
         "task": manifest["task"],
         "teleop_device": manifest["teleop_device"],
         "media_server": manifest["media_host"],
@@ -269,3 +282,19 @@ def status_payload(
             "episode": "R reset episode · N mark success and reset",
         },
     }
+    if manifest.get("transport") == LEISAAC_TRANSPORT_AGENT_RELAY:
+        nonce = str(manifest.get("session_nonce") or "")
+        credential = hashlib.sha256(
+            f"npa-leisaac-turn:{nonce}".encode("utf-8")
+        ).hexdigest()
+        payload["ice_servers"] = [
+            {
+                "urls": [
+                    f"turn:{manifest['media_host']}:{LEISAAC_TURN_PORT}?transport=udp"
+                ],
+                "username": run_id,
+                "credential": credential,
+            }
+        ]
+        payload["ice_transport_policy"] = "relay"
+    return payload

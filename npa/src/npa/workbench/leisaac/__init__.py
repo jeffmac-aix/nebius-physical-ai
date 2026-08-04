@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ipaddress
+import hashlib
 import json
 import re
 from datetime import datetime, timezone
@@ -18,6 +19,8 @@ ISAAC_SIM_VERSION = "5.1.0.0"
 ISAAC_LAB_VERSION = "2.3.2.post1"
 SIGNAL_PORT = 49100
 MEDIA_PORT = 47998
+TURN_PORT = 3478
+TURN_RELAY_PORT = 47999
 SERVICE_PORT = 8080
 RELAY_SERVICE_PORT = 48080
 GPU_PRODUCT = "NVIDIA-RTX-PRO-6000-Blackwell-Server-Edition"
@@ -45,6 +48,15 @@ def validate_run_id(run_id: str) -> str:
             "run id must contain only letters, numbers, '.', '_' and '-'"
         )
     return value
+
+
+def turn_credential(session_nonce: str) -> str:
+    """Derive the ephemeral TURN password without publishing the session nonce."""
+
+    nonce = str(session_nonce or "").strip().lower()
+    if not re.fullmatch(r"[a-f0-9]{64}", nonce):
+        raise LeIsaacConfigError("session nonce is invalid")
+    return hashlib.sha256(f"npa-leisaac-turn:{nonce}".encode()).hexdigest()
 
 
 def validate_image(image: str) -> str:
@@ -184,13 +196,14 @@ def relay_service_manifest(
     agent_project: str = "",
     agent_name: str = "",
     source_ranges: list[str] | tuple[str, ...] = (),
+    turn_peer_source: str = "",
 ) -> dict[str, Any]:
     """Build one private ClusterIP service for an agent-relayed session.
 
     The service has no cloud load balancer or public address.  The authenticated
     reverse sidecar carries status and signaling to the agent's fixed loopback
-    listeners. Media enters only through the source-restricted agent UDP port
-    and then uses native private-VPC UDP to the GPU pod's fixed host port.
+    listeners. Browser media uses a session-scoped TURN allocation on the
+    public agent because the agent and GPU cluster can occupy isolated VPCs.
     """
 
     run_id = validate_run_id(run_id)
@@ -208,6 +221,12 @@ def relay_service_manifest(
             validate_source_ranges(source_ranges)
         ),
     }
+    if turn_peer_source:
+        peer = validate_source_ranges([turn_peer_source])
+        network = ipaddress.ip_network(peer[0])
+        if len(peer) != 1 or network.version != 4 or network.prefixlen != 32:
+            raise LeIsaacConfigError("TURN peer source must be one public IPv4 /32")
+        annotations["npa.nebius.com/turn-peer-source"] = peer[0]
     if not agent_project or not agent_name:
         raise LeIsaacConfigError("agent relay requires an agent project and name")
     return {
@@ -489,6 +508,8 @@ def session_manifest(
         "signal_port": SIGNAL_PORT,
         "media_host": media_host,
         "media_port": MEDIA_PORT,
+        "turn_port": TURN_PORT,
+        "turn_relay_port": TURN_RELAY_PORT,
         "service_url": (
             f"http://127.0.0.1:{RELAY_SERVICE_PORT}"
             if transport == TRANSPORT_AGENT_RELAY

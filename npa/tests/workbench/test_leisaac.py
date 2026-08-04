@@ -17,6 +17,8 @@ from npa.workbench.leisaac import (
     GPU_PRODUCT,
     MEDIA_PORT,
     SIGNAL_PORT,
+    TURN_PORT,
+    TURN_RELAY_PORT,
     TRANSPORT_AGENT_RELAY,
     LeIsaacConfigError,
     deployment_manifest,
@@ -99,6 +101,7 @@ def test_agent_relay_service_is_private_clusterip_with_cleanup_metadata() -> Non
         agent_project="rtxpro",
         agent_name="agent",
         source_ranges=["8.8.8.8/32"],
+        turn_peer_source="9.9.9.9/32",
     )
 
     assert service["spec"]["type"] == "ClusterIP"
@@ -113,6 +116,7 @@ def test_agent_relay_service_is_private_clusterip_with_cleanup_metadata() -> Non
         "npa.nebius.com/agent-project": "rtxpro",
         "npa.nebius.com/agent-name": "agent",
         "npa.nebius.com/source-ranges": "8.8.8.8/32",
+        "npa.nebius.com/turn-peer-source": "9.9.9.9/32",
     }
 
 
@@ -161,6 +165,8 @@ def test_agent_relay_manifest_keeps_tcp_private_and_media_on_agent_public_ip() -
     assert manifest["signal_host"] == "127.0.0.1"
     assert manifest["service_url"] == "http://127.0.0.1:48080"
     assert manifest["media_host"] == "8.8.8.8"
+    assert manifest["turn_port"] == TURN_PORT
+    assert manifest["turn_relay_port"] == TURN_RELAY_PORT
 
 
 def test_agent_relay_rejects_non_loopback_signal_or_missing_agent_identity() -> None:
@@ -178,6 +184,15 @@ def test_agent_relay_rejects_non_loopback_signal_or_missing_agent_identity() -> 
             run_id="live-relay",
             namespace="default",
             source_ranges=["8.8.8.8/32"],
+        )
+    with pytest.raises(LeIsaacConfigError, match="public IPv4 /32"):
+        relay_service_manifest(
+            run_id="live-relay",
+            namespace="default",
+            agent_project="rtxpro",
+            agent_name="agent",
+            source_ranges=["8.8.8.8/32"],
+            turn_peer_source="2001:4860:4860::8888/32",
         )
 
 
@@ -276,6 +291,16 @@ def test_container_never_bakes_eula_client_or_assets() -> None:
     assert "safe_extract_zip" in server and "safe_extract_client" in server
     assert "feetech-servo-sdk" in dockerfile and "-m pip check" in dockerfile
     assert os.access(ROOT / "npa/docker/workbench/leisaac/build.sh", os.X_OK)
+
+
+def test_agent_bootstrap_installs_turn_without_baking_session_configuration() -> None:
+    agent = (ROOT / "npa/src/npa/cli/agent.py").read_text(encoding="utf-8")
+    ui = (ROOT / "npa/src/npa/cli/agent_ui.html").read_text(encoding="utf-8")
+
+    assert "ca-certificates coturn" in agent
+    assert "leisaac-turn.conf" not in agent
+    assert 'iceTransportPolicy: "relay"' in ui
+    assert "installLeIsaacPeerConnection(status)" in ui
 
 
 def test_client_transport_patch_is_exact_hash_verified_and_fails_closed(

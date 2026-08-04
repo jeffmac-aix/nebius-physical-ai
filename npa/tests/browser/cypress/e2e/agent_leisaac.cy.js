@@ -15,10 +15,17 @@ describe("NPA agent LeIsaac capability tab", () => {
       body: {
         available: true,
         run_id: "mock-run",
+        transport: "agent-relay",
         task: "LeIsaac-SO101-PickOrange-v0",
         teleop_device: "keyboard",
         media_server: "1.1.1.1",
         media_port: 47998,
+        ice_transport_policy: "relay",
+        ice_servers: [{
+          urls: ["turn:1.1.1.1:3478?transport=udp"],
+          username: "mock-run",
+          credential: "ephemeral-test-credential",
+        }],
         signaling_server: "same-origin",
         signaling_port: 443,
         signaling_path: "/api/leisaac/signal",
@@ -37,6 +44,7 @@ describe("NPA agent LeIsaac capability tab", () => {
       body: `window.OVWebStreamingLibrary = { AppStreamer: {
         connect: async function(props) {
           window.__LEISAAC_CONNECT_PROPS__ = props;
+          new window.RTCPeerConnection({ iceServers: [{ urls: "stun:untrusted.invalid" }] });
           props.streamConfig.onStart({ status: "success" });
           return { status: "inProgress" };
         },
@@ -48,12 +56,22 @@ describe("NPA agent LeIsaac capability tab", () => {
     cy.wait("@leisaacStatus");
     cy.get("#tabLeIsaac").should("exist").click();
     cy.get("#panelLeIsaac").should("have.class", "is-active");
+    cy.window().then((win) => {
+      function CapturingPeerConnection(config) {
+        win.__LEISAAC_PEER_CONFIG__ = config;
+      }
+      CapturingPeerConnection.prototype = {};
+      win.__LEISAAC_NATIVE_PEER__ = CapturingPeerConnection;
+      win.RTCPeerConnection = CapturingPeerConnection;
+    });
     cy.get("#leisaacConnect").click();
     cy.wait("@leisaacClient");
     cy.get("#leisaacStreamStatus").should("contain.text", "keyboard teleoperation active");
     cy.window().its("__LEISAAC_CONNECT_PROPS__.streamConfig.signalingPath").should("eq", "/api/leisaac/signal");
     cy.window().its("__LEISAAC_CONNECT_PROPS__.streamConfig.forceWSS").should("eq", true);
     cy.window().its("__LEISAAC_CONNECT_PROPS__.streamConfig.mediaPort").should("eq", 47998);
+    cy.window().its("__LEISAAC_PEER_CONFIG__.iceTransportPolicy").should("eq", "relay");
+    cy.window().its("__LEISAAC_PEER_CONFIG__.iceServers.0.urls.0").should("eq", "turn:1.1.1.1:3478?transport=udp");
     cy.get("#leisaacStreamHost").trigger("keydown", { key: "W", code: "KeyW" });
     cy.get("#leisaacInputStatus").should("contain.text", "Keyboard events sent: 1").and("contain.text", "last W");
 
@@ -65,5 +83,6 @@ describe("NPA agent LeIsaac capability tab", () => {
     cy.wait("@leisaacGone");
     cy.get("#tabLeIsaac").should("not.exist");
     cy.get("#panelLeIsaac").should("not.exist");
+    cy.window().then((win) => expect(win.RTCPeerConnection).to.equal(win.__LEISAAC_NATIVE_PEER__));
   });
 });

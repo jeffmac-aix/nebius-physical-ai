@@ -2170,6 +2170,7 @@
       let leisaacClientLoadPromise = null;
       let leisaacInputCount = 0;
       let leisaacStreamReady = false;
+      let leisaacPeerConnectionRestore = null;
       const LEISAAC_KEYS = new Set(["W", "S", "A", "D", "Q", "E", "J", "L", "I", "K", "U", "O", "R", "N"]);
       function leisaacPanelMarkup(status) {
         const runId = escapeHtml(String(status.run_id || ""));
@@ -2227,6 +2228,39 @@
       // consumes events during capture, so a later bubbling listener cannot
       // reliably report which controls were sent to the active stream.
       window.addEventListener("keydown", noteLeIsaacInput, { capture: true });
+      function restoreLeIsaacPeerConnection() {
+        const restore = leisaacPeerConnectionRestore;
+        leisaacPeerConnectionRestore = null;
+        if (restore) restore();
+      }
+      function installLeIsaacPeerConnection(status) {
+        restoreLeIsaacPeerConnection();
+        if (String(status.transport || "") !== "agent-relay") return;
+        const servers = Array.isArray(status.ice_servers) ? status.ice_servers : [];
+        if (String(status.ice_transport_policy || "") !== "relay" || servers.length !== 1) {
+          throw new Error("LeIsaac agent relay did not provide its authenticated TURN contract");
+        }
+        const server = servers[0] || {};
+        const urls = Array.isArray(server.urls) ? server.urls.map(String) : [String(server.urls || "")];
+        if (!urls.length || urls.some((url) => !url.startsWith("turn:") || !url.endsWith("?transport=udp")) || !server.username || !server.credential) {
+          throw new Error("LeIsaac TURN configuration is invalid");
+        }
+        const NativePeerConnection = window.RTCPeerConnection;
+        if (typeof NativePeerConnection !== "function") throw new Error("WebRTC is unavailable in this browser");
+        function LeIsaacPeerConnection(configuration, constraints) {
+          const merged = Object.assign({}, configuration || {}, {
+            iceServers: servers,
+            iceTransportPolicy: "relay",
+          });
+          return new NativePeerConnection(merged, constraints);
+        }
+        LeIsaacPeerConnection.prototype = NativePeerConnection.prototype;
+        Object.setPrototypeOf(LeIsaacPeerConnection, NativePeerConnection);
+        window.RTCPeerConnection = LeIsaacPeerConnection;
+        leisaacPeerConnectionRestore = () => {
+          if (window.RTCPeerConnection === LeIsaacPeerConnection) window.RTCPeerConnection = NativePeerConnection;
+        };
+      }
       function loadLeIsaacClient(status) {
         if (window.OVWebStreamingLibrary && window.OVWebStreamingLibrary.AppStreamer) {
           return Promise.resolve(window.OVWebStreamingLibrary.AppStreamer);
@@ -2262,6 +2296,9 @@
         setLeIsaacStreamState("Connecting to live simulation…", "pending");
         try {
           const AppStreamer = await loadLeIsaacClient(status);
+          // Install after NVIDIA's module has applied its adapter shims, but
+          // before AppStreamer creates the live peer connection.
+          installLeIsaacPeerConnection(status);
           leisaacStreamer = AppStreamer;
           const query = new URLSearchParams({ run_id: String(status.run_id || "") });
           await AppStreamer.connect({
@@ -2292,16 +2329,19 @@
               onStart: handleLeIsaacStreamEvent,
               onStop: () => {
                 leisaacStreamReady = false;
+                restoreLeIsaacPeerConnection();
                 setLeIsaacStreamState("Disconnected", "pending");
               },
               onTerminate: () => {
                 leisaacStreamReady = false;
+                restoreLeIsaacPeerConnection();
                 setLeIsaacStreamState("Disconnected", "pending");
               },
             },
           });
           if (disconnectBtn) disconnectBtn.disabled = false;
         } catch (err) {
+          restoreLeIsaacPeerConnection();
           if (connectBtn) connectBtn.disabled = false;
           setLeIsaacStreamState(String((err && err.message) || err), "error");
           throw err;
@@ -2317,6 +2357,7 @@
           if (host) host.focus();
         } else if (status === "error" || status === "canceled" || status === "cancelled") {
           leisaacStreamReady = false;
+          restoreLeIsaacPeerConnection();
           setLeIsaacStreamState(detail, "error");
         } else if (!leisaacStreamReady) {
           setLeIsaacStreamState(detail, "pending");
@@ -2329,6 +2370,7 @@
         if (streamer && streamer.terminate) {
           try { await streamer.terminate(false, true); } catch (_err) { /* already disconnected */ }
         }
+        restoreLeIsaacPeerConnection();
         const connectBtn = document.getElementById("leisaacConnect");
         const disconnectBtn = document.getElementById("leisaacDisconnect");
         if (connectBtn) connectBtn.disabled = false;

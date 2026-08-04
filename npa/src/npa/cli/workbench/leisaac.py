@@ -33,6 +33,8 @@ from npa.workbench.leisaac import (
     LeIsaacConfigError,
     MEDIA_PORT,
     RELAY_SERVICE_PORT,
+    TURN_PORT,
+    TURN_RELAY_PORT,
     TRANSPORT_AGENT_RELAY,
     TRANSPORT_LOAD_BALANCER,
     deployment_manifest,
@@ -42,6 +44,7 @@ from npa.workbench.leisaac import (
     service_manifests,
     session_manifest,
     split_s3_uri,
+    turn_credential,
     validate_expiry,
     validate_image,
     validate_public_ip,
@@ -70,6 +73,11 @@ _RELAY_TOOL = "leisaac-relay"
 _RELAY_CONFIG = "/etc/npa/leisaac-relay.json"
 _RELAY_SCRIPT = "/opt/npa-agent/leisaac-agent-relay.py"
 _RELAY_UNIT = "npa-leisaac-relay.service"
+_TURN_CONTROL_TOOL = "leisaac-turn-control"
+_TURN_MEDIA_TOOL = "leisaac-turn-media"
+_TURN_CONFIG = "/etc/npa/leisaac-turn.conf"
+_TURN_UNIT = "npa-leisaac-turn.service"
+_RELAY_CONTROL_PORT = 48082
 
 
 def _fail(message: str) -> None:
@@ -382,6 +390,126 @@ def _relay_status(ssh: SSHClient) -> dict[str, Any]:
     return payload
 
 
+def _relay_peer_public_ip(ssh: SSHClient) -> str:
+    while True:
+        code, stdout, _stderr = ssh.run(
+            f"curl --fail --silent --show-error http://127.0.0.1:{_RELAY_CONTROL_PORT}/status"
+        )
+        if code == 0:
+            payload = json.loads(stdout)
+            if not isinstance(payload, dict) or payload.get("connected") is not True:
+                raise RuntimeError("LeIsaac reverse relay returned invalid peer state")
+            return validate_public_ip(
+                payload.get("peer_public_ip", ""), "GPU egress IP"
+            )
+        time.sleep(2)
+
+
+def _install_agent_turn(
+    ssh: SSHClient,
+    *,
+    run_id: str,
+    session_nonce: str,
+    public_ip: str,
+) -> None:
+    """Install one authenticated TURN allocation range on the selected agent."""
+
+    username = validate_run_id(run_id)
+    public_ip = validate_public_ip(public_ip, "agent public IP")
+    password = turn_credential(session_nonce)
+    config = f"""listening-port={TURN_PORT}
+min-port={TURN_RELAY_PORT}
+max-port={TURN_RELAY_PORT}
+realm=npa-leisaac
+user={username}:{password}
+fingerprint
+lt-cred-mech
+stale-nonce=600
+total-quota=1
+user-quota=1
+no-tcp
+no-tls
+no-dtls
+no-cli
+no-multicast-peers
+no-loopback-peers
+simple-log
+log-file=stdout
+"""
+    unit = f"""[Unit]
+Description=NPA LeIsaac session-scoped TURN relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=turnserver
+Group=turnserver
+UMask=0027
+ExecStart=/usr/bin/turnserver -c {_TURN_CONFIG}
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=yes
+PrivateDevices=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+ProtectKernelModules=yes
+RestrictAddressFamilies=AF_INET AF_UNIX
+RestrictSUIDSGID=yes
+LockPersonality=yes
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target
+"""
+    config_b64 = base64.b64encode(config.encode("utf-8")).decode("ascii")
+    unit_b64 = base64.b64encode(unit.encode("utf-8")).decode("ascii")
+    run_q = shlex.quote(username)
+    command = f"""set -eu
+command -v turnserver >/dev/null || {{ echo 'coturn is missing; bootstrap the NPA agent' >&2; exit 43; }}
+existing=''
+if sudo test -f {_TURN_CONFIG}; then
+  existing=$(sudo sed -n 's/^user=\\([^:]*\\):.*$/\\1/p' {_TURN_CONFIG})
+fi
+if sudo systemctl is-active --quiet {_TURN_UNIT} && [ "$existing" != {run_q} ]; then
+  echo 'another LeIsaac TURN session is active' >&2
+  exit 42
+fi
+private_ip=$(ip -4 route get 1.1.1.1 | awk '{{for (i=1;i<=NF;i++) if ($i=="src") {{print $(i+1); exit}}}}')
+test -n "$private_ip"
+tmp_config=$(mktemp)
+trap 'rm -f "$tmp_config"' EXIT
+echo {shlex.quote(config_b64)} | base64 -d > "$tmp_config"
+printf 'listening-ip=%s\nrelay-ip=%s\nexternal-ip={public_ip}/%s\n' "$private_ip" "$private_ip" "$private_ip" >> "$tmp_config"
+sudo systemctl disable --now coturn.service >/dev/null 2>&1 || true
+sudo install -d -m 0755 /etc/npa
+sudo install -o root -g turnserver -m 0640 "$tmp_config" {_TURN_CONFIG}
+echo {shlex.quote(unit_b64)} | base64 -d | sudo tee /etc/systemd/system/{_TURN_UNIT} >/dev/null
+sudo chmod 0644 /etc/systemd/system/{_TURN_UNIT}
+sudo systemctl daemon-reload
+sudo systemctl enable --now {_TURN_UNIT} >/dev/null
+sudo systemctl restart {_TURN_UNIT}
+sudo systemctl is-active --quiet {_TURN_UNIT}
+"""
+    ssh.run_or_raise(command, label="install LeIsaac TURN relay")
+
+
+def _remove_agent_turn(ssh: SSHClient, *, run_id: str) -> None:
+    run_q = shlex.quote(validate_run_id(run_id))
+    command = f"""set -eu
+if ! sudo test -f {_TURN_CONFIG}; then exit 0; fi
+existing=$(sudo sed -n 's/^user=\\([^:]*\\):.*$/\\1/p' {_TURN_CONFIG})
+if [ "$existing" != {run_q} ]; then exit 0; fi
+sudo systemctl disable --now {_TURN_UNIT} >/dev/null 2>&1 || true
+sudo rm -f /etc/systemd/system/{_TURN_UNIT} {_TURN_CONFIG}
+sudo systemctl daemon-reload
+"""
+    ssh.run_or_raise(command, label="remove LeIsaac TURN relay")
+
+
 def _status(signal_host: str) -> dict[str, Any]:
     with urllib.request.urlopen(f"http://{signal_host}:8080/status") as response:  # noqa: S310 - validated LB IP
         payload = json.loads(response.read().decode("utf-8"))
@@ -503,6 +631,8 @@ def launch_cmd(
     ssh: SSHClient | None = None
     artifact_storage: dict[str, str] | None = None
     relay_installed = False
+    turn_installed = False
+    turn_peer_source = ""
     created_ingress_specs: list[tuple[int, str, str, str]] = []
     try:
         run_id = validate_run_id(run_id)
@@ -537,18 +667,6 @@ def launch_cmd(
                 source_ranges=source_ranges,
             )
             _apply(context, namespace, [service])
-            for source in source_ranges:
-                ingress = ensure_ingress(
-                    vm_id=instance_id,
-                    ports=(MEDIA_PORT,),
-                    source=source,
-                    tool=_RELAY_TOOL,
-                    protocol="UDP",
-                )
-                if ingress.changed:
-                    created_ingress_specs.append(
-                        (MEDIA_PORT, source, _RELAY_TOOL, "UDP")
-                    )
             relay_installed = True
             _install_agent_relay(
                 ssh,
@@ -592,6 +710,54 @@ def launch_cmd(
         )
         _apply(context, namespace, [deployment])
         _wait_ready(context, namespace, name)
+        if transport == Transport.agent_relay:
+            if ssh is None:
+                raise RuntimeError("LeIsaac agent relay has no SSH transport")
+            turn_peer_source = f"{_relay_peer_public_ip(ssh)}/32"
+            for source in source_ranges:
+                ingress = ensure_ingress(
+                    vm_id=instance_id,
+                    ports=(TURN_PORT,),
+                    source=source,
+                    tool=_TURN_CONTROL_TOOL,
+                    protocol="UDP",
+                )
+                if ingress.changed:
+                    created_ingress_specs.append(
+                        (TURN_PORT, source, _TURN_CONTROL_TOOL, "UDP")
+                    )
+            ingress = ensure_ingress(
+                vm_id=instance_id,
+                ports=(TURN_RELAY_PORT,),
+                source=turn_peer_source,
+                tool=_TURN_MEDIA_TOOL,
+                protocol="UDP",
+            )
+            if ingress.changed:
+                created_ingress_specs.append(
+                    (TURN_RELAY_PORT, turn_peer_source, _TURN_MEDIA_TOOL, "UDP")
+                )
+            _apply(
+                context,
+                namespace,
+                [
+                    relay_service_manifest(
+                        run_id=run_id,
+                        namespace=namespace,
+                        agent_project=agent_project,
+                        agent_name=agent_name,
+                        source_ranges=source_ranges,
+                        turn_peer_source=turn_peer_source,
+                    )
+                ],
+            )
+            turn_installed = True
+            _install_agent_turn(
+                ssh,
+                run_id=run_id,
+                session_nonce=nonce,
+                public_ip=media_host,
+            )
         health = _relay_status(ssh) if ssh is not None else _status(signal_host)
         if (
             health.get("state") != "ready"
@@ -618,6 +784,11 @@ def launch_cmd(
         )
     except Exception as exc:  # noqa: BLE001 - CLI boundary reports SDK and kubectl failures
         cleanup_errors: list[str] = []
+        if turn_installed and ssh is not None:
+            try:
+                _remove_agent_turn(ssh, run_id=run_id)
+            except Exception as cleanup_exc:  # noqa: BLE001 - preserve primary failure
+                cleanup_errors.append(f"TURN cleanup: {cleanup_exc}")
         if relay_installed and ssh is not None:
             try:
                 _remove_agent_relay(ssh, run_id=run_id)
@@ -725,16 +896,40 @@ def destroy_cmd(
             sources = validate_source_ranges(
                 str(annotations.get("npa.nebius.com/source-ranges") or "").split(",")
             )
+            peer_source = str(
+                annotations.get("npa.nebius.com/turn-peer-source") or ""
+            ).strip()
             instance_id, _public_ip, ssh, _auth_user, _auth_password = (
                 _agent_relay_context(project, agent_name)
             )
+            _remove_agent_turn(ssh, run_id=run_id)
             _remove_agent_relay(ssh, run_id=run_id)
-            for source in sources:
+            ingress_specs = [
+                (TURN_PORT, source, _TURN_CONTROL_TOOL) for source in sources
+            ]
+            if peer_source:
+                validated_peer = validate_source_ranges([peer_source])
+                peer_ip = validate_public_ip(
+                    validated_peer[0].rsplit("/", 1)[0], "TURN peer IP"
+                )
+                if len(validated_peer) != 1 or validated_peer[0] != f"{peer_ip}/32":
+                    raise LeIsaacConfigError(
+                        "agent relay TURN peer metadata is not one public /32"
+                    )
+                ingress_specs.append(
+                    (TURN_RELAY_PORT, validated_peer[0], _TURN_MEDIA_TOOL)
+                )
+            else:
+                # Compatibility cleanup for sessions launched before TURN support.
+                ingress_specs.extend(
+                    (MEDIA_PORT, source, _RELAY_TOOL) for source in sources
+                )
+            for port, source, tool in ingress_specs:
                 remove_exact_npa_ingress_for_instance(
                     instance_id,
-                    ports=(MEDIA_PORT,),
+                    ports=(port,),
                     source=source,
-                    tool=_RELAY_TOOL,
+                    tool=tool,
                     protocol="UDP",
                 )
         except Exception as exc:  # noqa: BLE001 - CLI cleanup boundary

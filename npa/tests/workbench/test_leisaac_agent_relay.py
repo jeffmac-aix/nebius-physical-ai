@@ -9,6 +9,8 @@ import pytest
 
 from npa.workbench.leisaac.agent_relay import (
     DATA,
+    BACKHAUL_LISTEN,
+    CONTROL_LISTEN,
     HELLO,
     OPEN,
     UDP,
@@ -20,11 +22,17 @@ from npa.workbench.leisaac.reverse_client import (
     Client,
     WebSocketConnection,
     _pod_ipv4,
+    _public_ipv4,
     load_config as load_client_config,
 )
 
 
 NONCE = "a" * 64
+
+
+def test_agent_relay_control_and_raw_backhaul_are_loopback_only() -> None:
+    assert CONTROL_LISTEN == ("127.0.0.1", 48082)
+    assert BACKHAUL_LISTEN == ("127.0.0.1", 48081)
 
 
 def test_relay_configs_pin_nonce_public_agent_and_certificate(tmp_path: Path) -> None:
@@ -104,9 +112,11 @@ def test_backhaul_rejects_wrong_nonce_and_multiplexes_loopback_tcp() -> None:
     server_connection, pod_connection = socket.socketpair()
 
     def pod() -> None:
+        hello = json.dumps(
+            {"nonce": NONCE, "peer_public_ip": "8.8.4.4"}
+        ).encode("ascii")
         pod_connection.sendall(
-            __import__("struct").pack("!BII", HELLO, 0, len(NONCE))
-            + NONCE.encode("ascii")
+            __import__("struct").pack("!BII", HELLO, 0, len(hello)) + hello
         )
         kind, stream_id, payload = _receive_frame(pod_connection)
         assert kind == OPEN
@@ -117,6 +127,7 @@ def test_backhaul_rejects_wrong_nonce_and_multiplexes_loopback_tcp() -> None:
 
     threading.Thread(target=pod, daemon=True).start()
     assert backhaul.attach(server_connection) is True
+    assert backhaul.peer_public_ip == "8.8.4.4"
     local_server, local_client = socket.socketpair()
     threading.Thread(
         target=backhaul.open_stream,
@@ -134,9 +145,10 @@ def test_backhaul_rejects_wrong_nonce_and_multiplexes_loopback_tcp() -> None:
 def test_backhaul_rejects_unauthenticated_hello() -> None:
     backhaul = Backhaul(NONCE)
     server_connection, peer = socket.socketpair()
-    peer.sendall(
-        __import__("struct").pack("!BII", HELLO, 0, 64) + ("b" * 64).encode("ascii")
-    )
+    hello = json.dumps(
+        {"nonce": "b" * 64, "peer_public_ip": "8.8.4.4"}
+    ).encode("ascii")
+    peer.sendall(__import__("struct").pack("!BII", HELLO, 0, len(hello)) + hello)
     assert backhaul.attach(server_connection) is False
     peer.close()
     server_connection.close()
@@ -189,6 +201,10 @@ def test_private_client_uses_one_connected_media_socket_per_udp_flow(monkeypatch
         lambda: "10.96.34.76",
     )
     monkeypatch.setattr(
+        "npa.workbench.leisaac.reverse_client._public_ipv4",
+        lambda: "8.8.4.4",
+    )
+    monkeypatch.setattr(
         "npa.workbench.leisaac.reverse_client.threading.Thread", FakeThread
     )
     client = Client({})
@@ -213,6 +229,38 @@ def test_private_client_resolves_only_non_loopback_private_pod_ipv4(monkeypatch)
     )
 
     assert _pod_ipv4() == "10.96.34.76"
+
+
+def test_private_client_resolves_only_global_gpu_egress_ipv4(monkeypatch) -> None:
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def read(self, _size: int) -> bytes:
+            return b"8.8.4.4\n"
+
+    monkeypatch.setattr(
+        "npa.workbench.leisaac.reverse_client.urllib.request.urlopen",
+        lambda *_args, **_kwargs: Response(),
+    )
+
+    assert _public_ipv4() == "8.8.4.4"
+
+
+def test_backhaul_rejects_private_peer_address() -> None:
+    backhaul = Backhaul(NONCE)
+    server_connection, peer = socket.socketpair()
+    hello = json.dumps(
+        {"nonce": NONCE, "peer_public_ip": "10.96.0.22"}
+    ).encode("ascii")
+    peer.sendall(__import__("struct").pack("!BII", HELLO, 0, len(hello)) + hello)
+
+    assert backhaul.attach(server_connection) is False
+    peer.close()
+    server_connection.close()
 
 
 def test_agent_uses_native_private_udp_per_browser_flow(monkeypatch) -> None:

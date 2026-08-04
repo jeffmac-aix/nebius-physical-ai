@@ -1,14 +1,16 @@
 """TLS backhaul endpoint for a private LeIsaac Kubernetes session.
 
 The GPU pod initiates one authenticated TLS connection to this process on the
-public agent VM.  Browser media arrives on the fixed, source-restricted UDP
-port; status and signaling remain loopback-only for nginx/the agent backend.
+public agent VM. Status, signaling, and the peer-egress discovery endpoint stay
+loopback-only for nginx/the launcher. Browser media uses the separately
+authenticated, source-restricted TURN service installed for the same session.
 """
 
 from __future__ import annotations
 
 import argparse
 import hmac
+import http.server
 import ipaddress
 import json
 import signal
@@ -24,6 +26,7 @@ STATUS_LISTEN = ("127.0.0.1", 48080)
 SIGNAL_LISTEN = ("127.0.0.1", 49100)
 MEDIA_LISTEN = ("0.0.0.0", 47998)
 BACKHAUL_LISTEN = ("127.0.0.1", 48081)
+CONTROL_LISTEN = ("127.0.0.1", 48082)
 HELLO, OPEN, DATA, CLOSE, UDP, UDP_CLOSE = 1, 2, 3, 4, 5, 6
 HEADER = struct.Struct("!BII")
 MAX_FRAME = 4 * 1024 * 1024
@@ -99,15 +102,29 @@ class Backhaul:
         self.udp_by_stream: dict[int, tuple[str, int]] = {}
         self.media_target = media_target
         self.direct_media: dict[tuple[str, int], tuple[socket.socket, float]] = {}
+        self.peer_public_ip = ""
 
     def attach(self, connection: socket.socket) -> bool:
         kind, stream_id, payload = _receive_frame(connection)
-        if kind != HELLO or stream_id != 0 or not hmac.compare_digest(payload, self.nonce):
+        try:
+            hello = json.loads(payload)
+            nonce = str(hello.get("nonce") or "").encode("ascii")
+            peer = ipaddress.ip_address(str(hello.get("peer_public_ip") or ""))
+        except (AttributeError, UnicodeError, ValueError, json.JSONDecodeError):
+            return False
+        if (
+            kind != HELLO
+            or stream_id != 0
+            or not hmac.compare_digest(nonce, self.nonce)
+            or peer.version != 4
+            or not peer.is_global
+        ):
             return False
         with self.condition:
             if self.connection is not None:
                 return False
             self.connection = connection
+            self.peer_public_ip = peer.compressed
             self.condition.notify_all()
         return True
 
@@ -115,6 +132,7 @@ class Backhaul:
         with self.condition:
             if self.connection is connection:
                 self.connection = None
+                self.peer_public_ip = ""
         with self.stream_lock:
             streams = list(self.streams.values())
             self.streams.clear()
@@ -322,6 +340,34 @@ class _TCPServer(socketserver.ThreadingTCPServer):
         super().__init__(listen, _TCPHandler)
 
 
+class _ControlHandler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self) -> None:  # noqa: N802 - stdlib handler API
+        if self.path != "/status":
+            self.send_error(404)
+            return
+        peer = self.server.backhaul.peer_public_ip  # type: ignore[attr-defined]
+        payload = json.dumps(
+            {"connected": bool(peer), "peer_public_ip": peer}, sort_keys=True
+        ).encode("utf-8") + b"\n"
+        self.send_response(200 if peer else 503)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def log_message(self, _format: str, *_args: Any) -> None:
+        return
+
+
+class _ControlServer(http.server.ThreadingHTTPServer):
+    daemon_threads = True
+
+    def __init__(self, backhaul: Backhaul):
+        self.backhaul = backhaul
+        super().__init__(CONTROL_LISTEN, _ControlHandler)
+
+
 def serve_backhaul(
     backhaul: Backhaul,
     *,
@@ -387,6 +433,7 @@ def serve(config: dict[str, Any]) -> None:
     backhaul = Backhaul(str(config["session_nonce"]), media_target)
     status = _TCPServer(STATUS_LISTEN, backhaul, 8080)
     signaling = _TCPServer(SIGNAL_LISTEN, backhaul, 49100)
+    control = _ControlServer(backhaul)
     stop = threading.Event()
 
     def request_stop(_signum: int, _frame: object) -> None:
@@ -397,6 +444,7 @@ def serve(config: dict[str, Any]) -> None:
     threads = [
         threading.Thread(target=status.serve_forever, daemon=True),
         threading.Thread(target=signaling.serve_forever, daemon=True),
+        threading.Thread(target=control.serve_forever, daemon=True),
         threading.Thread(
             target=serve_backhaul,
             kwargs={
@@ -413,8 +461,10 @@ def serve(config: dict[str, Any]) -> None:
     finally:
         status.shutdown()
         signaling.shutdown()
+        control.shutdown()
         status.server_close()
         signaling.server_close()
+        control.server_close()
 
 
 def main() -> int:
