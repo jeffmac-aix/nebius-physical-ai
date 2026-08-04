@@ -55,7 +55,7 @@ COPY --chown=ubuntu:ubuntu docker/workbench/leisaac/smoke_functional.py /opt/npa
 RUN /opt/npa/sim/venv/bin/python -m py_compile \
       /opt/npa/leisaac/session_server.py \
       /opt/npa/leisaac/smoke_functional.py \
-    && test ! -e /opt/leisaac-cache/client/5.18.11/index.js \
+    && test ! -e /opt/leisaac-cache/client/5.6.0/index.js \
     && test ! -e /opt/leisaac-cache/assets/v0.1.0/robots/so101_follower.usd
 
 ENV NPA_LEISAAC_CACHE_DIR=/opt/leisaac-cache \

@@ -49,8 +49,13 @@ remain behind nginx HTTPS and basic authentication; port `8787`, `8080`,
 - Isaac Lab `2.3.2.post1` and source commit `37ddf626…`;
 - LeIsaac `0.4.0` / commit `1651c321…` (upstream requests Isaac Lab 2.3.0;
   NPA uses the compatible patched 2.3.x release and validates the real task);
-- NVIDIA Omniverse WebRTC streaming client `5.18.11` (the NVIDIA 5.x release
-  line, with `forceWSS` enabled for authenticated public-IP HTTPS access).
+- NVIDIA Omniverse WebRTC streaming client `5.6.0`, the version documented by
+  NVIDIA's [web viewer sample](https://github.com/NVIDIA-Omniverse/web-viewer-sample)
+  for Kit 107.3.1+ and compatible with Isaac Sim 5.1. Its pristine
+  runtime-fetched JavaScript is hash-verified, then receives one exact
+  transport-only patch so a numeric signaling host on port 443 selects WSS.
+  Both source and served hashes are recorded in provenance. The browser still
+  requests `forceWSS` as defense in depth for clients that expose that option.
 
 The image bakes only Apache-2.0 LeIsaac source and OSS dependencies. The
 unlicensed optional Feetech SDK used by physical leader hardware is not

@@ -10,9 +10,12 @@ At container startup, the operator must explicitly provide both
 `OMNI_KIT_ACCEPT_EULA=YES` and `ISAACSIM_ACCEPT_EULA=YES`. Only then does the
 shared NPA bootstrap fetch the pinned Isaac Sim 5.1.0.0 / Isaac Lab
 2.3.2.post1 runtime. The service also fetches the two pinned LeIsaac v0.1.0
-assets and NVIDIA WebRTC client 5.18.11 into its mounted cache, verifies their
-cryptographic hashes, and writes `provenance.json`. EULA acceptance is never a
-Docker `ARG` or `ENV` and is not persisted in an image layer.
+assets and NVIDIA WebRTC client 5.6.0 into its mounted cache, verifies their
+cryptographic hashes, and writes `provenance.json`. The pristine client source
+hash is checked before one exact transport-only patch makes numeric hosts use
+WSS on signaling port 443; provenance records both source and served hashes.
+EULA acceptance is never a Docker `ARG` or `ENV` and is not persisted in an
+image layer.
 
 The browser service uses upstream LeIsaac's software keyboard device. The
 unlicensed `feetech-servo-sdk` package used only by physical SO101 leader

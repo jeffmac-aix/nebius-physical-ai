@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
+import importlib.util
+import io
 import os
+import tarfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -25,6 +29,26 @@ from npa.workbench.leisaac import (
 ROOT = Path(__file__).resolve().parents[3]
 IMAGE = "registry.example/npa-leisaac@sha256:" + "1" * 64
 NONCE = "a" * 64
+
+
+def _session_server_module():
+    path = ROOT / "npa/docker/workbench/leisaac/session_server.py"
+    spec = importlib.util.spec_from_file_location("npa_leisaac_session_server", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _client_archive(path: Path, client_js: bytes) -> None:
+    with tarfile.open(path, mode="w:gz") as bundle:
+        for name, content in (
+            ("package/dist/omniverse-webrtc-streaming-library.umd.cjs", client_js),
+            ("package/LICENSE.txt", b"NVIDIA test license"),
+        ):
+            member = tarfile.TarInfo(name)
+            member.size = len(content)
+            bundle.addfile(member, io.BytesIO(content))
 
 
 def test_service_manifests_source_restrict_tcp_and_udp_media() -> None:
@@ -231,8 +255,12 @@ def test_container_never_bakes_eula_client_or_assets() -> None:
         for line in copy_lines
     )
     assert "CLIENT_SHA512" in server and "CLIENT_JS_SHA256" in server
-    assert "5.18.11" in server
+    assert "CLIENT_SOURCE_JS_SHA256" in server
+    assert "5.6.0" in server
     assert LEISAAC_CLIENT_JS_SHA256 in server
+    assert "CLIENT_WSS_PATCH_OLD" in server and "CLIENT_WSS_PATCH_NEW" in server
+    assert "source.count(CLIENT_WSS_PATCH_OLD) != 1" in server
+    assert "signalingPort=443" in server
     assert 'f"--/app/livestream/publicEndpointPort={MEDIA_PORT}"' in server
     assert 'f"--/app/livestream/fixedHostPort={MEDIA_PORT}"' in server
     assert 'f"--/app/livestream/minHostPort={MEDIA_PORT}"' in server
@@ -242,6 +270,32 @@ def test_container_never_bakes_eula_client_or_assets() -> None:
     assert "safe_extract_zip" in server and "safe_extract_client" in server
     assert "feetech-servo-sdk" in dockerfile and "-m pip check" in dockerfile
     assert os.access(ROOT / "npa/docker/workbench/leisaac/build.sh", os.X_OK)
+
+
+def test_client_transport_patch_is_exact_hash_verified_and_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    server = _session_server_module()
+    source = b"prefix" + server.CLIENT_WSS_PATCH_OLD + b"suffix"
+    archive = tmp_path / "client.tgz"
+    destination = tmp_path / "client"
+    _client_archive(archive, source)
+    monkeypatch.setattr(
+        server, "CLIENT_SOURCE_JS_SHA256", hashlib.sha256(source).hexdigest()
+    )
+
+    server.safe_extract_client(archive, destination)
+
+    expected = source.replace(server.CLIENT_WSS_PATCH_OLD, server.CLIENT_WSS_PATCH_NEW)
+    assert (destination / "index.js").read_bytes() == expected
+
+    ambiguous = source + server.CLIENT_WSS_PATCH_OLD
+    _client_archive(archive, ambiguous)
+    monkeypatch.setattr(
+        server, "CLIENT_SOURCE_JS_SHA256", hashlib.sha256(ambiguous).hexdigest()
+    )
+    with pytest.raises(RuntimeError, match="WSS patch anchor mismatch"):
+        server.safe_extract_client(archive, destination)
 
 
 def test_build_script_supports_repository_python_310() -> None:

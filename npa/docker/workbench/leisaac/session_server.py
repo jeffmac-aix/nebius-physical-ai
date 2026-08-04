@@ -45,14 +45,24 @@ KITCHEN_SHA256 = "d314c54b63a17e91402bfaddf26e21ff614adf2430fa092b78897f15b8adea
 CLIENT_URL = (
     "https://edge.urm.nvidia.com/artifactory/api/npm/omniverse-client-npm/"
     "@nvidia/omniverse-webrtc-streaming-library/-/"
-    "@nvidia/omniverse-webrtc-streaming-library-5.18.11.tgz"
+    "@nvidia/omniverse-webrtc-streaming-library-5.6.0.tgz"
 )
-CLIENT_SHA512 = "adfe86eb15229c7b0786b2fd8a85d6f84cfbbee8f4d456bb59b4e9b7476ff1bcc7ea0248697d0f4792a176f9bef89d3e03529851823628515f0cceea577e5a3d"
-CLIENT_JS_SHA256 = "342740349919b80de47f8a7dab815eb080e0f699539689cac1f69144fffa1ffa"
+CLIENT_SHA512 = "37bd827a8194bfec2ccfbc656d10e42e83deebd682ac134095b2a8126901faa0966773752dd017353a1a5f7d1bc0b53be668d474ad5a14fd016c01df649f85dd"
+CLIENT_SOURCE_JS_SHA256 = (
+    "93cf2b328bcaaf9cf5a864c5b51f62e1bafcc533da9432ccc85633892f79ed86"
+)
+CLIENT_JS_SHA256 = "e9ac6563db79d3aea8afe94c4f60e50571abc01e3470d9bafb4e2f8b54cbd2a5"
+CLIENT_WSS_PATCH_OLD = (
+    b"M=Yc(B)?D.AppLevelProtocol.HTTP:D.AppLevelProtocol.HTTPS;"
+)
+CLIENT_WSS_PATCH_NEW = (
+    b"M=de===443?D.AppLevelProtocol.HTTPS:Yc(B)?"
+    b"D.AppLevelProtocol.HTTP:D.AppLevelProtocol.HTTPS;"
+)
 
 CACHE_ROOT = Path(os.environ.get("NPA_LEISAAC_CACHE_DIR", "/opt/leisaac-cache"))
 ASSETS_ROOT = CACHE_ROOT / "assets" / ASSET_RELEASE
-CLIENT_ROOT = CACHE_ROOT / "client" / "5.18.11"
+CLIENT_ROOT = CACHE_ROOT / "client" / "5.6.0"
 PROVENANCE_PATH = CACHE_ROOT / "provenance.json"
 STATE_LOCK = threading.Lock()
 STATE: dict[str, Any] = {
@@ -141,13 +151,21 @@ def safe_extract_client(archive: Path, destination: Path) -> None:
             with (destination / target).open("wb") as output:
                 shutil.copyfileobj(handle, output)
 
+    client_js = destination / "index.js"
+    if hash_file(client_js) != CLIENT_SOURCE_JS_SHA256:
+        raise RuntimeError("NVIDIA streaming client source hash mismatch")
+    source = client_js.read_bytes()
+    if source.count(CLIENT_WSS_PATCH_OLD) != 1:
+        raise RuntimeError("NVIDIA streaming client WSS patch anchor mismatch")
+    client_js.write_bytes(source.replace(CLIENT_WSS_PATCH_OLD, CLIENT_WSS_PATCH_NEW))
+
 
 def stage_runtime() -> None:
     CACHE_ROOT.mkdir(parents=True, exist_ok=True)
     downloads = CACHE_ROOT / "downloads"
     robot = downloads / "so101_follower.usd"
     kitchen = downloads / "kitchen_with_orange.zip"
-    client = downloads / "omniverse-webrtc-streaming-library-5.18.11.tgz"
+    client = downloads / "omniverse-webrtc-streaming-library-5.6.0.tgz"
     download_verified(ROBOT_URL, robot, ROBOT_SHA256)
     download_verified(KITCHEN_URL, kitchen, KITCHEN_SHA256)
     download_verified(CLIENT_URL, client, CLIENT_SHA512, "sha512")
@@ -192,9 +210,13 @@ def stage_runtime() -> None:
         ],
         "browser_client": {
             "url": CLIENT_URL,
-            "version": "5.18.11",
+            "version": "5.6.0",
             "sha512": CLIENT_SHA512,
+            "source_index_js_sha256": CLIENT_SOURCE_JS_SHA256,
             "index_js_sha256": CLIENT_JS_SHA256,
+            "transport_patch": (
+                "force HTTPS signaling for numeric hosts when signalingPort=443"
+            ),
             "license": "NVIDIA proprietary; operator-fetched at runtime",
         },
     }
