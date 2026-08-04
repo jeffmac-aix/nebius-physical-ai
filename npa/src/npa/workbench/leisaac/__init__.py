@@ -224,8 +224,10 @@ def relay_service_manifest(
     if turn_peer_source:
         peer = validate_source_ranges([turn_peer_source])
         network = ipaddress.ip_network(peer[0])
-        if len(peer) != 1 or network.version != 4 or network.prefixlen != 32:
-            raise LeIsaacConfigError("TURN peer source must be one public IPv4 /32")
+        if len(peer) != 1 or network.version != 4 or network.prefixlen < 22:
+            raise LeIsaacConfigError(
+                "TURN peer source must be one public IPv4 CIDR between /22 and /32"
+            )
         annotations["npa.nebius.com/turn-peer-source"] = peer[0]
     if not agent_project or not agent_name:
         raise LeIsaacConfigError("agent relay requires an agent project and name")

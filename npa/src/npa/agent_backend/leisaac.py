@@ -275,6 +275,7 @@ def status_payload(
         "image": manifest.get("image", ""),
         "gpu": health.get("gpu") or manifest.get("gpu", ""),
         "started_at": health.get("started_at", ""),
+        "input_events": health.get("input_events", 0),
         "controls": {
             "translate": "W/S forward/back · A/D left/right · Q/E up/down",
             "rotate": "J/L yaw · K/I pitch",

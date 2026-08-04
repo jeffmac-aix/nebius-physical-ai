@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 from types import SimpleNamespace
 
@@ -10,6 +11,7 @@ from npa.cli.workbench.leisaac import (
     _install_agent_relay,
     _install_agent_turn,
     _put_manifest,
+    _gpu_egress_source,
     _relay_peer_public_ip,
     _wait_ready,
     app,
@@ -148,6 +150,61 @@ def test_relay_peer_resolution_waits_for_authenticated_global_egress(monkeypatch
     assert sleeps == [2]
 
 
+def test_gpu_egress_source_accepts_only_narrow_nebius_announced_route(
+    monkeypatch,
+) -> None:
+    responses = iter(
+        [
+            io.BytesIO(
+                json.dumps(
+                    {"data": {"prefix": "9.9.8.0/22", "asns": ["53428"]}}
+                ).encode()
+            ),
+            io.BytesIO(
+                json.dumps(
+                    {
+                        "data": {
+                            "announced": True,
+                            "holder": "KCS-US-NEBIUS - Nebius Inc.",
+                        }
+                    }
+                ).encode()
+            ),
+        ]
+    )
+    monkeypatch.setattr(
+        "npa.cli.workbench.leisaac.urllib.request.urlopen",
+        lambda *_args, **_kwargs: next(responses),
+    )
+
+    assert _gpu_egress_source("9.9.9.9") == "9.9.8.0/22"
+
+
+def test_gpu_egress_source_fails_closed_for_broad_or_non_nebius_route(
+    monkeypatch,
+) -> None:
+    cases = [
+        [{"data": {"prefix": "9.0.0.0/8", "asns": ["53428"]}}],
+        [
+            {"data": {"prefix": "9.9.8.0/22", "asns": ["53428"]}},
+            {"data": {"announced": True, "holder": "another provider"}},
+        ],
+        [{"data": {"prefix": "8.8.8.0/24", "asns": ["53428"]}}],
+    ]
+    for payloads in cases:
+        responses = iter(io.BytesIO(json.dumps(item).encode()) for item in payloads)
+        monkeypatch.setattr(
+            "npa.cli.workbench.leisaac.urllib.request.urlopen",
+            lambda *_args, **_kwargs: next(responses),
+        )
+        try:
+            _gpu_egress_source("9.9.9.9")
+        except Exception as exc:
+            assert "could not be securely resolved" in str(exc)
+        else:
+            raise AssertionError("unsafe GPU egress route was accepted")
+
+
 def _args() -> list[str]:
     return [
         "launch",
@@ -225,6 +282,9 @@ def _patch_launch(monkeypatch):
     monkeypatch.setattr("npa.cli.workbench.leisaac._wait_ready", lambda *_args: None)
     monkeypatch.setattr(
         "npa.cli.workbench.leisaac._relay_peer_public_ip", lambda _ssh: "9.9.9.9"
+    )
+    monkeypatch.setattr(
+        "npa.cli.workbench.leisaac._gpu_egress_source", lambda _ip: "9.9.8.0/22"
     )
     turn_install_calls = []
     monkeypatch.setattr(
@@ -334,7 +394,7 @@ def test_launch_agent_relay_wires_private_cluster_public_agent_and_manifest(monk
     assert applied[2]["kind"] == "Deployment"
     assert applied[-1]["metadata"]["annotations"][
         "npa.nebius.com/turn-peer-source"
-    ] == "9.9.9.9/32"
+    ] == "9.9.8.0/22"
     assert ingress_calls == [
         {
             "vm_id": "vm-agent",
@@ -346,7 +406,7 @@ def test_launch_agent_relay_wires_private_cluster_public_agent_and_manifest(monk
         {
             "vm_id": "vm-agent",
             "ports": (47999,),
-            "source": "9.9.9.9/32",
+            "source": "9.9.8.0/22",
             "tool": "leisaac-turn-media",
             "protocol": "UDP",
         },
@@ -413,7 +473,7 @@ def test_relaunch_replaces_only_the_prior_recorded_gpu_egress_rule(monkeypatch) 
     applied, _ingress, _relay, _turn, _manifests, _ssh = _patch_launch(monkeypatch)
     monkeypatch.setattr(
         "npa.cli.workbench.leisaac._existing_turn_peer_source",
-        lambda *_args: "4.4.4.4/32",
+        lambda *_args: "4.4.4.0/24",
     )
     removals = []
     monkeypatch.setattr(
@@ -426,16 +486,16 @@ def test_relaunch_replaces_only_the_prior_recorded_gpu_egress_rule(monkeypatch) 
     assert result.exit_code == 0, result.output
     assert applied[0]["metadata"]["annotations"][
         "npa.nebius.com/turn-peer-source"
-    ] == "4.4.4.4/32"
+    ] == "4.4.4.0/24"
     assert applied[-1]["metadata"]["annotations"][
         "npa.nebius.com/turn-peer-source"
-    ] == "9.9.9.9/32"
+    ] == "9.9.8.0/22"
     assert removals == [
         (
             ("vm-agent",),
             {
                 "ports": (47999,),
-                "source": "4.4.4.4/32",
+                "source": "4.4.4.0/24",
                 "tool": "leisaac-turn-media",
                 "protocol": "UDP",
             },
@@ -450,7 +510,7 @@ def test_destroy_uses_service_metadata_to_remove_only_its_agent_relay(monkeypatc
                 "npa.nebius.com/agent-project": "rtxpro",
                 "npa.nebius.com/agent-name": "agent",
                 "npa.nebius.com/source-ranges": "8.8.8.8/32",
-                "npa.nebius.com/turn-peer-source": "9.9.9.9/32",
+                "npa.nebius.com/turn-peer-source": "9.9.8.0/22",
             }
         }
     }
@@ -504,7 +564,7 @@ def test_destroy_uses_service_metadata_to_remove_only_its_agent_relay(monkeypatc
     assert turn_removals == [((ssh,), {"run_id": "live-relay"})]
     assert [item[1]["source"] for item in ingress_removals] == [
         "8.8.8.8/32",
-        "9.9.9.9/32",
+        "9.9.8.0/22",
     ]
     assert [item[1]["ports"] for item in ingress_removals] == [(3478,), (47999,)]
     assert all(item[0] == ("vm-agent",) for item in ingress_removals)

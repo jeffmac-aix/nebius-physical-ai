@@ -37,6 +37,49 @@ function runId() {
       .and("contain.text", "RTX PRO 6000");
     cy.screenshot("01-public-leisaac-capability", { capture: "viewport" });
 
+    // Prove the browser can authenticate to the session-scoped TURN service
+    // and gather a relay candidate before the NVIDIA client consumes it.
+    cy.window().then(async (win) => {
+      const response = await win.fetch(
+        "/api/leisaac/status?run_id=" + encodeURIComponent(selectedRun),
+        { credentials: "include" }
+      );
+      const status = await response.json();
+      const peer = new win.RTCPeerConnection({
+        iceServers: status.ice_servers,
+        iceTransportPolicy: "relay",
+      });
+      peer.createDataChannel("npa-turn-preflight");
+      const result = await new Promise(async (resolve, reject) => {
+        const timer = win.setTimeout(
+          () => reject(new Error("TURN preflight did not gather a relay candidate")),
+          20000
+        );
+        peer.addEventListener("icecandidate", (event) => {
+          const candidate = String((event.candidate && event.candidate.candidate) || "");
+          if (candidate.includes(" typ relay ")) {
+            win.clearTimeout(timer);
+            resolve({ relay: true });
+          }
+        });
+        peer.addEventListener("icecandidateerror", (event) => {
+          win.__LEISAAC_TURN_ERROR__ = {
+            code: Number(event.errorCode || 0),
+            text: String(event.errorText || ""),
+            url: String(event.url || "").replace(/[^:]+:[^@]+@/, "REDACTED@"),
+          };
+        });
+        try {
+          await peer.setLocalDescription(await peer.createOffer());
+        } catch (error) {
+          win.clearTimeout(timer);
+          reject(error);
+        }
+      }).finally(() => peer.close());
+      win.__LEISAAC_TURN_PREFLIGHT__ = result;
+    });
+    cy.window().its("__LEISAAC_TURN_PREFLIGHT__.relay").should("eq", true);
+
     // Cypress injects cy.visit({ auth }) at its network proxy, which does not
     // populate Chromium's HTTP-auth cache for JavaScript-created WebSockets.
     // A normal browser already has that cache after the Basic-auth prompt. For
@@ -56,8 +99,33 @@ function runId() {
         }
       }
       win.WebSocket = AuthenticatedWebSocket;
+      const NativePeerConnection = win.RTCPeerConnection;
+      function InspectablePeerConnection(configuration, constraints) {
+        const config = configuration || {};
+        win.__LEISAAC_LIVE_PEER_CONFIG__ = {
+          iceTransportPolicy: String(config.iceTransportPolicy || ""),
+          iceServers: (config.iceServers || []).map((server) => ({
+            urls: Array.isArray(server.urls) ? server.urls.map(String) : [String(server.urls || "")],
+            username: String(server.username || ""),
+            hasCredential: Boolean(server.credential),
+          })),
+        };
+        return new NativePeerConnection(configuration, constraints);
+      }
+      InspectablePeerConnection.prototype = NativePeerConnection.prototype;
+      Object.setPrototypeOf(InspectablePeerConnection, NativePeerConnection);
+      win.RTCPeerConnection = InspectablePeerConnection;
     });
     cy.get("#leisaacConnect").click();
+    cy.window()
+      .its("__LEISAAC_LIVE_PEER_CONFIG__", { timeout: 60000 })
+      .should((config) => {
+        expect(config.iceTransportPolicy).to.equal("relay");
+        expect(config.iceServers).to.have.length(1);
+        expect(config.iceServers[0].urls[0]).to.match(/^turn:[0-9.]+:3478\?transport=udp$/);
+        expect(config.iceServers[0].username).to.equal(selectedRun);
+        expect(config.iceServers[0].hasCredential).to.equal(true);
+      });
     cy.get("#leisaacStreamStatus", { timeout: 120000 }).should(
       "contain.text",
       "keyboard teleoperation active"
@@ -77,6 +145,23 @@ function runId() {
     cy.get("#leisaacInputStatus")
       .should("contain.text", "Keyboard events sent: 13")
       .and("contain.text", "last L");
+    cy.window().then(async (win) => {
+      const deadline = Date.now() + 30000;
+      while (Date.now() < deadline) {
+        const response = await win.fetch(
+          "/api/leisaac/status?run_id=" + encodeURIComponent(selectedRun),
+          { credentials: "include", cache: "no-store" }
+        );
+        const status = await response.json();
+        if (Number(status.input_events || 0) >= 13) {
+          win.__LEISAAC_SERVER_INPUT_EVENTS__ = Number(status.input_events);
+          return;
+        }
+        await new Promise((resolve) => win.setTimeout(resolve, 1000));
+      }
+      throw new Error("LeIsaac server did not attest the keyboard input events");
+    });
+    cy.window().its("__LEISAAC_SERVER_INPUT_EVENTS__").should("be.at.least", 13);
     cy.wait(4000);
     cy.get("#leisaacVideo").should(($video) => {
       expect($video[0].readyState, "post-input decoded video").to.be.at.least(2);

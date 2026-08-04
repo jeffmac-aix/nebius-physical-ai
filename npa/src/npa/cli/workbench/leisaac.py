@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -405,11 +406,56 @@ def _relay_peer_public_ip(ssh: SSHClient) -> str:
         time.sleep(2)
 
 
+def _gpu_egress_source(peer_ip: str) -> str:
+    """Resolve and attest the narrow routed prefix for Nebius dynamic egress."""
+
+    peer_ip = validate_public_ip(peer_ip, "GPU egress IP")
+    try:
+        with urllib.request.urlopen(  # noqa: S310 - fixed HTTPS endpoint
+            "https://stat.ripe.net/data/network-info/data.json?resource="
+            f"{peer_ip}",
+            timeout=10,
+        ) as response:
+            route_payload = json.load(response)
+        route_data = route_payload.get("data", {})
+        network = ipaddress.ip_network(str(route_data.get("prefix") or ""))
+        asns = route_data.get("asns") or []
+        if (
+            network.version != 4
+            or ipaddress.ip_address(peer_ip) not in network
+            or not network.is_global
+            or not 22 <= network.prefixlen <= 32
+            or len(asns) != 1
+            or not str(asns[0]).isdigit()
+        ):
+            raise ValueError("route is not a narrow announced IPv4 prefix")
+        asn = str(asns[0])
+        with urllib.request.urlopen(  # noqa: S310 - fixed HTTPS endpoint
+            "https://stat.ripe.net/data/as-overview/data.json?resource=AS"
+            f"{asn}",
+            timeout=10,
+        ) as response:
+            as_payload = json.load(response)
+        as_data = as_payload.get("data", {})
+        if (
+            as_data.get("announced") is not True
+            or "NEBIUS" not in str(as_data.get("holder") or "").upper()
+        ):
+            raise ValueError("route origin is not an announced Nebius ASN")
+    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        raise LeIsaacConfigError(
+            "GPU egress route could not be securely resolved as a narrow Nebius prefix"
+        ) from exc
+    return network.with_prefixlen
+
+
 def _turn_peer_source(value: str) -> str:
     ranges = validate_source_ranges([value])
-    peer_ip = validate_public_ip(ranges[0].rsplit("/", 1)[0], "TURN peer IP")
-    if len(ranges) != 1 or ranges[0] != f"{peer_ip}/32":
-        raise LeIsaacConfigError("TURN peer source must be one public IPv4 /32")
+    network = ipaddress.ip_network(ranges[0])
+    if len(ranges) != 1 or network.version != 4 or network.prefixlen < 22:
+        raise LeIsaacConfigError(
+            "TURN peer source must be one public IPv4 CIDR between /22 and /32"
+        )
     return ranges[0]
 
 
@@ -738,7 +784,7 @@ def launch_cmd(
         if transport == Transport.agent_relay:
             if ssh is None:
                 raise RuntimeError("LeIsaac agent relay has no SSH transport")
-            turn_peer_source = f"{_relay_peer_public_ip(ssh)}/32"
+            turn_peer_source = _gpu_egress_source(_relay_peer_public_ip(ssh))
             for source in source_ranges:
                 ingress = ensure_ingress(
                     vm_id=instance_id,

@@ -40,7 +40,11 @@ and signaling use the authenticated WSS backhaul. Media uses the browser and
 upstream NVIDIA client's standard WebRTC path through a session-scoped coturn
 service on the public agent: allocation requests reach UDP `3478` only from
 explicit operator CIDRs, and the single relay port UDP `47999` accepts media
-only from the observed GPU egress `/32`. The UI forces `iceTransportPolicy` to
+only from the observed GPU egress route. Nebius's default egress gateway uses
+a dynamic address from a shared regional pool, so NPA resolves that address's
+announced route through RIPEstat and accepts only a public IPv4 `/22` or
+narrower whose announced origin holder is Nebius. Resolution or ownership
+ambiguity fails closed; this is never widened to all sources. The UI forces `iceTransportPolicy` to
 `relay` for that session. TURN long-term authentication, a one-user/one-allocation
 quota, and the exact security-group rules prevent the public relay from acting
 as an open proxy. Because the GPU sends media outbound to the TURN allocation,
@@ -139,7 +143,8 @@ npa workbench leisaac launch \
 `agent-relay` resolves the agent IP from live provider state and refuses a
 stale saved address, missing SSH key or agent auth, unrestricted source range, TLS
 certificate mismatch, invalid session nonce, invalid GPU public egress address,
-missing coturn package, or a second active relay/TURN session. The supported
+unattested or overly broad GPU egress route, missing coturn package, or a second
+active relay/TURN session. The supported
 agent bootstrap installs coturn but does not start or expose it until a LeIsaac
 session has passed live attestation. Use
 `--transport public-load-balancer` only when dedicated Kubernetes public IPv4

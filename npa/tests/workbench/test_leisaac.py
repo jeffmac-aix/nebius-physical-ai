@@ -101,7 +101,7 @@ def test_agent_relay_service_is_private_clusterip_with_cleanup_metadata() -> Non
         agent_project="rtxpro",
         agent_name="agent",
         source_ranges=["8.8.8.8/32"],
-        turn_peer_source="9.9.9.9/32",
+        turn_peer_source="9.9.8.0/22",
     )
 
     assert service["spec"]["type"] == "ClusterIP"
@@ -116,7 +116,7 @@ def test_agent_relay_service_is_private_clusterip_with_cleanup_metadata() -> Non
         "npa.nebius.com/agent-project": "rtxpro",
         "npa.nebius.com/agent-name": "agent",
         "npa.nebius.com/source-ranges": "8.8.8.8/32",
-        "npa.nebius.com/turn-peer-source": "9.9.9.9/32",
+        "npa.nebius.com/turn-peer-source": "9.9.8.0/22",
     }
 
 
@@ -185,7 +185,7 @@ def test_agent_relay_rejects_non_loopback_signal_or_missing_agent_identity() -> 
             namespace="default",
             source_ranges=["8.8.8.8/32"],
         )
-    with pytest.raises(LeIsaacConfigError, match="public IPv4 /32"):
+    with pytest.raises(LeIsaacConfigError, match="public IPv4 CIDR"):
         relay_service_manifest(
             run_id="live-relay",
             namespace="default",

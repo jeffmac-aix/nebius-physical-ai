@@ -262,6 +262,7 @@ def test_authenticated_backend_routes_gate_status_and_proxy_client(monkeypatch) 
                     "session_nonce": raw_manifest["session_nonce"],
                     "signal_port": LEISAAC_SIGNAL_PORT,
                     "pid": 42,
+                    "input_events": 17,
                 }
             )
         return FakeResponse(content=client_content)
@@ -312,6 +313,7 @@ def test_authenticated_backend_routes_gate_status_and_proxy_client(monkeypatch) 
     )
     assert status.status_code == 200
     assert status.json()["available"] is True
+    assert status.json()["input_events"] == 17
     assert status.headers["cache-control"] == "private, no-store"
     module = client.get(
         "/leisaac/client/index.js", params={"run_id": raw_manifest["run_id"]}
