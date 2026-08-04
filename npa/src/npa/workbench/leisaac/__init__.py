@@ -396,7 +396,7 @@ def deployment_manifest(
                     "httpGet": {"path": "/healthz", "port": "status"},
                     "initialDelaySeconds": 30,
                     "periodSeconds": 30,
-                    "failureThreshold": 6,
+                    "failureThreshold": 30,
                 },
                 "securityContext": {
                     "allowPrivilegeEscalation": False,

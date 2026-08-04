@@ -89,6 +89,7 @@ def test_deployment_is_real_rt_core_leisaac_and_operator_eula_runtime_config() -
     assert env["ISAACSIM_ACCEPT_EULA"] == "YES"
     assert env["NPA_LEISAAC_MEDIA_HOST"] == "1.1.1.1"
     assert "/status" == container["readinessProbe"]["httpGet"]["path"]
+    assert container["livenessProbe"]["failureThreshold"] == 30
     assert "hostPort" not in next(
         port for port in container["ports"] if port["name"] == "media"
     )
