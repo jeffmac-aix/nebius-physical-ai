@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from starlette.requests import Request
+from starlette.websockets import WebSocket
 
 LOG = logging.getLogger(__name__)
 _BACKHAUL_HEADER_SIZE = 9
@@ -163,7 +164,7 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
         )
 
     @app.websocket("/leisaac/signal")
-    async def leisaac_signal(websocket: Any) -> None:
+    async def leisaac_signal(websocket: WebSocket) -> None:
         if str(websocket.headers.get("x-forwarded-proto") or "").lower() != "https":
             await websocket.close(code=1008)
             return
@@ -219,7 +220,7 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
                 )
 
     @app.websocket("/leisaac/backhaul")
-    async def leisaac_backhaul(websocket: Any) -> None:
+    async def leisaac_backhaul(websocket: WebSocket) -> None:
         """Bridge the authenticated pod WSS backhaul to the loopback relay."""
 
         # This route is reachable only through nginx's exact authenticated WSS

@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import hashlib
+from typing import get_type_hints
 from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi import FastAPI, Response
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocket
 
 from npa.agent_backend.leisaac import (
     LEISAAC_MEDIA_PORT,
@@ -243,6 +245,17 @@ def test_authenticated_backend_routes_gate_status_and_proxy_client(monkeypatch) 
         ),
     )
     client = TestClient(api)
+    websocket_routes = {
+        route.path: route for route in api.routes if hasattr(route, "endpoint")
+    }
+    assert (
+        get_type_hints(websocket_routes["/leisaac/signal"].endpoint)["websocket"]
+        is WebSocket
+    )
+    assert (
+        get_type_hints(websocket_routes["/leisaac/backhaul"].endpoint)["websocket"]
+        is WebSocket
+    )
     missing = client.get("/leisaac/status", params={"run_id": "other"})
     assert missing.status_code == 200
     assert missing.json()["available"] is False
