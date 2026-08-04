@@ -112,6 +112,10 @@ The image must be pinned by digest and at least one public `/32` operator source
 range must be provided. The session has no implicit lifetime;
 an operator may add `--expires-at` as an explicit security policy, otherwise
 the live service lifecycle controls tab availability.
+Before applying the deployment, `launch` refreshes the selected Kubernetes pull
+secret with a newly minted Nebius IAM token and verifies that the secret exists.
+If credential minting or the secret apply fails, launch stops before scheduling
+the GPU workload instead of relying on a warm node image cache.
 
 Deploy or re-bootstrap the agent through the supported lifecycle command. A
 fresh deployment provisions a Nebius public IP; re-bootstrap resolves the

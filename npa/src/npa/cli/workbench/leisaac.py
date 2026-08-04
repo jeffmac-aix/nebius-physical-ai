@@ -52,6 +52,7 @@ from npa.workbench.leisaac import (
     validate_run_id,
     validate_source_ranges,
 )
+from npa.workflows.sim2real.registry_auth import ensure_registry_pull_secret_for_images
 
 app = typer.Typer(
     name="leisaac",
@@ -709,6 +710,15 @@ def launch_cmd(
         name = resource_name(run_id)
         nonce = secrets.token_hex(32)
         if image_pull_secret:
+            # Nebius IAM-backed registry credentials are intentionally short lived. Refresh
+            # the named secret for every launch so a pod scheduled onto a cold GPU node does
+            # not depend on an old node cache or somebody else's credential-refresh cycle.
+            ensure_registry_pull_secret_for_images(
+                image,
+                secret_name=image_pull_secret,
+                namespace=namespace,
+                k8s_context=context,
+            )
             secret = _kubectl(
                 context, namespace, ["get", "secret", image_pull_secret, "-o", "name"]
             )

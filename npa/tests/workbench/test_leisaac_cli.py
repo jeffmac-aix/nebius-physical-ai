@@ -232,6 +232,11 @@ def _args() -> list[str]:
 def _patch_launch(monkeypatch):
     monkeypatch.setenv("OMNI_KIT_ACCEPT_EULA", "YES")
     monkeypatch.setenv("ISAACSIM_ACCEPT_EULA", "YES")
+    registry_refreshes = []
+    monkeypatch.setattr(
+        "npa.cli.workbench.leisaac.ensure_registry_pull_secret_for_images",
+        lambda *args, **kwargs: registry_refreshes.append((args, kwargs)),
+    )
     monkeypatch.setattr(
         "npa.cli.workbench.leisaac._kubectl",
         lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout="secret/x", stderr=""),
@@ -321,7 +326,15 @@ def _patch_launch(monkeypatch):
             "gpu": "NVIDIA-RTX-PRO-6000-Blackwell-Server-Edition",
         },
     )
-    return applied, ingress_calls, install_calls, turn_install_calls, manifests, ssh
+    return (
+        applied,
+        ingress_calls,
+        install_calls,
+        turn_install_calls,
+        manifests,
+        ssh,
+        registry_refreshes,
+    )
 
 
 def test_agent_relay_manifest_uses_selected_agent_storage_not_shell_endpoint(monkeypatch) -> None:
@@ -380,15 +393,31 @@ def test_agent_relay_manifest_rejects_storage_scope_mismatch() -> None:
 
 
 def test_launch_agent_relay_wires_private_cluster_public_agent_and_manifest(monkeypatch) -> None:
-    applied, ingress_calls, install_calls, turn_install_calls, manifests, ssh = (
-        _patch_launch(monkeypatch)
-    )
+    (
+        applied,
+        ingress_calls,
+        install_calls,
+        turn_install_calls,
+        manifests,
+        ssh,
+        registry_refreshes,
+    ) = _patch_launch(monkeypatch)
 
     result = runner.invoke(app, _args())
 
     assert result.exit_code == 0, result.output
     assert "transport: agent-relay" in result.output
     assert "public_agent_url: https://8.8.4.4/" in result.output
+    assert registry_refreshes == [
+        (
+            (IMAGE,),
+            {
+                "secret_name": "npa-registry",
+                "namespace": "leisaac",
+                "k8s_context": "cluster",
+            },
+        )
+    ]
     assert applied[0]["spec"]["type"] == "ClusterIP"
     assert applied[1]["kind"] == "Secret"
     assert applied[2]["kind"] == "Deployment"
@@ -430,10 +459,30 @@ def test_launch_agent_relay_wires_private_cluster_public_agent_and_manifest(monk
     assert manifests[0]["media_host"] == "8.8.4.4"
 
 
+def test_launch_fails_closed_before_deployment_when_registry_refresh_fails(
+    monkeypatch,
+) -> None:
+    applied, *_rest = _patch_launch(monkeypatch)
+    monkeypatch.setattr(
+        "npa.cli.workbench.leisaac.ensure_registry_pull_secret_for_images",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("registry credential refresh failed")
+        ),
+    )
+
+    result = runner.invoke(app, _args())
+
+    assert result.exit_code == 1
+    assert "registry credential refresh failed" in result.output
+    assert applied == []
+
+
 def test_failed_agent_relay_launch_removes_partial_relay_ingress_and_kubernetes(
     monkeypatch,
 ) -> None:
-    _applied, _ingress, _install, _turn, _manifests, _ssh = _patch_launch(monkeypatch)
+    _applied, _ingress, _install, _turn, _manifests, _ssh, _registry = _patch_launch(
+        monkeypatch
+    )
     monkeypatch.setattr(
         "npa.cli.workbench.leisaac._install_agent_turn",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("install failed")),
@@ -470,7 +519,9 @@ def test_failed_agent_relay_launch_removes_partial_relay_ingress_and_kubernetes(
 
 
 def test_relaunch_replaces_only_the_prior_recorded_gpu_egress_rule(monkeypatch) -> None:
-    applied, _ingress, _relay, _turn, _manifests, _ssh = _patch_launch(monkeypatch)
+    applied, _ingress, _relay, _turn, _manifests, _ssh, _registry = _patch_launch(
+        monkeypatch
+    )
     monkeypatch.setattr(
         "npa.cli.workbench.leisaac._existing_turn_peer_source",
         lambda *_args: "4.4.4.0/24",
