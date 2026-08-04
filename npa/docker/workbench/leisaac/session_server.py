@@ -353,6 +353,17 @@ def health_document() -> dict[str, Any]:
     }
 
 
+def liveness_status() -> int:
+    """Restart a wedged first reset while preserving the pod's warm caches."""
+
+    with STATE_LOCK:
+        state = str(STATE.get("state") or "")
+        pid = int(STATE.get("pid") or 0)
+    if state == "failed" or (state == "starting" and pid > 0):
+        return 503
+    return 200
+
+
 class Handler(http.server.BaseHTTPRequestHandler):
     server_version = "npa-leisaac/0.4.0"
 
@@ -368,7 +379,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         path = self.path.split("?", 1)[0]
         if path == "/healthz":
-            self.send_bytes(200, "application/json", b'{"ok":true}\n')
+            status = liveness_status()
+            body = b'{"ok":true}\n' if status == 200 else b'{"ok":false}\n'
+            self.send_bytes(status, "application/json", body)
             return
         if path == "/status":
             document = health_document()

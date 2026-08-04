@@ -87,6 +87,10 @@ session supervisor starts Kit in an isolated process session with closed stdin
 so HTTP-service signal handling cannot interfere with upstream teleoperation.
 The browser service pins upstream seed `42` and reports it in `/status`; this
 avoids nondeterministic PickOrange reset states and makes evidence reproducible.
+On a cold pod, the existing liveness probe preserves the licensed runtime fetch
+but restarts a simulator that remains in its first pre-ready reset. Kubernetes
+keeps the pod's `emptyDir` Isaac caches, so the deterministic retry uses the
+warmed collision/shader cache while `/status` remains unavailable until reset.
 The exact patch is commit-locked in the image build and named in runtime
 provenance. It
 refuses to start until the operator explicitly sets both
