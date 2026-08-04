@@ -4193,6 +4193,15 @@
       let lastSimVizStatus = null;
       let rerunEnsureInFlight = null;
       let activeRunId = "";
+      let activeRunSelectionGeneration = 0;
+      function selectActiveRunId(runId) {
+        const selected = String(runId || "").trim();
+        if (selected) {
+          activeRunSelectionGeneration += 1;
+          activeRunId = selected;
+        }
+        return selected;
+      }
       let activeArtifactRender = "";
       let lastRerunBlobStatus = "pending";
       let lastRerunMountStatus = "pending";
@@ -6546,6 +6555,7 @@
       }
       async function refresh() {
         try {
+          const selectionGeneration = activeRunSelectionGeneration;
           const requestedRunId = String(activeRunId || "").trim();
           const statusPath = requestedRunId
             ? "/api/sim-viz/status?run_id=" + encodeURIComponent(requestedRunId)
@@ -6578,7 +6588,9 @@
           // An explicit browser selection also drives non-RRD capabilities such
           // as LeIsaac. A sim-viz response can retain the last RRD-capable
           // active_run_id; it must not silently replace the run we requested.
-          activeRunId = requestedRunId || String((simViz && (simViz.active_run_id || simViz.run_id)) || "").trim();
+          if (selectionGeneration === activeRunSelectionGeneration) {
+            activeRunId = requestedRunId || String((simViz && (simViz.active_run_id || simViz.run_id)) || "").trim();
+          }
           updateRunSelector(simViz);
           await loadRunDetails(activeRunId);
           renderAssetsSummary(assets);
@@ -7004,12 +7016,12 @@
         if (!runId) {
           throw new Error("Enter or select a run_id first");
         }
+        selectActiveRunId(runId);
         const data = await apiJson("/api/sim-viz/load-run", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ run_id: runId }),
         });
-        activeRunId = runId;
         await refreshLeIsaacCapability(runId);
         appendChat("assistant", "Loaded run context — **run_id**: `" + runId + "`.");
         await loadRunDetails(runId);
@@ -7134,11 +7146,14 @@
         window.open(src, "_blank", "noopener");
       }
       async function restoreSession() {
+        const selectionGeneration = activeRunSelectionGeneration;
         try {
           const session = await loadJson("/api/session");
           activeChatSessionId = String(session.active_chat_session_id || activeChatSessionId || "default");
           if (session && session.sim_viz) {
-            activeRunId = String((session.sim_viz.active_run_id || session.sim_viz.run_id || activeRunId || "")).trim();
+            if (selectionGeneration === activeRunSelectionGeneration) {
+              activeRunId = String((session.sim_viz.active_run_id || session.sim_viz.run_id || activeRunId || "")).trim();
+            }
             activeArtifactRender = String(session.sim_viz.artifact_render || activeArtifactRender || "");
             updateRenderedDataSummary(session.sim_viz);
           }
@@ -7339,6 +7354,7 @@
           disconnectLeIsaac,
           refresh,
           activeRunId: () => activeRunId,
+          selectActiveRunId,
         };
         try {
           wireUi();
