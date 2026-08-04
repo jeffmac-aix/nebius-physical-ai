@@ -14,9 +14,10 @@ from __future__ import annotations
 
 import hashlib
 import ipaddress
+import json
 import re
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlparse
 
 LEISAAC_SESSION_SCHEMA = "npa.leisaac.session.v1"
@@ -47,6 +48,40 @@ def is_leisaac_manifest_key(key: str) -> bool:
 
     value = str(key or "").strip().replace("\\", "/")
     return value.endswith(f"/reports/{LEISAAC_MANIFEST_NAME}")
+
+
+def load_manifest_artifact(
+    run_id: str,
+    *,
+    validate_run_id: Callable[[str], str],
+    s3_client: Callable[[], tuple[Any, dict]],
+    s3_buckets: Callable[[Any, dict], list[str]],
+    find_artifacts: Callable[..., tuple[str, list[Any]]],
+) -> dict | None:
+    """Load one bounded canonical manifest for a validated run from S3."""
+
+    normalized_run = validate_run_id(run_id)
+    s3, settings = s3_client()
+    bucket, artifacts = find_artifacts(
+        s3_buckets(s3, settings),
+        base_prefix=settings.get("prefix", ""),
+        run_id=normalized_run,
+        s3=s3,
+    )
+    matches = [
+        item for item in artifacts if is_leisaac_manifest_key(str(item.key or ""))
+    ]
+    if not bucket or len(matches) != 1:
+        return None
+    response = s3.get_object(Bucket=bucket, Key=str(matches[0].key or ""))
+    body = response["Body"].read(131073)
+    if len(body) > 131072:
+        return None
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
 
 
 def selected_run_id(state: dict | None, requested: str = "") -> str:

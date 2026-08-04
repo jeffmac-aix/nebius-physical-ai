@@ -36,6 +36,7 @@ from npa.clients.network import (
     resolve_instance_network_context,
 )
 from npa.clients.ssh import SSHClient, SSHError
+from npa.cli.agent_contracts import AGENT_LEISAAC_CONTRACT  # noqa: F401 - public API
 from npa.cli.agent_public import (
     AgentConfig,
     build_agent_urls,
@@ -168,20 +169,6 @@ AGENT_FOXGLOVE_CONTRACT = (
     "self-hosted",
     # Cross-origin embed: never claim a captured frame for the official app.
     "cross-origin iframe",
-)
-
-# First-class LeIsaac tab.  Unlike the always-present artifact viewers, this tab
-# is created only after the selected run's storage-scoped session artifact and
-# nonce-bound live service attestation both validate.
-AGENT_LEISAAC_CONTRACT = (
-    "ensureLeIsaacTab",
-    "removeLeIsaacTab",
-    "refreshLeIsaacCapability",
-    "connectLeIsaac",
-    "/api/leisaac/status",
-    "/api/leisaac/client/index.js",
-    "/api/leisaac/signal",
-    "LeIsaac-SO101-PickOrange-v0",
 )
 
 AGENT_CHAT_QUEUE_CONTRACT = (
@@ -1938,7 +1925,7 @@ from agent_backend.foxglove import (
     resolve_foxglove_config,
 )
 from agent_backend.foxglove_routes import FoxgloveDeps, register_foxglove_routes
-from agent_backend.leisaac import is_leisaac_manifest_key
+from agent_backend.leisaac import load_manifest_artifact
 from agent_backend.leisaac_routes import LeIsaacDeps, register_leisaac_routes
 
 
@@ -7574,30 +7561,11 @@ register_foxglove_routes(
 
 
 def _leisaac_manifest_for_run(run_id: str) -> dict | None:
-    # Load the selected run's canonical LeIsaac session artifact from S3.
-    normalized_run = validate_run_id(run_id)
-    s3, settings = _agent_s3_client()
-    bucket, artifacts = find_run_artifacts_across_buckets(
-        _agent_s3_buckets(s3, settings),
-        base_prefix=settings.get("prefix", ""),
-        run_id=normalized_run,
-        s3=s3,
+    return load_manifest_artifact(
+        run_id, validate_run_id=validate_run_id,
+        s3_client=_agent_s3_client, s3_buckets=_agent_s3_buckets,
+        find_artifacts=find_run_artifacts_across_buckets,
     )
-    if not bucket:
-        return None
-    matches = [item for item in artifacts if is_leisaac_manifest_key(str(item.key or ""))]
-    if len(matches) != 1:
-        return None
-    key = str(matches[0].key or "")
-    response = s3.get_object(Bucket=bucket, Key=key)
-    body = response["Body"].read(131073)
-    if len(body) > 131072:
-        return None
-    try:
-        payload = json.loads(body.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError):
-        return None
-    return payload if isinstance(payload, dict) else None
 
 
 register_leisaac_routes(

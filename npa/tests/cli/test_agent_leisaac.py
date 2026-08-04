@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import io
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from typing import get_type_hints
 
 import pytest
@@ -18,6 +20,7 @@ from npa.agent_backend.leisaac import (
     LEISAAC_TASK,
     LEISAAC_TURN_PORT,
     LEISAAC_TURN_RELAY_PORT,
+    load_manifest_artifact,
     normalize_manifest,
     selected_run_id,
     status_payload,
@@ -71,6 +74,33 @@ def test_selected_run_requires_safe_exact_identifier() -> None:
     )
     assert selected_run_id({}, "../../etc/passwd") == ""
     assert selected_run_id({"sim_viz": {"run_id": "other"}}, "explicit") == "explicit"
+
+
+def test_manifest_artifact_loader_requires_one_bounded_canonical_object() -> None:
+    payload = b'{"schema":"npa.leisaac.session.v1"}'
+
+    class S3:
+        def get_object(self, **_kwargs):
+            return {"Body": io.BytesIO(payload)}
+
+    artifact = SimpleNamespace(key="runs/live/reports/leisaac-session.json")
+    loaded = load_manifest_artifact(
+        "live",
+        validate_run_id=lambda value: value,
+        s3_client=lambda: (S3(), {"prefix": "runs"}),
+        s3_buckets=lambda _s3, _settings: ["bucket"],
+        find_artifacts=lambda *_args, **_kwargs: ("bucket", [artifact]),
+    )
+    assert loaded == {"schema": "npa.leisaac.session.v1"}
+
+    duplicated = load_manifest_artifact(
+        "live",
+        validate_run_id=lambda value: value,
+        s3_client=lambda: (S3(), {}),
+        s3_buckets=lambda _s3, _settings: ["bucket"],
+        find_artifacts=lambda *_args, **_kwargs: ("bucket", [artifact, artifact]),
+    )
+    assert duplicated is None
 
 
 @pytest.mark.parametrize(

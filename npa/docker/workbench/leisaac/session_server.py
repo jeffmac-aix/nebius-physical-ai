@@ -302,7 +302,12 @@ def run_simulation() -> None:
         READY_PATH.unlink(missing_ok=True)
         INPUT_COUNTER_PATH.write_text("0\n", encoding="utf-8")
         CHILD = subprocess.Popen(
-            command, cwd="/opt/leisaac", env=environment, text=True
+            command,
+            cwd="/opt/leisaac",
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+            text=True,
         )
         update_state(pid=CHILD.pid, gpu=detect_gpu(), started_at=utc_now())
         while CHILD.poll() is None:

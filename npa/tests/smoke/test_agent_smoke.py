@@ -51,8 +51,11 @@ RERUN_STATIC_CANDIDATES = (
 def test_agent_bootstrap_source_smoke() -> None:
     source = AGENT_MODULE.read_text(encoding="utf-8")
     ui_source = AGENT_UI_MODULE.read_text(encoding="utf-8")
+    contract_source = (
+        REPO_ROOT / "npa" / "src" / "npa" / "cli" / "agent_contracts.py"
+    ).read_text(encoding="utf-8")
     ui = rendered_agent_ui_html()
-    bundled = source + "\n" + ui_source + "\n" + ui
+    bundled = source + "\n" + ui_source + "\n" + contract_source + "\n" + ui
     assert '@app.get("/sim-viz/rrd")' in source
     assert '@app.post("/sim-viz/load-franka-demo")' in source
     assert '@app.post("/sim-viz/camera-preview")' in source
