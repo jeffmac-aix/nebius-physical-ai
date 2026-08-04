@@ -1831,6 +1831,10 @@ _AUTHOR_STOPWORDS = frozenset(
         "workflow", "pipeline", "that", "uses", "use", "using", "with", "and",
         "for", "to", "of", "create", "generate", "build", "make", "draft",
         "compose", "please", "give", "show", "new", "simple", "minimal", "example",
+        # Domain-only words select the canonical Sim2Real template. Treating
+        # ``sim2real`` as a concrete catalog-tool keyword otherwise ranks every
+        # ``workbench.sim2real.*`` tool equally and can compose arbitrary stages.
+        "sim2real",
     }
 )
 
