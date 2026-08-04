@@ -198,7 +198,8 @@ def _deployment_node_context(
     nodes = {
         str(item.get("spec", {}).get("nodeName") or "")
         for item in json.loads(result.stdout).get("items", [])
-        if item.get("status", {}).get("phase") == "Running"
+        if not item.get("metadata", {}).get("deletionTimestamp")
+        and item.get("status", {}).get("phase") == "Running"
         and all(
             bool(status.get("ready"))
             for status in item.get("status", {}).get("containerStatuses", [])

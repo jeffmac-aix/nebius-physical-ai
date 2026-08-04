@@ -151,6 +151,44 @@ def test_deployment_media_target_returns_exact_node_identity(monkeypatch) -> Non
     )
 
 
+def test_deployment_media_target_ignores_ready_pod_already_terminating(
+    monkeypatch,
+) -> None:
+    ready = {
+        "metadata": {},
+        "spec": {"nodeName": "computeinstance-current"},
+        "status": {
+            "phase": "Running",
+            "containerStatuses": [{"ready": True}, {"ready": True}],
+        },
+    }
+    terminating = {
+        "metadata": {"deletionTimestamp": "2026-08-04T07:30:00Z"},
+        "spec": {"nodeName": "computeinstance-old"},
+        "status": {
+            "phase": "Running",
+            "containerStatuses": [{"ready": True}, {"ready": True}],
+        },
+    }
+    responses = iter(
+        (
+            {"items": [terminating, ready]},
+            {"status": {"addresses": [{"type": "InternalIP", "address": "10.96.0.23"}]}},
+        )
+    )
+    monkeypatch.setattr(
+        "npa.cli.workbench.leisaac._kubectl",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0, stdout=json.dumps(next(responses)), stderr=""
+        ),
+    )
+
+    assert _deployment_node_context("cluster", "leisaac", "leisaac-live") == (
+        "computeinstance-current",
+        "10.96.0.23",
+    )
+
+
 def test_install_relay_creates_required_agent_directories() -> None:
     class CaptureSSH:
         command = ""
