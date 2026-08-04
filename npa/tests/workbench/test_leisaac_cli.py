@@ -9,12 +9,54 @@ from npa.cli.workbench.leisaac import (
     _delete_resources,
     _install_agent_relay,
     _put_manifest,
+    _wait_ready,
     app,
 )
 
 
 IMAGE = "registry.example/npa-leisaac@sha256:" + "1" * 64
 runner = CliRunner()
+
+
+def test_wait_ready_rejects_old_ready_replica_during_rollout(monkeypatch) -> None:
+    old_replica = {
+        "metadata": {"generation": 2},
+        "spec": {"replicas": 1},
+        "status": {
+            "observedGeneration": 2,
+            "replicas": 2,
+            "updatedReplicas": 1,
+            "readyReplicas": 1,
+            "availableReplicas": 1,
+            "unavailableReplicas": 1,
+        },
+    }
+    current_replica = {
+        "metadata": {"generation": 2},
+        "spec": {"replicas": 1},
+        "status": {
+            "observedGeneration": 2,
+            "replicas": 1,
+            "updatedReplicas": 1,
+            "readyReplicas": 1,
+            "availableReplicas": 1,
+        },
+    }
+    responses = iter((old_replica, current_replica))
+    calls = []
+    monkeypatch.setattr(
+        "npa.cli.workbench.leisaac._kubectl",
+        lambda *args: SimpleNamespace(
+            returncode=0, stdout=json.dumps(next(responses)), stderr=""
+        ),
+    )
+    monkeypatch.setattr(
+        "npa.cli.workbench.leisaac.time.sleep", lambda seconds: calls.append(seconds)
+    )
+
+    _wait_ready("cluster", "leisaac", "leisaac-live")
+
+    assert calls == [5]
 
 
 def test_delete_resources_addresses_each_kubernetes_kind_explicitly(monkeypatch) -> None:

@@ -120,10 +120,24 @@ def _wait_ready(context: str, namespace: str, deployment: str) -> None:
         result = _kubectl(
             context,
             namespace,
-            ["get", "deployment", deployment, "-o", "jsonpath={.status.readyReplicas}"],
+            ["get", "deployment", deployment, "-o", "json"],
         )
-        if result.returncode == 0 and result.stdout.strip() == "1":
-            return
+        if result.returncode == 0:
+            data = json.loads(result.stdout)
+            metadata = data.get("metadata", {}) or {}
+            spec = data.get("spec", {}) or {}
+            status = data.get("status", {}) or {}
+            generation = int(metadata.get("generation") or 0)
+            if (
+                generation > 0
+                and int(status.get("observedGeneration") or 0) == generation
+                and int(spec.get("replicas") or 0) == 1
+                and int(status.get("updatedReplicas") or 0) == 1
+                and int(status.get("readyReplicas") or 0) == 1
+                and int(status.get("availableReplicas") or 0) == 1
+                and int(status.get("unavailableReplicas") or 0) == 0
+            ):
+                return
         time.sleep(5)
 
 
