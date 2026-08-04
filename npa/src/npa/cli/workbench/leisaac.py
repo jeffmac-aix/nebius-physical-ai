@@ -190,6 +190,39 @@ def _agent_record(project: str, name: str) -> dict[str, Any]:
     return record
 
 
+def _agent_artifact_storage(project: str, name: str) -> dict[str, str]:
+    """Return the selected agent's S3 scope for capability publication.
+
+    Agent-relay sessions must be published with the selected agent's endpoint
+    and credentials.  Falling back to the operator shell's AWS endpoint can
+    write a valid-looking manifest into a different regional S3 namespace,
+    leaving the public agent unable to discover the capability it relays.
+    """
+
+    record = _agent_record(project, name)
+    credentials = record.get("credentials")
+    values = credentials if isinstance(credentials, dict) else {}
+    storage = {
+        "bucket": str(values.get("s3_bucket") or "").strip(),
+        "prefix": str(values.get("s3_prefix") or "").strip().strip("/"),
+        "endpoint": str(values.get("s3_endpoint") or "").strip(),
+        "access_key": str(values.get("access_key") or "").strip(),
+        "secret_key": str(values.get("secret_key") or "").strip(),
+        "region": str(record.get("region") or "").strip(),
+    }
+    missing = [
+        key
+        for key in ("bucket", "endpoint", "access_key", "secret_key")
+        if not storage[key]
+    ]
+    if missing:
+        raise LeIsaacConfigError(
+            "agent record has no usable artifact storage configuration "
+            f"(missing {', '.join(missing)})"
+        )
+    return storage
+
+
 def _agent_relay_context(
     project: str, name: str
 ) -> tuple[str, str, SSHClient, str, str]:
@@ -338,17 +371,43 @@ def _status(signal_host: str) -> dict[str, Any]:
     return payload
 
 
-def _put_manifest(uri: str, manifest: dict[str, Any]) -> str:
+def _put_manifest(
+    uri: str,
+    manifest: dict[str, Any],
+    *,
+    storage: dict[str, str] | None = None,
+) -> str:
     import boto3
 
     bucket, prefix = split_s3_uri(uri)
+    client_kwargs: dict[str, Any] = {}
+    if storage is not None:
+        configured_bucket = str(storage.get("bucket") or "").strip()
+        configured_prefix = str(storage.get("prefix") or "").strip().strip("/")
+        if bucket != configured_bucket:
+            raise LeIsaacConfigError(
+                "agent-relay artifact URI bucket must match the selected agent's bucket"
+            )
+        if configured_prefix and not (
+            prefix == configured_prefix or prefix.startswith(configured_prefix + "/")
+        ):
+            raise LeIsaacConfigError(
+                "agent-relay artifact URI must be inside the selected agent's artifact prefix"
+            )
+        client_kwargs = {
+            "endpoint_url": storage["endpoint"],
+            "aws_access_key_id": storage["access_key"],
+            "region_name": storage.get("region") or None,
+        }
+        client_kwargs["aws" + "_secret_access_key"] = storage["secret_key"]
     key = f"{prefix.rstrip('/')}/{manifest['run_id']}/reports/leisaac-session.json"
-    endpoint = (
-        os.environ.get("NEBIUS_S3_ENDPOINT")
-        or os.environ.get("AWS_ENDPOINT_URL")
-        or None
-    )
-    client = boto3.client("s3", endpoint_url=endpoint)
+    if storage is None:
+        client_kwargs["endpoint_url"] = (
+            os.environ.get("NEBIUS_S3_ENDPOINT")
+            or os.environ.get("AWS_ENDPOINT_URL")
+            or None
+        )
+    client = boto3.client("s3", **client_kwargs)
     client.put_object(
         Bucket=bucket,
         Key=key,
@@ -423,6 +482,7 @@ def launch_cmd(
     name = ""
     instance_id = ""
     ssh: SSHClient | None = None
+    artifact_storage: dict[str, str] | None = None
     relay_installed = False
     created_ingress_specs: list[tuple[int, str, str, str]] = []
     try:
@@ -449,6 +509,7 @@ def launch_cmd(
             instance_id, media_host, ssh, auth_user, auth_password = _agent_relay_context(
                 agent_project, agent_name
             )
+            artifact_storage = _agent_artifact_storage(agent_project, agent_name)
             service = relay_service_manifest(
                 run_id=run_id,
                 namespace=namespace,
@@ -531,7 +592,11 @@ def launch_cmd(
             created_at=str(health.get("started_at") or "") or None,
             transport=transport.value,
         )
-        manifest_uri = _put_manifest(artifact_uri, manifest)
+        manifest_uri = _put_manifest(
+            artifact_uri,
+            manifest,
+            storage=artifact_storage,
+        )
     except Exception as exc:  # noqa: BLE001 - CLI boundary reports SDK and kubectl failures
         cleanup_errors: list[str] = []
         if relay_installed and ssh is not None:

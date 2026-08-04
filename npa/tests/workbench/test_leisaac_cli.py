@@ -5,7 +5,12 @@ from types import SimpleNamespace
 
 from typer.testing import CliRunner
 
-from npa.cli.workbench.leisaac import _delete_resources, _install_agent_relay, app
+from npa.cli.workbench.leisaac import (
+    _delete_resources,
+    _install_agent_relay,
+    _put_manifest,
+    app,
+)
 
 
 IMAGE = "registry.example/npa-leisaac@sha256:" + "1" * 64
@@ -96,6 +101,18 @@ def _patch_launch(monkeypatch):
         "npa.cli.workbench.leisaac._agent_relay_context",
         lambda *_args: ("vm-agent", "8.8.4.4", ssh, "npa", "secret"),
     )
+    storage = {
+        "bucket": "bucket",
+        "prefix": "checkpoints",
+        "endpoint": "https://storage.example",
+        "access_key": "access",
+        "secret_key": "secret",
+        "region": "region",
+    }
+    monkeypatch.setattr(
+        "npa.cli.workbench.leisaac._agent_artifact_storage",
+        lambda *_args: storage,
+    )
     ingress_calls = []
 
     def ensure(**kwargs):
@@ -126,7 +143,8 @@ def _patch_launch(monkeypatch):
     )
     manifests = []
 
-    def put(_uri, manifest):
+    def put(_uri, manifest, *, storage):
+        assert storage["endpoint"] == "https://storage.example"
         manifests.append(manifest)
         return "s3://bucket/checkpoints/live-relay/reports/leisaac-session.json"
 
@@ -144,6 +162,61 @@ def _patch_launch(monkeypatch):
         },
     )
     return applied, ingress_calls, install_calls, manifests, ssh
+
+
+def test_agent_relay_manifest_uses_selected_agent_storage_not_shell_endpoint(monkeypatch) -> None:
+    calls = []
+
+    class S3:
+        def put_object(self, **kwargs):
+            calls.append(kwargs)
+
+    client_calls = []
+
+    def client(service, **kwargs):
+        client_calls.append((service, kwargs))
+        return S3()
+
+    monkeypatch.setattr("boto3.client", client)
+    monkeypatch.setenv("AWS_ENDPOINT_URL", "https://wrong-region.example")
+    manifest = {"run_id": "live-relay"}
+    storage = {
+        "bucket": "bucket",
+        "prefix": "checkpoints",
+        "endpoint": "https://agent-region.example",
+        "access_key": "agent-access",
+        "secret_key": "agent-secret",
+        "region": "agent-region",
+    }
+
+    uri = _put_manifest(
+        "s3://bucket/checkpoints", manifest, storage=storage
+    )
+
+    assert uri == "s3://bucket/checkpoints/live-relay/reports/leisaac-session.json"
+    assert client_calls[0][1]["endpoint_url"] == "https://agent-region.example"
+    assert client_calls[0][1]["aws_access_key_id"] == "agent-access"
+    assert client_calls[0][1]["aws_secret_access_key"] == "agent-secret"
+    assert calls[0]["Bucket"] == "bucket"
+
+
+def test_agent_relay_manifest_rejects_storage_scope_mismatch() -> None:
+    storage = {
+        "bucket": "agent-bucket",
+        "prefix": "checkpoints",
+        "endpoint": "https://agent-region.example",
+        "access_key": "agent-access",
+        "secret_key": "agent-secret",
+        "region": "agent-region",
+    }
+
+    for uri in ("s3://other/checkpoints", "s3://agent-bucket/outside"):
+        try:
+            _put_manifest(uri, {"run_id": "live-relay"}, storage=storage)
+        except Exception as exc:
+            assert "agent-relay artifact URI" in str(exc)
+        else:
+            raise AssertionError(f"storage scope mismatch was accepted: {uri}")
 
 
 def test_launch_agent_relay_wires_private_cluster_public_agent_and_manifest(monkeypatch) -> None:
