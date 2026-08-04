@@ -315,6 +315,7 @@ def test_observability_patch_is_exact_and_records_real_upstream_input() -> None:
     assert "NPA_LEISAAC_INPUT_COUNTER" in source
     assert "NPA_LEISAAC_READY_PATH" in source
     assert "NPA_LEISAAC_BROWSER_TELEOP" in source
+    assert "env_cfg.sim.use_fabric = False" in source
     assert "env_cfg.observations.policy.wrist = None" in source
     assert "env_cfg.observations.policy.front = None" in source
 

@@ -83,6 +83,8 @@ observation terms to avoid Isaac's camera/DirectGpu interoperability fault on
 `sm_120`. Physics for this single interactive environment runs on CPU because
 Isaac Sim 5.1 does not ship `sm_120` PhysX kernels; the real environment, RTX
 rendering, and WebRTC encoding remain active on the selected RT-core GPU. The
+browser path disables Isaac Lab Fabric so CPU PhysX synchronizes through the
+supported USD I/O path instead of stalling during the real environment reset. The
 session supervisor starts Kit in an isolated process session with closed stdin
 so HTTP-service signal handling cannot interfere with upstream teleoperation.
 The browser service pins upstream seed `42` and reports it in `/status`; this

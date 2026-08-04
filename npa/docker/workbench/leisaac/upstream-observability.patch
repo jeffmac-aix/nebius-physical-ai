@@ -2,15 +2,17 @@ diff --git a/scripts/environments/teleoperation/teleop_se3_agent.py b/scripts/en
 index a467482..652d435 100644
 --- a/scripts/environments/teleoperation/teleop_se3_agent.py
 +++ b/scripts/environments/teleoperation/teleop_se3_agent.py
-@@ -159,3 +159,7 @@ def main():  # noqa: C901
+@@ -159,3 +159,9 @@ def main():  # noqa: C901
      env_cfg = parse_env_cfg(args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs)
      env_cfg.use_teleop_device(args_cli.teleop_device)
 +    if os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") == "1":
 +        # WebRTC renders the viewport; teleoperation does not consume policy images.
++        # Fabric cannot synchronize CPU PhysX reliably on the sm_120 renderer.
++        env_cfg.sim.use_fabric = False
 +        env_cfg.observations.policy.wrist = None
 +        env_cfg.observations.policy.front = None
      env_cfg.seed = args_cli.seed if args_cli.seed is not None else int(time.time())
-@@ -312,4 +316,8 @@ def main():  # noqa: C901
+@@ -312,4 +318,8 @@ def main():  # noqa: C901
      if hasattr(env, "initialize"):
          env.initialize()
      env.reset()
