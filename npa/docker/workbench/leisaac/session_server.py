@@ -29,6 +29,7 @@ from typing import Any
 SCHEMA = "npa.leisaac.health.v1"
 TASK = "LeIsaac-SO101-PickOrange-v0"
 TELEOP_DEVICE = "keyboard"
+TELEOP_SEED = 42
 SOURCE_COMMIT = "1651c321e9b0c1bb54233211fc7b3cd70d8373d5"
 SOURCE_VERSION = "0.4.0"
 ISAAC_SIM_VERSION = "5.1.0.0"
@@ -275,6 +276,7 @@ def run_simulation() -> None:
             f"--task={TASK}",
             f"--teleop_device={TELEOP_DEVICE}",
             "--num_envs=1",
+            f"--seed={TELEOP_SEED}",
             # Isaac Sim 5.1 does not ship sm_120 PhysX kernels. Keep physics on
             # CPU for this single interactive environment; RTX rendering and
             # WebRTC encoding still run on the selected RT-core GPU.
@@ -336,6 +338,7 @@ def health_document() -> dict[str, Any]:
         "run_id": os.environ.get("NPA_LEISAAC_RUN_ID", ""),
         "task": TASK,
         "teleop_device": TELEOP_DEVICE,
+        "seed": TELEOP_SEED,
         "source_commit": SOURCE_COMMIT,
         "source_version": SOURCE_VERSION,
         "isaac_sim_version": ISAAC_SIM_VERSION,

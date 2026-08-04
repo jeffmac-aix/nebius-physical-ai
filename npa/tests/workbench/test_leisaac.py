@@ -290,6 +290,7 @@ def test_container_never_bakes_eula_client_or_assets() -> None:
     assert "ROBOT_SHA256" in server and "KITCHEN_SHA256" in server
     assert "safe_extract_zip" in server and "safe_extract_client" in server
     assert '"--device=cpu"' in server
+    assert 'f"--seed={TELEOP_SEED}"' in server
     assert 'environment["NPA_LEISAAC_BROWSER_TELEOP"] = "1"' in server
     assert "stdin=subprocess.DEVNULL" in server
     assert "start_new_session=True" in server
@@ -329,6 +330,7 @@ def test_health_reads_upstream_keyboard_counter(tmp_path: Path) -> None:
     assert health["input_events"] == 13
     assert health["physics_device"] == "cpu"
     assert health["render_device"] == "cuda"
+    assert health["seed"] == 42
 
 
 def test_agent_bootstrap_installs_turn_without_baking_session_configuration() -> None:
