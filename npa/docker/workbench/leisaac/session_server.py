@@ -52,6 +52,9 @@ CLIENT_SOURCE_JS_SHA256 = (
     "93cf2b328bcaaf9cf5a864c5b51f62e1bafcc533da9432ccc85633892f79ed86"
 )
 CLIENT_JS_SHA256 = "e9ac6563db79d3aea8afe94c4f60e50571abc01e3470d9bafb4e2f8b54cbd2a5"
+UPSTREAM_OBSERVABILITY_PATCH_SHA256 = (
+    "14dbbdd616d33bcc63d8e6476cb37e760dd0ed6db1dae4c4f87613b6847c2d9f"
+)
 CLIENT_WSS_PATCH_OLD = (
     b"M=Yc(B)?D.AppLevelProtocol.HTTP:D.AppLevelProtocol.HTTPS;"
 )
@@ -64,6 +67,8 @@ CACHE_ROOT = Path(os.environ.get("NPA_LEISAAC_CACHE_DIR", "/opt/leisaac-cache"))
 ASSETS_ROOT = CACHE_ROOT / "assets" / ASSET_RELEASE
 CLIENT_ROOT = CACHE_ROOT / "client" / "5.6.0"
 PROVENANCE_PATH = CACHE_ROOT / "provenance.json"
+READY_PATH = Path("/tmp/npa-leisaac-ready")
+INPUT_COUNTER_PATH = Path("/tmp/npa-leisaac-input-events")
 STATE_LOCK = threading.Lock()
 STATE: dict[str, Any] = {
     "state": "starting",
@@ -199,6 +204,10 @@ def stage_runtime() -> None:
             "version": SOURCE_VERSION,
             "commit": SOURCE_COMMIT,
             "license": "Apache-2.0",
+            "npa_observability_patch": {
+                "path": "upstream-observability.patch",
+                "sha256": UPSTREAM_OBSERVABILITY_PATCH_SHA256,
+            },
         },
         "assets": [
             {"url": ROBOT_URL, "sha256": ROBOT_SHA256, "bytes": robot.stat().st_size},
@@ -266,7 +275,10 @@ def run_simulation() -> None:
             f"--task={TASK}",
             f"--teleop_device={TELEOP_DEVICE}",
             "--num_envs=1",
-            "--device=cuda",
+            # One interactive environment does not benefit from GPU PhysX. CPU
+            # physics avoids the Isaac camera/DirectGpu interoperability fault
+            # on sm_120 while RTX rendering and WebRTC remain on the RT GPU.
+            "--device=cpu",
             "--enable_cameras",
             "--kit_args="
             + " ".join(
@@ -284,12 +296,16 @@ def run_simulation() -> None:
         ]
         environment = os.environ.copy()
         environment["LEISAAC_ASSETS_ROOT"] = str(ASSETS_ROOT)
+        environment["NPA_LEISAAC_READY_PATH"] = str(READY_PATH)
+        environment["NPA_LEISAAC_INPUT_COUNTER"] = str(INPUT_COUNTER_PATH)
+        READY_PATH.unlink(missing_ok=True)
+        INPUT_COUNTER_PATH.write_text("0\n", encoding="utf-8")
         CHILD = subprocess.Popen(
             command, cwd="/opt/leisaac", env=environment, text=True
         )
         update_state(pid=CHILD.pid, gpu=detect_gpu(), started_at=utc_now())
         while CHILD.poll() is None:
-            if tcp_ready(SIGNAL_PORT):
+            if tcp_ready(SIGNAL_PORT) and READY_PATH.is_file():
                 update_state(state="ready", detail="live", webrtc_ready=True)
                 break
             time.sleep(1)
@@ -303,6 +319,12 @@ def run_simulation() -> None:
 def health_document() -> dict[str, Any]:
     with STATE_LOCK:
         state = dict(STATE)
+    try:
+        input_events = max(
+            0, int(INPUT_COUNTER_PATH.read_text(encoding="utf-8").strip() or "0")
+        )
+    except (OSError, ValueError):
+        input_events = 0
     return {
         "schema": SCHEMA,
         "run_id": os.environ.get("NPA_LEISAAC_RUN_ID", ""),
@@ -315,7 +337,9 @@ def health_document() -> dict[str, Any]:
         "session_nonce": os.environ.get("NPA_LEISAAC_SESSION_NONCE", ""),
         "signal_port": SIGNAL_PORT,
         "media_port": MEDIA_PORT,
-        "input_events": 0,
+        "input_events": input_events,
+        "physics_device": "cpu",
+        "render_device": "cuda",
         **state,
     }
 

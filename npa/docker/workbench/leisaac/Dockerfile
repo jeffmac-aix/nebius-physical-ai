@@ -18,6 +18,8 @@ LABEL npa.tool="leisaac" \
 USER root
 SHELL ["/bin/bash", "-lc"]
 
+COPY docker/workbench/leisaac/upstream-observability.patch /tmp/leisaac-upstream-observability.patch
+
 # libXrandr is required by omni.kit.livestream.webrtc. All Python packages here
 # are OSS; Isaac, task assets, and NVIDIA's browser client are deliberately absent.
 # The software-keyboard path does not need the unlicensed Feetech SDK used by
@@ -31,6 +33,8 @@ RUN apt-get update \
     && git clone --filter=blob:none --no-checkout https://github.com/LightwheelAI/leisaac.git /opt/leisaac \
     && git -C /opt/leisaac checkout "${LEISAAC_COMMIT}" \
     && test "$(git -C /opt/leisaac rev-parse HEAD)" = "${LEISAAC_COMMIT}" \
+    && git -C /opt/leisaac apply --check /tmp/leisaac-upstream-observability.patch \
+    && git -C /opt/leisaac apply /tmp/leisaac-upstream-observability.patch \
     && sed -i '/"feetech-servo-sdk",/d' /opt/leisaac/source/leisaac/pyproject.toml \
     && ! grep -q 'feetech-servo-sdk' /opt/leisaac/source/leisaac/pyproject.toml \
     && /opt/npa/sim/venv/bin/python -m pip install --no-cache-dir \
@@ -43,6 +47,7 @@ RUN apt-get update \
     && ! /opt/npa/sim/venv/bin/python -m pip show feetech-servo-sdk \
     && /opt/npa/sim/venv/bin/python -m pip check \
     && cp /opt/leisaac/LICENSE /opt/leisaac/APACHE-2.0.txt \
+    && rm -f /tmp/leisaac-upstream-observability.patch \
     && rm -rf /opt/leisaac/.git \
     && test ! -e /opt/leisaac/assets/robots/so101_follower.usd \
     && test ! -e /opt/leisaac/assets/scenes/kitchen_with_orange \

@@ -289,8 +289,40 @@ def test_container_never_bakes_eula_client_or_assets() -> None:
     assert 'f"--/app/livestream/port={SIGNAL_PORT}"' in server
     assert "ROBOT_SHA256" in server and "KITCHEN_SHA256" in server
     assert "safe_extract_zip" in server and "safe_extract_client" in server
+    assert '"--device=cpu"' in server
+    assert "tcp_ready(SIGNAL_PORT) and READY_PATH.is_file()" in server
+    assert "NPA_LEISAAC_INPUT_COUNTER" in server
     assert "feetech-servo-sdk" in dockerfile and "-m pip check" in dockerfile
+    assert "git -C /opt/leisaac apply --check" in dockerfile
     assert os.access(ROOT / "npa/docker/workbench/leisaac/build.sh", os.X_OK)
+
+
+def test_observability_patch_is_exact_and_records_real_upstream_input() -> None:
+    patch = ROOT / "npa/docker/workbench/leisaac/upstream-observability.patch"
+    server = _session_server_module()
+
+    assert hashlib.sha256(patch.read_bytes()).hexdigest() == (
+        server.UPSTREAM_OBSERVABILITY_PATCH_SHA256
+    )
+    source = patch.read_text(encoding="utf-8")
+    assert "SO101Keyboard(Device)" in source
+    assert "KeyboardEventType.KEY_PRESS" in source
+    assert "self._delta_action +=" in source
+    assert "NPA_LEISAAC_INPUT_COUNTER" in source
+    assert "NPA_LEISAAC_READY_PATH" in source
+
+
+def test_health_reads_upstream_keyboard_counter(tmp_path: Path) -> None:
+    server = _session_server_module()
+    counter = tmp_path / "input-events"
+    counter.write_text("13\n", encoding="utf-8")
+    server.INPUT_COUNTER_PATH = counter
+
+    health = server.health_document()
+
+    assert health["input_events"] == 13
+    assert health["physics_device"] == "cpu"
+    assert health["render_device"] == "cuda"
 
 
 def test_agent_bootstrap_installs_turn_without_baking_session_configuration() -> None:

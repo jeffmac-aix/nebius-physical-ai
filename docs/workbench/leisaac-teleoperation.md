@@ -75,7 +75,13 @@ GPU pod are never publicly reachable.
 The image bakes only Apache-2.0 LeIsaac source and OSS dependencies. The
 unlicensed optional Feetech SDK used by physical leader hardware is not
 redistributed; an explicit packaging-only patch removes that dependency edge,
-and this browser service uses upstream's unmodified software keyboard path. It
+and this browser service uses upstream's software keyboard path with a narrow,
+fail-safe observability patch that publishes readiness only after the real task
+reset and counts accepted upstream keyboard events. For one interactive
+environment, physics runs on CPU to avoid Isaac's camera/DirectGpu fault on
+`sm_120`; RTX rendering and WebRTC encoding remain on the selected RT-core GPU.
+The exact patch is commit-locked in the image build and named in runtime
+provenance. It
 refuses to start until the operator explicitly sets both
 `OMNI_KIT_ACCEPT_EULA=YES` and `ISAACSIM_ACCEPT_EULA=YES`. Only then are Isaac,
 the NVIDIA client, and the two task assets fetched into mounted caches. The
