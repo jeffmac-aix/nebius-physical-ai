@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 from typer.testing import CliRunner
 
-from npa.cli.workbench.leisaac import _delete_resources, app
+from npa.cli.workbench.leisaac import _delete_resources, _install_agent_relay, app
 
 
 IMAGE = "registry.example/npa-leisaac@sha256:" + "1" * 64
@@ -32,6 +32,25 @@ def test_delete_resources_addresses_each_kubernetes_kind_explicitly(monkeypatch)
         "service/leisaac-live-relay",
         "--ignore-not-found=true",
     ]
+
+
+def test_install_relay_creates_required_agent_directories() -> None:
+    class CaptureSSH:
+        command = ""
+
+        def run_or_raise(self, command, **_kwargs):
+            self.command = command
+
+    ssh = CaptureSSH()
+    _install_agent_relay(
+        ssh,
+        run_id="live-relay",
+        target_host="10.96.0.22",
+        ports={"status": 30001, "signal": 30002, "media": 30003},
+    )
+
+    assert "sudo install -d -m 0755 /etc/npa /opt/npa-agent" in ssh.command
+    assert "DynamicUser=yes" not in ssh.command  # unit is base64-encoded in transit
 
 
 def _args() -> list[str]:

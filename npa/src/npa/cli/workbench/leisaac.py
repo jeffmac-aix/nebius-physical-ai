@@ -268,6 +268,7 @@ if sudo systemctl is-active --quiet {_RELAY_UNIT} && [ "$existing" != {run_q} ];
   echo 'another LeIsaac relay session is active' >&2
   exit 42
 fi
+sudo install -d -m 0755 /etc/npa /opt/npa-agent
 echo {shlex.quote(script_b64)} | base64 -d | sudo tee {_RELAY_SCRIPT} >/dev/null
 echo {shlex.quote(config_b64)} | base64 -d | sudo tee {_RELAY_CONFIG} >/dev/null
 echo {shlex.quote(unit_b64)} | base64 -d | sudo tee /etc/systemd/system/{_RELAY_UNIT} >/dev/null
