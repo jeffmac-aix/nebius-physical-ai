@@ -432,7 +432,7 @@ no-tls
 no-dtls
 no-cli
 no-multicast-peers
-no-loopback-peers
+pidfile=/var/tmp/npa-leisaac-turn.pid
 simple-log
 log-file=stdout
 """

@@ -56,6 +56,21 @@ describe("NPA agent LeIsaac capability tab", () => {
     cy.wait("@leisaacStatus");
     cy.get("#tabLeIsaac").should("exist").click();
     cy.get("#panelLeIsaac").should("have.class", "is-active");
+    cy.intercept("GET", "/api/sim-viz/status?run_id=mock-run", {
+      statusCode: 200,
+      body: {
+        run_id: "mock-run",
+        active_run_id: "older-rerun-only-run",
+        stage: "artifacts_available",
+        available_runs: [],
+      },
+    }).as("selectedRunRefresh");
+    cy.window().then((win) => win.__NPA_AGENT_TEST__.refresh());
+    cy.wait("@selectedRunRefresh");
+    cy.window().then((win) => {
+      expect(win.__NPA_AGENT_TEST__.activeRunId()).to.equal("mock-run");
+    });
+    cy.get("#tabLeIsaac").should("exist");
     cy.window().then((win) => {
       function CapturingPeerConnection(config) {
         win.__LEISAAC_PEER_CONFIG__ = config;

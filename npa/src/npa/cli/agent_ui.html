@@ -6546,8 +6546,9 @@
       }
       async function refresh() {
         try {
-          const statusPath = activeRunId
-            ? "/api/sim-viz/status?run_id=" + encodeURIComponent(activeRunId)
+          const requestedRunId = String(activeRunId || "").trim();
+          const statusPath = requestedRunId
+            ? "/api/sim-viz/status?run_id=" + encodeURIComponent(requestedRunId)
             : "/api/sim-viz/status";
           // Fetch independent state in parallel to cut UI-load and per-action latency
           // (was three sequential round-trips: session -> sim-assets -> sim-viz status).
@@ -6574,7 +6575,10 @@
               setWorkflowYaml(draftYaml, session.workflow_draft.validation || {});
             }
           }
-          activeRunId = String((simViz && (simViz.active_run_id || simViz.run_id)) || activeRunId || "").trim();
+          // An explicit browser selection also drives non-RRD capabilities such
+          // as LeIsaac. A sim-viz response can retain the last RRD-capable
+          // active_run_id; it must not silently replace the run we requested.
+          activeRunId = requestedRunId || String((simViz && (simViz.active_run_id || simViz.run_id)) || "").trim();
           updateRunSelector(simViz);
           await loadRunDetails(activeRunId);
           renderAssetsSummary(assets);
@@ -7333,6 +7337,8 @@
           removeLeIsaacTab,
           connectLeIsaac,
           disconnectLeIsaac,
+          refresh,
+          activeRunId: () => activeRunId,
         };
         try {
           wireUi();
