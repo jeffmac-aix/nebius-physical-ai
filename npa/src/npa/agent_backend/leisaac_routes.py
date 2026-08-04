@@ -222,15 +222,17 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
     async def leisaac_backhaul(websocket: Any) -> None:
         """Bridge the authenticated pod WSS backhaul to the loopback relay."""
 
-        if str(websocket.headers.get("x-forwarded-proto") or "").lower() != "https":
+        forwarded = str(websocket.headers.get("x-forwarded-proto") or "").lower()
+        scope_scheme = str(getattr(websocket, "scope", {}).get("scheme") or "").lower()
+        if forwarded != "https" and scope_scheme != "wss":
             await websocket.close(code=1008)
             return
+        await websocket.accept()
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", 48081)
         except OSError:
             await websocket.close(code=1013)
             return
-        await websocket.accept()
 
         async def websocket_to_relay() -> None:
             while True:
