@@ -5,11 +5,33 @@ from types import SimpleNamespace
 
 from typer.testing import CliRunner
 
-from npa.cli.workbench.leisaac import app
+from npa.cli.workbench.leisaac import _delete_resources, app
 
 
 IMAGE = "registry.example/npa-leisaac@sha256:" + "1" * 64
 runner = CliRunner()
+
+
+def test_delete_resources_addresses_each_kubernetes_kind_explicitly(monkeypatch) -> None:
+    calls = []
+    monkeypatch.setattr(
+        "npa.cli.workbench.leisaac._kubectl",
+        lambda *args, **kwargs: (
+            calls.append((args, kwargs))
+            or SimpleNamespace(returncode=0, stdout="", stderr="")
+        ),
+    )
+
+    _delete_resources("cluster", "leisaac", "leisaac-live")
+
+    assert calls[0][0][2] == [
+        "delete",
+        "deployment/leisaac-live",
+        "service/leisaac-live-tcp",
+        "service/leisaac-live-media",
+        "service/leisaac-live-relay",
+        "--ignore-not-found=true",
+    ]
 
 
 def _args() -> list[str]:

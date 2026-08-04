@@ -129,12 +129,10 @@ def _delete_resources(context: str, namespace: str, name: str) -> None:
         namespace,
         [
             "delete",
-            "deployment",
-            name,
-            "service",
-            f"{name}-tcp",
-            f"{name}-media",
-            f"{name}-relay",
+            f"deployment/{name}",
+            f"service/{name}-tcp",
+            f"service/{name}-media",
+            f"service/{name}-relay",
             "--ignore-not-found=true",
         ],
     )
