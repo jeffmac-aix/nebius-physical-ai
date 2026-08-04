@@ -154,6 +154,9 @@ curl -sk -u "${AGENT_USER}:${AGENT_PASSWORD}" "${AGENT_URL}/api/health"
 ```bash
 export OMNI_KIT_ACCEPT_EULA=YES
 export ISAACSIM_ACCEPT_EULA=YES
+# On shared operator hosts, select the registry-authorized identity separately
+# from the Nebius/Kubernetes access profile used by the rest of the command.
+export NPA_NEBIUS_PROFILE=agent-sa
 
 npa workbench leisaac launch \
   --run-id leisaac-teleop-example \
