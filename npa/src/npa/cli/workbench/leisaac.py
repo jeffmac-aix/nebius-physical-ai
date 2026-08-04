@@ -405,6 +405,25 @@ def _relay_peer_public_ip(ssh: SSHClient) -> str:
         time.sleep(2)
 
 
+def _turn_peer_source(value: str) -> str:
+    ranges = validate_source_ranges([value])
+    peer_ip = validate_public_ip(ranges[0].rsplit("/", 1)[0], "TURN peer IP")
+    if len(ranges) != 1 or ranges[0] != f"{peer_ip}/32":
+        raise LeIsaacConfigError("TURN peer source must be one public IPv4 /32")
+    return ranges[0]
+
+
+def _existing_turn_peer_source(
+    context: str, namespace: str, service: str
+) -> str:
+    result = _kubectl(context, namespace, ["get", "service", service, "-o", "json"])
+    if result.returncode:
+        return ""
+    annotations = json.loads(result.stdout).get("metadata", {}).get("annotations", {})
+    value = str((annotations or {}).get("npa.nebius.com/turn-peer-source") or "")
+    return _turn_peer_source(value) if value else ""
+
+
 def _install_agent_turn(
     ssh: SSHClient,
     *,
@@ -631,8 +650,9 @@ def launch_cmd(
     ssh: SSHClient | None = None
     artifact_storage: dict[str, str] | None = None
     relay_installed = False
-    turn_installed = False
+    turn_cleanup_required = False
     turn_peer_source = ""
+    prior_turn_peer_source = ""
     created_ingress_specs: list[tuple[int, str, str, str]] = []
     try:
         run_id = validate_run_id(run_id)
@@ -658,13 +678,18 @@ def launch_cmd(
             instance_id, media_host, ssh, auth_user, auth_password = (
                 _agent_relay_context(agent_project, agent_name)
             )
+            turn_cleanup_required = True
             artifact_storage = _agent_artifact_storage(agent_project, agent_name)
+            prior_turn_peer_source = _existing_turn_peer_source(
+                context, namespace, f"{name}-relay"
+            )
             service = relay_service_manifest(
                 run_id=run_id,
                 namespace=namespace,
                 agent_project=agent_project,
                 agent_name=agent_name,
                 source_ranges=source_ranges,
+                turn_peer_source=prior_turn_peer_source,
             )
             _apply(context, namespace, [service])
             relay_installed = True
@@ -726,6 +751,14 @@ def launch_cmd(
                     created_ingress_specs.append(
                         (TURN_PORT, source, _TURN_CONTROL_TOOL, "UDP")
                     )
+            if prior_turn_peer_source and prior_turn_peer_source != turn_peer_source:
+                remove_exact_npa_ingress_for_instance(
+                    instance_id,
+                    ports=(TURN_RELAY_PORT,),
+                    source=prior_turn_peer_source,
+                    tool=_TURN_MEDIA_TOOL,
+                    protocol="UDP",
+                )
             ingress = ensure_ingress(
                 vm_id=instance_id,
                 ports=(TURN_RELAY_PORT,),
@@ -751,7 +784,6 @@ def launch_cmd(
                     )
                 ],
             )
-            turn_installed = True
             _install_agent_turn(
                 ssh,
                 run_id=run_id,
@@ -784,7 +816,7 @@ def launch_cmd(
         )
     except Exception as exc:  # noqa: BLE001 - CLI boundary reports SDK and kubectl failures
         cleanup_errors: list[str] = []
-        if turn_installed and ssh is not None:
+        if turn_cleanup_required and ssh is not None:
             try:
                 _remove_agent_turn(ssh, run_id=run_id)
             except Exception as cleanup_exc:  # noqa: BLE001 - preserve primary failure
@@ -908,16 +940,9 @@ def destroy_cmd(
                 (TURN_PORT, source, _TURN_CONTROL_TOOL) for source in sources
             ]
             if peer_source:
-                validated_peer = validate_source_ranges([peer_source])
-                peer_ip = validate_public_ip(
-                    validated_peer[0].rsplit("/", 1)[0], "TURN peer IP"
-                )
-                if len(validated_peer) != 1 or validated_peer[0] != f"{peer_ip}/32":
-                    raise LeIsaacConfigError(
-                        "agent relay TURN peer metadata is not one public /32"
-                    )
+                validated_peer = _turn_peer_source(peer_source)
                 ingress_specs.append(
-                    (TURN_RELAY_PORT, validated_peer[0], _TURN_MEDIA_TOOL)
+                    (TURN_RELAY_PORT, validated_peer, _TURN_MEDIA_TOOL)
                 )
             else:
                 # Compatibility cleanup for sessions launched before TURN support.

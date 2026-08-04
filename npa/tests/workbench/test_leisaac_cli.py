@@ -201,6 +201,10 @@ def _patch_launch(monkeypatch):
         "npa.cli.workbench.leisaac._agent_artifact_storage",
         lambda *_args: storage,
     )
+    monkeypatch.setattr(
+        "npa.cli.workbench.leisaac._existing_turn_peer_source",
+        lambda *_args: "",
+    )
     ingress_calls = []
 
     def ensure(**kwargs):
@@ -403,6 +407,40 @@ def test_failed_agent_relay_launch_removes_partial_relay_ingress_and_kubernetes(
     assert removed_turn
     assert removed_ingress
     assert removed_kubernetes == [("cluster", "leisaac", "leisaac-live-relay")]
+
+
+def test_relaunch_replaces_only_the_prior_recorded_gpu_egress_rule(monkeypatch) -> None:
+    applied, _ingress, _relay, _turn, _manifests, _ssh = _patch_launch(monkeypatch)
+    monkeypatch.setattr(
+        "npa.cli.workbench.leisaac._existing_turn_peer_source",
+        lambda *_args: "4.4.4.4/32",
+    )
+    removals = []
+    monkeypatch.setattr(
+        "npa.cli.workbench.leisaac.remove_exact_npa_ingress_for_instance",
+        lambda *args, **kwargs: removals.append((args, kwargs)),
+    )
+
+    result = runner.invoke(app, _args())
+
+    assert result.exit_code == 0, result.output
+    assert applied[0]["metadata"]["annotations"][
+        "npa.nebius.com/turn-peer-source"
+    ] == "4.4.4.4/32"
+    assert applied[-1]["metadata"]["annotations"][
+        "npa.nebius.com/turn-peer-source"
+    ] == "9.9.9.9/32"
+    assert removals == [
+        (
+            ("vm-agent",),
+            {
+                "ports": (47999,),
+                "source": "4.4.4.4/32",
+                "tool": "leisaac-turn-media",
+                "protocol": "UDP",
+            },
+        )
+    ]
 
 
 def test_destroy_uses_service_metadata_to_remove_only_its_agent_relay(monkeypatch) -> None:
