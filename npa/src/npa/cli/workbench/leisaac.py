@@ -180,6 +180,44 @@ def _node_internal_ip(context: str, namespace: str) -> str:
     return sorted(set(candidates))[0]
 
 
+def _deployment_node_internal_ip(
+    context: str,
+    namespace: str,
+    deployment: str,
+) -> str:
+    result = _kubectl(
+        context,
+        namespace,
+        ["get", "pods", "-l", f"app={deployment}", "-o", "json"],
+    )
+    if result.returncode:
+        raise RuntimeError((result.stderr or result.stdout).strip())
+    nodes = {
+        str(item.get("spec", {}).get("nodeName") or "")
+        for item in json.loads(result.stdout).get("items", [])
+        if item.get("status", {}).get("phase") == "Running"
+        and all(
+            bool(status.get("ready"))
+            for status in item.get("status", {}).get("containerStatuses", [])
+        )
+    }
+    nodes.discard("")
+    if len(nodes) != 1:
+        raise RuntimeError("LeIsaac deployment does not have exactly one ready node")
+    node = next(iter(nodes))
+    result = _kubectl(context, namespace, ["get", "node", node, "-o", "json"])
+    if result.returncode:
+        raise RuntimeError((result.stderr or result.stdout).strip())
+    addresses = [
+        str(item.get("address") or "")
+        for item in json.loads(result.stdout).get("status", {}).get("addresses", [])
+        if item.get("type") == "InternalIP"
+    ]
+    if len(addresses) != 1:
+        raise RuntimeError("LeIsaac node does not have exactly one internal IP")
+    return addresses[0]
+
+
 def _relay_nodeports(context: str, namespace: str, service: str) -> dict[str, int]:
     result = _kubectl(context, namespace, ["get", "service", service, "-o", "json"])
     if result.returncode:
@@ -299,11 +337,16 @@ def _install_agent_relay(
     *,
     run_id: str,
     session_nonce: str,
+    media_target_host: str = "",
+    media_target_port: int = 0,
 ) -> None:
     config = {
         "run_id": run_id,
         "session_nonce": session_nonce,
     }
+    if media_target_host or media_target_port:
+        config["media_target_host"] = media_target_host
+        config["media_target_port"] = media_target_port
     unit = """[Unit]
 Description=NPA LeIsaac private-cluster relay
 After=network-online.target
@@ -587,6 +630,16 @@ def launch_cmd(
         )
         _apply(context, namespace, [deployment])
         _wait_ready(context, namespace, name)
+        if transport == Transport.agent_relay and ssh is not None:
+            _install_agent_relay(
+                ssh,
+                run_id=run_id,
+                session_nonce=nonce,
+                media_target_host=_deployment_node_internal_ip(
+                    context, namespace, name
+                ),
+                media_target_port=MEDIA_PORT,
+            )
         health = _relay_status(ssh) if ssh is not None else _status(signal_host)
         if (
             health.get("state") != "ready"

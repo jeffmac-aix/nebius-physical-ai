@@ -7,6 +7,7 @@ from typer.testing import CliRunner
 
 from npa.cli.workbench.leisaac import (
     _delete_resources,
+    _deployment_node_internal_ip,
     _install_agent_relay,
     _put_manifest,
     _wait_ready,
@@ -82,6 +83,43 @@ def test_delete_resources_addresses_each_kubernetes_kind_explicitly(monkeypatch)
     ]
 
 
+def test_deployment_media_target_resolves_exact_ready_private_node(monkeypatch) -> None:
+    responses = iter(
+        (
+            {
+                "items": [
+                    {
+                        "spec": {"nodeName": "rt-node"},
+                        "status": {
+                            "phase": "Running",
+                            "containerStatuses": [{"ready": True}, {"ready": True}],
+                        },
+                    }
+                ]
+            },
+            {
+                "status": {
+                    "addresses": [
+                        {"type": "Hostname", "address": "rt-node"},
+                        {"type": "InternalIP", "address": "10.96.0.22"},
+                    ]
+                }
+            },
+        )
+    )
+    monkeypatch.setattr(
+        "npa.cli.workbench.leisaac._kubectl",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0, stdout=json.dumps(next(responses)), stderr=""
+        ),
+    )
+
+    assert (
+        _deployment_node_internal_ip("cluster", "leisaac", "leisaac-live")
+        == "10.96.0.22"
+    )
+
+
 def test_install_relay_creates_required_agent_directories() -> None:
     class CaptureSSH:
         command = ""
@@ -95,6 +133,8 @@ def test_install_relay_creates_required_agent_directories() -> None:
         ssh,
         run_id="live-relay",
         session_nonce="a" * 64,
+        media_target_host="10.96.0.22",
+        media_target_port=47998,
     )
 
     assert "sudo install -d -m 0755 /etc/npa /opt/npa-agent" in ssh.command
@@ -173,6 +213,10 @@ def _patch_launch(monkeypatch):
         "npa.cli.workbench.leisaac._agent_certificate_sha256", lambda _ip: "f" * 64
     )
     monkeypatch.setattr("npa.cli.workbench.leisaac._wait_ready", lambda *_args: None)
+    monkeypatch.setattr(
+        "npa.cli.workbench.leisaac._deployment_node_internal_ip",
+        lambda *_args: "10.96.0.22",
+    )
     monkeypatch.setattr(
         "npa.cli.workbench.leisaac._relay_status",
         lambda *_args: {
@@ -283,6 +327,9 @@ def test_launch_agent_relay_wires_private_cluster_public_agent_and_manifest(monk
     ]
     assert install_calls[0][0] == (ssh,)
     assert install_calls[0][1]["session_nonce"] == "a" * 64
+    assert install_calls[0][1].get("media_target_host", "") == ""
+    assert install_calls[1][1]["media_target_host"] == "10.96.0.22"
+    assert install_calls[1][1]["media_target_port"] == 47998
     assert manifests[0]["transport"] == "agent-relay"
     assert manifests[0]["signal_host"] == "127.0.0.1"
     assert manifests[0]["media_host"] == "8.8.4.4"

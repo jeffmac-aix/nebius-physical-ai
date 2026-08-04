@@ -187,10 +187,10 @@ def relay_service_manifest(
 ) -> dict[str, Any]:
     """Build one private ClusterIP service for an agent-relayed session.
 
-    The service has no cloud load balancer or public address.  A separately
-    authenticated NPA agent VM reaches these NodePorts over the private VPC and
-    maintains only the fixed loopback TCP and source-restricted backhaul/media
-    contracts. The sidecar uses pod-local sockets rather than this Service.
+    The service has no cloud load balancer or public address.  The authenticated
+    reverse sidecar carries status and signaling to the agent's fixed loopback
+    listeners. Media enters only through the source-restricted agent UDP port
+    and then uses native private-VPC UDP to the GPU pod's fixed host port.
     """
 
     run_id = validate_run_id(run_id)
@@ -342,7 +342,12 @@ def deployment_manifest(
                         "protocol": "TCP",
                     },
                     {"name": "signal", "containerPort": SIGNAL_PORT, "protocol": "TCP"},
-                    {"name": "media", "containerPort": MEDIA_PORT, "protocol": "UDP"},
+                    {
+                        "name": "media",
+                        "containerPort": MEDIA_PORT,
+                        "protocol": "UDP",
+                        **({"hostPort": MEDIA_PORT} if relay_client_secret else {}),
+                    },
                 ],
                 "env": [
                     {"name": key, "value": value}

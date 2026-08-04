@@ -31,6 +31,39 @@ def test_relay_configs_pin_nonce_public_agent_and_certificate(tmp_path: Path) ->
     server_path.write_text(json.dumps({"session_nonce": NONCE}), encoding="utf-8")
     assert load_server_config(server_path) == {"session_nonce": NONCE}
 
+    server_path.write_text(
+        json.dumps(
+            {
+                "session_nonce": NONCE,
+                "media_target_host": "10.96.0.22",
+                "media_target_port": 47998,
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert load_server_config(server_path) == {
+        "session_nonce": NONCE,
+        "media_target_host": "10.96.0.22",
+        "media_target_port": 47998,
+    }
+    for host, port in (
+        ("8.8.8.8", 47998),
+        ("127.0.0.1", 47998),
+        ("10.96.0.22", 49100),
+    ):
+        server_path.write_text(
+            json.dumps(
+                {
+                    "session_nonce": NONCE,
+                    "media_target_host": host,
+                    "media_target_port": port,
+                }
+            ),
+            encoding="utf-8",
+        )
+        with pytest.raises(ValueError, match="media target"):
+            load_server_config(server_path)
+
     client_path = tmp_path / "client.json"
     client_path.write_text(
         json.dumps(
@@ -159,6 +192,49 @@ def test_private_client_uses_one_connected_media_socket_per_udp_flow(monkeypatch
     client.handle(UDP, 11, b"again")
 
     assert len(created) == 2
+    assert created[0].sent == [b"first", b"again"]  # type: ignore[attr-defined]
+    assert created[1].sent == [b"second"]  # type: ignore[attr-defined]
+
+
+def test_agent_uses_native_private_udp_per_browser_flow(monkeypatch) -> None:
+    created: list[object] = []
+
+    class FakeSocket:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            self.sent: list[bytes] = []
+            self.target: tuple[str, int] | None = None
+            created.append(self)
+
+        def connect(self, address: tuple[str, int]) -> None:
+            self.target = address
+
+        def send(self, payload: bytes) -> None:
+            self.sent.append(payload)
+
+        def close(self) -> None:
+            return None
+
+    class FakeThread:
+        def __init__(self, **_kwargs: object) -> None:
+            return None
+
+        def start(self) -> None:
+            return None
+
+    monkeypatch.setattr(socket, "socket", FakeSocket)
+    monkeypatch.setattr(
+        "npa.workbench.leisaac.agent_relay.threading.Thread", FakeThread
+    )
+    backhaul = Backhaul(NONCE, ("10.96.0.22", 47998))
+    first = ("198.51.100.10", 41001)
+    second = ("198.51.100.10", 41002)
+
+    backhaul.relay_browser_udp(b"first", first)
+    backhaul.relay_browser_udp(b"second", second)
+    backhaul.relay_browser_udp(b"again", first)
+
+    assert len(created) == 2
+    assert created[0].target == ("10.96.0.22", 47998)  # type: ignore[attr-defined]
     assert created[0].sent == [b"first", b"again"]  # type: ignore[attr-defined]
     assert created[1].sent == [b"second"]  # type: ignore[attr-defined]
 

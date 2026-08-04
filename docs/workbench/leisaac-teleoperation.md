@@ -27,18 +27,22 @@ public UDP `47998` endpoint.
 Two transport modes preserve that browser contract. `public-load-balancer`
 source-restricts status/client TCP `8080`, signaling TCP `49100`, and UDP media
 `47998` on dedicated load balancers. `agent-relay` consumes no additional
-public IPv4 allocation: Kubernetes uses a private NodePort service, the saved
+public IPv4 allocation: Kubernetes uses a private `ClusterIP` service, the saved
 NPA agent runs a hardened systemd relay, and a non-GPU sidecar in the simulation
 pod initiates an authenticated WSS backhaul through nginx `443` to it. The
 backhaul uses the agent's existing basic-auth credential, pins the public HTTPS
-certificate SHA-256, and authenticates again with a random session nonce. The relay binds status to
-`127.0.0.1:48080`, signaling to `127.0.0.1:49100`, and media to fixed UDP
-`47998`; its raw backhaul socket is loopback-only at `127.0.0.1:48081`. The
-Kubernetes Service is `ClusterIP` only. Media UDP is opened only for explicit
-operator CIDRs. The backhaul script, agent auth, certificate hash, and nonce
-are mounted into the pod through a Kubernetes Secret. The UI and TCP APIs
-remain behind nginx HTTPS and basic authentication; port `8787`, `8080`,
-`49100`, cluster ports, and the GPU pod are never published.
+certificate SHA-256, and authenticates again with a random session nonce. The
+relay binds status to `127.0.0.1:48080`, signaling to `127.0.0.1:49100`, and
+media to fixed public UDP `47998`; its raw backhaul socket is loopback-only at
+`127.0.0.1:48081`. Status and signaling use the WSS backhaul. WebRTC media keeps
+native UDP semantics: one agent socket per browser ICE flow forwards over the
+private VPC to UDP `47998` on the exact Ready GPU node. That fixed pod host port
+is not public and the media target is rejected unless it is a private IPv4
+address. Public media UDP is opened only for explicit operator CIDRs. The
+backhaul script, agent auth, certificate hash, and nonce are mounted into the
+pod through a Kubernetes Secret. The UI and TCP APIs remain behind nginx HTTPS
+and basic authentication; port `8787`, `8080`, `49100`, cluster ports, and the
+GPU pod are never publicly reachable.
 
 ## Runtime and licensing
 

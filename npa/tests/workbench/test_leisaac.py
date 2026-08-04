@@ -87,6 +87,9 @@ def test_deployment_is_real_rt_core_leisaac_and_operator_eula_runtime_config() -
     assert env["ISAACSIM_ACCEPT_EULA"] == "YES"
     assert env["NPA_LEISAAC_MEDIA_HOST"] == "1.1.1.1"
     assert "/status" == container["readinessProbe"]["httpGet"]["path"]
+    assert "hostPort" not in next(
+        port for port in container["ports"] if port["name"] == "media"
+    )
 
 
 def test_agent_relay_service_is_private_clusterip_with_cleanup_metadata() -> None:
@@ -139,6 +142,9 @@ def test_agent_relay_client_is_secret_mounted_as_non_gpu_sidecar() -> None:
     assert sidecar["name"] == "agent-relay-client"
     assert "nvidia.com/gpu" not in sidecar["resources"]["requests"]
     assert pod["volumes"][-1]["secret"]["secretName"] == secret["metadata"]["name"]
+    media = next(port for port in pod["containers"][0]["ports"] if port["name"] == "media")
+    assert media["containerPort"] == MEDIA_PORT
+    assert media["hostPort"] == MEDIA_PORT
 
 
 def test_agent_relay_manifest_keeps_tcp_private_and_media_on_agent_public_ip() -> None:
