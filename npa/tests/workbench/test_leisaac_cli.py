@@ -7,12 +7,12 @@ from types import SimpleNamespace
 from typer.testing import CliRunner
 
 from npa.cli.workbench.leisaac import (
-    _agent_private_ipv4,
     _delete_resources,
     _install_agent_relay,
     _install_agent_turn,
     _put_manifest,
     _gpu_egress_source,
+    _relay_media_server,
     _relay_peer_public_ip,
     _wait_ready,
     app,
@@ -155,13 +155,38 @@ def test_relay_peer_resolution_waits_for_authenticated_global_egress(
     assert sleeps == [2]
 
 
-def test_agent_private_media_address_comes_from_the_default_route() -> None:
-    class AgentSSH:
-        def run(self, command):
-            assert "route get 1.1.1.1" in command
-            return 0, "10.96.0.5\n", ""
+def test_relay_media_server_is_the_single_ready_pod_host(monkeypatch) -> None:
+    pod_list = {
+        "items": [
+            {
+                "metadata": {"name": "old", "deletionTimestamp": "now"},
+                "status": {
+                    "phase": "Running",
+                    "hostIP": "10.96.0.1",
+                    "containerStatuses": [{"name": "leisaac", "ready": True}],
+                },
+            },
+            {
+                "metadata": {"name": "current"},
+                "status": {
+                    "phase": "Running",
+                    "hostIP": "10.96.0.22",
+                    "containerStatuses": [
+                        {"name": "agent-relay-client", "ready": True},
+                        {"name": "leisaac", "ready": True},
+                    ],
+                },
+            },
+        ]
+    }
+    monkeypatch.setattr(
+        "npa.cli.workbench.leisaac._kubectl",
+        lambda *_args: SimpleNamespace(
+            returncode=0, stdout=json.dumps(pod_list), stderr=""
+        ),
+    )
 
-    assert _agent_private_ipv4(AgentSSH()) == "10.96.0.5"
+    assert _relay_media_server("cluster", "leisaac", "deployment") == "10.96.0.22"
 
 
 def test_gpu_egress_source_accepts_only_narrow_nebius_announced_route(
@@ -265,14 +290,7 @@ def _patch_launch(monkeypatch):
     ssh = object()
     monkeypatch.setattr(
         "npa.cli.workbench.leisaac._agent_relay_context",
-        lambda *_args: (
-            "vm-agent",
-            "8.8.4.4",
-            "10.96.0.5",
-            ssh,
-            "npa",
-            "secret",
-        ),
+        lambda *_args: ("vm-agent", "8.8.4.4", ssh, "npa", "secret"),
     )
     storage = {
         "bucket": "bucket",
@@ -306,6 +324,10 @@ def _patch_launch(monkeypatch):
         "npa.cli.workbench.leisaac._agent_certificate_sha256", lambda _ip: "f" * 64
     )
     monkeypatch.setattr("npa.cli.workbench.leisaac._wait_ready", lambda *_args: None)
+    monkeypatch.setattr(
+        "npa.cli.workbench.leisaac._relay_media_server",
+        lambda *_args: "10.96.0.22",
+    )
     monkeypatch.setattr(
         "npa.cli.workbench.leisaac._relay_peer_public_ip", lambda _ssh: "9.9.9.9"
     )
@@ -447,10 +469,18 @@ def test_launch_agent_relay_wires_private_cluster_public_agent_and_manifest(
     assert applied[1]["kind"] == "Secret"
     assert applied[2]["kind"] == "Deployment"
     deployment_env = {
-        item["name"]: item["value"]
+        item["name"]: item
         for item in applied[2]["spec"]["template"]["spec"]["containers"][0]["env"]
     }
-    assert deployment_env["NPA_LEISAAC_MEDIA_HOST"] == "10.96.0.5"
+    assert deployment_env["NPA_LEISAAC_MEDIA_HOST"]["valueFrom"] == {
+        "fieldRef": {"fieldPath": "status.hostIP"}
+    }
+    media_port = next(
+        item
+        for item in applied[2]["spec"]["template"]["spec"]["containers"][0]["ports"]
+        if item["name"] == "media"
+    )
+    assert media_port["hostPort"] == 47998
     assert (
         applied[-1]["metadata"]["annotations"]["npa.nebius.com/turn-peer-source"]
         == "9.9.8.0/22"
@@ -488,7 +518,7 @@ def test_launch_agent_relay_wires_private_cluster_public_agent_and_manifest(
     assert manifests[0]["transport"] == "agent-relay"
     assert manifests[0]["signal_host"] == "127.0.0.1"
     assert manifests[0]["media_host"] == "8.8.4.4"
-    assert manifests[0]["media_server"] == "10.96.0.5"
+    assert manifests[0]["media_server"] == "10.96.0.22"
 
 
 def test_launch_fails_closed_before_deployment_when_registry_refresh_fails(

@@ -154,9 +154,15 @@ def test_agent_relay_client_is_secret_mounted_as_non_gpu_sidecar() -> None:
         port for port in pod["containers"][0]["ports"] if port["name"] == "media"
     )
     assert media["containerPort"] == MEDIA_PORT
-    assert "hostPort" not in media
-    env = {item["name"]: item["value"] for item in pod["containers"][0]["env"]}
-    assert env["NPA_LEISAAC_MEDIA_HOST"] == "10.96.0.5"
+    assert media["hostPort"] == MEDIA_PORT
+    env = {item["name"]: item for item in pod["containers"][0]["env"]}
+    assert env["NPA_LEISAAC_MEDIA_HOST"]["valueFrom"] == {
+        "fieldRef": {"fieldPath": "status.hostIP"}
+    }
+    assert deployment["spec"]["strategy"]["rollingUpdate"] == {
+        "maxSurge": 0,
+        "maxUnavailable": 1,
+    }
 
 
 def test_agent_relay_manifest_keeps_tcp_private_and_media_on_agent_public_ip() -> None:

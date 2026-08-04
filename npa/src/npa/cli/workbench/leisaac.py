@@ -170,6 +170,42 @@ def _delete_resources(context: str, namespace: str, name: str) -> None:
         raise RuntimeError((result.stderr or result.stdout).strip())
 
 
+def _relay_media_server(context: str, namespace: str, deployment: str) -> str:
+    """Return the private host IP of the one ready simulator pod."""
+
+    result = _kubectl(
+        context,
+        namespace,
+        ["get", "pods", "-l", f"app={deployment}", "-o", "json"],
+    )
+    if result.returncode:
+        raise RuntimeError((result.stderr or result.stdout).strip())
+    candidates: list[str] = []
+    for pod in json.loads(result.stdout).get("items", []):
+        metadata = pod.get("metadata", {}) or {}
+        status = pod.get("status", {}) or {}
+        containers = status.get("containerStatuses", []) or []
+        main_ready = any(
+            item.get("name") == "leisaac" and item.get("ready") is True
+            for item in containers
+        )
+        if (
+            metadata.get("deletionTimestamp")
+            or status.get("phase") != "Running"
+            or not main_ready
+        ):
+            continue
+        candidates.append(
+            validate_private_ip(status.get("hostIP"), "RTX node media address")
+        )
+    if len(candidates) != 1:
+        raise RuntimeError(
+            "LeIsaac relay requires exactly one ready simulator pod with a private "
+            "RTX node address"
+        )
+    return candidates[0]
+
+
 def _node_internal_ip(context: str, namespace: str) -> str:
     result = _kubectl(context, namespace, ["get", "nodes", "-o", "json"])
     if result.returncode:
@@ -250,23 +286,9 @@ def _agent_artifact_storage(project: str, name: str) -> dict[str, str]:
     return storage
 
 
-def _agent_private_ipv4(ssh: SSHClient) -> str:
-    code, stdout, stderr = ssh.run(
-        "ip -4 route get 1.1.1.1 | "
-        'awk \'{for (i=1;i<=NF;i++) if ($i=="src") '
-        "{print $(i+1); exit}}'"
-    )
-    if code:
-        detail = stderr.strip() or stdout.strip() or "route lookup failed"
-        raise LeIsaacConfigError(
-            f"agent private media address could not be resolved: {detail}"
-        )
-    return validate_private_ip(stdout.strip(), "agent private media address")
-
-
 def _agent_relay_context(
     project: str, name: str
-) -> tuple[str, str, str, SSHClient, str, str]:
+) -> tuple[str, str, SSHClient, str, str]:
     record = _agent_record(project, name)
     instance_id = str(record.get("instance_id") or "").strip()
     key_path = str(record.get("ssh_key_path") or "").strip()
@@ -301,14 +323,7 @@ def _agent_relay_context(
             key_path=key_path,
         )
     )
-    return (
-        instance_id,
-        public_ip,
-        _agent_private_ipv4(ssh),
-        ssh,
-        auth_user,
-        auth_password,
-    )
+    return instance_id, public_ip, ssh, auth_user, auth_password
 
 
 def _agent_certificate_sha256(public_ip: str) -> str:
@@ -751,14 +766,9 @@ def launch_cmd(
                 raise LeIsaacConfigError(
                     "agent-relay requires --agent-project and --agent-name"
                 )
-            (
-                instance_id,
-                media_host,
-                media_server,
-                ssh,
-                auth_user,
-                auth_password,
-            ) = _agent_relay_context(agent_project, agent_name)
+            instance_id, media_host, ssh, auth_user, auth_password = (
+                _agent_relay_context(agent_project, agent_name)
+            )
             turn_cleanup_required = True
             artifact_storage = _agent_artifact_storage(agent_project, agent_name)
             prior_turn_peer_source = _existing_turn_peer_source(
@@ -807,7 +817,6 @@ def launch_cmd(
             namespace=namespace,
             image=image,
             media_host=media_host,
-            media_server=media_server,
             session_nonce=nonce,
             image_pull_secret=image_pull_secret,
             relay_client_secret=(
@@ -819,6 +828,7 @@ def launch_cmd(
         if transport == Transport.agent_relay:
             if ssh is None:
                 raise RuntimeError("LeIsaac agent relay has no SSH transport")
+            media_server = _relay_media_server(context, namespace, name)
             turn_peer_source = _gpu_egress_source(_relay_peer_public_ip(ssh))
             for source in source_ranges:
                 ingress = ensure_ingress(

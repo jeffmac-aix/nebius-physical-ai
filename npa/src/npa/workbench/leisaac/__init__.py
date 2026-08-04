@@ -346,14 +346,9 @@ def deployment_manifest(
     run_id = validate_run_id(run_id)
     image = validate_image(image)
     media_host = validate_public_ip(media_host, "media host")
-    runtime_media_host = media_host
-    if relay_client_secret:
-        runtime_media_host = validate_private_ip(
-            media_server, "agent relay media server"
-        )
-    elif media_server:
-        runtime_media_host = validate_public_ip(media_server, "media server")
-        if runtime_media_host != media_host:
+    if not relay_client_secret and media_server:
+        media_server = validate_public_ip(media_server, "media server")
+        if media_server != media_host:
             raise LeIsaacConfigError(
                 "public load-balancer media server must match the media host"
             )
@@ -373,9 +368,32 @@ def deployment_manifest(
         "ISAACSIM_ACCEPT_EULA": "YES",
         "NPA_LEISAAC_RUN_ID": run_id,
         "NPA_LEISAAC_SESSION_NONCE": session_nonce,
-        "NPA_LEISAAC_MEDIA_HOST": runtime_media_host,
         "NVIDIA_DRIVER_CAPABILITIES": "all",
     }
+    environment_items: list[dict[str, Any]] = [
+        {"name": key, "value": value} for key, value in sorted(environment.items())
+    ]
+    if relay_client_secret:
+        # The TURN server runs on the agent VM and reaches the simulator through
+        # the RTX node's private address. The downward API keeps the advertised
+        # endpoint aligned with whichever eligible node actually schedules the pod.
+        environment_items.append(
+            {
+                "name": "NPA_LEISAAC_MEDIA_HOST",
+                "valueFrom": {"fieldRef": {"fieldPath": "status.hostIP"}},
+            }
+        )
+    else:
+        environment_items.append(
+            {"name": "NPA_LEISAAC_MEDIA_HOST", "value": media_host}
+        )
+    media_port: dict[str, Any] = {
+        "name": "media",
+        "containerPort": MEDIA_PORT,
+        "protocol": "UDP",
+    }
+    if relay_client_secret:
+        media_port["hostPort"] = MEDIA_PORT
     pod_spec: dict[str, Any] = {
         "nodeSelector": {"nvidia.com/gpu.product": GPU_PRODUCT},
         "containers": [
@@ -390,16 +408,9 @@ def deployment_manifest(
                         "protocol": "TCP",
                     },
                     {"name": "signal", "containerPort": SIGNAL_PORT, "protocol": "TCP"},
-                    {
-                        "name": "media",
-                        "containerPort": MEDIA_PORT,
-                        "protocol": "UDP",
-                    },
+                    media_port,
                 ],
-                "env": [
-                    {"name": key, "value": value}
-                    for key, value in sorted(environment.items())
-                ],
+                "env": environment_items,
                 "resources": {
                     "requests": {
                         # PickOrange uses CPU PhysX on sm_120 while the RTX GPU
@@ -500,6 +511,14 @@ def deployment_manifest(
         "metadata": {"name": name, "namespace": namespace, "labels": labels},
         "spec": {
             "replicas": 1,
+            "strategy": (
+                {
+                    "type": "RollingUpdate",
+                    "rollingUpdate": {"maxSurge": 0, "maxUnavailable": 1},
+                }
+                if relay_client_secret
+                else {"type": "RollingUpdate"}
+            ),
             "selector": {"matchLabels": {"app": name}},
             "template": {"metadata": {"labels": labels}, "spec": pod_spec},
         },
