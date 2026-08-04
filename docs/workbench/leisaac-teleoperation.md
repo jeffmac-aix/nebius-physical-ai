@@ -37,8 +37,11 @@ media to fixed public UDP `47998`; its raw backhaul socket is loopback-only at
 `127.0.0.1:48081`. Status and signaling use the WSS backhaul. WebRTC media keeps
 native UDP semantics: one agent socket per browser ICE flow forwards over the
 private VPC to UDP `47998` on the exact Ready GPU node. That fixed pod host port
-is not public and the media target is rejected unless it is a private IPv4
-address. Public media UDP is opened only for explicit operator CIDRs. The
+is not public: NPA resolves both VMs from provider state and creates one exact
+UDP rule on that node from the agent VM's private IPv4 `/32`. The node identity,
+source `/32`, and cleanup contract are recorded on the private Service; broader,
+public, or incomplete private-media metadata fails closed. Public media UDP is
+opened only on the agent and only for explicit operator CIDRs. The
 backhaul script, agent auth, certificate hash, and nonce are mounted into the
 pod through a Kubernetes Secret. The UI and TCP APIs remain behind nginx HTTPS
 and basic authentication; port `8787`, `8080`, `49100`, cluster ports, and the
@@ -156,7 +159,8 @@ npa workbench leisaac destroy --run-id leisaac-teleop-example --context YOUR_KUB
 Destroy removes only that run's transient Deployment and Services. For an
 agent-relayed run it reads the owning agent and source CIDRs from Kubernetes
 metadata, stops only the matching relay unit, and deletes only the matching
-NPA-managed UDP media ingress rule. It preserves the S3
+NPA-managed public agent UDP rule plus the exact agent-private-IP-to-GPU-node
+UDP rule. It preserves the S3
 manifest/log/evidence record.
 Once the service is gone, live health fails and the agent UI removes the tab
 even if the historical manifest still exists.

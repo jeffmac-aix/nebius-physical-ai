@@ -116,6 +116,48 @@ def test_agent_relay_service_is_private_clusterip_with_cleanup_metadata() -> Non
     }
 
 
+def test_agent_relay_service_records_exact_private_media_cleanup_contract() -> None:
+    service = relay_service_manifest(
+        run_id="live-1",
+        namespace="leisaac",
+        agent_project="rtxpro",
+        agent_name="agent",
+        source_ranges=["8.8.8.8/32"],
+        private_media_node="computeinstance-rt-node",
+        private_media_source="10.96.0.21/32",
+    )
+
+    annotations = service["metadata"]["annotations"]
+    assert annotations["npa.nebius.com/private-media-node"] == (
+        "computeinstance-rt-node"
+    )
+    assert annotations["npa.nebius.com/private-media-source"] == "10.96.0.21/32"
+
+
+@pytest.mark.parametrize(
+    ("node", "source"),
+    [
+        ("computeinstance-rt-node", ""),
+        ("", "10.96.0.21/32"),
+        ("computeinstance-rt-node", "10.96.0.0/24"),
+        ("computeinstance-rt-node", "8.8.8.8/32"),
+    ],
+)
+def test_agent_relay_service_rejects_broad_or_incomplete_private_media_metadata(
+    node: str, source: str
+) -> None:
+    with pytest.raises(LeIsaacConfigError):
+        relay_service_manifest(
+            run_id="live-1",
+            namespace="leisaac",
+            agent_project="rtxpro",
+            agent_name="agent",
+            source_ranges=["8.8.8.8/32"],
+            private_media_node=node,
+            private_media_source=source,
+        )
+
+
 def test_agent_relay_client_is_secret_mounted_as_non_gpu_sidecar() -> None:
     secret = relay_client_secret_manifest(
         run_id="live-relay",

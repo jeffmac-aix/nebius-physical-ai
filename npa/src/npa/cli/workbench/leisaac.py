@@ -44,6 +44,8 @@ from npa.workbench.leisaac import (
     split_s3_uri,
     validate_expiry,
     validate_image,
+    validate_private_ipv4,
+    validate_private_source_range,
     validate_public_ip,
     validate_run_id,
     validate_source_ranges,
@@ -67,6 +69,7 @@ class Transport(str, Enum):
 
 
 _RELAY_TOOL = "leisaac-relay"
+_PRIVATE_MEDIA_TOOL = "leisaac-relay-private-media"
 _RELAY_CONFIG = "/etc/npa/leisaac-relay.json"
 _RELAY_SCRIPT = "/opt/npa-agent/leisaac-agent-relay.py"
 _RELAY_UNIT = "npa-leisaac-relay.service"
@@ -180,11 +183,11 @@ def _node_internal_ip(context: str, namespace: str) -> str:
     return sorted(set(candidates))[0]
 
 
-def _deployment_node_internal_ip(
+def _deployment_node_context(
     context: str,
     namespace: str,
     deployment: str,
-) -> str:
+) -> tuple[str, str]:
     result = _kubectl(
         context,
         namespace,
@@ -215,7 +218,17 @@ def _deployment_node_internal_ip(
     ]
     if len(addresses) != 1:
         raise RuntimeError("LeIsaac node does not have exactly one internal IP")
-    return addresses[0]
+    return node, validate_private_ipv4(addresses[0], "LeIsaac node internal IP")
+
+
+def _deployment_node_internal_ip(
+    context: str,
+    namespace: str,
+    deployment: str,
+) -> str:
+    """Compatibility wrapper for callers that only need the media target."""
+
+    return _deployment_node_context(context, namespace, deployment)[1]
 
 
 def _relay_nodeports(context: str, namespace: str, service: str) -> dict[str, int]:
@@ -277,7 +290,7 @@ def _agent_artifact_storage(project: str, name: str) -> dict[str, str]:
 
 def _agent_relay_context(
     project: str, name: str
-) -> tuple[str, str, SSHClient, str, str]:
+) -> tuple[str, str, str, SSHClient, str, str]:
     record = _agent_record(project, name)
     instance_id = str(record.get("instance_id") or "").strip()
     key_path = str(record.get("ssh_key_path") or "").strip()
@@ -288,6 +301,9 @@ def _agent_relay_context(
     network = resolve_instance_network_context(instance_id)
     public_ip = validate_public_ip(
         str(network.public_ip).split("/", 1)[0], "agent public IP"
+    )
+    private_ip = validate_private_ipv4(
+        str(network.private_ip).split("/", 1)[0], "agent private IP"
     )
     saved_ip = str(record.get("public_ip") or "").split("/", 1)[0]
     if saved_ip and saved_ip != public_ip:
@@ -312,7 +328,7 @@ def _agent_relay_context(
             key_path=key_path,
         )
     )
-    return instance_id, public_ip, ssh, auth_user, auth_password
+    return instance_id, public_ip, private_ip, ssh, auth_user, auth_password
 
 
 def _agent_certificate_sha256(public_ip: str) -> str:
@@ -538,10 +554,11 @@ def launch_cmd(
         )
     name = ""
     instance_id = ""
+    node_instance_id = ""
     ssh: SSHClient | None = None
     artifact_storage: dict[str, str] | None = None
     relay_installed = False
-    created_ingress_specs: list[tuple[int, str, str, str]] = []
+    created_ingress_specs: list[tuple[str, int, str, str, str]] = []
     try:
         run_id = validate_run_id(run_id)
         image = validate_image(image)
@@ -563,9 +580,14 @@ def launch_cmd(
                 raise LeIsaacConfigError(
                     "agent-relay requires --agent-project and --agent-name"
                 )
-            instance_id, media_host, ssh, auth_user, auth_password = _agent_relay_context(
-                agent_project, agent_name
-            )
+            (
+                instance_id,
+                media_host,
+                agent_private_ip,
+                ssh,
+                auth_user,
+                auth_password,
+            ) = _agent_relay_context(agent_project, agent_name)
             artifact_storage = _agent_artifact_storage(agent_project, agent_name)
             service = relay_service_manifest(
                 run_id=run_id,
@@ -585,7 +607,7 @@ def launch_cmd(
                 )
                 if ingress.changed:
                     created_ingress_specs.append(
-                        (MEDIA_PORT, source, _RELAY_TOOL, "UDP")
+                        (instance_id, MEDIA_PORT, source, _RELAY_TOOL, "UDP")
                     )
             relay_installed = True
             _install_agent_relay(
@@ -631,13 +653,49 @@ def launch_cmd(
         _apply(context, namespace, [deployment])
         _wait_ready(context, namespace, name)
         if transport == Transport.agent_relay and ssh is not None:
+            node_instance_id, node_internal_ip = _deployment_node_context(
+                context, namespace, name
+            )
+            private_media_source = validate_private_source_range(
+                f"{agent_private_ip}/32", "agent private media source"
+            )
+            private_ingress = ensure_ingress(
+                vm_id=node_instance_id,
+                ports=(MEDIA_PORT,),
+                source=private_media_source,
+                tool=_PRIVATE_MEDIA_TOOL,
+                protocol="UDP",
+            )
+            if private_ingress.changed:
+                created_ingress_specs.append(
+                    (
+                        node_instance_id,
+                        MEDIA_PORT,
+                        private_media_source,
+                        _PRIVATE_MEDIA_TOOL,
+                        "UDP",
+                    )
+                )
+            _apply(
+                context,
+                namespace,
+                [
+                    relay_service_manifest(
+                        run_id=run_id,
+                        namespace=namespace,
+                        agent_project=agent_project,
+                        agent_name=agent_name,
+                        source_ranges=source_ranges,
+                        private_media_node=node_instance_id,
+                        private_media_source=private_media_source,
+                    )
+                ],
+            )
             _install_agent_relay(
                 ssh,
                 run_id=run_id,
                 session_nonce=nonce,
-                media_target_host=_deployment_node_internal_ip(
-                    context, namespace, name
-                ),
+                media_target_host=node_internal_ip,
                 media_target_port=MEDIA_PORT,
             )
         health = _relay_status(ssh) if ssh is not None else _status(signal_host)
@@ -671,10 +729,10 @@ def launch_cmd(
                 _remove_agent_relay(ssh, run_id=run_id)
             except Exception as cleanup_exc:  # noqa: BLE001 - preserve primary failure
                 cleanup_errors.append(f"relay cleanup: {cleanup_exc}")
-        for port, source, tool, protocol in created_ingress_specs:
+        for target_instance, port, source, tool, protocol in created_ingress_specs:
             try:
                 remove_exact_npa_ingress_for_instance(
-                    instance_id,
+                    target_instance,
                     ports=(port,),
                     source=source,
                     tool=tool,
@@ -773,9 +831,29 @@ def destroy_cmd(
             sources = validate_source_ranges(
                 str(annotations.get("npa.nebius.com/source-ranges") or "").split(",")
             )
-            instance_id, _public_ip, ssh, _auth_user, _auth_password = (
-                _agent_relay_context(project, agent_name)
+            private_node = str(
+                annotations.get("npa.nebius.com/private-media-node") or ""
             )
+            private_source = str(
+                annotations.get("npa.nebius.com/private-media-source") or ""
+            )
+            if bool(private_node) != bool(private_source):
+                raise LeIsaacConfigError(
+                    "private media cleanup metadata is incomplete"
+                )
+            if private_node:
+                private_node = validate_run_id(private_node)
+                private_source = validate_private_source_range(
+                    private_source, "private media source"
+                )
+            (
+                instance_id,
+                _public_ip,
+                _private_ip,
+                ssh,
+                _auth_user,
+                _auth_password,
+            ) = _agent_relay_context(project, agent_name)
             _remove_agent_relay(ssh, run_id=run_id)
             for source in sources:
                 remove_exact_npa_ingress_for_instance(
@@ -783,6 +861,14 @@ def destroy_cmd(
                     ports=(MEDIA_PORT,),
                     source=source,
                     tool=_RELAY_TOOL,
+                    protocol="UDP",
+                )
+            if private_node:
+                remove_exact_npa_ingress_for_instance(
+                    private_node,
+                    ports=(MEDIA_PORT,),
+                    source=private_source,
+                    tool=_PRIVATE_MEDIA_TOOL,
                     protocol="UDP",
                 )
         except Exception as exc:  # noqa: BLE001 - CLI cleanup boundary

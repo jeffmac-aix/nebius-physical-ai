@@ -59,6 +59,7 @@ class InstanceNetworkContext:
     project_id: str
     public_ip: str
     security_group_ids: tuple[str, ...]
+    private_ip: str = ""
 
     @property
     def security_group_id(self) -> str:
@@ -325,12 +326,13 @@ def ensure_ingress(
 
 
 def resolve_instance_network_context(instance_id: str) -> InstanceNetworkContext:
-    """Resolve project, public IP, and attached security groups for an instance."""
+    """Resolve project, public/private IPs, and attached security groups for an instance."""
     instance = _get_instance(instance_id)
     metadata = _metadata(instance)
     resolved_id = metadata.get("id", instance_id)
     project_id = metadata.get("parent_id", "")
     public_ip = _instance_public_ip(instance)
+    private_ip = _instance_private_ip(instance)
     security_group_ids = _instance_security_group_ids(instance)
 
     if not project_id:
@@ -345,6 +347,7 @@ def resolve_instance_network_context(instance_id: str) -> InstanceNetworkContext
         project_id=project_id,
         public_ip=public_ip,
         security_group_ids=security_group_ids,
+        private_ip=private_ip,
     )
 
 
@@ -562,6 +565,14 @@ def _instance_security_group_ids(instance: dict[str, Any]) -> tuple[str, ...]:
 def _instance_public_ip(instance: dict[str, Any]) -> str:
     for iface in instance.get("status", {}).get("network_interfaces", []) or []:
         address = iface.get("public_ip_address", {}).get("address", "")
+        if address:
+            return address
+    return ""
+
+
+def _instance_private_ip(instance: dict[str, Any]) -> str:
+    for iface in instance.get("status", {}).get("network_interfaces", []) or []:
+        address = iface.get("ip_address", {}).get("address", "")
         if address:
             return address
     return ""
