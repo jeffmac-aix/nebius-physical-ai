@@ -30,6 +30,7 @@ LEISAAC_SERVICE_PORT = 8080
 LEISAAC_RELAY_SERVICE_PORT = 48080
 LEISAAC_TURN_PORT = 3478
 LEISAAC_TURN_RELAY_PORT = 47999
+LEISAAC_TURN_RELAY_MAX_PORT = 48015
 LEISAAC_TRANSPORT_LOAD_BALANCER = "public-load-balancer"
 LEISAAC_TRANSPORT_AGENT_RELAY = "agent-relay"
 LEISAAC_TASK = "LeIsaac-SO101-PickOrange-v0"
@@ -229,6 +230,7 @@ def normalize_manifest(
     if transport == LEISAAC_TRANSPORT_AGENT_RELAY and (
         _integer(data.get("turn_port")) != LEISAAC_TURN_PORT
         or _integer(data.get("turn_relay_port")) != LEISAAC_TURN_RELAY_PORT
+        or _integer(data.get("turn_relay_max_port")) != LEISAAC_TURN_RELAY_MAX_PORT
     ):
         return None, "LeIsaac session has an unsupported TURN contract"
     service_url = _service_url(data.get("service_url"), signal_host, transport)
@@ -267,6 +269,7 @@ def normalize_manifest(
         "media_port": LEISAAC_MEDIA_PORT,
         "turn_port": _integer(data.get("turn_port")) or 0,
         "turn_relay_port": _integer(data.get("turn_relay_port")) or 0,
+        "turn_relay_max_port": _integer(data.get("turn_relay_max_port")) or 0,
         "service_url": service_url,
         "session_nonce": nonce.lower(),
         "expires_at": (

@@ -19,6 +19,7 @@ from npa.workbench.leisaac import (
     SIGNAL_PORT,
     TURN_PORT,
     TURN_RELAY_PORT,
+    TURN_RELAY_MAX_PORT,
     TRANSPORT_AGENT_RELAY,
     LeIsaacConfigError,
     deployment_manifest,
@@ -138,6 +139,7 @@ def test_agent_relay_client_is_secret_mounted_as_non_gpu_sidecar() -> None:
     assert secret["stringData"]["config.json"]
     assert "listening-port=3478" in secret["stringData"]["turnserver.conf"]
     assert "min-port=47999" in secret["stringData"]["turnserver.conf"]
+    assert "max-port=48015" in secret["stringData"]["turnserver.conf"]
     assert NONCE not in secret["stringData"]["turnserver.conf"]
     deployment = deployment_manifest(
         run_id="live-relay",
@@ -189,6 +191,7 @@ def test_agent_relay_manifest_keeps_tcp_private_and_media_on_agent_public_ip() -
     assert manifest["media_server"] == "10.96.0.5"
     assert manifest["turn_port"] == TURN_PORT
     assert manifest["turn_relay_port"] == TURN_RELAY_PORT
+    assert manifest["turn_relay_max_port"] == TURN_RELAY_MAX_PORT
 
 
 def test_agent_relay_rejects_non_loopback_signal_or_missing_agent_identity() -> None:

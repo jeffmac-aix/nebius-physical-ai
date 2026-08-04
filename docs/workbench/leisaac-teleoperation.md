@@ -38,9 +38,11 @@ certificate SHA-256, and authenticates again with a random session nonce. The
 relay binds status to `127.0.0.1:48080`, signaling to `127.0.0.1:49100`, and
 its raw backhaul socket to `127.0.0.1:48081`. Status, signaling, and public
 UDP `3478` TURN control datagrams use the authenticated WSS backhaul. The
-coturn allocation's fixed UDP `47999` relay and Isaac Sim's UDP `47998`
+coturn allocation's private UDP `47999-48015` relay range and Isaac Sim's
+UDP `47998`
 media peer communicate directly inside the shared pod network namespace.
-Only explicit operator CIDRs can reach public UDP `3478`; UDP `47999`, the
+Only explicit operator CIDRs can reach public UDP `3478`; UDP
+`47999-48015`, the
 GPU pod, and the GPU node remain private. The UI forces
 `iceTransportPolicy=relay` for that session. TURN long-term authentication,
 a one-user/one-allocation quota, and the exact security-group rule prevent the

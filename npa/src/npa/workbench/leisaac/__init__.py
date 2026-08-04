@@ -21,6 +21,7 @@ SIGNAL_PORT = 49100
 MEDIA_PORT = 47998
 TURN_PORT = 3478
 TURN_RELAY_PORT = 47999
+TURN_RELAY_MAX_PORT = 48015
 TURN_IMAGE = (
     "docker.io/coturn/coturn@"
     "sha256:747ffd6c11fffad8c9c344a116d45f1365ee69a3e3af6475ce5c49e1024848f5"
@@ -309,7 +310,7 @@ def relay_client_secret_manifest(
         raise LeIsaacConfigError("agent basic-auth credential is invalid")
     turn_config = f"""listening-port={TURN_PORT}
 min-port={TURN_RELAY_PORT}
-max-port={TURN_RELAY_PORT}
+max-port={TURN_RELAY_MAX_PORT}
 realm=npa-leisaac
 user={run_id}:{turn_credential(session_nonce)}
 fingerprint
@@ -634,6 +635,7 @@ def session_manifest(
         "media_port": MEDIA_PORT,
         "turn_port": TURN_PORT,
         "turn_relay_port": TURN_RELAY_PORT,
+        "turn_relay_max_port": TURN_RELAY_MAX_PORT,
         "service_url": (
             f"http://127.0.0.1:{RELAY_SERVICE_PORT}"
             if transport == TRANSPORT_AGENT_RELAY

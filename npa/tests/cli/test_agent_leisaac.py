@@ -20,6 +20,7 @@ from npa.agent_backend.leisaac import (
     LEISAAC_TASK,
     LEISAAC_TURN_PORT,
     LEISAAC_TURN_RELAY_PORT,
+    LEISAAC_TURN_RELAY_MAX_PORT,
     load_manifest_artifact,
     normalize_manifest,
     selected_run_id,
@@ -44,6 +45,7 @@ def _manifest(**overrides):
         "media_port": LEISAAC_MEDIA_PORT,
         "turn_port": LEISAAC_TURN_PORT,
         "turn_relay_port": LEISAAC_TURN_RELAY_PORT,
+        "turn_relay_max_port": LEISAAC_TURN_RELAY_MAX_PORT,
         "service_url": "http://8.8.8.8:8080",
         "session_nonce": "a" * 64,
         "created_at": now.isoformat(),
@@ -173,6 +175,7 @@ def test_agent_relay_manifest_accepts_only_fixed_loopback_tcp_contract() -> None
         {"service_url": "http://169.254.169.254:48080"},
         {"turn_port": 80},
         {"turn_relay_port": 65535},
+        {"turn_relay_max_port": 65535},
     ):
         relay_values = {
             "transport": "agent-relay",
