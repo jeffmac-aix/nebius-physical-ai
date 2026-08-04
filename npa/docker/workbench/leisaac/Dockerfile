@@ -33,8 +33,8 @@ RUN apt-get update \
     && git clone --filter=blob:none --no-checkout https://github.com/LightwheelAI/leisaac.git /opt/leisaac \
     && git -C /opt/leisaac checkout "${LEISAAC_COMMIT}" \
     && test "$(git -C /opt/leisaac rev-parse HEAD)" = "${LEISAAC_COMMIT}" \
-    && git -C /opt/leisaac apply --check /tmp/leisaac-upstream-observability.patch \
-    && git -C /opt/leisaac apply /tmp/leisaac-upstream-observability.patch \
+    && git -C /opt/leisaac apply --check --unidiff-zero /tmp/leisaac-upstream-observability.patch \
+    && git -C /opt/leisaac apply --unidiff-zero /tmp/leisaac-upstream-observability.patch \
     && sed -i '/"feetech-servo-sdk",/d' /opt/leisaac/source/leisaac/pyproject.toml \
     && ! grep -q 'feetech-servo-sdk' /opt/leisaac/source/leisaac/pyproject.toml \
     && /opt/npa/sim/venv/bin/python -m pip install --no-cache-dir \

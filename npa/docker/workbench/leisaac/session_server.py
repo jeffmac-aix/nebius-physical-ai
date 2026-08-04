@@ -53,7 +53,7 @@ CLIENT_SOURCE_JS_SHA256 = (
 )
 CLIENT_JS_SHA256 = "e9ac6563db79d3aea8afe94c4f60e50571abc01e3470d9bafb4e2f8b54cbd2a5"
 UPSTREAM_OBSERVABILITY_PATCH_SHA256 = (
-    "14dbbdd616d33bcc63d8e6476cb37e760dd0ed6db1dae4c4f87613b6847c2d9f"
+    "dc6cdd099a1a1e0c6bb59477b3f4a4aaa9592bc264606c2133da915b0bc11785"
 )
 CLIENT_WSS_PATCH_OLD = (
     b"M=Yc(B)?D.AppLevelProtocol.HTTP:D.AppLevelProtocol.HTTPS;"
@@ -275,9 +275,9 @@ def run_simulation() -> None:
             f"--task={TASK}",
             f"--teleop_device={TELEOP_DEVICE}",
             "--num_envs=1",
-            # One interactive environment does not benefit from GPU PhysX. CPU
-            # physics avoids the Isaac camera/DirectGpu interoperability fault
-            # on sm_120 while RTX rendering and WebRTC remain on the RT GPU.
+            # Isaac Sim 5.1 does not ship sm_120 PhysX kernels. Keep physics on
+            # CPU for this single interactive environment; RTX rendering and
+            # WebRTC encoding still run on the selected RT-core GPU.
             "--device=cpu",
             "--enable_cameras",
             "--kit_args="
@@ -296,6 +296,7 @@ def run_simulation() -> None:
         ]
         environment = os.environ.copy()
         environment["LEISAAC_ASSETS_ROOT"] = str(ASSETS_ROOT)
+        environment["NPA_LEISAAC_BROWSER_TELEOP"] = "1"
         environment["NPA_LEISAAC_READY_PATH"] = str(READY_PATH)
         environment["NPA_LEISAAC_INPUT_COUNTER"] = str(INPUT_COUNTER_PATH)
         READY_PATH.unlink(missing_ok=True)

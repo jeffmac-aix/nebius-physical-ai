@@ -1,15 +1,35 @@
+diff --git a/scripts/environments/teleoperation/teleop_se3_agent.py b/scripts/environments/teleoperation/teleop_se3_agent.py
+index a467482..652d435 100644
+--- a/scripts/environments/teleoperation/teleop_se3_agent.py
++++ b/scripts/environments/teleoperation/teleop_se3_agent.py
+@@ -159,3 +159,7 @@ def main():  # noqa: C901
+     env_cfg = parse_env_cfg(args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs)
+     env_cfg.use_teleop_device(args_cli.teleop_device)
++    if os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") == "1":
++        # WebRTC renders the viewport; teleoperation does not consume policy images.
++        env_cfg.observations.policy.wrist = None
++        env_cfg.observations.policy.front = None
+     env_cfg.seed = args_cli.seed if args_cli.seed is not None else int(time.time())
+@@ -312,4 +316,8 @@ def main():  # noqa: C901
+     if hasattr(env, "initialize"):
+         env.initialize()
+     env.reset()
+     teleop_interface.reset()
++    ready_path = os.environ.get("NPA_LEISAAC_READY_PATH", "")
++    if ready_path:
++        with open(ready_path, "w", encoding="utf-8") as ready_file:
++            ready_file.write("ready\n")
 diff --git a/source/leisaac/leisaac/devices/keyboard/so101_keyboard.py b/source/leisaac/leisaac/devices/keyboard/so101_keyboard.py
-index 65adff0..e4ea551 100644
+index 1ecc934..cbb093a 100644
 --- a/source/leisaac/leisaac/devices/keyboard/so101_keyboard.py
 +++ b/source/leisaac/leisaac/devices/keyboard/so101_keyboard.py
-@@ -1,3 +1,6 @@
+@@ -1,2 +1,5 @@
 +import os
 +from pathlib import Path
 +
  import carb
  import numpy as np
- 
-@@ -62,6 +65,17 @@ class SO101Keyboard(Device):
+@@ -69,6 +72,17 @@ class SO101Keyboard(Device):
          if event.type == carb.input.KeyboardEventType.KEY_PRESS:
              if event.input.name in self._INPUT_KEY_MAPPING.keys():
                  self._delta_action += self._ACTION_DELTA_MAPPING[self._INPUT_KEY_MAPPING[event.input.name]]
@@ -27,18 +47,3 @@ index 65adff0..e4ea551 100644
          # remove the command when un-pressed
          if event.type == carb.input.KeyboardEventType.KEY_RELEASE:
              if event.input.name in self._INPUT_KEY_MAPPING.keys():
-diff --git a/scripts/environments/teleoperation/teleop_se3_agent.py b/scripts/environments/teleoperation/teleop_se3_agent.py
-index 9d81dba..900e2e5 100644
---- a/scripts/environments/teleoperation/teleop_se3_agent.py
-+++ b/scripts/environments/teleoperation/teleop_se3_agent.py
-@@ -330,6 +330,10 @@ def main():  # noqa: C901
-         env.initialize()
-     env.reset()
-     teleop_interface.reset()
-+    ready_path = os.environ.get("NPA_LEISAAC_READY_PATH", "")
-+    if ready_path:
-+        with open(ready_path, "w", encoding="utf-8") as ready_file:
-+            ready_file.write("ready\n")
- 
-     resume_recorded_demo_count = 0
-     if args_cli.record and args_cli.resume:

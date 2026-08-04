@@ -290,10 +290,11 @@ def test_container_never_bakes_eula_client_or_assets() -> None:
     assert "ROBOT_SHA256" in server and "KITCHEN_SHA256" in server
     assert "safe_extract_zip" in server and "safe_extract_client" in server
     assert '"--device=cpu"' in server
+    assert 'environment["NPA_LEISAAC_BROWSER_TELEOP"] = "1"' in server
     assert "tcp_ready(SIGNAL_PORT) and READY_PATH.is_file()" in server
     assert "NPA_LEISAAC_INPUT_COUNTER" in server
     assert "feetech-servo-sdk" in dockerfile and "-m pip check" in dockerfile
-    assert "git -C /opt/leisaac apply --check" in dockerfile
+    assert "git -C /opt/leisaac apply --check --unidiff-zero" in dockerfile
     assert os.access(ROOT / "npa/docker/workbench/leisaac/build.sh", os.X_OK)
 
 
@@ -310,6 +311,9 @@ def test_observability_patch_is_exact_and_records_real_upstream_input() -> None:
     assert "self._delta_action +=" in source
     assert "NPA_LEISAAC_INPUT_COUNTER" in source
     assert "NPA_LEISAAC_READY_PATH" in source
+    assert "NPA_LEISAAC_BROWSER_TELEOP" in source
+    assert "env_cfg.observations.policy.wrist = None" in source
+    assert "env_cfg.observations.policy.front = None" in source
 
 
 def test_health_reads_upstream_keyboard_counter(tmp_path: Path) -> None:
