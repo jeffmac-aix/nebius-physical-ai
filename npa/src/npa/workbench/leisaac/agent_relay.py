@@ -1,19 +1,21 @@
-"""Minimal TCP/UDP relay for a private LeIsaac Kubernetes NodePort service.
+"""TLS backhaul endpoint for a private LeIsaac Kubernetes session.
 
-This process runs on an NPA agent VM.  Status and WebSocket signaling bind only
-to loopback; WebRTC media binds its fixed public UDP port.  The cloud security
-group remains the source-of-truth allowlist for that UDP socket.
+The GPU pod initiates one authenticated TLS connection to this process on the
+public agent VM.  Browser media arrives on the fixed, source-restricted UDP
+port; status and signaling remain loopback-only for nginx/the agent backend.
 """
 
 from __future__ import annotations
 
 import argparse
-import ipaddress
+import hmac
 import json
-import selectors
+import os
 import signal
 import socket
 import socketserver
+import ssl
+import struct
 import threading
 from pathlib import Path
 from typing import Any
@@ -21,99 +23,200 @@ from typing import Any
 STATUS_LISTEN = ("127.0.0.1", 48080)
 SIGNAL_LISTEN = ("127.0.0.1", 49100)
 MEDIA_LISTEN = ("0.0.0.0", 47998)
+BACKHAUL_LISTEN = ("0.0.0.0", 48081)
+HELLO, OPEN, DATA, CLOSE, UDP = 1, 2, 3, 4, 5
+HEADER = struct.Struct("!BII")
+MAX_FRAME = 4 * 1024 * 1024
 
 
 def load_config(path: str | Path) -> dict[str, Any]:
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     if not isinstance(data, dict):
         raise ValueError("relay config must be an object")
-    target = ipaddress.ip_address(str(data.get("target_host") or ""))
-    if target.is_global or target.is_loopback or target.is_unspecified:
-        raise ValueError("relay target must be a private VPC address")
-    result: dict[str, Any] = {"target_host": target.compressed}
-    for name in ("status_port", "signal_port", "media_port"):
-        port = int(data.get(name) or 0)
-        if port < 30000 or port > 32767:
-            raise ValueError(f"{name} must be a Kubernetes NodePort")
-        result[name] = port
-    return result
+    nonce = str(data.get("session_nonce") or "")
+    if len(nonce) != 64 or any(character not in "0123456789abcdef" for character in nonce):
+        raise ValueError("relay session nonce must be 64 lowercase hexadecimal characters")
+    return {"session_nonce": nonce}
 
 
-def _copy(source: socket.socket, destination: socket.socket) -> None:
-    try:
-        while True:
-            chunk = source.recv(65536)
-            if not chunk:
-                break
-            destination.sendall(chunk)
-    except OSError:
-        pass
-    finally:
+def _receive_exact(connection: socket.socket, size: int) -> bytes:
+    chunks = bytearray()
+    while len(chunks) < size:
+        chunk = connection.recv(size - len(chunks))
+        if not chunk:
+            raise EOFError("backhaul closed")
+        chunks.extend(chunk)
+    return bytes(chunks)
+
+
+def _receive_frame(connection: socket.socket) -> tuple[int, int, bytes]:
+    kind, stream_id, size = HEADER.unpack(_receive_exact(connection, HEADER.size))
+    if size > MAX_FRAME:
+        raise ValueError("backhaul frame is too large")
+    return kind, stream_id, _receive_exact(connection, size)
+
+
+class Backhaul:
+    def __init__(self, nonce: str):
+        self.nonce = nonce.encode("ascii")
+        self.condition = threading.Condition()
+        self.connection: ssl.SSLSocket | None = None
+        self.send_lock = threading.Lock()
+        self.stream_lock = threading.Lock()
+        self.streams: dict[int, socket.socket] = {}
+        self.next_stream = 1
+        self.public_udp: socket.socket | None = None
+        self.browser_address: tuple[str, int] | None = None
+
+    def attach(self, connection: ssl.SSLSocket) -> bool:
+        kind, stream_id, payload = _receive_frame(connection)
+        if kind != HELLO or stream_id != 0 or not hmac.compare_digest(payload, self.nonce):
+            return False
+        with self.condition:
+            if self.connection is not None:
+                return False
+            self.connection = connection
+            self.condition.notify_all()
+        return True
+
+    def detach(self, connection: ssl.SSLSocket) -> None:
+        with self.condition:
+            if self.connection is connection:
+                self.connection = None
+        with self.stream_lock:
+            streams = list(self.streams.values())
+            self.streams.clear()
+        for stream in streams:
+            try:
+                stream.close()
+            except OSError:
+                pass
+
+    def send(self, kind: int, stream_id: int, payload: bytes = b"") -> None:
+        with self.condition:
+            if self.connection is None:
+                self.condition.wait_for(lambda: self.connection is not None, timeout=10)
+            connection = self.connection
+        if connection is None:
+            raise ConnectionError("LeIsaac pod backhaul is unavailable")
+        frame = HEADER.pack(kind, stream_id, len(payload)) + payload
+        with self.send_lock:
+            connection.sendall(frame)
+
+    def open_stream(self, client: socket.socket, port: int) -> None:
+        with self.stream_lock:
+            stream_id = self.next_stream
+            self.next_stream += 1
+            self.streams[stream_id] = client
         try:
-            destination.shutdown(socket.SHUT_WR)
-        except OSError:
-            pass
+            self.send(OPEN, stream_id, struct.pack("!H", port))
+            while True:
+                payload = client.recv(65536)
+                if not payload:
+                    break
+                self.send(DATA, stream_id, payload)
+        finally:
+            with self.stream_lock:
+                self.streams.pop(stream_id, None)
+            try:
+                self.send(CLOSE, stream_id)
+            except (ConnectionError, OSError):
+                pass
+
+    def handle(self, kind: int, stream_id: int, payload: bytes) -> None:
+        if kind == DATA:
+            with self.stream_lock:
+                stream = self.streams.get(stream_id)
+            if stream is not None:
+                stream.sendall(payload)
+        elif kind == CLOSE:
+            with self.stream_lock:
+                stream = self.streams.pop(stream_id, None)
+            if stream is not None:
+                stream.close()
+        elif kind == UDP and self.public_udp is not None and self.browser_address is not None:
+            self.public_udp.sendto(payload, self.browser_address)
 
 
 class _TCPHandler(socketserver.BaseRequestHandler):
     def handle(self) -> None:
-        upstream = socket.create_connection(self.server.target, timeout=10)  # type: ignore[attr-defined]
-        upstream.settimeout(None)
-        self.request.settimeout(None)
-        reverse = threading.Thread(
-            target=_copy,
-            args=(upstream, self.request),
-            daemon=True,
-        )
-        reverse.start()
-        _copy(self.request, upstream)
-        reverse.join(timeout=2)
-        upstream.close()
+        self.server.backhaul.open_stream(self.request, self.server.target_port)  # type: ignore[attr-defined]
 
 
 class _TCPServer(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
     daemon_threads = True
 
-    def __init__(self, listen: tuple[str, int], target: tuple[str, int]):
-        self.target = target
+    def __init__(self, listen: tuple[str, int], backhaul: Backhaul, target_port: int):
+        self.backhaul = backhaul
+        self.target_port = target_port
         super().__init__(listen, _TCPHandler)
 
 
-def relay_udp(
-    target: tuple[str, int],
+def serve_backhaul(
+    backhaul: Backhaul,
     *,
     stop: threading.Event,
-    listen: tuple[str, int] = MEDIA_LISTEN,
+    certificate: str,
+    private_key: str,
 ) -> None:
-    public = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    public.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    public.bind(listen)
-    upstream = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    upstream.connect(target)
-    selector = selectors.DefaultSelector()
-    selector.register(public, selectors.EVENT_READ, "public")
-    selector.register(upstream, selectors.EVENT_READ, "upstream")
-    client: tuple[str, int] | None = None
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    context.load_cert_chain(certificate, private_key)
+    listener = socket.socket()
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(BACKHAUL_LISTEN)
+    listener.listen(2)
+    listener.settimeout(0.5)
     try:
         while not stop.is_set():
-            for key, _events in selector.select(timeout=0.5):
-                if key.data == "public":
-                    payload, client = public.recvfrom(65536)
-                    upstream.send(payload)
-                elif client is not None:
-                    payload = upstream.recv(65536)
-                    public.sendto(payload, client)
+            try:
+                raw, _address = listener.accept()
+            except socket.timeout:
+                continue
+            try:
+                connection = context.wrap_socket(raw, server_side=True)
+                if not backhaul.attach(connection):
+                    connection.close()
+                    continue
+                try:
+                    while not stop.is_set():
+                        backhaul.handle(*_receive_frame(connection))
+                finally:
+                    backhaul.detach(connection)
+                    connection.close()
+            except (EOFError, OSError, ssl.SSLError, ValueError):
+                raw.close()
     finally:
-        selector.close()
-        upstream.close()
+        listener.close()
+
+
+def relay_udp(backhaul: Backhaul, *, stop: threading.Event) -> None:
+    public = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    public.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    public.bind(MEDIA_LISTEN)
+    public.settimeout(0.5)
+    backhaul.public_udp = public
+    try:
+        while not stop.is_set():
+            try:
+                payload, address = public.recvfrom(65536)
+            except socket.timeout:
+                continue
+            backhaul.browser_address = address
+            try:
+                backhaul.send(UDP, 0, payload)
+            except (ConnectionError, OSError):
+                continue
+    finally:
+        backhaul.public_udp = None
         public.close()
 
 
-def serve(config: dict[str, Any]) -> None:
-    host = str(config["target_host"])
-    status = _TCPServer(STATUS_LISTEN, (host, int(config["status_port"])))
-    signal_server = _TCPServer(SIGNAL_LISTEN, (host, int(config["signal_port"])))
+def serve(config: dict[str, Any], *, certificate: str, private_key: str) -> None:
+    backhaul = Backhaul(str(config["session_nonce"]))
+    status = _TCPServer(STATUS_LISTEN, backhaul, 8080)
+    signaling = _TCPServer(SIGNAL_LISTEN, backhaul, 49100)
     stop = threading.Event()
 
     def request_stop(_signum: int, _frame: object) -> None:
@@ -123,27 +226,41 @@ def serve(config: dict[str, Any]) -> None:
     signal.signal(signal.SIGINT, request_stop)
     threads = [
         threading.Thread(target=status.serve_forever, daemon=True),
-        threading.Thread(target=signal_server.serve_forever, daemon=True),
+        threading.Thread(target=signaling.serve_forever, daemon=True),
+        threading.Thread(
+            target=serve_backhaul,
+            kwargs={
+                "backhaul": backhaul,
+                "stop": stop,
+                "certificate": certificate,
+                "private_key": private_key,
+            },
+            daemon=True,
+        ),
     ]
     for thread in threads:
         thread.start()
     try:
-        relay_udp(
-            (host, int(config["media_port"])),
-            stop=stop,
-        )
+        relay_udp(backhaul, stop=stop)
     finally:
         status.shutdown()
-        signal_server.shutdown()
+        signaling.shutdown()
         status.server_close()
-        signal_server.server_close()
+        signaling.server_close()
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
     args = parser.parse_args()
-    serve(load_config(args.config))
+    credentials = os.environ.get("CREDENTIALS_DIRECTORY", "")
+    if not credentials:
+        raise RuntimeError("systemd credential directory is required")
+    serve(
+        load_config(args.config),
+        certificate=str(Path(credentials) / "backhaul.crt"),
+        private_key=str(Path(credentials) / "backhaul.key"),
+    )
     return 0
 
 

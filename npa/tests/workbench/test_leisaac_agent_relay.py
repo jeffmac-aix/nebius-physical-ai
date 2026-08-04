@@ -7,101 +7,92 @@ from pathlib import Path
 
 import pytest
 
-from npa.workbench.leisaac.agent_relay import _TCPServer, load_config, relay_udp
+from npa.workbench.leisaac.agent_relay import (
+    DATA,
+    HELLO,
+    OPEN,
+    Backhaul,
+    _receive_frame,
+    load_config as load_server_config,
+)
+from npa.workbench.leisaac.reverse_client import load_config as load_client_config
 
 
-def test_relay_config_requires_private_target_and_nodeports(tmp_path: Path) -> None:
-    path = tmp_path / "relay.json"
-    path.write_text(
+NONCE = "a" * 64
+
+
+def test_relay_configs_pin_nonce_public_agent_and_certificate(tmp_path: Path) -> None:
+    server_path = tmp_path / "server.json"
+    server_path.write_text(json.dumps({"session_nonce": NONCE}), encoding="utf-8")
+    assert load_server_config(server_path) == {"session_nonce": NONCE}
+
+    client_path = tmp_path / "client.json"
+    client_path.write_text(
         json.dumps(
             {
-                "target_host": "10.96.0.22",
-                "status_port": 30001,
-                "signal_port": 30002,
-                "media_port": 30003,
+                "agent_host": "8.8.8.8",
+                "session_nonce": NONCE,
+                "certificate_sha256": "b" * 64,
             }
         ),
         encoding="utf-8",
     )
-    assert load_config(path) == {
-        "target_host": "10.96.0.22",
-        "status_port": 30001,
-        "signal_port": 30002,
-        "media_port": 30003,
+    assert load_client_config(client_path) == {
+        "agent_host": "8.8.8.8",
+        "session_nonce": NONCE,
+        "certificate_sha256": "b" * 64,
     }
 
-    for host, port in (("8.8.8.8", 30001), ("127.0.0.1", 30001), ("10.0.0.1", 8080)):
-        path.write_text(
-            json.dumps(
-                {
-                    "target_host": host,
-                    "status_port": port,
-                    "signal_port": 30002,
-                    "media_port": 30003,
-                }
-            ),
-            encoding="utf-8",
-        )
+    for override in (
+        {"agent_host": "127.0.0.1"},
+        {"session_nonce": "bad"},
+        {"certificate_sha256": "bad"},
+    ):
+        data = json.loads(client_path.read_text(encoding="utf-8"))
+        data.update(override)
+        client_path.write_text(json.dumps(data), encoding="utf-8")
         with pytest.raises(ValueError):
-            load_config(path)
+            load_client_config(client_path)
 
 
-def test_tcp_relay_forwards_bidirectionally() -> None:
-    upstream = socket.socket()
-    upstream.bind(("127.0.0.1", 0))
-    upstream.listen()
-    upstream_host = upstream.getsockname()
+def test_backhaul_rejects_wrong_nonce_and_multiplexes_loopback_tcp() -> None:
+    backhaul = Backhaul(NONCE)
+    server_connection, pod_connection = socket.socketpair()
 
-    def echo() -> None:
-        connection, _address = upstream.accept()
-        with connection:
-            connection.sendall(connection.recv(64).upper())
+    def pod() -> None:
+        pod_connection.sendall(
+            __import__("struct").pack("!BII", HELLO, 0, len(NONCE))
+            + NONCE.encode("ascii")
+        )
+        kind, stream_id, payload = _receive_frame(pod_connection)
+        assert kind == OPEN
+        assert payload == __import__("struct").pack("!H", 8080)
+        pod_connection.sendall(
+            __import__("struct").pack("!BII", DATA, stream_id, 5) + b"READY"
+        )
 
-    echo_thread = threading.Thread(target=echo, daemon=True)
-    echo_thread.start()
-    relay = _TCPServer(("127.0.0.1", 0), upstream_host)
-    relay_thread = threading.Thread(target=relay.serve_forever, daemon=True)
-    relay_thread.start()
-    try:
-        with socket.create_connection(relay.server_address) as client:
-            client.sendall(b"leisaac")
-            client.shutdown(socket.SHUT_WR)
-            assert client.recv(64) == b"LEISAAC"
-    finally:
-        relay.shutdown()
-        relay.server_close()
-        upstream.close()
-
-
-def test_udp_relay_forwards_return_media() -> None:
-    upstream = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    upstream.bind(("127.0.0.1", 0))
-    upstream_address = upstream.getsockname()
-    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    probe.bind(("127.0.0.1", 0))
-    relay_address = probe.getsockname()
-    probe.close()
-    stop = threading.Event()
-
-    def echo() -> None:
-        payload, address = upstream.recvfrom(64)
-        upstream.sendto(payload.upper(), address)
-
-    threading.Thread(target=echo, daemon=True).start()
-    thread = threading.Thread(
-        target=relay_udp,
-        args=(upstream_address,),
-        kwargs={"stop": stop, "listen": relay_address},
+    threading.Thread(target=pod, daemon=True).start()
+    assert backhaul.attach(server_connection) is True
+    local_server, local_client = socket.socketpair()
+    threading.Thread(
+        target=backhaul.open_stream,
+        args=(local_server, 8080),
         daemon=True,
+    ).start()
+    kind, stream_id, payload = _receive_frame(server_connection)
+    backhaul.handle(kind, stream_id, payload)
+    assert local_client.recv(5) == b"READY"
+    local_client.close()
+    pod_connection.close()
+    server_connection.close()
+
+
+def test_backhaul_rejects_unauthenticated_hello() -> None:
+    backhaul = Backhaul(NONCE)
+    server_connection, peer = socket.socketpair()
+    peer.sendall(
+        __import__("struct").pack("!BII", HELLO, 0, 64) + ("b" * 64).encode("ascii")
     )
-    thread.start()
-    client = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    client.settimeout(2)
-    try:
-        client.sendto(b"media", relay_address)
-        assert client.recv(64) == b"MEDIA"
-    finally:
-        stop.set()
-        thread.join(timeout=2)
-        client.close()
-        upstream.close()
+    assert backhaul.attach(server_connection) is False
+    peer.close()
+    server_connection.close()

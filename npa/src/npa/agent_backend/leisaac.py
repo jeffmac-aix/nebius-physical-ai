@@ -1,10 +1,11 @@
 """Pure helpers for the agent's capability-gated LeIsaac teleoperation tab.
 
 The live session manifest is an artifact emitted by ``npa workbench leisaac``.
-It is intentionally treated as untrusted input here: endpoints must be public,
-ports are fixed to the Isaac Sim 5.1 WebRTC contract, and no endpoint or service
-credential is ever returned to the browser.  The browser sees only the public
-UDP media endpoint and same-origin, authenticated agent routes.
+It is intentionally treated as untrusted input here: media must be public,
+direct TCP endpoints must be public, relay TCP endpoints must be exact
+loopback addresses, ports are fixed to the Isaac Sim 5.1 WebRTC contract, and
+no credential is returned to the browser. The browser sees only the public UDP
+media endpoint and same-origin, authenticated agent routes.
 """
 
 from __future__ import annotations
@@ -151,7 +152,7 @@ def normalize_manifest(
     )
     media_host = _public_ip(data.get("media_host"))
     if not signal_host or not media_host:
-        return None, "LeIsaac session endpoints must be public IP addresses"
+        return None, "LeIsaac session endpoints violate the fixed network contract"
     if _integer(data.get("signal_port")) != LEISAAC_SIGNAL_PORT:
         return None, "LeIsaac session has an unsupported signaling port"
     if _integer(data.get("media_port")) != LEISAAC_MEDIA_PORT:

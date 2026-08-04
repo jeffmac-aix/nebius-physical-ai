@@ -1,0 +1,175 @@
+"""Private GPU-pod side of the LeIsaac TLS backhaul."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import ipaddress
+import json
+import socket
+import ssl
+import struct
+import threading
+import time
+from pathlib import Path
+from typing import Any
+
+HELLO, OPEN, DATA, CLOSE, UDP = 1, 2, 3, 4, 5
+HEADER = struct.Struct("!BII")
+MAX_FRAME = 4 * 1024 * 1024
+
+
+def load_config(path: str | Path) -> dict[str, Any]:
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    host = ipaddress.ip_address(str(data.get("agent_host") or ""))
+    if not host.is_global:
+        raise ValueError("agent host must be a public IP address")
+    nonce = str(data.get("session_nonce") or "")
+    fingerprint = str(data.get("certificate_sha256") or "").lower()
+    if len(nonce) != 64 or any(character not in "0123456789abcdef" for character in nonce):
+        raise ValueError("session nonce is invalid")
+    if len(fingerprint) != 64 or any(
+        character not in "0123456789abcdef" for character in fingerprint
+    ):
+        raise ValueError("certificate fingerprint is invalid")
+    return {
+        "agent_host": host.compressed,
+        "session_nonce": nonce,
+        "certificate_sha256": fingerprint,
+    }
+
+
+def _receive_exact(connection: socket.socket, size: int) -> bytes:
+    chunks = bytearray()
+    while len(chunks) < size:
+        chunk = connection.recv(size - len(chunks))
+        if not chunk:
+            raise EOFError("backhaul closed")
+        chunks.extend(chunk)
+    return bytes(chunks)
+
+
+def _receive_frame(connection: socket.socket) -> tuple[int, int, bytes]:
+    kind, stream_id, size = HEADER.unpack(_receive_exact(connection, HEADER.size))
+    if size > MAX_FRAME:
+        raise ValueError("backhaul frame is too large")
+    return kind, stream_id, _receive_exact(connection, size)
+
+
+class Client:
+    def __init__(self, config: dict[str, Any]):
+        self.config = config
+        self.connection: ssl.SSLSocket | None = None
+        self.send_lock = threading.Lock()
+        self.stream_lock = threading.Lock()
+        self.streams: dict[int, socket.socket] = {}
+        self.media = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.media.connect(("127.0.0.1", 47998))
+
+    def send(self, kind: int, stream_id: int, payload: bytes = b"") -> None:
+        connection = self.connection
+        if connection is None:
+            raise ConnectionError("backhaul is disconnected")
+        with self.send_lock:
+            connection.sendall(HEADER.pack(kind, stream_id, len(payload)) + payload)
+
+    def read_stream(self, stream_id: int, stream: socket.socket) -> None:
+        try:
+            while True:
+                payload = stream.recv(65536)
+                if not payload:
+                    break
+                self.send(DATA, stream_id, payload)
+        except (ConnectionError, OSError):
+            pass
+        finally:
+            with self.stream_lock:
+                self.streams.pop(stream_id, None)
+            try:
+                self.send(CLOSE, stream_id)
+            except (ConnectionError, OSError):
+                pass
+            stream.close()
+
+    def read_media(self) -> None:
+        while True:
+            try:
+                payload = self.media.recv(65536)
+                self.send(UDP, 0, payload)
+            except (ConnectionError, OSError):
+                time.sleep(0.2)
+
+    def handle(self, kind: int, stream_id: int, payload: bytes) -> None:
+        if kind == OPEN:
+            if len(payload) != 2:
+                raise ValueError("invalid open frame")
+            port = struct.unpack("!H", payload)[0]
+            if port not in (8080, 49100):
+                raise ValueError("invalid LeIsaac target port")
+            stream = socket.create_connection(("127.0.0.1", port), timeout=10)
+            stream.settimeout(None)
+            with self.stream_lock:
+                self.streams[stream_id] = stream
+            threading.Thread(
+                target=self.read_stream,
+                args=(stream_id, stream),
+                daemon=True,
+            ).start()
+        elif kind == DATA:
+            with self.stream_lock:
+                stream = self.streams.get(stream_id)
+            if stream is not None:
+                stream.sendall(payload)
+        elif kind == CLOSE:
+            with self.stream_lock:
+                stream = self.streams.pop(stream_id, None)
+            if stream is not None:
+                stream.close()
+        elif kind == UDP:
+            self.media.send(payload)
+
+    def connect(self) -> ssl.SSLSocket:
+        raw = socket.create_connection((str(self.config["agent_host"]), 48081), timeout=10)
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        connection = context.wrap_socket(raw, server_hostname=str(self.config["agent_host"]))
+        certificate = connection.getpeercert(binary_form=True)
+        if hashlib.sha256(certificate).hexdigest() != self.config["certificate_sha256"]:
+            connection.close()
+            raise ssl.SSLError("agent relay certificate fingerprint mismatch")
+        connection.settimeout(None)
+        return connection
+
+    def run(self) -> None:
+        threading.Thread(target=self.read_media, daemon=True).start()
+        while True:
+            try:
+                self.connection = self.connect()
+                self.send(HELLO, 0, str(self.config["session_nonce"]).encode("ascii"))
+                while True:
+                    self.handle(*_receive_frame(self.connection))
+            except (ConnectionError, EOFError, OSError, ssl.SSLError, ValueError):
+                time.sleep(2)
+            finally:
+                if self.connection is not None:
+                    self.connection.close()
+                self.connection = None
+                with self.stream_lock:
+                    streams = list(self.streams.values())
+                    self.streams.clear()
+                for stream in streams:
+                    stream.close()
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", required=True)
+    args = parser.parse_args()
+    Client(load_config(args.config)).run()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

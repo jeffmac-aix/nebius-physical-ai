@@ -17,6 +17,7 @@ from npa.workbench.leisaac import (
     LeIsaacConfigError,
     deployment_manifest,
     relay_service_manifest,
+    relay_client_secret_manifest,
     service_manifests,
     session_manifest,
 )
@@ -64,16 +65,17 @@ def test_deployment_is_real_rt_core_leisaac_and_operator_eula_runtime_config() -
     assert "/status" == container["readinessProbe"]["httpGet"]["path"]
 
 
-def test_agent_relay_service_is_private_nodeport_with_cleanup_metadata() -> None:
+def test_agent_relay_service_is_private_clusterip_with_cleanup_metadata() -> None:
     service = relay_service_manifest(
         run_id="live-1",
         namespace="leisaac",
         agent_project="rtxpro",
         agent_name="agent",
         source_ranges=["8.8.8.8/32"],
+        backhaul_source_ranges=["1.1.1.1/32"],
     )
 
-    assert service["spec"]["type"] == "NodePort"
+    assert service["spec"]["type"] == "ClusterIP"
     assert "loadBalancerSourceRanges" not in service["spec"]
     assert {item["name"] for item in service["spec"]["ports"]} == {
         "status",
@@ -85,7 +87,34 @@ def test_agent_relay_service_is_private_nodeport_with_cleanup_metadata() -> None
         "npa.nebius.com/agent-project": "rtxpro",
         "npa.nebius.com/agent-name": "agent",
         "npa.nebius.com/source-ranges": "8.8.8.8/32",
+        "npa.nebius.com/backhaul-source-ranges": "1.1.1.1/32",
     }
+
+
+def test_agent_relay_client_is_secret_mounted_as_non_gpu_sidecar() -> None:
+    secret = relay_client_secret_manifest(
+        run_id="live-relay",
+        namespace="leisaac",
+        agent_host="8.8.8.8",
+        session_nonce=NONCE,
+        certificate_sha256="b" * 64,
+        client_source="print('client')\n",
+    )
+    assert secret["kind"] == "Secret"
+    assert secret["stringData"]["config.json"]
+    deployment = deployment_manifest(
+        run_id="live-relay",
+        namespace="leisaac",
+        image=IMAGE,
+        media_host="8.8.8.8",
+        session_nonce=NONCE,
+        relay_client_secret=secret["metadata"]["name"],
+    )
+    pod = deployment["spec"]["template"]["spec"]
+    sidecar = pod["containers"][1]
+    assert sidecar["name"] == "agent-relay-client"
+    assert "nvidia.com/gpu" not in sidecar["resources"]["requests"]
+    assert pod["volumes"][-1]["secret"]["secretName"] == secret["metadata"]["name"]
 
 
 def test_agent_relay_manifest_keeps_tcp_private_and_media_on_agent_public_ip() -> None:
@@ -119,6 +148,7 @@ def test_agent_relay_rejects_non_loopback_signal_or_missing_agent_identity() -> 
             run_id="live-relay",
             namespace="default",
             source_ranges=["8.8.8.8/32"],
+            backhaul_source_ranges=["1.1.1.1/32"],
         )
 
 

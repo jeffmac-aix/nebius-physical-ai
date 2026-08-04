@@ -71,7 +71,7 @@ def test_selected_run_requires_safe_exact_identifier() -> None:
     [
         ({"task": "Isaac-Cartpole-v0"}, "supported task"),
         ({"teleop_device": "so101leader"}, "keyboard"),
-        ({"signal_host": "127.0.0.1"}, "public IP"),
+        ({"signal_host": "127.0.0.1"}, "network contract"),
         ({"service_url": "http://1.1.1.1:8080"}, "service endpoint"),
         ({"signal_port": "not-an-int"}, "signaling port"),
         ({"media_port": 80}, "media port"),

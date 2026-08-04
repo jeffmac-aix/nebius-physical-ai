@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ipaddress
+import json
 import re
 from datetime import datetime, timezone
 from typing import Any
@@ -183,12 +184,14 @@ def relay_service_manifest(
     agent_project: str = "",
     agent_name: str = "",
     source_ranges: list[str] | tuple[str, ...] = (),
+    backhaul_source_ranges: list[str] | tuple[str, ...] = (),
 ) -> dict[str, Any]:
-    """Build one private NodePort service for an agent-relayed session.
+    """Build one private ClusterIP service for an agent-relayed session.
 
     The service has no cloud load balancer or public address.  A separately
     authenticated NPA agent VM reaches these NodePorts over the private VPC and
-    relays only the fixed loopback TCP and source-restricted UDP contracts.
+    maintains only the fixed loopback TCP and source-restricted backhaul/media
+    contracts. The sidecar uses pod-local sockets rather than this Service.
     """
 
     run_id = validate_run_id(run_id)
@@ -205,6 +208,9 @@ def relay_service_manifest(
         "npa.nebius.com/source-ranges": ",".join(
             validate_source_ranges(source_ranges)
         ),
+        "npa.nebius.com/backhaul-source-ranges": ",".join(
+            validate_source_ranges(backhaul_source_ranges)
+        ),
     }
     if not agent_project or not agent_name:
         raise LeIsaacConfigError("agent relay requires an agent project and name")
@@ -218,8 +224,7 @@ def relay_service_manifest(
             "annotations": annotations,
         },
         "spec": {
-            "type": "NodePort",
-            "externalTrafficPolicy": "Cluster",
+            "type": "ClusterIP",
             "selector": {"app": name},
             "ports": [
                 {
@@ -245,6 +250,50 @@ def relay_service_manifest(
     }
 
 
+def relay_client_secret_manifest(
+    *,
+    run_id: str,
+    namespace: str,
+    agent_host: str,
+    session_nonce: str,
+    certificate_sha256: str,
+    client_source: str,
+) -> dict[str, Any]:
+    """Mount the authenticated TLS backhaul client into the GPU pod."""
+
+    name = resource_name(validate_run_id(run_id))
+    agent_host = validate_public_ip(agent_host, "agent host")
+    if not re.fullmatch(r"[a-f0-9]{64}", session_nonce):
+        raise LeIsaacConfigError("session nonce is invalid")
+    if not re.fullmatch(r"[a-f0-9]{64}", certificate_sha256):
+        raise LeIsaacConfigError("relay certificate fingerprint is invalid")
+    return {
+        "apiVersion": "v1",
+        "kind": "Secret",
+        "metadata": {
+            "name": f"{name}-relay-client",
+            "namespace": namespace,
+            "labels": {
+                "app.kubernetes.io/name": "leisaac",
+                "app.kubernetes.io/instance": name,
+                "app.kubernetes.io/managed-by": "npa",
+            },
+        },
+        "type": "Opaque",
+        "stringData": {
+            "reverse_client.py": client_source,
+            "config.json": json.dumps(
+                {
+                    "agent_host": agent_host,
+                    "session_nonce": session_nonce,
+                    "certificate_sha256": certificate_sha256,
+                },
+                sort_keys=True,
+            ),
+        },
+    }
+
+
 def deployment_manifest(
     *,
     run_id: str,
@@ -253,6 +302,7 @@ def deployment_manifest(
     media_host: str,
     session_nonce: str,
     image_pull_secret: str = "npa-registry",
+    relay_client_secret: str = "",
 ) -> dict[str, Any]:
     run_id = validate_run_id(run_id)
     image = validate_image(image)
@@ -344,6 +394,43 @@ def deployment_manifest(
         ],
         "restartPolicy": "Always",
     }
+    if relay_client_secret:
+        pod_spec["containers"].append(
+            {
+                "name": "agent-relay-client",
+                "image": image,
+                "imagePullPolicy": "IfNotPresent",
+                "command": [
+                    "/opt/npa/sim/venv/bin/python",
+                    "/opt/npa-relay/reverse_client.py",
+                    "--config",
+                    "/opt/npa-relay/config.json",
+                ],
+                "resources": {
+                    "requests": {"cpu": "50m", "memory": "64Mi"},
+                    "limits": {"cpu": "500m", "memory": "256Mi"},
+                },
+                "securityContext": {
+                    "allowPrivilegeEscalation": False,
+                    "capabilities": {"drop": ["ALL"]},
+                    "runAsNonRoot": True,
+                    "runAsUser": 1000,
+                    "seccompProfile": {"type": "RuntimeDefault"},
+                },
+                "volumeMounts": [
+                    {"name": "relay-client", "mountPath": "/opt/npa-relay", "readOnly": True}
+                ],
+            }
+        )
+        pod_spec["volumes"].append(
+            {
+                "name": "relay-client",
+                "secret": {
+                    "secretName": relay_client_secret,
+                    "defaultMode": 0o555,
+                },
+            }
+        )
     if image_pull_secret:
         pod_spec["imagePullSecrets"] = [{"name": image_pull_secret}]
     return {

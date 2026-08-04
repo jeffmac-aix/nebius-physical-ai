@@ -6,6 +6,7 @@ import base64
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import shlex
 import subprocess
@@ -33,6 +34,7 @@ from npa.workbench.leisaac import (
     TRANSPORT_AGENT_RELAY,
     TRANSPORT_LOAD_BALANCER,
     deployment_manifest,
+    relay_client_secret_manifest,
     relay_service_manifest,
     resource_name,
     service_manifests,
@@ -63,9 +65,13 @@ class Transport(str, Enum):
 
 
 _RELAY_TOOL = "leisaac-relay"
+_RELAY_BACKHAUL_TOOL = "leisaac-backhaul"
 _RELAY_CONFIG = "/etc/npa/leisaac-relay.json"
 _RELAY_SCRIPT = "/opt/npa-agent/leisaac-agent-relay.py"
 _RELAY_UNIT = "npa-leisaac-relay.service"
+_RELAY_CERT = "/etc/npa/leisaac-relay.crt"
+_RELAY_KEY = "/etc/npa/leisaac-relay.key"
+_RELAY_BACKHAUL_PORT = 48081
 
 
 def _fail(message: str) -> None:
@@ -133,6 +139,7 @@ def _delete_resources(context: str, namespace: str, name: str) -> None:
             f"service/{name}-tcp",
             f"service/{name}-media",
             f"service/{name}-relay",
+            f"secret/{name}-relay-client",
             "--ignore-not-found=true",
         ],
     )
@@ -221,15 +228,12 @@ def _install_agent_relay(
     ssh: SSHClient,
     *,
     run_id: str,
-    target_host: str,
-    ports: dict[str, int],
-) -> None:
+    public_ip: str,
+    session_nonce: str,
+) -> str:
     config = {
         "run_id": run_id,
-        "target_host": target_host,
-        "status_port": ports["status"],
-        "signal_port": ports["signal"],
-        "media_port": ports["media"],
+        "session_nonce": session_nonce,
     }
     unit = """[Unit]
 Description=NPA LeIsaac private-cluster relay
@@ -240,6 +244,8 @@ Wants=network-online.target
 Type=simple
 DynamicUser=yes
 ExecStart=/usr/bin/python3 /opt/npa-agent/leisaac-agent-relay.py --config /etc/npa/leisaac-relay.json
+LoadCredential=backhaul.crt:/etc/npa/leisaac-relay.crt
+LoadCredential=backhaul.key:/etc/npa/leisaac-relay.key
 Restart=on-failure
 RestartSec=2
 NoNewPrivileges=yes
@@ -269,15 +275,26 @@ if sudo systemctl is-active --quiet {_RELAY_UNIT} && [ "$existing" != {run_q} ];
   exit 42
 fi
 sudo install -d -m 0755 /etc/npa /opt/npa-agent
+sudo openssl req -x509 -newkey rsa:2048 -nodes \
+  -subj {shlex.quote('/CN=' + public_ip)} \
+  -keyout {_RELAY_KEY} -out {_RELAY_CERT} >/dev/null 2>&1
 echo {shlex.quote(script_b64)} | base64 -d | sudo tee {_RELAY_SCRIPT} >/dev/null
 echo {shlex.quote(config_b64)} | base64 -d | sudo tee {_RELAY_CONFIG} >/dev/null
 echo {shlex.quote(unit_b64)} | base64 -d | sudo tee /etc/systemd/system/{_RELAY_UNIT} >/dev/null
-sudo chmod 0644 {_RELAY_SCRIPT} {_RELAY_CONFIG} /etc/systemd/system/{_RELAY_UNIT}
+sudo chmod 0600 {_RELAY_KEY}
+sudo chmod 0644 {_RELAY_CERT} {_RELAY_SCRIPT} {_RELAY_CONFIG} /etc/systemd/system/{_RELAY_UNIT}
 sudo systemctl daemon-reload
 sudo systemctl enable --now {_RELAY_UNIT} >/dev/null
 sudo systemctl restart {_RELAY_UNIT}
+sudo openssl x509 -in {_RELAY_CERT} -outform DER | sha256sum | cut -d' ' -f1
 """
-    ssh.run_or_raise(command, label="install LeIsaac agent relay")
+    _code, stdout, _stderr = ssh.run_or_raise(
+        command, label="install LeIsaac agent relay"
+    )
+    fingerprint = stdout.strip().splitlines()[-1].lower() if stdout.strip() else ""
+    if not re.fullmatch(r"[a-f0-9]{64}", fingerprint):
+        raise RuntimeError("agent relay did not return a certificate fingerprint")
+    return fingerprint
 
 
 def _remove_agent_relay(ssh: SSHClient, *, run_id: str) -> None:
@@ -287,7 +304,7 @@ if ! sudo test -f {_RELAY_CONFIG}; then exit 0; fi
 existing=$(sudo /usr/bin/python3 -c 'import json; print(json.load(open("{_RELAY_CONFIG}"))["run_id"])')
 if [ "$existing" != {run_q} ]; then exit 0; fi
 sudo systemctl disable --now {_RELAY_UNIT} >/dev/null 2>&1 || true
-sudo rm -f /etc/systemd/system/{_RELAY_UNIT} {_RELAY_CONFIG} {_RELAY_SCRIPT}
+sudo rm -f /etc/systemd/system/{_RELAY_UNIT} {_RELAY_CONFIG} {_RELAY_SCRIPT} {_RELAY_CERT} {_RELAY_KEY}
 sudo systemctl daemon-reload
 """
     ssh.run_or_raise(command, label="remove LeIsaac agent relay")
@@ -359,6 +376,11 @@ def launch_cmd(
         "--source-range",
         help="Public operator CIDR allowed to reach the session; repeat when needed.",
     ),
+    backhaul_source_range: list[str] = typer.Option(
+        [],
+        "--backhaul-source-range",
+        help="Public cluster-egress CIDR allowed to establish the TLS agent backhaul.",
+    ),
     artifact_uri: str = typer.Option(
         ..., "--artifact-uri", help="S3 prefix where the run manifest is written."
     ),
@@ -398,7 +420,7 @@ def launch_cmd(
     instance_id = ""
     ssh: SSHClient | None = None
     relay_installed = False
-    created_ingress_sources: list[str] = []
+    created_ingress_specs: list[tuple[int, str, str, str]] = []
     try:
         run_id = validate_run_id(run_id)
         image = validate_image(image)
@@ -406,6 +428,7 @@ def launch_cmd(
         source_ranges = validate_source_ranges(source_range)
         split_s3_uri(artifact_uri)
         name = resource_name(run_id)
+        nonce = secrets.token_hex(32)
         if image_pull_secret:
             secret = _kubectl(
                 context, namespace, ["get", "secret", image_pull_secret, "-o", "name"]
@@ -419,6 +442,7 @@ def launch_cmd(
                 raise LeIsaacConfigError(
                     "agent-relay requires --agent-project and --agent-name"
                 )
+            backhaul_ranges = validate_source_ranges(backhaul_source_range)
             instance_id, media_host, ssh = _agent_relay_context(
                 agent_project, agent_name
             )
@@ -428,12 +452,9 @@ def launch_cmd(
                 agent_project=agent_project,
                 agent_name=agent_name,
                 source_ranges=source_ranges,
+                backhaul_source_ranges=backhaul_ranges,
             )
             _apply(context, namespace, [service])
-            node_host = _node_internal_ip(context, namespace)
-            node_ports = _relay_nodeports(
-                context, namespace, f"{name}-relay"
-            )
             for source in source_ranges:
                 ingress = ensure_ingress(
                     vm_id=instance_id,
@@ -443,14 +464,42 @@ def launch_cmd(
                     protocol="UDP",
                 )
                 if ingress.changed:
-                    created_ingress_sources.append(source)
+                    created_ingress_specs.append(
+                        (MEDIA_PORT, source, _RELAY_TOOL, "UDP")
+                    )
+            for source in backhaul_ranges:
+                ingress = ensure_ingress(
+                    vm_id=instance_id,
+                    ports=(_RELAY_BACKHAUL_PORT,),
+                    source=source,
+                    tool=_RELAY_BACKHAUL_TOOL,
+                    protocol="TCP",
+                )
+                if ingress.changed:
+                    created_ingress_specs.append(
+                        (
+                            _RELAY_BACKHAUL_PORT,
+                            source,
+                            _RELAY_BACKHAUL_TOOL,
+                            "TCP",
+                        )
+                    )
             relay_installed = True
-            _install_agent_relay(
+            certificate_sha256 = _install_agent_relay(
                 ssh,
                 run_id=run_id,
-                target_host=node_host,
-                ports=node_ports,
+                public_ip=media_host,
+                session_nonce=nonce,
             )
+            relay_secret = relay_client_secret_manifest(
+                run_id=run_id,
+                namespace=namespace,
+                agent_host=media_host,
+                session_nonce=nonce,
+                certificate_sha256=certificate_sha256,
+                client_source=_relay_source("reverse_client.py").decode("utf-8"),
+            )
+            _apply(context, namespace, [relay_secret])
             signal_host = "127.0.0.1"
         else:
             services = service_manifests(
@@ -461,7 +510,6 @@ def launch_cmd(
             _apply(context, namespace, services)
             signal_host = _external_ip(context, namespace, f"{name}-tcp")
             media_host = _external_ip(context, namespace, f"{name}-media")
-        nonce = secrets.token_hex(32)
         deployment = deployment_manifest(
             run_id=run_id,
             namespace=namespace,
@@ -469,6 +517,11 @@ def launch_cmd(
             media_host=media_host,
             session_nonce=nonce,
             image_pull_secret=image_pull_secret,
+            relay_client_secret=(
+                f"{name}-relay-client"
+                if transport == Transport.agent_relay
+                else ""
+            ),
         )
         _apply(context, namespace, [deployment])
         _wait_ready(context, namespace, name)
@@ -499,14 +552,14 @@ def launch_cmd(
                 _remove_agent_relay(ssh, run_id=run_id)
             except Exception as cleanup_exc:  # noqa: BLE001 - preserve primary failure
                 cleanup_errors.append(f"relay cleanup: {cleanup_exc}")
-        for source in created_ingress_sources:
+        for port, source, tool, protocol in created_ingress_specs:
             try:
                 remove_exact_npa_ingress_for_instance(
                     instance_id,
-                    ports=(MEDIA_PORT,),
+                    ports=(port,),
                     source=source,
-                    tool=_RELAY_TOOL,
-                    protocol="UDP",
+                    tool=tool,
+                    protocol=protocol,
                 )
             except Exception as cleanup_exc:  # noqa: BLE001 - preserve primary failure
                 cleanup_errors.append(f"ingress cleanup: {cleanup_exc}")
@@ -601,6 +654,11 @@ def destroy_cmd(
             sources = validate_source_ranges(
                 str(annotations.get("npa.nebius.com/source-ranges") or "").split(",")
             )
+            backhaul_sources = validate_source_ranges(
+                str(
+                    annotations.get("npa.nebius.com/backhaul-source-ranges") or ""
+                ).split(",")
+            )
             instance_id, _public_ip, ssh = _agent_relay_context(project, agent_name)
             _remove_agent_relay(ssh, run_id=run_id)
             for source in sources:
@@ -610,6 +668,14 @@ def destroy_cmd(
                     source=source,
                     tool=_RELAY_TOOL,
                     protocol="UDP",
+                )
+            for source in backhaul_sources:
+                remove_exact_npa_ingress_for_instance(
+                    instance_id,
+                    ports=(_RELAY_BACKHAUL_PORT,),
+                    source=source,
+                    tool=_RELAY_BACKHAUL_TOOL,
+                    protocol="TCP",
                 )
         except Exception as exc:  # noqa: BLE001 - CLI cleanup boundary
             _fail(f"agent relay cleanup failed; Kubernetes resources retained: {exc}")
