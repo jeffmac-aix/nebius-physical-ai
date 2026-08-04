@@ -169,6 +169,7 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
         websocket: WebSocket, signal_path: str = ""
     ) -> None:
         if str(websocket.headers.get("x-forwarded-proto") or "").lower() != "https":
+            LOG.warning("LeIsaac signaling rejected: public HTTPS was not preserved")
             await websocket.close(code=1008)
             return
         # Isaac Sim's 5.1 browser client opens its signaling WebSocket at
@@ -176,15 +177,18 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
         # compatibility tests, but do not turn this into an arbitrary upstream
         # path proxy.
         if signal_path not in ("", "sign_in"):
+            LOG.warning("LeIsaac signaling rejected: unsupported upstream path")
             await websocket.close(code=1008)
             return
         run_id = str(websocket.query_params.get("run_id") or "")
-        manifest, _reason = _resolve(deps, run_id)
+        manifest, reason = _resolve(deps, run_id)
         if not manifest:
+            LOG.warning("LeIsaac signaling rejected: %s", reason)
             await websocket.close(code=1008)
             return
-        health, _reason = _health(deps, manifest)
+        health, reason = _health(deps, manifest)
         if not health:
+            LOG.warning("LeIsaac signaling rejected: %s", reason)
             await websocket.close(code=1013)
             return
 
@@ -228,7 +232,11 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
                     task.cancel()
                 await asyncio.gather(*done, *pending, return_exceptions=True)
         except Exception as exc:
-            LOG.debug("LeIsaac signaling relay closed with an error", exc_info=exc)
+            LOG.warning(
+                "LeIsaac signaling upstream connection failed: %s",
+                type(exc).__name__,
+                exc_info=exc,
+            )
             try:
                 await websocket.close(code=1011)
             except Exception as close_exc:
