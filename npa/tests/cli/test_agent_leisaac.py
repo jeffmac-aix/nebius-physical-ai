@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
-from typing import get_type_hints
 from datetime import datetime, timedelta, timezone
+from typing import get_type_hints
 
 import pytest
 from fastapi import FastAPI, Response
 from fastapi.testclient import TestClient
-from starlette.websockets import WebSocket
+from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from npa.agent_backend.leisaac import (
     LEISAAC_MEDIA_PORT,
@@ -253,6 +254,12 @@ def test_authenticated_backend_routes_gate_status_and_proxy_client(monkeypatch) 
         is WebSocket
     )
     assert (
+        get_type_hints(
+            websocket_routes["/leisaac/signal/{signal_path:path}"].endpoint
+        )["websocket"]
+        is WebSocket
+    )
+    assert (
         get_type_hints(websocket_routes["/leisaac/backhaul"].endpoint)["websocket"]
         is WebSocket
     )
@@ -285,3 +292,81 @@ def test_authenticated_backend_routes_gate_status_and_proxy_client(monkeypatch) 
     )
     assert rejected.status_code == 502
     assert "integrity" in rejected.json()["detail"]
+
+
+def test_signaling_proxy_preserves_only_upstream_sign_in_path() -> None:
+    raw_manifest = _manifest()
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {
+                "schema": "npa.leisaac.health.v1",
+                "state": "ready",
+                "webrtc_ready": True,
+                "run_id": raw_manifest["run_id"],
+                "task": raw_manifest["task"],
+                "source_commit": raw_manifest["source_commit"],
+                "session_nonce": raw_manifest["session_nonce"],
+                "signal_port": LEISAAC_SIGNAL_PORT,
+            }
+
+    class FakeUpstream:
+        subprotocol = None
+
+        def __init__(self):
+            self.sent_initial = False
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def send(self, _message):
+            return None
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if not self.sent_initial:
+                self.sent_initial = True
+                return '{"ackid":1}'
+            await asyncio.Event().wait()
+            raise StopAsyncIteration
+
+    connected = []
+
+    def connect(uri, **_kwargs):
+        connected.append(uri)
+        return FakeUpstream()
+
+    api = FastAPI()
+    register_leisaac_routes(
+        api,
+        LeIsaacDeps(
+            load_state=lambda: {},
+            resolve_manifest=lambda _run_id: raw_manifest,
+            http_get=lambda *_args, **_kwargs: FakeResponse(),
+            response=Response,
+            websocket_connect=connect,
+        ),
+    )
+    client = TestClient(api)
+    headers = {"x-forwarded-proto": "https"}
+    query = f"run_id={raw_manifest['run_id']}&peer_id=browser-1&version=2"
+    with client.websocket_connect(
+        f"/leisaac/signal/sign_in?{query}", headers=headers
+    ) as websocket:
+        assert websocket.receive_text() == '{"ackid":1}'
+    assert connected == [f"ws://8.8.8.8:{LEISAAC_SIGNAL_PORT}/sign_in?{query}"]
+
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect(
+            f"/leisaac/signal/arbitrary?run_id={raw_manifest['run_id']}",
+            headers=headers,
+        ):
+            pass
+    assert exc_info.value.code == 1008

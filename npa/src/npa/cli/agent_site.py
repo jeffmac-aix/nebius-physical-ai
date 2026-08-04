@@ -172,10 +172,10 @@ def nginx_agent_site_body(
     default_type text/html;
     add_header Cache-Control "no-store" always;
   }}
-  # WebSocket upgrade is needed only for the authenticated LeIsaac signaling
-  # relay.  Keeping it exact avoids turning every ordinary API request into an
-  # upgrade and preserves the existing HTTP behavior of /api/.
-  location = /api/leisaac/signal {{
+  # Isaac Sim's browser client appends /sign_in to its configured signaling
+  # path.  This narrow authenticated prefix carries only WebSocket upgrades;
+  # the backend independently allowlists the bare path and /sign_in.
+  location ^~ /api/leisaac/signal {{
     rewrite ^/api/(.*)$ /$1 break;
     proxy_pass http://127.0.0.1:{backend_port}/;
     proxy_http_version 1.1;

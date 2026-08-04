@@ -435,11 +435,12 @@ def test_existing_agent_bootstrap_fails_closed_when_https_ingress_cannot_be_ensu
 
 def test_leisaac_signaling_inherits_basic_auth() -> None:
     source = _agent_source()
-    location = source.split("location = /api/leisaac/signal {{", 1)[1].split(
+    location = source.split("location ^~ /api/leisaac/signal {{", 1)[1].split(
         "location /api/ {{", 1
     )[0]
     assert "auth_basic off" not in location
     assert "proxy_set_header Upgrade $http_upgrade;" in location
+    assert "allowlists the bare path and /sign_in" in source
 
 
 def test_leisaac_pod_backhaul_uses_authenticated_public_https_only() -> None:

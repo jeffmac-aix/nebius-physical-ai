@@ -316,6 +316,7 @@ def test_rendered_backend_imports_and_registers_foxglove_routes(monkeypatch, tmp
         "/leisaac/status",
         "/leisaac/client/index.js",
         "/leisaac/signal",
+        "/leisaac/signal/{signal_path:path}",
         "/leisaac/backhaul",
     ):
         assert expected in paths, f"rendered backend did not register {expected}"

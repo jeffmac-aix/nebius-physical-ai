@@ -164,8 +164,18 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
         )
 
     @app.websocket("/leisaac/signal")
-    async def leisaac_signal(websocket: WebSocket) -> None:
+    @app.websocket("/leisaac/signal/{signal_path:path}")
+    async def leisaac_signal(
+        websocket: WebSocket, signal_path: str = ""
+    ) -> None:
         if str(websocket.headers.get("x-forwarded-proto") or "").lower() != "https":
+            await websocket.close(code=1008)
+            return
+        # Isaac Sim's 5.1 browser client opens its signaling WebSocket at
+        # ``<configured-path>/sign_in``.  Keep the bare path for protocol
+        # compatibility tests, but do not turn this into an arbitrary upstream
+        # path proxy.
+        if signal_path not in ("", "sign_in"):
             await websocket.close(code=1008)
             return
         run_id = str(websocket.query_params.get("run_id") or "")
@@ -183,7 +193,14 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
         protocols = [
             item for item in protocols if len(item) <= 128 and "\n" not in item
         ]
-        uri = f"ws://{manifest['signal_host']}:{LEISAAC_SIGNAL_PORT}"
+        query = str(websocket.url.query or "")
+        if len(query) > 4096 or any(char in query for char in "\r\n"):
+            await websocket.close(code=1008)
+            return
+        upstream_path = f"/{signal_path}" if signal_path else ""
+        uri = f"ws://{manifest['signal_host']}:{LEISAAC_SIGNAL_PORT}{upstream_path}"
+        if query:
+            uri += f"?{query}"
         try:
             async with deps.websocket_connect(
                 uri,
