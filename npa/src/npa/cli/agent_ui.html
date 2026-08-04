@@ -145,6 +145,88 @@
       /* The Voxel51 panel has no wasm/drawer to keep alive, so fully remove it
          when inactive (avoids any absolute-overlay layout quirks on mobile). */
       #panelVoxel.is-inactive { display: none; }
+      #panelLeIsaac.is-inactive { display: none; }
+      .leisaac-panel {
+        min-height: calc(100dvh - 140px);
+        padding: 0;
+        overflow: hidden;
+        background: #050914;
+        border-color: #1e293b;
+        color: #e2e8f0;
+      }
+      .leisaac-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 14px 16px;
+        border-bottom: 1px solid #1e293b;
+        background: #0b1220;
+      }
+      .leisaac-head h3 { color: #f8fafc; margin-bottom: 4px; }
+      .leisaac-head .hint { color: #94a3b8; }
+      .leisaac-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+      .leisaac-stage {
+        position: relative;
+        min-height: calc(100dvh - 245px);
+        background: #000;
+        outline: none;
+      }
+      .leisaac-stage:focus-visible { box-shadow: inset 0 0 0 3px var(--brand); }
+      .leisaac-stage video {
+        display: block;
+        width: 100%;
+        height: calc(100dvh - 245px);
+        min-height: 560px;
+        object-fit: contain;
+        background: #000;
+      }
+      .leisaac-stage audio { display: none; }
+      .leisaac-overlay {
+        position: absolute;
+        left: 14px;
+        right: 14px;
+        bottom: 14px;
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-end;
+        gap: 12px;
+        pointer-events: none;
+      }
+      .leisaac-overlay-card {
+        max-width: min(680px, 80%);
+        padding: 9px 12px;
+        border: 1px solid rgba(148, 163, 184, 0.35);
+        border-radius: 8px;
+        color: #e2e8f0;
+        background: rgba(2, 6, 23, 0.82);
+        backdrop-filter: blur(6px);
+        font-size: 12px;
+        line-height: 1.45;
+      }
+      .leisaac-controls { color: #cbd5e1; }
+      .leisaac-controls kbd {
+        display: inline-block;
+        min-width: 22px;
+        margin: 1px;
+        padding: 1px 5px;
+        border: 1px solid #64748b;
+        border-radius: 4px;
+        color: #fff;
+        background: #1e293b;
+        text-align: center;
+        font-family: ui-monospace, monospace;
+      }
+      .leisaac-live-dot {
+        display: inline-block;
+        width: 8px;
+        height: 8px;
+        margin-right: 6px;
+        border-radius: 999px;
+        background: #64748b;
+      }
+      .leisaac-live-dot.is-ready { background: #22c55e; box-shadow: 0 0 8px #22c55e; }
+      .leisaac-live-dot.is-error { background: #ef4444; }
       .layout { display: grid; gap: 14px; }
       .layout-rerun {
         grid-template-columns: minmax(300px, 360px) minmax(0, 1fr);
@@ -2082,16 +2164,259 @@
         updateChatQueueBadge();
         return processChatQueue();
       }
+      let leisaacCapability = null;
+      let leisaacCapabilityGeneration = 0;
+      let leisaacStreamer = null;
+      let leisaacClientLoadPromise = null;
+      let leisaacInputCount = 0;
+      let leisaacStreamReady = false;
+      const LEISAAC_KEYS = new Set(["W", "S", "A", "D", "Q", "E", "J", "L", "I", "K", "U", "O", "R", "N"]);
+      function leisaacPanelMarkup(status) {
+        const runId = escapeHtml(String(status.run_id || ""));
+        const task = escapeHtml(String(status.task || ""));
+        const gpu = escapeHtml(String(status.gpu || "RT-core GPU"));
+        return `
+          <section class="panel leisaac-panel">
+            <div class="leisaac-head">
+              <div>
+                <h3>LeIsaac teleoperation</h3>
+                <p class="hint">Run <strong>${runId}</strong> · ${task} · ${gpu}</p>
+              </div>
+              <div class="leisaac-actions">
+                <button id="leisaacConnect" class="btn btn-primary" type="button">Connect teleoperation</button>
+                <button id="leisaacDisconnect" class="btn" type="button" disabled>Disconnect</button>
+              </div>
+            </div>
+            <div id="leisaacStreamHost" class="leisaac-stage" tabindex="0" aria-label="Interactive LeIsaac simulation stream">
+              <video id="leisaacVideo" autoplay playsinline></video>
+              <audio id="leisaacAudio" autoplay></audio>
+              <div class="leisaac-overlay">
+                <div class="leisaac-overlay-card leisaac-controls">
+                  Position <kbd>W</kbd><kbd>S</kbd><kbd>A</kbd><kbd>D</kbd><kbd>Q</kbd><kbd>E</kbd>
+                  · rotate <kbd>J</kbd><kbd>L</kbd><kbd>K</kbd><kbd>I</kbd>
+                  · gripper <kbd>U</kbd><kbd>O</kbd> · reset <kbd>R</kbd> · success/reset <kbd>N</kbd>
+                </div>
+                <div class="leisaac-overlay-card">
+                  <span id="leisaacLiveDot" class="leisaac-live-dot"></span>
+                  <span id="leisaacStreamStatus">Ready to connect</span><br>
+                  <span id="leisaacInputStatus">Keyboard events sent: 0</span>
+                </div>
+              </div>
+            </div>
+          </section>`;
+      }
+      function setLeIsaacStreamState(text, tone) {
+        const label = document.getElementById("leisaacStreamStatus");
+        const dot = document.getElementById("leisaacLiveDot");
+        if (label) label.textContent = String(text || "");
+        if (dot) {
+          dot.classList.toggle("is-ready", tone === "ready");
+          dot.classList.toggle("is-error", tone === "error");
+        }
+      }
+      function noteLeIsaacInput(event) {
+        const key = String((event && event.key) || "").toUpperCase();
+        if (!leisaacStreamReady || !LEISAAC_KEYS.has(key) || (event && event.repeat)) return;
+        leisaacInputCount += 1;
+        const label = document.getElementById("leisaacInputStatus");
+        if (label) label.textContent = "Keyboard events sent: " + String(leisaacInputCount) + " · last " + key;
+      }
+      function loadLeIsaacClient(status) {
+        if (window.OVWebStreamingLibrary && window.OVWebStreamingLibrary.AppStreamer) {
+          return Promise.resolve(window.OVWebStreamingLibrary.AppStreamer);
+        }
+        if (leisaacClientLoadPromise) return leisaacClientLoadPromise;
+        leisaacClientLoadPromise = new Promise((resolve, reject) => {
+          const script = document.createElement("script");
+          script.src = String(status.client_module_url || "");
+          script.async = true;
+          script.onload = () => {
+            const client = window.OVWebStreamingLibrary && window.OVWebStreamingLibrary.AppStreamer;
+            if (!client) {
+              reject(new Error("NVIDIA streaming client did not expose AppStreamer"));
+              return;
+            }
+            resolve(client);
+          };
+          script.onerror = () => reject(new Error("Could not load the authenticated LeIsaac streaming client"));
+          document.head.appendChild(script);
+        }).catch((err) => {
+          leisaacClientLoadPromise = null;
+          throw err;
+        });
+        return leisaacClientLoadPromise;
+      }
+      async function connectLeIsaac() {
+        const status = leisaacCapability;
+        if (!status || !status.available) throw new Error("No usable LeIsaac session is selected");
+        const connectBtn = document.getElementById("leisaacConnect");
+        const disconnectBtn = document.getElementById("leisaacDisconnect");
+        if (connectBtn) connectBtn.disabled = true;
+        leisaacStreamReady = false;
+        setLeIsaacStreamState("Connecting to live simulation…", "pending");
+        try {
+          const AppStreamer = await loadLeIsaacClient(status);
+          leisaacStreamer = AppStreamer;
+          const query = new URLSearchParams({ run_id: String(status.run_id || "") });
+          await AppStreamer.connect({
+            streamSource: "direct",
+            streamConfig: {
+              signalingServer: window.location.hostname,
+              signalingPort: Number(window.location.port || (window.location.protocol === "https:" ? 443 : 80)),
+              signalingPath: String(status.signaling_path || "/api/leisaac/signal"),
+              signalingQuery: query,
+              // The supported agent endpoint is HTTPS, including when its host is a
+              // raw Nebius public IPv4 address.  NVIDIA's client otherwise chooses
+              // insecure WS for an IPv4 signalingServer.
+              forceWSS: true,
+              mediaServer: String(status.media_server || ""),
+              mediaPort: Number(status.media_port || 47998),
+              autoLaunch: true,
+              cursor: "free",
+              mic: false,
+              videoElementId: "leisaacVideo",
+              audioElementId: "leisaacAudio",
+              authenticate: false,
+              maxReconnects: 20,
+              nativeTouchEvents: true,
+              width: 1920,
+              height: 1080,
+              fps: 60,
+              onUpdate: handleLeIsaacStreamEvent,
+              onStart: handleLeIsaacStreamEvent,
+              onStop: () => {
+                leisaacStreamReady = false;
+                setLeIsaacStreamState("Disconnected", "pending");
+              },
+              onTerminate: () => {
+                leisaacStreamReady = false;
+                setLeIsaacStreamState("Disconnected", "pending");
+              },
+            },
+          });
+          if (disconnectBtn) disconnectBtn.disabled = false;
+        } catch (err) {
+          if (connectBtn) connectBtn.disabled = false;
+          setLeIsaacStreamState(String((err && err.message) || err), "error");
+          throw err;
+        }
+      }
+      function handleLeIsaacStreamEvent(message) {
+        const status = String((message && message.status) || "").toLowerCase();
+        const detail = String((message && (message.info || message.detail || message.message)) || "Connecting");
+        if (status === "success") {
+          leisaacStreamReady = true;
+          setLeIsaacStreamState("Live · keyboard teleoperation active", "ready");
+          const host = document.getElementById("leisaacStreamHost");
+          if (host) host.focus();
+        } else if (status === "error" || status === "canceled" || status === "cancelled") {
+          leisaacStreamReady = false;
+          setLeIsaacStreamState(detail, "error");
+        } else if (!leisaacStreamReady) {
+          setLeIsaacStreamState(detail, "pending");
+        }
+      }
+      async function disconnectLeIsaac() {
+        const streamer = leisaacStreamer;
+        leisaacStreamer = null;
+        leisaacStreamReady = false;
+        if (streamer && streamer.terminate) {
+          try { await streamer.terminate(false, true); } catch (_err) { /* already disconnected */ }
+        }
+        const connectBtn = document.getElementById("leisaacConnect");
+        const disconnectBtn = document.getElementById("leisaacDisconnect");
+        if (connectBtn) connectBtn.disabled = false;
+        if (disconnectBtn) disconnectBtn.disabled = true;
+        setLeIsaacStreamState("Disconnected", "pending");
+      }
+      function ensureLeIsaacTab(status) {
+        const tabs = document.querySelector(".main-tabs");
+        const page = document.querySelector("main.page");
+        if (!tabs || !page) return;
+        let tab = document.getElementById("tabLeIsaac");
+        let panel = document.getElementById("panelLeIsaac");
+        const changedRun = panel && panel.getAttribute("data-run-id") !== String(status.run_id || "");
+        if (changedRun) {
+          disconnectLeIsaac().catch(() => {});
+          panel.remove();
+          panel = null;
+        }
+        if (!tab) {
+          tab = document.createElement("button");
+          tab.id = "tabLeIsaac";
+          tab.className = "main-tab";
+          tab.type = "button";
+          tab.setAttribute("role", "tab");
+          tab.setAttribute("aria-selected", "false");
+          tab.setAttribute("aria-controls", "panelLeIsaac");
+          tab.setAttribute("data-tab", "leisaac");
+          tab.textContent = "LeIsaac";
+          tab.addEventListener("click", () => activateMainTab("leisaac"));
+          tabs.appendChild(tab);
+        }
+        if (!panel) {
+          panel = document.createElement("div");
+          panel.id = "panelLeIsaac";
+          panel.className = "tab-panel is-inactive";
+          panel.setAttribute("role", "tabpanel");
+          panel.setAttribute("aria-labelledby", "tabLeIsaac");
+          panel.setAttribute("aria-hidden", "true");
+          panel.setAttribute("data-run-id", String(status.run_id || ""));
+          panel.innerHTML = leisaacPanelMarkup(status);
+          page.appendChild(panel);
+          const connectBtn = panel.querySelector("#leisaacConnect");
+          const disconnectBtn = panel.querySelector("#leisaacDisconnect");
+          const host = panel.querySelector("#leisaacStreamHost");
+          if (connectBtn) connectBtn.addEventListener("click", () => connectLeIsaac().catch((err) => showToast(String(err), "error")));
+          if (disconnectBtn) disconnectBtn.addEventListener("click", () => disconnectLeIsaac());
+          if (host) {
+            host.addEventListener("keydown", noteLeIsaacInput);
+            host.addEventListener("click", () => host.focus());
+          }
+        }
+      }
+      function removeLeIsaacTab() {
+        const tab = document.getElementById("tabLeIsaac");
+        const panel = document.getElementById("panelLeIsaac");
+        if (activeMainTab === "leisaac") activateMainTab("main", { skipEnsure: true });
+        disconnectLeIsaac().catch(() => {});
+        if (tab) tab.remove();
+        if (panel) panel.remove();
+        leisaacCapability = null;
+      }
+      async function refreshLeIsaacCapability(runId) {
+        const target = String(runId || "").trim();
+        const generation = ++leisaacCapabilityGeneration;
+        if (!target) {
+          removeLeIsaacTab();
+          return null;
+        }
+        try {
+          const status = await loadJson("/api/leisaac/status?run_id=" + encodeURIComponent(target));
+          if (generation !== leisaacCapabilityGeneration) return null;
+          if (!(status && status.available && String(status.run_id || "") === target)) {
+            removeLeIsaacTab();
+            return null;
+          }
+          leisaacCapability = status;
+          ensureLeIsaacTab(status);
+          return status;
+        } catch (_err) {
+          if (generation === leisaacCapabilityGeneration) removeLeIsaacTab();
+          return null;
+        }
+      }
       async function activateMainTab(name, options) {
         const opts = options || {};
         const raw = String(name || "main").trim();
-        const tab = (raw === "rerun" || raw === "voxel51") ? raw : "main";
+        const leisaacExists = Boolean(document.getElementById("tabLeIsaac") && document.getElementById("panelLeIsaac"));
+        const tab = (raw === "rerun" || raw === "voxel51" || (raw === "leisaac" && leisaacExists)) ? raw : "main";
         const switching = activeMainTab !== tab;
         activeMainTab = tab;
         // Keep all panels mounted (opacity toggle only). display:none / visibility:hidden
         // would unload or defer the Rerun wasm viewer bundle on every tab switch.
-        const panelIds = { main: "panelChat", rerun: "panelRerun", voxel51: "panelVoxel" };
-        const tabIds = { main: "tabMain", rerun: "tabRerun", voxel51: "tabVoxel" };
+        const panelIds = { main: "panelChat", rerun: "panelRerun", voxel51: "panelVoxel", leisaac: "panelLeIsaac" };
+        const tabIds = { main: "tabMain", rerun: "tabRerun", voxel51: "tabVoxel", leisaac: "tabLeIsaac" };
         for (const key of Object.keys(panelIds)) {
           const panel = document.getElementById(panelIds[key]);
           if (panel) {
@@ -2104,8 +2429,8 @@
           const tabBtn = document.getElementById(tabIds[key]);
           if (tabBtn) tabBtn.setAttribute("aria-selected", key === tab ? "true" : "false");
         }
-        document.body.classList.toggle("viewer-focus", tab === "rerun");
-        if (tab !== "rerun") {
+        document.body.classList.toggle("viewer-focus", tab === "rerun" || tab === "leisaac");
+        if (tab !== "rerun" && tab !== "leisaac") {
           setChatDrawerOpen(false);
         } else if (!chatDrawerOpen) {
           setChatDrawerOpen(false);
@@ -6634,6 +6959,7 @@
           body: JSON.stringify({ run_id: runId }),
         });
         activeRunId = runId;
+        await refreshLeIsaacCapability(runId);
         appendChat("assistant", "Loaded run context — **run_id**: `" + runId + "`.");
         await loadRunDetails(runId);
         if (data && data.sim_viz && (data.sim_viz.rrd_uri || data.sim_viz.rerun_ready)) {
@@ -6854,6 +7180,10 @@
           const artifactsPromise = refreshArtifactRuns().catch((_artifactErr) => {
             // artifact discovery is optional when S3 credentials are missing.
           });
+          // Capability discovery may involve remote artifact/service probes. Let it
+          // reveal the optional tab asynchronously instead of delaying the existing
+          // viewer boot path.
+          refreshLeIsaacCapability(activeRunId).catch(() => null);
           if (document.body.classList.contains("mobile-agent")) {
             await Promise.all([refreshPromise, artifactsPromise, warmPromise]);
             hideRerunBundleCover();
@@ -6911,6 +7241,7 @@
       function startPeriodicRefresh() {
         if (refreshTimer !== null) return;
         refreshTimer = window.setInterval(() => {
+          refreshLeIsaacCapability(activeRunId).catch(() => null);
           // Skip only while the Rerun panel is the active (visible) tab — do not
           // kill chat/stages/model refresh for the rest of the session just because
           // the iframe was mounted in the background.
@@ -6950,6 +7281,11 @@
           lichtblickNeedsLayoutSeed,
           markLichtblickLayoutSeeded,
           LICHTBLICK_LAYOUT_SEED_KEY,
+          refreshLeIsaacCapability,
+          ensureLeIsaacTab,
+          removeLeIsaacTab,
+          connectLeIsaac,
+          disconnectLeIsaac,
         };
         try {
           wireUi();

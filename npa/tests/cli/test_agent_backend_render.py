@@ -232,6 +232,8 @@ def _capture_setup_script(monkeypatch) -> str:
     [
         ("retrieval", "def build_lance_store"),
         ("trace", "def analyze_traces"),
+        ("leisaac", "def normalize_manifest"),
+        ("leisaac_routes", "def register_leisaac_routes"),
     ],
 )
 def test_shipped_agent_backend_modules_compile(monkeypatch, module, marker) -> None:
@@ -279,7 +281,15 @@ def test_rendered_backend_imports_and_registers_foxglove_routes(monkeypatch, tmp
     package = tmp_path / "agent_backend"
     package.mkdir()
     (package / "__init__.py").write_text("", encoding="utf-8")
-    for name in ("memory", "retrieval", "trace", "foxglove", "foxglove_routes"):
+    for name in (
+        "memory",
+        "retrieval",
+        "trace",
+        "foxglove",
+        "foxglove_routes",
+        "leisaac",
+        "leisaac_routes",
+    ):
         (package / f"{name}.py").write_text(
             _extract(f"/opt/npa-agent/agent_backend/{name}.py"), encoding="utf-8"
         )
@@ -303,6 +313,9 @@ def test_rendered_backend_imports_and_registers_foxglove_routes(monkeypatch, tmp
         "/foxglove/load-artifact",
         "/foxglove/convert-run",
         "/foxglove/live",
+        "/leisaac/status",
+        "/leisaac/client/index.js",
+        "/leisaac/signal",
     ):
         assert expected in paths, f"rendered backend did not register {expected}"
 
@@ -333,7 +346,15 @@ def test_rendered_backend_loads_real_skill_excerpts(monkeypatch, tmp_path):
     package = tmp_path / "agent_backend"
     package.mkdir()
     (package / "__init__.py").write_text("", encoding="utf-8")
-    for name in ("memory", "retrieval", "trace", "foxglove", "foxglove_routes"):
+    for name in (
+        "memory",
+        "retrieval",
+        "trace",
+        "foxglove",
+        "foxglove_routes",
+        "leisaac",
+        "leisaac_routes",
+    ):
         (package / f"{name}.py").write_text(
             _extract(f"/opt/npa-agent/agent_backend/{name}.py"), encoding="utf-8"
         )

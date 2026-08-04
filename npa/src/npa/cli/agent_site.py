@@ -172,6 +172,23 @@ def nginx_agent_site_body(
     default_type text/html;
     add_header Cache-Control "no-store" always;
   }}
+  # WebSocket upgrade is needed only for the authenticated LeIsaac signaling
+  # relay.  Keeping it exact avoids turning every ordinary API request into an
+  # upgrade and preserves the existing HTTP behavior of /api/.
+  location = /api/leisaac/signal {{
+    rewrite ^/api/(.*)$ /$1 break;
+    proxy_pass http://127.0.0.1:{backend_port}/;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_connect_timeout 30s;
+    proxy_read_timeout 900s;
+    proxy_send_timeout 900s;
+  }}
   location /api/ {{
     proxy_pass http://127.0.0.1:{backend_port}/;
     proxy_http_version 1.1;

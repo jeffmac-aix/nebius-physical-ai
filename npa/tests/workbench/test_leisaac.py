@@ -1,0 +1,146 @@
+"""LeIsaac runtime, Kubernetes, assets, EULA, and GPU guardrails."""
+
+from __future__ import annotations
+
+import os
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+import pytest
+
+from npa.agent_backend.leisaac import LEISAAC_CLIENT_JS_SHA256
+from npa.workbench.leisaac import (
+    GPU_PRODUCT,
+    MEDIA_PORT,
+    SIGNAL_PORT,
+    LeIsaacConfigError,
+    deployment_manifest,
+    service_manifests,
+    session_manifest,
+)
+
+ROOT = Path(__file__).resolve().parents[3]
+IMAGE = "registry.example/npa-leisaac@sha256:" + "1" * 64
+NONCE = "a" * 64
+
+
+def test_service_manifests_source_restrict_tcp_and_udp_media() -> None:
+    tcp, media = service_manifests(
+        run_id="live-1", namespace="default", source_ranges=["8.8.8.8/32"]
+    )
+    assert tcp["spec"]["loadBalancerSourceRanges"] == ["8.8.8.8/32"]
+    assert {port["port"] for port in tcp["spec"]["ports"]} == {8080, SIGNAL_PORT}
+    assert all(port["protocol"] == "TCP" for port in tcp["spec"]["ports"])
+    assert media["spec"]["loadBalancerSourceRanges"] == ["8.8.8.8/32"]
+    assert media["spec"]["ports"] == [
+        {
+            "name": "media",
+            "protocol": "UDP",
+            "port": MEDIA_PORT,
+            "targetPort": MEDIA_PORT,
+        }
+    ]
+
+
+def test_deployment_is_real_rt_core_leisaac_and_operator_eula_runtime_config() -> None:
+    deployment = deployment_manifest(
+        run_id="live-1",
+        namespace="default",
+        image=IMAGE,
+        media_host="1.1.1.1",
+        session_nonce=NONCE,
+    )
+    pod = deployment["spec"]["template"]["spec"]
+    assert pod["nodeSelector"] == {"nvidia.com/gpu.product": GPU_PRODUCT}
+    container = pod["containers"][0]
+    assert container["resources"]["limits"]["nvidia.com/gpu"] == "1"
+    assert container["securityContext"]["runAsNonRoot"] is True
+    env = {item["name"]: item["value"] for item in container["env"]}
+    assert env["OMNI_KIT_ACCEPT_EULA"] == "YES"
+    assert env["ISAACSIM_ACCEPT_EULA"] == "YES"
+    assert env["NPA_LEISAAC_MEDIA_HOST"] == "1.1.1.1"
+    assert "/status" == container["readinessProbe"]["httpGet"]["path"]
+
+
+def test_manifest_records_exact_real_component_and_provenance() -> None:
+    manifest = session_manifest(
+        run_id="live-1",
+        image=IMAGE,
+        signal_host="8.8.8.8",
+        media_host="1.1.1.1",
+        session_nonce=NONCE,
+        expires_at=(datetime.now(timezone.utc) + timedelta(days=1)).isoformat(),
+    )
+    assert manifest["task"] == "LeIsaac-SO101-PickOrange-v0"
+    assert manifest["teleop_device"] == "keyboard"
+    assert manifest["source_commit"] == "1651c321e9b0c1bb54233211fc7b3cd70d8373d5"
+    assert manifest["isaac_sim_version"] == "5.1.0.0"
+    assert manifest["isaac_lab_version"] == "2.3.2.post1"
+    assert manifest["image"] == IMAGE
+
+
+@pytest.mark.parametrize("value", ["", "latest", "x:tag", "x@sha256:bad"])
+def test_image_must_be_digest_pinned(value: str) -> None:
+    with pytest.raises(LeIsaacConfigError, match="digest"):
+        deployment_manifest(
+            run_id="live-1",
+            namespace="default",
+            image=value,
+            media_host="1.1.1.1",
+            session_nonce=NONCE,
+        )
+
+
+def test_private_or_unrestricted_tcp_endpoints_are_rejected() -> None:
+    with pytest.raises(LeIsaacConfigError, match="at least one"):
+        service_manifests(run_id="live-1", namespace="default", source_ranges=[])
+    with pytest.raises(LeIsaacConfigError, match="public"):
+        service_manifests(
+            run_id="live-1", namespace="default", source_ranges=["0.0.0.0/0"]
+        )
+    with pytest.raises(LeIsaacConfigError, match="public"):
+        deployment_manifest(
+            run_id="live-1",
+            namespace="default",
+            image=IMAGE,
+            media_host="127.0.0.1",
+            session_nonce=NONCE,
+        )
+
+
+def test_container_never_bakes_eula_client_or_assets() -> None:
+    dockerfile = (ROOT / "npa/docker/workbench/leisaac/Dockerfile").read_text(
+        encoding="utf-8"
+    )
+    server = (ROOT / "npa/docker/workbench/leisaac/session_server.py").read_text(
+        encoding="utf-8"
+    )
+    instructions = "\n".join(
+        line for line in dockerfile.splitlines() if not line.lstrip().startswith("#")
+    )
+    assert "ENV OMNI_KIT_ACCEPT_EULA" not in instructions
+    assert "ENV ISAACSIM_ACCEPT_EULA" not in instructions
+    copy_lines = [
+        line
+        for line in instructions.splitlines()
+        if line.lstrip().startswith(("COPY ", "ADD "))
+    ]
+    assert not any(
+        "so101_follower.usd" in line or "kitchen_with_orange" in line
+        for line in copy_lines
+    )
+    assert "CLIENT_SHA512" in server and "CLIENT_JS_SHA256" in server
+    assert "5.18.11" in server
+    assert LEISAAC_CLIENT_JS_SHA256 in server
+    assert "ROBOT_SHA256" in server and "KITCHEN_SHA256" in server
+    assert "safe_extract_zip" in server and "safe_extract_client" in server
+    assert "feetech-servo-sdk" in dockerfile and "-m pip check" in dockerfile
+    assert os.access(ROOT / "npa/docker/workbench/leisaac/build.sh", os.X_OK)
+
+
+def test_build_script_supports_repository_python_310() -> None:
+    script = (ROOT / "npa/docker/workbench/leisaac/build.sh").read_text(
+        encoding="utf-8"
+    )
+    assert "except ModuleNotFoundError:" in script
+    assert "import tomli as tomllib" in script

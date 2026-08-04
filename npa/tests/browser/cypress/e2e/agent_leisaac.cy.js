@@ -1,0 +1,69 @@
+describe("NPA agent LeIsaac capability tab", () => {
+  beforeEach(() => {
+    cy.visitMockAgent();
+    cy.wait("@session");
+  });
+
+  it("is absent when the selected run has no usable live capability", () => {
+    cy.get("#tabLeIsaac").should("not.exist");
+    cy.get("#panelLeIsaac").should("not.exist");
+  });
+
+  it("appears only for a live run and drives the upstream keyboard client", () => {
+    cy.intercept("GET", "/api/leisaac/status?run_id=mock-run", {
+      statusCode: 200,
+      body: {
+        available: true,
+        run_id: "mock-run",
+        task: "LeIsaac-SO101-PickOrange-v0",
+        teleop_device: "keyboard",
+        media_server: "1.1.1.1",
+        media_port: 47998,
+        signaling_server: "same-origin",
+        signaling_port: 443,
+        signaling_path: "/api/leisaac/signal",
+        client_module_url: "/api/leisaac/client/index.js?run_id=mock-run",
+        source_version: "0.4.0",
+        source_commit: "1651c321e9b0c1bb54233211fc7b3cd70d8373d5",
+        isaac_sim_version: "5.1.0.0",
+        isaac_lab_version: "2.3.2.post1",
+        image: "registry/npa-leisaac@sha256:test",
+        gpu: "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+      },
+    }).as("leisaacStatus");
+    cy.intercept("GET", "/api/leisaac/client/index.js?run_id=mock-run", {
+      statusCode: 200,
+      headers: { "content-type": "text/javascript" },
+      body: `window.OVWebStreamingLibrary = { AppStreamer: {
+        connect: async function(props) {
+          window.__LEISAAC_CONNECT_PROPS__ = props;
+          props.streamConfig.onStart({ status: "success" });
+          return { status: "inProgress" };
+        },
+        terminate: async function() { window.__LEISAAC_TERMINATED__ = true; }
+      }};`,
+    }).as("leisaacClient");
+
+    cy.window().then((win) => win.__NPA_AGENT_TEST__.refreshLeIsaacCapability("mock-run"));
+    cy.wait("@leisaacStatus");
+    cy.get("#tabLeIsaac").should("exist").click();
+    cy.get("#panelLeIsaac").should("have.class", "is-active");
+    cy.get("#leisaacConnect").click();
+    cy.wait("@leisaacClient");
+    cy.get("#leisaacStreamStatus").should("contain.text", "keyboard teleoperation active");
+    cy.window().its("__LEISAAC_CONNECT_PROPS__.streamConfig.signalingPath").should("eq", "/api/leisaac/signal");
+    cy.window().its("__LEISAAC_CONNECT_PROPS__.streamConfig.forceWSS").should("eq", true);
+    cy.window().its("__LEISAAC_CONNECT_PROPS__.streamConfig.mediaPort").should("eq", 47998);
+    cy.get("#leisaacStreamHost").trigger("keydown", { key: "W", code: "KeyW" });
+    cy.get("#leisaacInputStatus").should("contain.text", "Keyboard events sent: 1").and("contain.text", "last W");
+
+    cy.intercept("GET", "/api/leisaac/status?run_id=mock-run", {
+      statusCode: 200,
+      body: { available: false, reason: "session expired" },
+    }).as("leisaacGone");
+    cy.window().then((win) => win.__NPA_AGENT_TEST__.refreshLeIsaacCapability("mock-run"));
+    cy.wait("@leisaacGone");
+    cy.get("#tabLeIsaac").should("not.exist");
+    cy.get("#panelLeIsaac").should("not.exist");
+  });
+});

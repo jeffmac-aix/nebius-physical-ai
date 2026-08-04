@@ -64,6 +64,53 @@ def test_build_agent_urls_http_legacy() -> None:
     assert urls["cameras_api_url"] == "http://203.0.113.50:8088/assets/api/sim-assets/cameras"
 
 
+def test_customer_url_is_canonical_for_persisted_public_https_ip() -> None:
+    from npa.cli.agent import _record_customer_url
+
+    record = {
+        "public_ip": "8.8.8.8",
+        "public_https": True,
+        "public_url": "https://203.0.113.50/",
+        "agent_url": "https://203.0.113.50/",
+    }
+
+    assert _record_customer_url(record) == "https://8.8.8.8/"
+
+
+def test_existing_agent_public_ip_resolves_from_provider_state(monkeypatch) -> None:
+    from npa.cli.agent import _resolve_record_public_ip
+
+    monkeypatch.setattr(
+        "npa.cli.agent.resolve_instance_network_context",
+        lambda instance_id: SimpleNamespace(
+            instance_id=instance_id,
+            public_ip="8.8.8.8/32",
+            project_id="project-1",
+            security_group_ids=("sg-1",),
+        ),
+    )
+
+    assert (
+        _resolve_record_public_ip(
+            {"instance_id": "instance-1", "public_ip": "203.0.113.50"}
+        )
+        == "8.8.8.8"
+    )
+
+
+def test_existing_agent_public_ip_rejects_non_public_provider_state(monkeypatch) -> None:
+    from npa.cli.agent import _resolve_record_public_ip
+    from npa.clients.network import NetworkIngressError
+
+    monkeypatch.setattr(
+        "npa.cli.agent.resolve_instance_network_context",
+        lambda _instance_id: SimpleNamespace(public_ip="127.0.0.1"),
+    )
+
+    with pytest.raises(NetworkIngressError, match="routable public IP"):
+        _resolve_record_public_ip({"instance_id": "instance-1"})
+
+
 def test_ensure_terraform_state_bucket_creates_missing_bucket(monkeypatch) -> None:
     from npa.cli.agent import _ensure_terraform_state_bucket
 
@@ -356,6 +403,40 @@ def test_bootstrap_enables_public_https_nginx() -> None:
     assert "DEFAULT_HTTPS_PORT" in source
     assert "Customer URL: use" in source
     assert "--no-public-https" in source
+
+
+def test_public_https_keeps_backend_loopback_only() -> None:
+    source = _agent_source()
+    assert "uvicorn backend:app --host 127.0.0.1 --port {backend_port}" in source
+    assert "uvicorn backend:app --host 0.0.0.0 --port {backend_port}" not in source
+    assert "proxy_pass http://127.0.0.1:{backend_port}/;" in source
+
+
+def test_public_ingress_excludes_internal_backend_port() -> None:
+    from npa.cli.agent import _agent_extra_ingress_ports
+
+    ports = _agent_extra_ingress_ports(
+        agent_port=8088,
+        rerun_port=9090,
+        public_https=True,
+    )
+    assert ports == [443, 9090]
+    assert 8787 not in ports
+
+
+def test_existing_agent_bootstrap_fails_closed_when_https_ingress_cannot_be_ensured() -> None:
+    source = _agent_source()
+    assert '_fail(f"npa network ensure-ingress failed: {exc}")' in source
+    assert "Customer HTTPS on port 443 may be unreachable" not in source
+
+
+def test_leisaac_signaling_inherits_basic_auth() -> None:
+    source = _agent_source()
+    location = source.split("location = /api/leisaac/signal {{", 1)[1].split(
+        "location /api/ {{", 1
+    )[0]
+    assert "auth_basic off" not in location
+    assert "proxy_set_header Upgrade $http_upgrade;" in location
 
 
 def test_bootstrap_nginx_serves_public_rerun_recording() -> None:
@@ -1165,14 +1246,14 @@ def test_agent_status_json(monkeypatch) -> None:
         "npa.cli.agent._agent_record",
         lambda project, name: {
             "public_ip": "8.8.8.8",
-            "agent_url": "https://203.0.113.50/",
-            "public_url": "https://203.0.113.50/",
+            "agent_url": "https://8.8.8.8/",
+            "public_url": "https://8.8.8.8/",
             "public_https": True,
-            "direct_url": "http://203.0.113.50:8088/",
-            "rerun_url": "https://203.0.113.50/rerun/",
-            "sim_viz_url": "https://203.0.113.50/rerun/",
-            "sim_assets_url": "https://203.0.113.50/assets/",
-            "cameras_api_url": "https://203.0.113.50/assets/api/sim-assets/cameras",
+            "direct_url": "http://8.8.8.8:8088/",
+            "rerun_url": "https://8.8.8.8/rerun/",
+            "sim_viz_url": "https://8.8.8.8/rerun/",
+            "sim_assets_url": "https://8.8.8.8/assets/",
+            "cameras_api_url": "https://8.8.8.8/assets/api/sim-assets/cameras",
             "auth_secret_path": "/tmp/agent-auth",
             "llm": {"provider": "token_factory", "model": "nvidia/Cosmos3-Super-Reasoner"},
         },
@@ -1189,8 +1270,9 @@ def test_agent_status_json(monkeypatch) -> None:
     assert payload["health"] is True
     assert payload["ui_status_code"] == 200
     assert payload["rerun_status_code"] == 200
+    assert payload["public_url"] == "https://8.8.8.8/"
     assert payload["sim_viz_url"].endswith("/rerun/")
-    assert payload["sim_assets_url"].endswith("203.0.113.50/assets/")
+    assert payload["sim_assets_url"].endswith("8.8.8.8/assets/")
     assert payload["cameras_api_url"].endswith("/assets/api/sim-assets/cameras")
 
 
@@ -1271,14 +1353,14 @@ def test_verify_live_runs_pytests(monkeypatch) -> None:
         lambda project, name: {
             "public_ip": "8.8.8.8",
             "region": "us-central1",
-            "agent_url": "https://203.0.113.50/",
-            "public_url": "https://203.0.113.50/",
+            "agent_url": "https://8.8.8.8/",
+            "public_url": "https://8.8.8.8/",
             "public_https": True,
-            "direct_url": "http://203.0.113.50:8088/",
-            "rerun_url": "https://203.0.113.50/rerun/",
-            "sim_viz_url": "https://203.0.113.50/rerun/",
-            "sim_assets_url": "https://203.0.113.50/assets/",
-            "cameras_api_url": "https://203.0.113.50/assets/api/sim-assets/cameras",
+            "direct_url": "http://8.8.8.8:8088/",
+            "rerun_url": "https://8.8.8.8/rerun/",
+            "sim_viz_url": "https://8.8.8.8/rerun/",
+            "sim_assets_url": "https://8.8.8.8/assets/",
+            "cameras_api_url": "https://8.8.8.8/assets/api/sim-assets/cameras",
             "auth_secret_path": "/tmp/agent-auth",
         },
     )
@@ -1338,7 +1420,9 @@ def test_verify_live_runs_pytests(monkeypatch) -> None:
             return _Resp('{"ok":true}', status_code=200)
         if "/rerun/" in url_s:
             return _Resp(b"console.log('rerun');", status_code=200)
-        if url_s.rstrip("/").endswith(("203.0.113.50", ":8088")):
+        if url_s.rstrip("/").endswith(("8.8.8.8", ":8088")):
+            if _kwargs.get("auth") is None:
+                return _Resp({"detail": "authentication required"}, status_code=401)
             html = (
                 f'<html><head><meta name="viewport" content="width=device-width, initial-scale=1">'
                 f'<meta name="npa-ui-version" content="{AGENT_UI_VERSION}"></head>'
@@ -1370,6 +1454,10 @@ def test_verify_live_runs_pytests(monkeypatch) -> None:
                 'function queueChatText(){} function waitForQualityRerunFrame(){} '
                 'function captureCanvasDataUrl(){} function ensureRerunCaptureBridge(){} '
                 'function pickBestIframeCanvas(){} function sampleFrameStats(){} '
+                'function ensureLeIsaacTab(){} function removeLeIsaacTab(){} '
+                'function refreshLeIsaacCapability(){} function connectLeIsaac(){} '
+                '/api/leisaac/status /api/leisaac/client/index.js /api/leisaac/signal '
+                'LeIsaac-SO101-PickOrange-v0 '
                 'function openFullChatTab(){} '
                 'do not prefetch .rrd bytes; skipUserAppend; Describe this — capturing; '
                 'async function loadArtifact(payload){ await swapRerunRecordingInPlace(); } '

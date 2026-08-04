@@ -8,6 +8,7 @@ import pytest
 
 from npa.cli.agent import (
     AGENT_FOXGLOVE_CONTRACT,
+    AGENT_LEISAAC_CONTRACT,
     AGENT_MEDIA_PREVIEW_CONTRACT,
     AGENT_UI_VERSION,
     rendered_agent_ui_html,
@@ -66,6 +67,8 @@ def test_agent_bootstrap_source_smoke() -> None:
         assert marker in bundled, f"missing media-preview contract marker: {marker!r}"
     for marker in AGENT_FOXGLOVE_CONTRACT:
         assert marker in bundled, f"missing Foxglove viewer contract marker: {marker!r}"
+    for marker in AGENT_LEISAAC_CONTRACT:
+        assert marker in bundled, f"missing LeIsaac teleoperation contract marker: {marker!r}"
     # The Foxglove SDK must be loaded on demand (dynamic import), never eagerly:
     # opening the agent must not pay for an embed the operator did not ask for.
     assert 'await import(moduleUrl)' in ui_source
