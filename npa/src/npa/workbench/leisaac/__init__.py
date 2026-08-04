@@ -18,7 +18,10 @@ ISAAC_LAB_VERSION = "2.3.2.post1"
 SIGNAL_PORT = 49100
 MEDIA_PORT = 47998
 SERVICE_PORT = 8080
+RELAY_SERVICE_PORT = 48080
 GPU_PRODUCT = "NVIDIA-RTX-PRO-6000-Blackwell-Server-Edition"
+TRANSPORT_LOAD_BALANCER = "public-load-balancer"
+TRANSPORT_AGENT_RELAY = "agent-relay"
 
 _RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
@@ -67,14 +70,14 @@ def validate_source_ranges(values: list[str] | tuple[str, ...]) -> list[str]:
             network = ipaddress.ip_network(str(raw or "").strip(), strict=False)
         except ValueError as exc:
             raise LeIsaacConfigError(
-                f"invalid TCP load-balancer source range: {raw}"
+                f"invalid LeIsaac source range: {raw}"
             ) from exc
         if not network.is_global:
-            raise LeIsaacConfigError(f"TCP source range must be public: {network}")
+            raise LeIsaacConfigError(f"LeIsaac source range must be public: {network}")
         result.append(network.with_prefixlen)
     if not result:
         raise LeIsaacConfigError(
-            "at least one agent/operator TCP source range is required"
+            "at least one agent/operator source range is required"
         )
     return sorted(set(result))
 
@@ -171,6 +174,75 @@ def service_manifests(
             },
         },
     ]
+
+
+def relay_service_manifest(
+    *,
+    run_id: str,
+    namespace: str,
+    agent_project: str = "",
+    agent_name: str = "",
+    source_ranges: list[str] | tuple[str, ...] = (),
+) -> dict[str, Any]:
+    """Build one private NodePort service for an agent-relayed session.
+
+    The service has no cloud load balancer or public address.  A separately
+    authenticated NPA agent VM reaches these NodePorts over the private VPC and
+    relays only the fixed loopback TCP and source-restricted UDP contracts.
+    """
+
+    run_id = validate_run_id(run_id)
+    name = resource_name(run_id)
+    labels = {
+        "app": name,
+        "app.kubernetes.io/name": "leisaac",
+        "app.kubernetes.io/instance": name,
+        "app.kubernetes.io/managed-by": "npa",
+    }
+    annotations = {
+        "npa.nebius.com/agent-project": str(agent_project),
+        "npa.nebius.com/agent-name": str(agent_name),
+        "npa.nebius.com/source-ranges": ",".join(
+            validate_source_ranges(source_ranges)
+        ),
+    }
+    if not agent_project or not agent_name:
+        raise LeIsaacConfigError("agent relay requires an agent project and name")
+    return {
+        "apiVersion": "v1",
+        "kind": "Service",
+        "metadata": {
+            "name": f"{name}-relay",
+            "namespace": namespace,
+            "labels": labels,
+            "annotations": annotations,
+        },
+        "spec": {
+            "type": "NodePort",
+            "externalTrafficPolicy": "Cluster",
+            "selector": {"app": name},
+            "ports": [
+                {
+                    "name": "status",
+                    "protocol": "TCP",
+                    "port": SERVICE_PORT,
+                    "targetPort": SERVICE_PORT,
+                },
+                {
+                    "name": "signal",
+                    "protocol": "TCP",
+                    "port": SIGNAL_PORT,
+                    "targetPort": SIGNAL_PORT,
+                },
+                {
+                    "name": "media",
+                    "protocol": "UDP",
+                    "port": MEDIA_PORT,
+                    "targetPort": MEDIA_PORT,
+                },
+            ],
+        },
+    }
 
 
 def deployment_manifest(
@@ -296,10 +368,17 @@ def session_manifest(
     expires_at: str = "",
     gpu: str = GPU_PRODUCT,
     created_at: str | None = None,
+    transport: str = TRANSPORT_LOAD_BALANCER,
 ) -> dict[str, Any]:
     run_id = validate_run_id(run_id)
     image = validate_image(image)
-    signal_host = validate_public_ip(signal_host, "signal host")
+    if transport not in (TRANSPORT_LOAD_BALANCER, TRANSPORT_AGENT_RELAY):
+        raise LeIsaacConfigError(f"unsupported LeIsaac transport: {transport}")
+    if transport == TRANSPORT_AGENT_RELAY:
+        if signal_host != "127.0.0.1":
+            raise LeIsaacConfigError("agent-relay signaling must use 127.0.0.1")
+    else:
+        signal_host = validate_public_ip(signal_host, "signal host")
     media_host = validate_public_ip(media_host, "media host")
     expires_at = validate_expiry(expires_at)
     if not re.fullmatch(r"[a-f0-9]{64}", session_nonce):
@@ -310,13 +389,18 @@ def session_manifest(
         "schema": SESSION_SCHEMA,
         "run_id": run_id,
         "provider": "nebius-kubernetes",
+        "transport": transport,
         "task": TASK,
         "teleop_device": TELEOP_DEVICE,
         "signal_host": signal_host,
         "signal_port": SIGNAL_PORT,
         "media_host": media_host,
         "media_port": MEDIA_PORT,
-        "service_url": f"http://{signal_host}:{SERVICE_PORT}",
+        "service_url": (
+            f"http://127.0.0.1:{RELAY_SERVICE_PORT}"
+            if transport == TRANSPORT_AGENT_RELAY
+            else f"http://{signal_host}:{SERVICE_PORT}"
+        ),
         "session_nonce": session_nonce,
         "created_at": created_at
         or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),

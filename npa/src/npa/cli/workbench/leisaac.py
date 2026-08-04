@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import os
+from pathlib import Path
 import secrets
+import shlex
 import subprocess
 import time
 import urllib.request
@@ -13,19 +16,33 @@ from typing import Any
 
 import typer
 
+from npa.clients.config import SSHConfig, list_projects
+from npa.clients.network import (
+    ensure_ingress,
+    remove_exact_npa_ingress_for_instance,
+    resolve_instance_network_context,
+)
+from npa.clients.ssh import SSHClient
 from npa.workbench.leisaac import (
     GPU_PRODUCT,
     SOURCE_COMMIT,
     TASK,
     LeIsaacConfigError,
+    MEDIA_PORT,
+    RELAY_SERVICE_PORT,
+    TRANSPORT_AGENT_RELAY,
+    TRANSPORT_LOAD_BALANCER,
     deployment_manifest,
+    relay_service_manifest,
     resource_name,
     service_manifests,
     session_manifest,
     split_s3_uri,
     validate_expiry,
     validate_image,
+    validate_public_ip,
     validate_run_id,
+    validate_source_ranges,
 )
 
 app = typer.Typer(
@@ -38,6 +55,17 @@ app = typer.Typer(
 class OutputFormat(str, Enum):
     text = "text"
     json = "json"
+
+
+class Transport(str, Enum):
+    load_balancer = TRANSPORT_LOAD_BALANCER
+    agent_relay = TRANSPORT_AGENT_RELAY
+
+
+_RELAY_TOOL = "leisaac-relay"
+_RELAY_CONFIG = "/etc/npa/leisaac-relay.json"
+_RELAY_SCRIPT = "/opt/npa-agent/leisaac-agent-relay.py"
+_RELAY_UNIT = "npa-leisaac-relay.service"
 
 
 def _fail(message: str) -> None:
@@ -95,6 +123,188 @@ def _wait_ready(context: str, namespace: str, deployment: str) -> None:
         time.sleep(5)
 
 
+def _delete_resources(context: str, namespace: str, name: str) -> None:
+    result = _kubectl(
+        context,
+        namespace,
+        [
+            "delete",
+            "deployment",
+            name,
+            "service",
+            f"{name}-tcp",
+            f"{name}-media",
+            f"{name}-relay",
+            "--ignore-not-found=true",
+        ],
+    )
+    if result.returncode:
+        raise RuntimeError((result.stderr or result.stdout).strip())
+
+
+def _node_internal_ip(context: str, namespace: str) -> str:
+    result = _kubectl(context, namespace, ["get", "nodes", "-o", "json"])
+    if result.returncode:
+        raise RuntimeError((result.stderr or result.stdout).strip())
+    candidates: list[str] = []
+    for node in json.loads(result.stdout).get("items", []):
+        labels = node.get("metadata", {}).get("labels", {}) or {}
+        ready = any(
+            condition.get("type") == "Ready" and condition.get("status") == "True"
+            for condition in node.get("status", {}).get("conditions", []) or []
+        )
+        if not ready or labels.get("nvidia.com/gpu.product") != GPU_PRODUCT:
+            continue
+        for address in node.get("status", {}).get("addresses", []) or []:
+            if address.get("type") == "InternalIP" and address.get("address"):
+                candidates.append(str(address["address"]))
+    if not candidates:
+        raise RuntimeError(f"no Ready {GPU_PRODUCT} node with an internal IP was found")
+    return sorted(set(candidates))[0]
+
+
+def _relay_nodeports(context: str, namespace: str, service: str) -> dict[str, int]:
+    result = _kubectl(context, namespace, ["get", "service", service, "-o", "json"])
+    if result.returncode:
+        raise RuntimeError((result.stderr or result.stdout).strip())
+    ports = {
+        str(item.get("name") or ""): int(item.get("nodePort") or 0)
+        for item in json.loads(result.stdout).get("spec", {}).get("ports", [])
+    }
+    if set(ports) != {"status", "signal", "media"} or any(
+        value < 30000 or value > 32767 for value in ports.values()
+    ):
+        raise RuntimeError("LeIsaac relay service did not receive valid NodePorts")
+    return ports
+
+
+def _agent_record(project: str, name: str) -> dict[str, Any]:
+    project_record = list_projects().get(project, {})
+    agents = project_record.get("agents", {}) if isinstance(project_record, dict) else {}
+    record = agents.get(name, {}) if isinstance(agents, dict) else {}
+    if not isinstance(record, dict) or not record:
+        raise LeIsaacConfigError(f"agent config not found for {project}/{name}")
+    return record
+
+
+def _agent_relay_context(project: str, name: str) -> tuple[str, str, SSHClient]:
+    record = _agent_record(project, name)
+    instance_id = str(record.get("instance_id") or "").strip()
+    key_path = str(record.get("ssh_key_path") or "").strip()
+    if not instance_id:
+        raise LeIsaacConfigError("agent record has no provider instance id")
+    if not key_path or not Path(key_path).expanduser().is_file():
+        raise LeIsaacConfigError("agent record has no usable SSH private key")
+    network = resolve_instance_network_context(instance_id)
+    public_ip = validate_public_ip(
+        str(network.public_ip).split("/", 1)[0], "agent public IP"
+    )
+    saved_ip = str(record.get("public_ip") or "").split("/", 1)[0]
+    if saved_ip and saved_ip != public_ip:
+        raise LeIsaacConfigError(
+            "agent public IP differs from provider state; bootstrap the agent to refresh it"
+        )
+    ssh = SSHClient(
+        SSHConfig(
+            host=public_ip,
+            user=str(record.get("ssh_user") or "ubuntu"),
+            key_path=key_path,
+        )
+    )
+    return instance_id, public_ip, ssh
+
+
+def _relay_source(path: str) -> bytes:
+    source = Path(__file__).resolve().parents[2] / "workbench" / "leisaac" / path
+    return source.read_bytes()
+
+
+def _install_agent_relay(
+    ssh: SSHClient,
+    *,
+    run_id: str,
+    target_host: str,
+    ports: dict[str, int],
+) -> None:
+    config = {
+        "run_id": run_id,
+        "target_host": target_host,
+        "status_port": ports["status"],
+        "signal_port": ports["signal"],
+        "media_port": ports["media"],
+    }
+    unit = """[Unit]
+Description=NPA LeIsaac private-cluster relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+ExecStart=/usr/bin/python3 /opt/npa-agent/leisaac-agent-relay.py --config /etc/npa/leisaac-relay.json
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+
+[Install]
+WantedBy=multi-user.target
+"""
+    script_b64 = base64.b64encode(_relay_source("agent_relay.py")).decode("ascii")
+    config_b64 = base64.b64encode(
+        (json.dumps(config, sort_keys=True) + "\n").encode("utf-8")
+    ).decode("ascii")
+    unit_b64 = base64.b64encode(unit.encode("utf-8")).decode("ascii")
+    run_q = shlex.quote(run_id)
+    command = f"""set -eu
+existing=''
+if sudo test -f {_RELAY_CONFIG}; then
+  existing=$(sudo /usr/bin/python3 -c 'import json; print(json.load(open("{_RELAY_CONFIG}"))["run_id"])')
+fi
+if sudo systemctl is-active --quiet {_RELAY_UNIT} && [ "$existing" != {run_q} ]; then
+  echo 'another LeIsaac relay session is active' >&2
+  exit 42
+fi
+echo {shlex.quote(script_b64)} | base64 -d | sudo tee {_RELAY_SCRIPT} >/dev/null
+echo {shlex.quote(config_b64)} | base64 -d | sudo tee {_RELAY_CONFIG} >/dev/null
+echo {shlex.quote(unit_b64)} | base64 -d | sudo tee /etc/systemd/system/{_RELAY_UNIT} >/dev/null
+sudo chmod 0644 {_RELAY_SCRIPT} {_RELAY_CONFIG} /etc/systemd/system/{_RELAY_UNIT}
+sudo systemctl daemon-reload
+sudo systemctl enable --now {_RELAY_UNIT} >/dev/null
+sudo systemctl restart {_RELAY_UNIT}
+"""
+    ssh.run_or_raise(command, label="install LeIsaac agent relay")
+
+
+def _remove_agent_relay(ssh: SSHClient, *, run_id: str) -> None:
+    run_q = shlex.quote(run_id)
+    command = f"""set -eu
+if ! sudo test -f {_RELAY_CONFIG}; then exit 0; fi
+existing=$(sudo /usr/bin/python3 -c 'import json; print(json.load(open("{_RELAY_CONFIG}"))["run_id"])')
+if [ "$existing" != {run_q} ]; then exit 0; fi
+sudo systemctl disable --now {_RELAY_UNIT} >/dev/null 2>&1 || true
+sudo rm -f /etc/systemd/system/{_RELAY_UNIT} {_RELAY_CONFIG} {_RELAY_SCRIPT}
+sudo systemctl daemon-reload
+"""
+    ssh.run_or_raise(command, label="remove LeIsaac agent relay")
+
+
+def _relay_status(ssh: SSHClient) -> dict[str, Any]:
+    _code, stdout, _stderr = ssh.run_or_raise(
+        f"curl --fail --silent --show-error http://127.0.0.1:{RELAY_SERVICE_PORT}/status",
+        label="attest LeIsaac through the agent relay",
+    )
+    payload = json.loads(stdout)
+    if not isinstance(payload, dict):
+        raise RuntimeError("LeIsaac relay returned a non-object health document")
+    return payload
+
+
 def _status(signal_host: str) -> dict[str, Any]:
     with urllib.request.urlopen(f"http://{signal_host}:8080/status") as response:  # noqa: S310 - validated LB IP
         payload = json.loads(response.read().decode("utf-8"))
@@ -148,7 +358,7 @@ def launch_cmd(
     source_range: list[str] = typer.Option(
         ...,
         "--source-range",
-        help="Public CIDR allowed to reach status/signaling TCP ports; repeat for agent and operator.",
+        help="Public operator CIDR allowed to reach the session; repeat when needed.",
     ),
     artifact_uri: str = typer.Option(
         ..., "--artifact-uri", help="S3 prefix where the run manifest is written."
@@ -160,6 +370,17 @@ def launch_cmd(
     ),
     image_pull_secret: str = typer.Option(
         "npa-registry", "--image-pull-secret", help="Existing registry pull secret."
+    ),
+    transport: Transport = typer.Option(
+        Transport.load_balancer,
+        "--transport",
+        help="Public LBs, or the existing public HTTPS agent with private cluster relay.",
+    ),
+    agent_project: str = typer.Option(
+        "", "--agent-project", help="Saved NPA agent project alias for agent-relay."
+    ),
+    agent_name: str = typer.Option(
+        "", "--agent-name", help="Saved NPA agent deployment name for agent-relay."
     ),
     output: OutputFormat = typer.Option(
         OutputFormat.text, "--output", help="Output format."
@@ -174,16 +395,17 @@ def launch_cmd(
         _fail(
             "set OMNI_KIT_ACCEPT_EULA=YES and ISAACSIM_ACCEPT_EULA=YES after accepting NVIDIA's EULAs"
         )
+    name = ""
+    instance_id = ""
+    ssh: SSHClient | None = None
+    relay_installed = False
+    created_ingress_sources: list[str] = []
     try:
         run_id = validate_run_id(run_id)
         image = validate_image(image)
         expires_at = validate_expiry(expires_at)
+        source_ranges = validate_source_ranges(source_range)
         split_s3_uri(artifact_uri)
-        services = service_manifests(
-            run_id=run_id,
-            namespace=namespace,
-            source_ranges=source_range,
-        )
         name = resource_name(run_id)
         if image_pull_secret:
             secret = _kubectl(
@@ -193,9 +415,53 @@ def launch_cmd(
                 raise LeIsaacConfigError(
                     f"image pull secret {image_pull_secret!r} is missing in namespace {namespace!r}"
                 )
-        _apply(context, namespace, services)
-        signal_host = _external_ip(context, namespace, f"{name}-tcp")
-        media_host = _external_ip(context, namespace, f"{name}-media")
+        if transport == Transport.agent_relay:
+            if not agent_project or not agent_name:
+                raise LeIsaacConfigError(
+                    "agent-relay requires --agent-project and --agent-name"
+                )
+            instance_id, media_host, ssh = _agent_relay_context(
+                agent_project, agent_name
+            )
+            service = relay_service_manifest(
+                run_id=run_id,
+                namespace=namespace,
+                agent_project=agent_project,
+                agent_name=agent_name,
+                source_ranges=source_ranges,
+            )
+            _apply(context, namespace, [service])
+            node_host = _node_internal_ip(context, namespace)
+            node_ports = _relay_nodeports(
+                context, namespace, f"{name}-relay"
+            )
+            for source in source_ranges:
+                ingress = ensure_ingress(
+                    vm_id=instance_id,
+                    ports=(MEDIA_PORT,),
+                    source=source,
+                    tool=_RELAY_TOOL,
+                    protocol="UDP",
+                )
+                if ingress.changed:
+                    created_ingress_sources.append(source)
+            relay_installed = True
+            _install_agent_relay(
+                ssh,
+                run_id=run_id,
+                target_host=node_host,
+                ports=node_ports,
+            )
+            signal_host = "127.0.0.1"
+        else:
+            services = service_manifests(
+                run_id=run_id,
+                namespace=namespace,
+                source_ranges=source_ranges,
+            )
+            _apply(context, namespace, services)
+            signal_host = _external_ip(context, namespace, f"{name}-tcp")
+            media_host = _external_ip(context, namespace, f"{name}-media")
         nonce = secrets.token_hex(32)
         deployment = deployment_manifest(
             run_id=run_id,
@@ -207,7 +473,7 @@ def launch_cmd(
         )
         _apply(context, namespace, [deployment])
         _wait_ready(context, namespace, name)
-        health = _status(signal_host)
+        health = _relay_status(ssh) if ssh is not None else _status(signal_host)
         if (
             health.get("state") != "ready"
             or health.get("task") != TASK
@@ -224,9 +490,34 @@ def launch_cmd(
             expires_at=expires_at,
             gpu=str(health.get("gpu") or GPU_PRODUCT),
             created_at=str(health.get("started_at") or "") or None,
+            transport=transport.value,
         )
         manifest_uri = _put_manifest(artifact_uri, manifest)
     except Exception as exc:  # noqa: BLE001 - CLI boundary reports SDK and kubectl failures
+        cleanup_errors: list[str] = []
+        if relay_installed and ssh is not None:
+            try:
+                _remove_agent_relay(ssh, run_id=run_id)
+            except Exception as cleanup_exc:  # noqa: BLE001 - preserve primary failure
+                cleanup_errors.append(f"relay cleanup: {cleanup_exc}")
+        for source in created_ingress_sources:
+            try:
+                remove_exact_npa_ingress_for_instance(
+                    instance_id,
+                    ports=(MEDIA_PORT,),
+                    source=source,
+                    tool=_RELAY_TOOL,
+                    protocol="UDP",
+                )
+            except Exception as cleanup_exc:  # noqa: BLE001 - preserve primary failure
+                cleanup_errors.append(f"ingress cleanup: {cleanup_exc}")
+        if name:
+            try:
+                _delete_resources(context, namespace, name)
+            except Exception as cleanup_exc:  # noqa: BLE001 - preserve primary failure
+                cleanup_errors.append(f"Kubernetes cleanup: {cleanup_exc}")
+        if cleanup_errors:
+            _fail(f"{exc}; cleanup also failed: {'; '.join(cleanup_errors)}")
         _fail(str(exc))
         return
     _emit(
@@ -236,10 +527,16 @@ def launch_cmd(
             "task": TASK,
             "gpu": health.get("gpu"),
             "image": image,
+            "transport": transport.value,
             "deployment": name,
             "signal_host": signal_host,
             "media_host": media_host,
             "artifact": manifest_uri,
+            "public_agent_url": (
+                f"https://{media_host}/"
+                if transport == Transport.agent_relay
+                else "not used"
+            ),
             "expires_at": expires_at or "none (service lifecycle)",
         },
         output,
@@ -291,19 +588,34 @@ def destroy_cmd(
     except LeIsaacConfigError as exc:
         _fail(str(exc))
         return
-    result = _kubectl(
-        context,
-        namespace,
-        [
-            "delete",
-            "deployment",
-            name,
-            "service",
-            f"{name}-tcp",
-            f"{name}-media",
-            "--ignore-not-found=true",
-        ],
+    relay = _kubectl(
+        context, namespace, ["get", "service", f"{name}-relay", "-o", "json"]
     )
-    if result.returncode:
-        _fail((result.stderr or result.stdout).strip())
-    typer.echo((result.stdout or "transient LeIsaac resources absent").strip())
+    if relay.returncode == 0:
+        try:
+            annotations = (
+                json.loads(relay.stdout).get("metadata", {}).get("annotations", {})
+                or {}
+            )
+            project = str(annotations.get("npa.nebius.com/agent-project") or "")
+            agent_name = str(annotations.get("npa.nebius.com/agent-name") or "")
+            sources = validate_source_ranges(
+                str(annotations.get("npa.nebius.com/source-ranges") or "").split(",")
+            )
+            instance_id, _public_ip, ssh = _agent_relay_context(project, agent_name)
+            _remove_agent_relay(ssh, run_id=run_id)
+            for source in sources:
+                remove_exact_npa_ingress_for_instance(
+                    instance_id,
+                    ports=(MEDIA_PORT,),
+                    source=source,
+                    tool=_RELAY_TOOL,
+                    protocol="UDP",
+                )
+        except Exception as exc:  # noqa: BLE001 - CLI cleanup boundary
+            _fail(f"agent relay cleanup failed; Kubernetes resources retained: {exc}")
+    try:
+        _delete_resources(context, namespace, name)
+    except Exception as exc:  # noqa: BLE001 - CLI cleanup boundary
+        _fail(str(exc))
+    typer.echo("transient LeIsaac Kubernetes and relay resources removed")

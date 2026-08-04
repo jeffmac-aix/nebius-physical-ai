@@ -12,7 +12,7 @@ It is not a Cartpole or synthetic viewer demo.
 The `LeIsaac` tab is not present in the initial HTML. The browser asks the
 authenticated agent backend about the selected run. The backend discovers
 exactly one `reports/leisaac-session.json` artifact, validates its schema,
-run/task/device, fixed ports, public IP endpoints, expiry, source commit, and
+run/task/device, fixed transport endpoints, expiry, source commit, and
 digest-pinned image, then verifies the live service's matching nonce
 attestation. Any absent, stale, malformed, unreachable, mismatched, or
 non-ready session leaves the tab absent. Switching runs repeats this check.
@@ -22,9 +22,17 @@ Signaling is relayed through the agent's authenticated same-origin
 `/api/leisaac/signal` WebSocket. The NVIDIA browser client JavaScript is also
 proxied through an authenticated route and must match the agent's exact pinned
 SHA-256 before it can execute. WebRTC media uses only the session's
-public UDP `47998` endpoint. Status/client TCP `8080` and signaling TCP `49100`
-and UDP media `47998` are source-restricted to the operator and agent IPs at
-their load balancers.
+public UDP `47998` endpoint.
+
+Two transport modes preserve that browser contract. `public-load-balancer`
+source-restricts status/client TCP `8080`, signaling TCP `49100`, and UDP media
+`47998` on dedicated load balancers. `agent-relay` consumes no additional
+public IPv4 allocation: Kubernetes uses a private NodePort service, the saved
+NPA agent reaches it over the VPC, and a hardened systemd relay binds status to
+`127.0.0.1:48080`, signaling to `127.0.0.1:49100`, and media to fixed UDP
+`47998`. Only media UDP is added to the agent security group, and only for each
+explicit operator CIDR. The UI and TCP APIs remain behind nginx HTTPS and basic
+authentication; port `8787`, NodePorts, `8080`, and `49100` are never published.
 
 ## Runtime and licensing
 
@@ -52,8 +60,8 @@ EULA acceptance and proprietary bytes are never baked into an image.
 
 Rendering requires an RT-core GPU. Use L40S or RTX PRO 6000; the Kubernetes
 launcher hard-selects RTX PRO 6000 and never routes this path to H100/H200.
-The image must be pinned by digest and at least one public `/32` source range
-must be provided for the agent/operator. The session has no implicit lifetime;
+The image must be pinned by digest and at least one public `/32` operator source
+range must be provided. The session has no implicit lifetime;
 an operator may add `--expires-at` as an explicit security policy, otherwise
 the live service lifecycle controls tab availability.
 
@@ -99,10 +107,19 @@ npa workbench leisaac launch \
   --run-id leisaac-teleop-example \
   --image cr.us-central1.nebius.cloud/REGISTRY/npa-leisaac@sha256:DIGEST \
   --context YOUR_KUBECTL_CONTEXT \
-  --source-range AGENT_PUBLIC_IP/32 \
   --source-range OPERATOR_PUBLIC_IP/32 \
+  --transport agent-relay \
+  --agent-project PROJECT_ALIAS \
+  --agent-name AGENT_NAME \
   --artifact-uri s3://BUCKET/leisaac
 ```
+
+`agent-relay` resolves the agent IP from live provider state and refuses a
+stale saved address, missing SSH key, public relay target, non-NodePort target,
+unrestricted source range, or a second active relay session. Use
+`--transport public-load-balancer` only when dedicated Kubernetes public IPv4
+allocations are intended; in that mode repeat `--source-range` for the agent
+and operator because the agent reaches the status/signaling load balancer.
 
 This is an interactive, lifecycle-bearing service rather than a finite batch
 stage, so it is intentionally launched and destroyed through the Workbench
@@ -121,10 +138,12 @@ npa workbench leisaac status --run-id leisaac-teleop-example --context YOUR_KUBE
 npa workbench leisaac destroy --run-id leisaac-teleop-example --context YOUR_KUBECTL_CONTEXT
 ```
 
-Destroy removes only that run's transient Deployment and load balancers. It
-preserves the S3 manifest/log/evidence record. Once the service is gone, live
-health fails and the agent UI removes the tab even if the historical manifest
-still exists.
+Destroy removes only that run's transient Deployment and Services. For an
+agent-relayed run it reads the owning agent and source CIDRs from Kubernetes
+metadata, stops only the matching relay unit, and deletes only the matching
+NPA-managed UDP ingress rule. It preserves the S3 manifest/log/evidence record.
+Once the service is gone, live health fails and the agent UI removes the tab
+even if the historical manifest still exists.
 
 Durable validation evidence and screenshots live under
 `docs/evidence/leisaac/`.

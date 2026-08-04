@@ -13,8 +13,10 @@ from npa.workbench.leisaac import (
     GPU_PRODUCT,
     MEDIA_PORT,
     SIGNAL_PORT,
+    TRANSPORT_AGENT_RELAY,
     LeIsaacConfigError,
     deployment_manifest,
+    relay_service_manifest,
     service_manifests,
     session_manifest,
 )
@@ -60,6 +62,64 @@ def test_deployment_is_real_rt_core_leisaac_and_operator_eula_runtime_config() -
     assert env["ISAACSIM_ACCEPT_EULA"] == "YES"
     assert env["NPA_LEISAAC_MEDIA_HOST"] == "1.1.1.1"
     assert "/status" == container["readinessProbe"]["httpGet"]["path"]
+
+
+def test_agent_relay_service_is_private_nodeport_with_cleanup_metadata() -> None:
+    service = relay_service_manifest(
+        run_id="live-1",
+        namespace="leisaac",
+        agent_project="rtxpro",
+        agent_name="agent",
+        source_ranges=["8.8.8.8/32"],
+    )
+
+    assert service["spec"]["type"] == "NodePort"
+    assert "loadBalancerSourceRanges" not in service["spec"]
+    assert {item["name"] for item in service["spec"]["ports"]} == {
+        "status",
+        "signal",
+        "media",
+    }
+    annotations = service["metadata"]["annotations"]
+    assert annotations == {
+        "npa.nebius.com/agent-project": "rtxpro",
+        "npa.nebius.com/agent-name": "agent",
+        "npa.nebius.com/source-ranges": "8.8.8.8/32",
+    }
+
+
+def test_agent_relay_manifest_keeps_tcp_private_and_media_on_agent_public_ip() -> None:
+    manifest = session_manifest(
+        run_id="live-relay",
+        image=IMAGE,
+        signal_host="127.0.0.1",
+        media_host="8.8.8.8",
+        session_nonce=NONCE,
+        transport=TRANSPORT_AGENT_RELAY,
+    )
+
+    assert manifest["transport"] == TRANSPORT_AGENT_RELAY
+    assert manifest["signal_host"] == "127.0.0.1"
+    assert manifest["service_url"] == "http://127.0.0.1:48080"
+    assert manifest["media_host"] == "8.8.8.8"
+
+
+def test_agent_relay_rejects_non_loopback_signal_or_missing_agent_identity() -> None:
+    with pytest.raises(LeIsaacConfigError, match="127.0.0.1"):
+        session_manifest(
+            run_id="live-relay",
+            image=IMAGE,
+            signal_host="8.8.8.8",
+            media_host="8.8.8.8",
+            session_nonce=NONCE,
+            transport=TRANSPORT_AGENT_RELAY,
+        )
+    with pytest.raises(LeIsaacConfigError, match="agent project and name"):
+        relay_service_manifest(
+            run_id="live-relay",
+            namespace="default",
+            source_ranges=["8.8.8.8/32"],
+        )
 
 
 def test_manifest_records_exact_real_component_and_provenance() -> None:

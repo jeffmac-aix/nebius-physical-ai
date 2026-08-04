@@ -21,6 +21,9 @@ LEISAAC_MANIFEST_NAME = "leisaac-session.json"
 LEISAAC_SIGNAL_PORT = 49100
 LEISAAC_MEDIA_PORT = 47998
 LEISAAC_SERVICE_PORT = 8080
+LEISAAC_RELAY_SERVICE_PORT = 48080
+LEISAAC_TRANSPORT_LOAD_BALANCER = "public-load-balancer"
+LEISAAC_TRANSPORT_AGENT_RELAY = "agent-relay"
 LEISAAC_TASK = "LeIsaac-SO101-PickOrange-v0"
 LEISAAC_TELEOP_DEVICE = "keyboard"
 LEISAAC_CLIENT_VERSION = "5.18.11"
@@ -68,18 +71,23 @@ def _public_ip(value: Any) -> str:
     return address.compressed
 
 
-def _service_url(value: Any, signal_host: str) -> str:
+def _service_url(value: Any, signal_host: str, transport: str) -> str:
     raw = str(value or "").strip()
     parsed = urlparse(raw)
     if parsed.scheme != "http" or parsed.username or parsed.password:
         return ""
     if parsed.path not in ("", "/") or parsed.query or parsed.fragment:
         return ""
-    host = _public_ip(parsed.hostname)
+    raw_host = str(parsed.hostname or "")
     try:
         port = parsed.port
     except ValueError:
         return ""
+    if transport == LEISAAC_TRANSPORT_AGENT_RELAY:
+        if raw_host != "127.0.0.1" or port != LEISAAC_RELAY_SERVICE_PORT:
+            return ""
+        return f"http://127.0.0.1:{LEISAAC_RELAY_SERVICE_PORT}"
+    host = _public_ip(raw_host)
     if not host or host != signal_host or port != LEISAAC_SERVICE_PORT:
         return ""
     return f"http://{host}:{LEISAAC_SERVICE_PORT}"
@@ -128,7 +136,19 @@ def normalize_manifest(
     if str(data.get("teleop_device") or "") != LEISAAC_TELEOP_DEVICE:
         return None, "LeIsaac session is not keyboard-teleoperation capable"
 
-    signal_host = _public_ip(data.get("signal_host"))
+    transport = str(data.get("transport") or LEISAAC_TRANSPORT_LOAD_BALANCER)
+    if transport not in (
+        LEISAAC_TRANSPORT_LOAD_BALANCER,
+        LEISAAC_TRANSPORT_AGENT_RELAY,
+    ):
+        return None, "LeIsaac session transport is unsupported"
+    raw_signal_host = str(data.get("signal_host") or "").strip()
+    signal_host = (
+        "127.0.0.1"
+        if transport == LEISAAC_TRANSPORT_AGENT_RELAY
+        and raw_signal_host == "127.0.0.1"
+        else _public_ip(raw_signal_host)
+    )
     media_host = _public_ip(data.get("media_host"))
     if not signal_host or not media_host:
         return None, "LeIsaac session endpoints must be public IP addresses"
@@ -136,7 +156,7 @@ def normalize_manifest(
         return None, "LeIsaac session has an unsupported signaling port"
     if _integer(data.get("media_port")) != LEISAAC_MEDIA_PORT:
         return None, "LeIsaac session has an unsupported media port"
-    service_url = _service_url(data.get("service_url"), signal_host)
+    service_url = _service_url(data.get("service_url"), signal_host, transport)
     if not service_url:
         return None, "LeIsaac session service endpoint is invalid"
 
@@ -162,6 +182,7 @@ def normalize_manifest(
         "schema": LEISAAC_SESSION_SCHEMA,
         "run_id": run_id,
         "provider": "nebius-kubernetes",
+        "transport": transport,
         "task": LEISAAC_TASK,
         "teleop_device": LEISAAC_TELEOP_DEVICE,
         "signal_host": signal_host,

@@ -238,6 +238,50 @@ def test_network_ensure_ingress_partial_coverage_creates_missing_ports(mocker) -
     assert "8081" not in create
 
 
+def test_network_ensure_ingress_supports_source_restricted_udp(mocker) -> None:
+    from npa.clients import network as network_client
+
+    calls = _mock_nebius(mocker)
+    result = network_client.ensure_ingress(
+        vm_id="computeinstance-test",
+        ports=(47998,),
+        source="8.8.8.8/32",
+        tool="leisaac-relay",
+        protocol="UDP",
+    )
+
+    assert result.changed is True
+    create = _create_calls(calls)[0]
+    assert create[create.index("--protocol") + 1] == "udp"
+    assert create[create.index("--ingress-source-cidrs") + 1] == "8.8.8.8/32"
+    assert create[create.index("--ingress-destination-ports") + 1] == "47998"
+
+
+def test_network_udp_does_not_accept_tcp_coverage(mocker) -> None:
+    from npa.clients import network as network_client
+
+    calls = _mock_nebius(
+        mocker,
+        rules=[
+            _ingress_rule(
+                name="allow-npa-leisaac-relay-47998",
+                ports=[47998],
+                source="8.8.8.8/32",
+                protocol="TCP",
+            )
+        ],
+    )
+    network_client.ensure_ingress(
+        vm_id="computeinstance-test",
+        ports=(47998,),
+        source="8.8.8.8/32",
+        tool="leisaac-relay",
+        protocol="UDP",
+    )
+
+    assert len(_create_calls(calls)) == 1
+
+
 def test_network_ensure_ingress_permission_failure_is_clean(mocker) -> None:
     _mock_nebius(mocker, create_error="permission denied")
 
@@ -423,6 +467,48 @@ def test_remove_internal_agent_port_deletes_only_dedicated_npa_rule(mocker) -> N
     assert deleted == ["rule-backend"]
     run.assert_called_once_with(
         ["vpc", "security-rule", "delete", "--id", "rule-backend"]
+    )
+
+
+def test_remove_exact_udp_ingress_preserves_nonmatching_rules(mocker) -> None:
+    from npa.clients import network as network_client
+
+    mocker.patch("npa.clients.network._get_instance", return_value=_instance())
+    mocker.patch(
+        "npa.clients.network._list_security_rules",
+        return_value=[
+            _ingress_rule(
+                rule_id="rule-relay",
+                name="allow-npa-leisaac-relay-47998",
+                ports=[47998],
+                source="8.8.8.8/32",
+                protocol="UDP",
+            ),
+            _ingress_rule(
+                rule_id="rule-other-source",
+                name="allow-npa-leisaac-relay-47998",
+                ports=[47998],
+                source="1.1.1.1/32",
+                protocol="UDP",
+            ),
+            _ingress_rule(
+                rule_id="rule-https", name="allow-server", ports=[443]
+            ),
+        ],
+    )
+    run = mocker.patch("npa.clients.network.nebius._run")
+
+    deleted = network_client.remove_exact_npa_ingress_for_instance(
+        "computeinstance-test",
+        ports=(47998,),
+        source="8.8.8.8/32",
+        tool="leisaac-relay",
+        protocol="UDP",
+    )
+
+    assert deleted == ["rule-relay"]
+    run.assert_called_once_with(
+        ["vpc", "security-rule", "delete", "--id", "rule-relay"]
     )
 
 

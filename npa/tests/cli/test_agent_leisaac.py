@@ -112,6 +112,41 @@ def test_manifest_without_expiry_remains_lifecycle_gated() -> None:
     assert normalized["expires_at"] == ""
 
 
+def test_agent_relay_manifest_accepts_only_fixed_loopback_tcp_contract() -> None:
+    normalized, reason = normalize_manifest(
+        _manifest(
+            transport="agent-relay",
+            signal_host="127.0.0.1",
+            service_url="http://127.0.0.1:48080",
+        ),
+        expected_run_id="leisaac-live-1",
+    )
+
+    assert reason == ""
+    assert normalized is not None
+    assert normalized["transport"] == "agent-relay"
+    assert normalized["signal_host"] == "127.0.0.1"
+
+    for override in (
+        {"signal_host": "127.0.0.2"},
+        {"service_url": "http://127.0.0.1:8080"},
+        {"service_url": "http://127.0.0.2:48080"},
+        {"service_url": "http://169.254.169.254:48080"},
+    ):
+        relay_values = {
+            "transport": "agent-relay",
+            "signal_host": "127.0.0.1",
+            "service_url": "http://127.0.0.1:48080",
+        }
+        relay_values.update(override)
+        rejected, rejected_reason = normalize_manifest(
+            _manifest(**relay_values),
+            expected_run_id="leisaac-live-1",
+        )
+        assert rejected is None
+        assert rejected_reason
+
+
 def test_live_health_attestation_gates_secret_free_status() -> None:
     manifest = _normalized()
     health, reason = validate_health(
