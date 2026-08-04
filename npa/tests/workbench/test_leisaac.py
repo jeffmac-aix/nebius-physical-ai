@@ -333,6 +333,9 @@ def test_container_never_bakes_eula_client_or_assets() -> None:
     assert "stdin=subprocess.DEVNULL" in server
     assert "start_new_session=True" in server
     assert "tcp_ready(SIGNAL_PORT) and READY_PATH.is_file()" in server
+    assert "RENDER_WARMUP_SECONDS = 45" in server
+    assert 'update_state(detail="warming RTX renderer")' in server
+    assert "time.monotonic() - renderer_ready_at >= RENDER_WARMUP_SECONDS" in server
     assert "NPA_LEISAAC_INPUT_COUNTER" in server
     assert "feetech-servo-sdk" in dockerfile and "-m pip check" in dockerfile
     assert "git -C /opt/leisaac apply --check --unidiff-zero" in dockerfile

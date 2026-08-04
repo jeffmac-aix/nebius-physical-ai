@@ -2322,9 +2322,11 @@
               authenticate: false,
               maxReconnects: 20,
               nativeTouchEvents: true,
-              width: 1920,
-              height: 1080,
-              fps: 60,
+              // Keep the authenticated WSS/UDP relay comfortably interactive
+              // while preserving enough detail for SO101 teleoperation.
+              width: 1280,
+              height: 720,
+              fps: 30,
               onUpdate: handleLeIsaacStreamEvent,
               onStart: handleLeIsaacStreamEvent,
               onStop: () => {

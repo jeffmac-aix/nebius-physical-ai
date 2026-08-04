@@ -37,6 +37,7 @@ ISAAC_LAB_VERSION = "2.3.2.post1"
 SIGNAL_PORT = 49100
 MEDIA_PORT = 47998
 SERVICE_PORT = 8080
+RENDER_WARMUP_SECONDS = 45
 
 ASSET_RELEASE = "v0.1.0"
 ROBOT_URL = "https://github.com/LightwheelAI/leisaac/releases/download/v0.1.0/so101_follower.usd"
@@ -312,10 +313,17 @@ def run_simulation() -> None:
             text=True,
         )
         update_state(pid=CHILD.pid, gpu=detect_gpu(), started_at=utc_now())
+        renderer_ready_at: float | None = None
         while CHILD.poll() is None:
             if tcp_ready(SIGNAL_PORT) and READY_PATH.is_file():
-                update_state(state="ready", detail="live", webrtc_ready=True)
-                break
+                if renderer_ready_at is None:
+                    renderer_ready_at = time.monotonic()
+                    update_state(detail="warming RTX renderer")
+                if time.monotonic() - renderer_ready_at >= RENDER_WARMUP_SECONDS:
+                    update_state(state="ready", detail="live", webrtc_ready=True)
+                    break
+            else:
+                renderer_ready_at = None
             time.sleep(1)
         while CHILD.poll() is None:
             time.sleep(2)
