@@ -85,7 +85,11 @@ def validate_source_ranges(values: list[str] | tuple[str, ...]) -> list[str]:
             raise LeIsaacConfigError(
                 f"invalid LeIsaac source range: {raw}"
             ) from exc
-        if not network.is_global:
+        # ``ipaddress`` changed its classification of the all-addresses
+        # network across supported Python releases.  Reject an unrestricted
+        # route explicitly instead of depending on that version-specific
+        # classification.
+        if network.prefixlen == 0 or not network.is_global:
             raise LeIsaacConfigError(f"LeIsaac source range must be public: {network}")
         result.append(network.with_prefixlen)
     if not result:
@@ -375,13 +379,16 @@ def deployment_manifest(
                 ],
                 "resources": {
                     "requests": {
-                        "cpu": "4",
+                        # PickOrange uses CPU PhysX on sm_120 while the RTX GPU
+                        # renders and encodes the interactive viewport.  The
+                        # first scene reset saturates the old eight-core quota.
+                        "cpu": "16",
                         "memory": "24Gi",
                         "ephemeral-storage": "70Gi",
                         "nvidia.com/gpu": "1",
                     },
                     "limits": {
-                        "cpu": "8",
+                        "cpu": "32",
                         "memory": "48Gi",
                         "ephemeral-storage": "90Gi",
                         "nvidia.com/gpu": "1",

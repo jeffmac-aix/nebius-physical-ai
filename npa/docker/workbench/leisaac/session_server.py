@@ -354,12 +354,15 @@ def health_document() -> dict[str, Any]:
 
 
 def liveness_status() -> int:
-    """Restart a wedged reset while preserving the pod's warm caches."""
+    """Keep a live simulator process alive while readiness is still pending."""
 
     with STATE_LOCK:
         state = str(STATE.get("state") or "")
         pid = int(STATE.get("pid") or 0)
-    if state == "failed" or (state == "starting" and pid > 0):
+    child = CHILD
+    if state == "failed" or (
+        pid > 0 and (child is None or child.poll() is not None)
+    ):
         return 503
     return 200
 

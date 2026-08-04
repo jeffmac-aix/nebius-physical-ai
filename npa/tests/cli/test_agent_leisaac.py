@@ -402,7 +402,6 @@ def test_signaling_proxy_preserves_only_upstream_sign_in_path() -> None:
             if not self.sent_initial:
                 self.sent_initial = True
                 return '{"ackid":1}'
-            await asyncio.Event().wait()
             raise StopAsyncIteration
 
     connected = []

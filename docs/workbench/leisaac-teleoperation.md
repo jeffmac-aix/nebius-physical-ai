@@ -84,18 +84,17 @@ observation terms to avoid Isaac's camera/DirectGpu interoperability fault on
 Isaac Sim 5.1 does not ship `sm_120` PhysX kernels; the real environment, RTX
 rendering, and WebRTC encoding remain active on the selected RT-core GPU. The
 browser path disables Isaac Lab Fabric so CPU PhysX synchronizes through the
-supported USD I/O path instead of stalling during the real environment reset. The
+supported USD I/O path. The pod requests 16 CPU cores and may use up to 32 so
+the USD-backed first reset is not throttled by the previous eight-core limit. The
 session supervisor starts Kit in an isolated process session with closed stdin
 so HTTP-service signal handling cannot interfere with upstream teleoperation.
 The browser service pins upstream seed `42` and reports it in `/status`; this
 avoids nondeterministic PickOrange reset states and makes evidence reproducible.
-On a cold pod, the existing liveness probe preserves the licensed runtime fetch
-but restarts a simulator that remains in its first pre-ready reset. Kubernetes
-keeps the pod's `emptyDir` Isaac caches, so the deterministic retry uses the
-warmed collision/shader cache while `/status` remains unavailable until reset.
-The liveness tolerance covers the measured cold collision/shader preparation;
-pre-ready retries remain unbounded and retain the same pod-local cache until the
-real environment reset completes.
+On a cold pod, liveness remains healthy while the supervised simulator process
+is alive, including during the licensed runtime fetch and first reset. Readiness
+and `/status` remain unavailable until the real reset and WebRTC signaling are
+both ready; a failed or exited simulator still fails liveness so Kubernetes can
+restart it while preserving the pod-local `emptyDir` caches.
 The exact patch is commit-locked in the image build and named in runtime
 provenance. It
 refuses to start until the operator explicitly sets both

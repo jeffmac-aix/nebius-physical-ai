@@ -82,6 +82,8 @@ def test_deployment_is_real_rt_core_leisaac_and_operator_eula_runtime_config() -
     pod = deployment["spec"]["template"]["spec"]
     assert pod["nodeSelector"] == {"nvidia.com/gpu.product": GPU_PRODUCT}
     container = pod["containers"][0]
+    assert container["resources"]["requests"]["cpu"] == "16"
+    assert container["resources"]["limits"]["cpu"] == "32"
     assert container["resources"]["limits"]["nvidia.com/gpu"] == "1"
     assert container["securityContext"]["runAsNonRoot"] is True
     env = {item["name"]: item["value"] for item in container["env"]}
@@ -335,15 +337,19 @@ def test_health_reads_upstream_keyboard_counter(tmp_path: Path) -> None:
     assert health["seed"] == 42
 
 
-def test_liveness_preserves_runtime_fetch_and_restarts_wedged_reset() -> None:
+def test_liveness_preserves_live_initial_reset_and_restarts_dead_child() -> None:
     server = _session_server_module()
 
     server.STATE.update(state="starting", pid=0)
     assert server.liveness_status() == 200
+    child = type("Child", (), {"poll": lambda self: None})()
+    server.CHILD = child
     server.STATE.update(state="starting", pid=42)
-    assert server.liveness_status() == 503
+    assert server.liveness_status() == 200
     server.STATE.update(state="ready", pid=42)
     assert server.liveness_status() == 200
+    child.poll = lambda: 1
+    assert server.liveness_status() == 503
     server.STATE.update(state="failed", pid=0)
     assert server.liveness_status() == 503
 
