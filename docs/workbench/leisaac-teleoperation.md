@@ -77,14 +77,18 @@ unlicensed optional Feetech SDK used by physical leader hardware is not
 redistributed; an explicit packaging-only patch removes that dependency edge,
 and this browser service uses upstream's software keyboard path with a narrow,
 fail-safe observability patch that publishes readiness only after the real task
-reset and counts accepted upstream keyboard events. Browser teleoperation does
-not consume policy image tensors, so the same patch disables those two unused
-observation terms to avoid Isaac's camera/DirectGpu interoperability fault on
+reset and counts accepted upstream keyboard events. Browser teleoperation uses
+the WebRTC viewport rather than policy camera tensors, so the same patch removes
+the two unused tiled-camera sensors, their observation terms, and the now-unused
+front-camera randomizer to avoid Isaac's camera/DirectGpu interoperability fault on
 `sm_120`. Physics for this single interactive environment runs on CPU because
 Isaac Sim 5.1 does not ship `sm_120` PhysX kernels; the real environment, RTX
 rendering, and WebRTC encoding remain active on the selected RT-core GPU. The
 browser path disables Isaac Lab Fabric so CPU PhysX synchronizes through the
-supported USD I/O path. The pod requests 16 CPU cores and may use up to 32 so
+supported USD I/O path. It also disables Isaac Lab's texture-loading wait: the
+headless session uses the WebRTC viewport rather than RTX camera observations,
+and the default asset-loading loop does not terminate reliably on this path.
+The pod requests 16 CPU cores and may use up to 32 so
 the USD-backed first reset is not throttled by the previous eight-core limit. The
 session supervisor starts Kit in an isolated process session with closed stdin
 so HTTP-service signal handling cannot interfere with upstream teleoperation.

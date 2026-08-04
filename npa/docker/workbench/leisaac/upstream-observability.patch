@@ -2,7 +2,7 @@ diff --git a/scripts/environments/teleoperation/teleop_se3_agent.py b/scripts/en
 index a467482..652d435 100644
 --- a/scripts/environments/teleoperation/teleop_se3_agent.py
 +++ b/scripts/environments/teleoperation/teleop_se3_agent.py
-@@ -159,3 +159,9 @@ def main():  # noqa: C901
+@@ -159,3 +159,15 @@ def main():  # noqa: C901
      env_cfg = parse_env_cfg(args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs)
      env_cfg.use_teleop_device(args_cli.teleop_device)
 +    if os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") == "1":
@@ -11,8 +11,14 @@ index a467482..652d435 100644
 +        env_cfg.sim.use_fabric = False
 +        env_cfg.observations.policy.wrist = None
 +        env_cfg.observations.policy.front = None
++        env_cfg.scene.wrist = None
++        env_cfg.scene.front = None
++        env_cfg.events.domain_randomize_4 = None
++        # Headless WebRTC uses the viewport, not RTX camera observations. Isaac
++        # Lab's default texture wait can remain true forever on this path.
++        env_cfg.wait_for_textures = False
      env_cfg.seed = args_cli.seed if args_cli.seed is not None else int(time.time())
-@@ -312,4 +318,8 @@ def main():  # noqa: C901
+@@ -312,4 +324,8 @@ def main():  # noqa: C901
      if hasattr(env, "initialize"):
          env.initialize()
      env.reset()

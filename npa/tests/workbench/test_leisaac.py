@@ -321,6 +321,10 @@ def test_observability_patch_is_exact_and_records_real_upstream_input() -> None:
     assert "env_cfg.sim.use_fabric = False" in source
     assert "env_cfg.observations.policy.wrist = None" in source
     assert "env_cfg.observations.policy.front = None" in source
+    assert "env_cfg.scene.wrist = None" in source
+    assert "env_cfg.scene.front = None" in source
+    assert "env_cfg.events.domain_randomize_4 = None" in source
+    assert "env_cfg.wait_for_textures = False" in source
 
 
 def test_health_reads_upstream_keyboard_counter(tmp_path: Path) -> None:
