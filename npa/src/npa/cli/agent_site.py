@@ -189,6 +189,20 @@ def nginx_agent_site_body(
     proxy_read_timeout 900s;
     proxy_send_timeout 900s;
   }}
+  location = /api/leisaac/backhaul {{
+    rewrite ^/api/(.*)$ /$1 break;
+    proxy_pass http://127.0.0.1:{backend_port}/;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_connect_timeout 30s;
+    proxy_read_timeout 900s;
+    proxy_send_timeout 900s;
+  }}
   location /api/ {{
     proxy_pass http://127.0.0.1:{backend_port}/;
     proxy_http_version 1.1;

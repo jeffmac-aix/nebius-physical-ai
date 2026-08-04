@@ -72,7 +72,6 @@ def test_agent_relay_service_is_private_clusterip_with_cleanup_metadata() -> Non
         agent_project="rtxpro",
         agent_name="agent",
         source_ranges=["8.8.8.8/32"],
-        backhaul_source_ranges=["1.1.1.1/32"],
     )
 
     assert service["spec"]["type"] == "ClusterIP"
@@ -87,7 +86,6 @@ def test_agent_relay_service_is_private_clusterip_with_cleanup_metadata() -> Non
         "npa.nebius.com/agent-project": "rtxpro",
         "npa.nebius.com/agent-name": "agent",
         "npa.nebius.com/source-ranges": "8.8.8.8/32",
-        "npa.nebius.com/backhaul-source-ranges": "1.1.1.1/32",
     }
 
 
@@ -98,6 +96,8 @@ def test_agent_relay_client_is_secret_mounted_as_non_gpu_sidecar() -> None:
         agent_host="8.8.8.8",
         session_nonce=NONCE,
         certificate_sha256="b" * 64,
+        auth_user="npa",
+        auth_password="secret",
         client_source="print('client')\n",
     )
     assert secret["kind"] == "Secret"
@@ -148,7 +148,6 @@ def test_agent_relay_rejects_non_loopback_signal_or_missing_agent_identity() -> 
             run_id="live-relay",
             namespace="default",
             source_ranges=["8.8.8.8/32"],
-            backhaul_source_ranges=["1.1.1.1/32"],
         )
 
 

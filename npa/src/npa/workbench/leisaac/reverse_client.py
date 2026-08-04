@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import ipaddress
 import json
+import os
 import socket
 import ssl
 import struct
@@ -26,17 +28,99 @@ def load_config(path: str | Path) -> dict[str, Any]:
         raise ValueError("agent host must be a public IP address")
     nonce = str(data.get("session_nonce") or "")
     fingerprint = str(data.get("certificate_sha256") or "").lower()
+    auth_user = str(data.get("auth_user") or "")
+    auth_password = str(data.get("auth_password") or "")
     if len(nonce) != 64 or any(character not in "0123456789abcdef" for character in nonce):
         raise ValueError("session nonce is invalid")
     if len(fingerprint) != 64 or any(
         character not in "0123456789abcdef" for character in fingerprint
     ):
         raise ValueError("certificate fingerprint is invalid")
+    if not auth_user or not auth_password or "\n" in auth_user + auth_password:
+        raise ValueError("agent basic-auth credential is invalid")
     return {
         "agent_host": host.compressed,
         "session_nonce": nonce,
         "certificate_sha256": fingerprint,
+        "auth_user": auth_user,
+        "auth_password": auth_password,
     }
+
+
+def _read_exact(connection: socket.socket, size: int) -> bytes:
+    data = bytearray()
+    while len(data) < size:
+        chunk = connection.recv(size - len(data))
+        if not chunk:
+            raise EOFError("WebSocket closed")
+        data.extend(chunk)
+    return bytes(data)
+
+
+class WebSocketConnection:
+    """Small binary WSS client sufficient for the private NPA backhaul."""
+
+    def __init__(self, connection: ssl.SSLSocket):
+        self.connection = connection
+        self.buffer = bytearray()
+        self.send_lock = threading.Lock()
+
+    def _send_message(self, payload: bytes, opcode: int = 2) -> None:
+        mask = os.urandom(4)
+        size = len(payload)
+        if size < 126:
+            header = bytes((0x80 | opcode, 0x80 | size))
+        elif size <= 65535:
+            header = bytes((0x80 | opcode, 0x80 | 126)) + struct.pack("!H", size)
+        else:
+            header = bytes((0x80 | opcode, 0x80 | 127)) + struct.pack("!Q", size)
+        masked = bytes(value ^ mask[index % 4] for index, value in enumerate(payload))
+        with self.send_lock:
+            self.connection.sendall(header + mask + masked)
+
+    def sendall(self, payload: bytes) -> None:
+        self._send_message(payload)
+
+    def _receive_message(self) -> bytes:
+        fragments = bytearray()
+        while True:
+            first, second = _read_exact(self.connection, 2)
+            final = bool(first & 0x80)
+            opcode = first & 0x0F
+            size = second & 0x7F
+            if size == 126:
+                size = struct.unpack("!H", _read_exact(self.connection, 2))[0]
+            elif size == 127:
+                size = struct.unpack("!Q", _read_exact(self.connection, 8))[0]
+            mask = _read_exact(self.connection, 4) if second & 0x80 else b""
+            payload = _read_exact(self.connection, size)
+            if mask:
+                payload = bytes(
+                    value ^ mask[index % 4] for index, value in enumerate(payload)
+                )
+            if opcode == 8:
+                raise EOFError("WebSocket closed")
+            if opcode == 9:
+                self._send_message(payload, opcode=10)
+                continue
+            if opcode in (0, 2):
+                fragments.extend(payload)
+                if final:
+                    return bytes(fragments)
+
+    def recv(self, size: int) -> bytes:
+        if not self.buffer:
+            self.buffer.extend(self._receive_message())
+        result = bytes(self.buffer[:size])
+        del self.buffer[:size]
+        return result
+
+    def close(self) -> None:
+        try:
+            self._send_message(b"", opcode=8)
+        except OSError:
+            pass
+        self.connection.close()
 
 
 def _receive_exact(connection: socket.socket, size: int) -> bytes:
@@ -59,7 +143,7 @@ def _receive_frame(connection: socket.socket) -> tuple[int, int, bytes]:
 class Client:
     def __init__(self, config: dict[str, Any]):
         self.config = config
-        self.connection: ssl.SSLSocket | None = None
+        self.connection: WebSocketConnection | None = None
         self.send_lock = threading.Lock()
         self.stream_lock = threading.Lock()
         self.streams: dict[int, socket.socket] = {}
@@ -128,19 +212,51 @@ class Client:
         elif kind == UDP:
             self.media.send(payload)
 
-    def connect(self) -> ssl.SSLSocket:
-        raw = socket.create_connection((str(self.config["agent_host"]), 48081), timeout=10)
+    def connect(self) -> WebSocketConnection:
+        host = str(self.config["agent_host"])
+        raw = socket.create_connection((host, 443), timeout=10)
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         context.minimum_version = ssl.TLSVersion.TLSv1_2
         context.check_hostname = False
         context.verify_mode = ssl.CERT_NONE
-        connection = context.wrap_socket(raw, server_hostname=str(self.config["agent_host"]))
+        connection = context.wrap_socket(raw, server_hostname=host)
         certificate = connection.getpeercert(binary_form=True)
         if hashlib.sha256(certificate).hexdigest() != self.config["certificate_sha256"]:
             connection.close()
             raise ssl.SSLError("agent relay certificate fingerprint mismatch")
+        key = base64.b64encode(os.urandom(16)).decode("ascii")
+        credential = base64.b64encode(
+            f"{self.config['auth_user']}:{self.config['auth_password']}".encode("utf-8")
+        ).decode("ascii")
+        request = (
+            "GET /api/leisaac/backhaul HTTP/1.1\r\n"
+            f"Host: {host}\r\n"
+            "Upgrade: websocket\r\n"
+            "Connection: Upgrade\r\n"
+            f"Sec-WebSocket-Key: {key}\r\n"
+            "Sec-WebSocket-Version: 13\r\n"
+            f"Authorization: Basic {credential}\r\n\r\n"
+        )
+        connection.sendall(request.encode("ascii"))
+        response = bytearray()
+        while b"\r\n\r\n" not in response and len(response) < 16384:
+            response.extend(connection.recv(4096))
+        headers, separator, _remainder = bytes(response).partition(b"\r\n\r\n")
+        expected_accept = base64.b64encode(
+            hashlib.sha1(
+                (key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode("ascii")
+            ).digest()
+        )
+        if (
+            not separator
+            or not headers.startswith(b"HTTP/1.1 101 ")
+            or b"sec-websocket-accept: " + expected_accept.lower()
+            not in headers.lower()
+        ):
+            connection.close()
+            raise ConnectionError("authenticated agent WebSocket upgrade failed")
         connection.settimeout(None)
-        return connection
+        return WebSocketConnection(connection)
 
     def run(self) -> None:
         threading.Thread(target=self.read_media, daemon=True).start()

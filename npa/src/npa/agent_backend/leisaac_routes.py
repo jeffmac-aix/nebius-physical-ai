@@ -12,6 +12,8 @@ from typing import Any, Callable
 from starlette.requests import Request
 
 LOG = logging.getLogger(__name__)
+_BACKHAUL_HEADER_SIZE = 9
+_BACKHAUL_MAX_FRAME = 4 * 1024 * 1024
 
 try:  # agent VM: /opt/npa-agent is on sys.path
     from agent_backend.leisaac import (
@@ -215,3 +217,51 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
                 LOG.debug(
                     "LeIsaac browser WebSocket was already closed", exc_info=close_exc
                 )
+
+    @app.websocket("/leisaac/backhaul")
+    async def leisaac_backhaul(websocket: Any) -> None:
+        """Bridge the authenticated pod WSS backhaul to the loopback relay."""
+
+        if str(websocket.headers.get("x-forwarded-proto") or "").lower() != "https":
+            await websocket.close(code=1008)
+            return
+        try:
+            reader, writer = await asyncio.open_connection("127.0.0.1", 48081)
+        except OSError:
+            await websocket.close(code=1013)
+            return
+        await websocket.accept()
+
+        async def websocket_to_relay() -> None:
+            while True:
+                message = await websocket.receive()
+                if message.get("type") == "websocket.disconnect":
+                    return
+                payload = message.get("bytes")
+                if payload is None or len(payload) > _BACKHAUL_MAX_FRAME + _BACKHAUL_HEADER_SIZE:
+                    raise ValueError("invalid LeIsaac backhaul frame")
+                writer.write(payload)
+                await writer.drain()
+
+        async def relay_to_websocket() -> None:
+            while True:
+                header = await reader.readexactly(_BACKHAUL_HEADER_SIZE)
+                size = int.from_bytes(header[5:9], "big")
+                if size > _BACKHAUL_MAX_FRAME:
+                    raise ValueError("invalid LeIsaac backhaul frame")
+                await websocket.send_bytes(header + await reader.readexactly(size))
+
+        tasks = {
+            asyncio.create_task(websocket_to_relay()),
+            asyncio.create_task(relay_to_websocket()),
+        }
+        try:
+            done, pending = await asyncio.wait(
+                tasks, return_when=asyncio.FIRST_COMPLETED
+            )
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*done, *pending, return_exceptions=True)
+        finally:
+            writer.close()
+            await writer.wait_closed()

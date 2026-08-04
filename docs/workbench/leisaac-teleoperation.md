@@ -29,12 +29,14 @@ source-restricts status/client TCP `8080`, signaling TCP `49100`, and UDP media
 `47998` on dedicated load balancers. `agent-relay` consumes no additional
 public IPv4 allocation: Kubernetes uses a private NodePort service, the saved
 NPA agent runs a hardened systemd relay, and a non-GPU sidecar in the simulation
-pod initiates an authenticated TLS backhaul to it. The relay binds status to
+pod initiates an authenticated WSS backhaul through nginx `443` to it. The
+backhaul uses the agent's existing basic-auth credential, pins the public HTTPS
+certificate SHA-256, and authenticates again with a random session nonce. The relay binds status to
 `127.0.0.1:48080`, signaling to `127.0.0.1:49100`, and media to fixed UDP
-`47998`. The Kubernetes Service is `ClusterIP` only. Media UDP is opened only
-for explicit operator CIDRs; backhaul TCP `48081` is opened only for explicit
-cluster-egress CIDRs. Each launch generates a relay certificate and pins its
-SHA-256 plus a random session nonce in a Kubernetes Secret. The UI and TCP APIs
+`47998`; its raw backhaul socket is loopback-only at `127.0.0.1:48081`. The
+Kubernetes Service is `ClusterIP` only. Media UDP is opened only for explicit
+operator CIDRs. The backhaul script, agent auth, certificate hash, and nonce
+are mounted into the pod through a Kubernetes Secret. The UI and TCP APIs
 remain behind nginx HTTPS and basic authentication; port `8787`, `8080`,
 `49100`, cluster ports, and the GPU pod are never published.
 
@@ -112,7 +114,6 @@ npa workbench leisaac launch \
   --image cr.us-central1.nebius.cloud/REGISTRY/npa-leisaac@sha256:DIGEST \
   --context YOUR_KUBECTL_CONTEXT \
   --source-range OPERATOR_PUBLIC_IP/32 \
-  --backhaul-source-range CLUSTER_EGRESS_PUBLIC_IP/32 \
   --transport agent-relay \
   --agent-project PROJECT_ALIAS \
   --agent-name AGENT_NAME \
@@ -120,11 +121,8 @@ npa workbench leisaac launch \
 ```
 
 `agent-relay` resolves the agent IP from live provider state and refuses a
-stale saved address, missing SSH key, unrestricted source range, TLS
-certificate mismatch, invalid session nonce, or
-a second active relay session. Determine the cluster's outbound NAT address
-from a transient CPU-only pod before launch and pass its exact `/32`; never use
-`0.0.0.0/0`. Use
+stale saved address, missing SSH key or agent auth, unrestricted source range, TLS
+certificate mismatch, invalid session nonce, or a second active relay session. Use
 `--transport public-load-balancer` only when dedicated Kubernetes public IPv4
 allocations are intended; in that mode repeat `--source-range` for the agent
 and operator because the agent reaches the status/signaling load balancer.
@@ -149,7 +147,7 @@ npa workbench leisaac destroy --run-id leisaac-teleop-example --context YOUR_KUB
 Destroy removes only that run's transient Deployment and Services. For an
 agent-relayed run it reads the owning agent and source CIDRs from Kubernetes
 metadata, stops only the matching relay unit, and deletes only the matching
-NPA-managed UDP media and TCP backhaul ingress rules. It preserves the S3
+NPA-managed UDP media ingress rule. It preserves the S3
 manifest/log/evidence record.
 Once the service is gone, live health fails and the agent UI removes the tab
 even if the historical manifest still exists.

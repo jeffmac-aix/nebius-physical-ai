@@ -184,7 +184,6 @@ def relay_service_manifest(
     agent_project: str = "",
     agent_name: str = "",
     source_ranges: list[str] | tuple[str, ...] = (),
-    backhaul_source_ranges: list[str] | tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """Build one private ClusterIP service for an agent-relayed session.
 
@@ -207,9 +206,6 @@ def relay_service_manifest(
         "npa.nebius.com/agent-name": str(agent_name),
         "npa.nebius.com/source-ranges": ",".join(
             validate_source_ranges(source_ranges)
-        ),
-        "npa.nebius.com/backhaul-source-ranges": ",".join(
-            validate_source_ranges(backhaul_source_ranges)
         ),
     }
     if not agent_project or not agent_name:
@@ -257,6 +253,8 @@ def relay_client_secret_manifest(
     agent_host: str,
     session_nonce: str,
     certificate_sha256: str,
+    auth_user: str,
+    auth_password: str,
     client_source: str,
 ) -> dict[str, Any]:
     """Mount the authenticated TLS backhaul client into the GPU pod."""
@@ -267,6 +265,8 @@ def relay_client_secret_manifest(
         raise LeIsaacConfigError("session nonce is invalid")
     if not re.fullmatch(r"[a-f0-9]{64}", certificate_sha256):
         raise LeIsaacConfigError("relay certificate fingerprint is invalid")
+    if not auth_user or not auth_password or "\n" in auth_user + auth_password:
+        raise LeIsaacConfigError("agent basic-auth credential is invalid")
     return {
         "apiVersion": "v1",
         "kind": "Secret",
@@ -287,6 +287,8 @@ def relay_client_secret_manifest(
                     "agent_host": agent_host,
                     "session_nonce": session_nonce,
                     "certificate_sha256": certificate_sha256,
+                    "auth_user": auth_user,
+                    "auth_password": auth_password,
                 },
                 sort_keys=True,
             ),

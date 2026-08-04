@@ -47,13 +47,12 @@ def test_install_relay_creates_required_agent_directories() -> None:
     _install_agent_relay(
         ssh,
         run_id="live-relay",
-        public_ip="8.8.8.8",
         session_nonce="a" * 64,
     )
 
     assert "sudo install -d -m 0755 /etc/npa /opt/npa-agent" in ssh.command
     assert "DynamicUser=yes" not in ssh.command  # unit is base64-encoded in transit
-    assert "openssl req -x509" in ssh.command
+    assert "openssl req -x509" not in ssh.command
 
 
 def _args() -> list[str]:
@@ -69,8 +68,6 @@ def _args() -> list[str]:
         "leisaac",
         "--source-range",
         "8.8.8.8/32",
-        "--backhaul-source-range",
-        "1.1.1.1/32",
         "--artifact-uri",
         "s3://bucket/checkpoints",
         "--transport",
@@ -97,7 +94,7 @@ def _patch_launch(monkeypatch):
     ssh = object()
     monkeypatch.setattr(
         "npa.cli.workbench.leisaac._agent_relay_context",
-        lambda *_args: ("vm-agent", "8.8.4.4", ssh),
+        lambda *_args: ("vm-agent", "8.8.4.4", ssh, "npa", "secret"),
     )
     ingress_calls = []
 
@@ -110,8 +107,11 @@ def _patch_launch(monkeypatch):
     monkeypatch.setattr(
         "npa.cli.workbench.leisaac._install_agent_relay",
         lambda *args, **kwargs: (
-            install_calls.append((args, kwargs)) or "f" * 64
+            install_calls.append((args, kwargs))
         ),
+    )
+    monkeypatch.setattr(
+        "npa.cli.workbench.leisaac._agent_certificate_sha256", lambda _ip: "f" * 64
     )
     monkeypatch.setattr("npa.cli.workbench.leisaac._wait_ready", lambda *_args: None)
     monkeypatch.setattr(
@@ -165,16 +165,8 @@ def test_launch_agent_relay_wires_private_cluster_public_agent_and_manifest(monk
             "tool": "leisaac-relay",
             "protocol": "UDP",
         },
-        {
-            "vm_id": "vm-agent",
-            "ports": (48081,),
-            "source": "1.1.1.1/32",
-            "tool": "leisaac-backhaul",
-            "protocol": "TCP",
-        },
     ]
     assert install_calls[0][0] == (ssh,)
-    assert install_calls[0][1]["public_ip"] == "8.8.4.4"
     assert install_calls[0][1]["session_nonce"] == "a" * 64
     assert manifests[0]["transport"] == "agent-relay"
     assert manifests[0]["signal_host"] == "127.0.0.1"
@@ -221,7 +213,6 @@ def test_destroy_uses_service_metadata_to_remove_only_its_agent_relay(monkeypatc
                 "npa.nebius.com/agent-project": "rtxpro",
                 "npa.nebius.com/agent-name": "agent",
                 "npa.nebius.com/source-ranges": "8.8.8.8/32",
-                "npa.nebius.com/backhaul-source-ranges": "1.1.1.1/32",
             }
         }
     }
@@ -234,7 +225,7 @@ def test_destroy_uses_service_metadata_to_remove_only_its_agent_relay(monkeypatc
     ssh = object()
     monkeypatch.setattr(
         "npa.cli.workbench.leisaac._agent_relay_context",
-        lambda *_args: ("vm-agent", "8.8.4.4", ssh),
+        lambda *_args: ("vm-agent", "8.8.4.4", ssh, "npa", "secret"),
     )
     relay_removals = []
     ingress_removals = []
@@ -270,6 +261,4 @@ def test_destroy_uses_service_metadata_to_remove_only_its_agent_relay(monkeypatc
     assert ingress_removals[0][0] == ("vm-agent",)
     assert ingress_removals[0][1]["source"] == "8.8.8.8/32"
     assert ingress_removals[0][1]["protocol"] == "UDP"
-    assert ingress_removals[1][1]["source"] == "1.1.1.1/32"
-    assert ingress_removals[1][1]["protocol"] == "TCP"
     assert k8s_removals == [("cluster", "leisaac", "leisaac-live-relay")]

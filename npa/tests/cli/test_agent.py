@@ -442,6 +442,16 @@ def test_leisaac_signaling_inherits_basic_auth() -> None:
     assert "proxy_set_header Upgrade $http_upgrade;" in location
 
 
+def test_leisaac_pod_backhaul_uses_authenticated_public_https_only() -> None:
+    source = _agent_source()
+    location = source.split("location = /api/leisaac/backhaul {{", 1)[1].split(
+        "location /api/ {{", 1
+    )[0]
+    assert "auth_basic off" not in location
+    assert "proxy_pass http://127.0.0.1:{backend_port}/;" in location
+    assert "proxy_set_header X-Forwarded-Proto $scheme;" in location
+
+
 def test_bootstrap_nginx_serves_public_rerun_recording() -> None:
     source = _agent_source()
     assert "location /rerun/recordings/" in source

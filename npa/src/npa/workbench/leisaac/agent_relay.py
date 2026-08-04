@@ -10,11 +10,9 @@ from __future__ import annotations
 import argparse
 import hmac
 import json
-import os
 import signal
 import socket
 import socketserver
-import ssl
 import struct
 import threading
 from pathlib import Path
@@ -23,7 +21,7 @@ from typing import Any
 STATUS_LISTEN = ("127.0.0.1", 48080)
 SIGNAL_LISTEN = ("127.0.0.1", 49100)
 MEDIA_LISTEN = ("0.0.0.0", 47998)
-BACKHAUL_LISTEN = ("0.0.0.0", 48081)
+BACKHAUL_LISTEN = ("127.0.0.1", 48081)
 HELLO, OPEN, DATA, CLOSE, UDP = 1, 2, 3, 4, 5
 HEADER = struct.Struct("!BII")
 MAX_FRAME = 4 * 1024 * 1024
@@ -60,7 +58,7 @@ class Backhaul:
     def __init__(self, nonce: str):
         self.nonce = nonce.encode("ascii")
         self.condition = threading.Condition()
-        self.connection: ssl.SSLSocket | None = None
+        self.connection: socket.socket | None = None
         self.send_lock = threading.Lock()
         self.stream_lock = threading.Lock()
         self.streams: dict[int, socket.socket] = {}
@@ -68,7 +66,7 @@ class Backhaul:
         self.public_udp: socket.socket | None = None
         self.browser_address: tuple[str, int] | None = None
 
-    def attach(self, connection: ssl.SSLSocket) -> bool:
+    def attach(self, connection: socket.socket) -> bool:
         kind, stream_id, payload = _receive_frame(connection)
         if kind != HELLO or stream_id != 0 or not hmac.compare_digest(payload, self.nonce):
             return False
@@ -79,7 +77,7 @@ class Backhaul:
             self.condition.notify_all()
         return True
 
-    def detach(self, connection: ssl.SSLSocket) -> None:
+    def detach(self, connection: socket.socket) -> None:
         with self.condition:
             if self.connection is connection:
                 self.connection = None
@@ -157,12 +155,7 @@ def serve_backhaul(
     backhaul: Backhaul,
     *,
     stop: threading.Event,
-    certificate: str,
-    private_key: str,
 ) -> None:
-    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    context.minimum_version = ssl.TLSVersion.TLSv1_2
-    context.load_cert_chain(certificate, private_key)
     listener = socket.socket()
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     listener.bind(BACKHAUL_LISTEN)
@@ -175,17 +168,17 @@ def serve_backhaul(
             except socket.timeout:
                 continue
             try:
-                connection = context.wrap_socket(raw, server_side=True)
-                if not backhaul.attach(connection):
-                    connection.close()
+                if not backhaul.attach(raw):
+                    raw.close()
                     continue
+                connection = raw
                 try:
                     while not stop.is_set():
                         backhaul.handle(*_receive_frame(connection))
                 finally:
                     backhaul.detach(connection)
                     connection.close()
-            except (EOFError, OSError, ssl.SSLError, ValueError):
+            except (EOFError, OSError, ValueError):
                 raw.close()
     finally:
         listener.close()
@@ -213,7 +206,7 @@ def relay_udp(backhaul: Backhaul, *, stop: threading.Event) -> None:
         public.close()
 
 
-def serve(config: dict[str, Any], *, certificate: str, private_key: str) -> None:
+def serve(config: dict[str, Any]) -> None:
     backhaul = Backhaul(str(config["session_nonce"]))
     status = _TCPServer(STATUS_LISTEN, backhaul, 8080)
     signaling = _TCPServer(SIGNAL_LISTEN, backhaul, 49100)
@@ -232,8 +225,6 @@ def serve(config: dict[str, Any], *, certificate: str, private_key: str) -> None
             kwargs={
                 "backhaul": backhaul,
                 "stop": stop,
-                "certificate": certificate,
-                "private_key": private_key,
             },
             daemon=True,
         ),
@@ -253,14 +244,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
     args = parser.parse_args()
-    credentials = os.environ.get("CREDENTIALS_DIRECTORY", "")
-    if not credentials:
-        raise RuntimeError("systemd credential directory is required")
-    serve(
-        load_config(args.config),
-        certificate=str(Path(credentials) / "backhaul.crt"),
-        private_key=str(Path(credentials) / "backhaul.key"),
-    )
+    serve(load_config(args.config))
     return 0
 
 
