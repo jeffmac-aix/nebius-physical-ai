@@ -21,9 +21,12 @@ function runId() {
 
   it("discovers, renders, and controls PickOrange through public authenticated HTTPS", () => {
     const selectedRun = runId();
-    cy.window({ timeout: 30000 }).then((win) =>
-      win.__NPA_AGENT_TEST__.refreshLeIsaacCapability(selectedRun)
-    );
+    // Exercise the supported run picker so periodic capability refreshes stay
+    // pinned to this live run instead of the agent's previously active run.
+    cy.get("#stagesRunInput", { timeout: 30000 })
+      .clear()
+      .type(selectedRun, { delay: 0 });
+    cy.get("#stagesLoadRun").click();
 
     cy.get("#tabLeIsaac", { timeout: 30000 }).should("be.visible").click();
     cy.get("#panelLeIsaac")
@@ -34,6 +37,26 @@ function runId() {
       .and("contain.text", "RTX PRO 6000");
     cy.screenshot("01-public-leisaac-capability", { capture: "viewport" });
 
+    // Cypress injects cy.visit({ auth }) at its network proxy, which does not
+    // populate Chromium's HTTP-auth cache for JavaScript-created WebSockets.
+    // A normal browser already has that cache after the Basic-auth prompt. For
+    // live automation, put the same credentials in only the in-memory WSS URL;
+    // Chromium converts them to Authorization before nginx and never exposes
+    // them through the application API or committed evidence.
+    cy.window().then((win) => {
+      const NativeWebSocket = win.WebSocket;
+      const user = String(Cypress.env("NPA_AGENT_USER") || "");
+      const password = String(Cypress.env("NPA_AGENT_PASSWORD") || "");
+      class AuthenticatedWebSocket extends NativeWebSocket {
+        constructor(url, protocols) {
+          const target = new win.URL(String(url));
+          target.username = user;
+          target.password = password;
+          super(target.toString(), protocols);
+        }
+      }
+      win.WebSocket = AuthenticatedWebSocket;
+    });
     cy.get("#leisaacConnect").click();
     cy.get("#leisaacStreamStatus", { timeout: 120000 }).should(
       "contain.text",

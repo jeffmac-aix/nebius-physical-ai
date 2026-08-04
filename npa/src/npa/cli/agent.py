@@ -7094,6 +7094,32 @@ def sim_viz_load_run(payload: dict | None = None):
                 "sim_viz": _sim_viz_load_response(state, sim_viz, run_id=run_id),
                 "preferred": preferred.to_dict(),
             }}
+        if artifacts:
+            # A selected run is still real and usable when its capability is a
+            # service/session artifact rather than an RRD recording. Persist an
+            # artifact-backed active context so conditional tabs (LeIsaac in
+            # particular) survive periodic refresh, while keeping Rerun
+            # truthfully unavailable instead of downloading JSON as a viewer.
+            state = _load_state()
+            selected = {{
+                "run_id": run_id,
+                "stage": "artifacts_available",
+                "rrd_uri": "",
+                "rrd_updated_at": _now_iso(),
+                "artifact_uri": str(preferred.s3_uri if preferred else ""),
+                "artifact_key": str(preferred.key if preferred else ""),
+                "artifact_render": str(preferred.render if preferred else ""),
+                "camera": camera,
+                "mode": "static",
+            }}
+            state["sim_viz"] = selected
+            _record_sim_viz_run(state, selected)
+            _save_state(state)
+            return {{
+                "ok": True,
+                "sim_viz": _sim_viz_load_response(state, selected, run_id=run_id),
+                "preferred": preferred.to_dict() if preferred else None,
+            }}
     except Exception:
         # Fall back to the historical in-memory run selector below; callers still
         # get a useful 404 if the run has never been seen.

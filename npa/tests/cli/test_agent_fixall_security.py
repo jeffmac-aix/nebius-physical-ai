@@ -183,6 +183,9 @@ def test_load_run_rejects_unknown_ids() -> None:
     block = source.split('@app.post("/sim-viz/load-run")')[1].split('@app.get("/sim-viz/recordings")')[0]
     assert "run_id not found" in block
     assert "Never invent phantom run ids" in block or "sim2real_runs" in block
+    assert "if artifacts:" in block
+    assert '"stage": "artifacts_available"' in block
+    assert "conditional tabs (LeIsaac in" in block
 
 
 def test_franka_wire_preserves_selection() -> None:
