@@ -233,6 +233,11 @@ def test_container_never_bakes_eula_client_or_assets() -> None:
     assert "CLIENT_SHA512" in server and "CLIENT_JS_SHA256" in server
     assert "5.18.11" in server
     assert LEISAAC_CLIENT_JS_SHA256 in server
+    assert 'f"--/app/livestream/publicEndpointPort={MEDIA_PORT}"' in server
+    assert 'f"--/app/livestream/fixedHostPort={MEDIA_PORT}"' in server
+    assert 'f"--/app/livestream/minHostPort={MEDIA_PORT}"' in server
+    assert 'f"--/app/livestream/maxHostPort={MEDIA_PORT}"' in server
+    assert 'f"--/app/livestream/port={SIGNAL_PORT}"' in server
     assert "ROBOT_SHA256" in server and "KITCHEN_SHA256" in server
     assert "safe_extract_zip" in server and "safe_extract_client" in server
     assert "feetech-servo-sdk" in dockerfile and "-m pip check" in dockerfile

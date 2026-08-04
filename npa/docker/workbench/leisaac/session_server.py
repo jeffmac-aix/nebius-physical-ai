@@ -252,6 +252,10 @@ def run_simulation() -> None:
                     "--no-window",
                     "--enable omni.kit.livestream.webrtc",
                     f"--/app/livestream/publicEndpointAddress={media_host}",
+                    f"--/app/livestream/publicEndpointPort={MEDIA_PORT}",
+                    f"--/app/livestream/fixedHostPort={MEDIA_PORT}",
+                    f"--/app/livestream/minHostPort={MEDIA_PORT}",
+                    f"--/app/livestream/maxHostPort={MEDIA_PORT}",
                     f"--/app/livestream/port={SIGNAL_PORT}",
                 ]
             ),
