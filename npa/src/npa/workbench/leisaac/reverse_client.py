@@ -16,9 +16,10 @@ import time
 from pathlib import Path
 from typing import Any
 
-HELLO, OPEN, DATA, CLOSE, UDP = 1, 2, 3, 4, 5
+HELLO, OPEN, DATA, CLOSE, UDP, UDP_CLOSE = 1, 2, 3, 4, 5, 6
 HEADER = struct.Struct("!BII")
 MAX_FRAME = 4 * 1024 * 1024
+MAX_UDP_FLOWS = 64
 
 
 def load_config(path: str | Path) -> dict[str, Any]:
@@ -147,8 +148,8 @@ class Client:
         self.send_lock = threading.Lock()
         self.stream_lock = threading.Lock()
         self.streams: dict[int, socket.socket] = {}
-        self.media = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.media.connect(("127.0.0.1", 47998))
+        self.media_lock = threading.Lock()
+        self.media: dict[int, socket.socket] = {}
 
     def send(self, kind: int, stream_id: int, payload: bytes = b"") -> None:
         connection = self.connection
@@ -175,13 +176,38 @@ class Client:
                 pass
             stream.close()
 
-    def read_media(self) -> None:
-        while True:
+    def read_media(self, stream_id: int, media: socket.socket) -> None:
+        try:
+            while True:
+                payload = media.recv(65536)
+                self.send(UDP, stream_id, payload)
+        except (ConnectionError, OSError):
+            pass
+        finally:
+            with self.media_lock:
+                if self.media.get(stream_id) is media:
+                    self.media.pop(stream_id, None)
             try:
-                payload = self.media.recv(65536)
-                self.send(UDP, 0, payload)
-            except (ConnectionError, OSError):
-                time.sleep(0.2)
+                media.close()
+            except OSError:
+                pass
+
+    def media_for(self, stream_id: int) -> socket.socket:
+        with self.media_lock:
+            existing = self.media.get(stream_id)
+            if existing is not None:
+                return existing
+            if len(self.media) >= MAX_UDP_FLOWS:
+                raise ConnectionError("too many browser UDP flows")
+            media = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            media.connect(("127.0.0.1", 47998))
+            self.media[stream_id] = media
+        threading.Thread(
+            target=self.read_media,
+            args=(stream_id, media),
+            daemon=True,
+        ).start()
+        return media
 
     def handle(self, kind: int, stream_id: int, payload: bytes) -> None:
         if kind == OPEN:
@@ -210,7 +236,12 @@ class Client:
             if stream is not None:
                 stream.close()
         elif kind == UDP:
-            self.media.send(payload)
+            self.media_for(stream_id).send(payload)
+        elif kind == UDP_CLOSE:
+            with self.media_lock:
+                media = self.media.pop(stream_id, None)
+            if media is not None:
+                media.close()
 
     def connect(self) -> WebSocketConnection:
         host = str(self.config["agent_host"])
@@ -259,7 +290,6 @@ class Client:
         return WebSocketConnection(connection)
 
     def run(self) -> None:
-        threading.Thread(target=self.read_media, daemon=True).start()
         while True:
             try:
                 self.connection = self.connect()
@@ -277,6 +307,11 @@ class Client:
                     self.streams.clear()
                 for stream in streams:
                     stream.close()
+                with self.media_lock:
+                    media = list(self.media.values())
+                    self.media.clear()
+                for flow in media:
+                    flow.close()
 
 
 def main() -> int:

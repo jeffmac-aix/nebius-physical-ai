@@ -11,11 +11,13 @@ from npa.workbench.leisaac.agent_relay import (
     DATA,
     HELLO,
     OPEN,
+    UDP,
     Backhaul,
     _receive_frame,
     load_config as load_server_config,
 )
 from npa.workbench.leisaac.reverse_client import (
+    Client,
     WebSocketConnection,
     load_config as load_client_config,
 )
@@ -104,6 +106,61 @@ def test_backhaul_rejects_unauthenticated_hello() -> None:
     assert backhaul.attach(server_connection) is False
     peer.close()
     server_connection.close()
+
+
+def test_backhaul_preserves_multiple_browser_udp_flows() -> None:
+    backhaul = Backhaul(NONCE)
+    first = ("198.51.100.10", 41001)
+    second = ("198.51.100.10", 41002)
+
+    first_stream = backhaul.udp_stream_for(first, now=1.0)
+    second_stream = backhaul.udp_stream_for(second, now=1.0)
+
+    assert first_stream != second_stream
+    assert backhaul.udp_stream_for(first, now=2.0) == first_stream
+    assert backhaul.browser_address_for(first_stream) == first
+    assert backhaul.browser_address_for(second_stream) == second
+
+
+def test_private_client_uses_one_connected_media_socket_per_udp_flow(monkeypatch) -> None:
+    created: list[object] = []
+
+    class FakeSocket:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            self.sent: list[bytes] = []
+            created.append(self)
+
+        def connect(self, address: tuple[str, int]) -> None:
+            assert address == ("127.0.0.1", 47998)
+
+        def send(self, payload: bytes) -> None:
+            self.sent.append(payload)
+
+        def recv(self, _size: int) -> bytes:
+            raise OSError("test flow complete")
+
+        def close(self) -> None:
+            return None
+
+    class FakeThread:
+        def __init__(self, **_kwargs: object) -> None:
+            return None
+
+        def start(self) -> None:
+            return None
+
+    monkeypatch.setattr(socket, "socket", FakeSocket)
+    monkeypatch.setattr(
+        "npa.workbench.leisaac.reverse_client.threading.Thread", FakeThread
+    )
+    client = Client({})
+    client.handle(UDP, 11, b"first")
+    client.handle(UDP, 12, b"second")
+    client.handle(UDP, 11, b"again")
+
+    assert len(created) == 2
+    assert created[0].sent == [b"first", b"again"]  # type: ignore[attr-defined]
+    assert created[1].sent == [b"second"]  # type: ignore[attr-defined]
 
 
 def test_private_websocket_client_masks_outbound_and_reads_binary_reply() -> None:

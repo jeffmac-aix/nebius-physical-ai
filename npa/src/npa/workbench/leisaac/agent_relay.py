@@ -15,6 +15,7 @@ import socket
 import socketserver
 import struct
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -22,9 +23,11 @@ STATUS_LISTEN = ("127.0.0.1", 48080)
 SIGNAL_LISTEN = ("127.0.0.1", 49100)
 MEDIA_LISTEN = ("0.0.0.0", 47998)
 BACKHAUL_LISTEN = ("127.0.0.1", 48081)
-HELLO, OPEN, DATA, CLOSE, UDP = 1, 2, 3, 4, 5
+HELLO, OPEN, DATA, CLOSE, UDP, UDP_CLOSE = 1, 2, 3, 4, 5, 6
 HEADER = struct.Struct("!BII")
 MAX_FRAME = 4 * 1024 * 1024
+MAX_UDP_FLOWS = 64
+UDP_FLOW_TTL_SECONDS = 120.0
 
 
 def load_config(path: str | Path) -> dict[str, Any]:
@@ -64,7 +67,10 @@ class Backhaul:
         self.streams: dict[int, socket.socket] = {}
         self.next_stream = 1
         self.public_udp: socket.socket | None = None
-        self.browser_address: tuple[str, int] | None = None
+        self.udp_lock = threading.Lock()
+        self.next_udp_stream = 1
+        self.udp_by_address: dict[tuple[str, int], tuple[int, float]] = {}
+        self.udp_by_stream: dict[int, tuple[str, int]] = {}
 
     def attach(self, connection: socket.socket) -> bool:
         kind, stream_id, payload = _receive_frame(connection)
@@ -89,6 +95,54 @@ class Backhaul:
                 stream.close()
             except OSError:
                 pass
+        with self.udp_lock:
+            self.udp_by_address.clear()
+            self.udp_by_stream.clear()
+
+    def udp_stream_for(self, address: tuple[str, int], *, now: float | None = None) -> int:
+        """Map each browser UDP socket to its own pod-side connected socket.
+
+        NVIDIA's browser client creates several ICE transports.  Collapsing
+        them onto one pod UDP socket makes every reply look identical and can
+        route media to the most recently active browser port.  Preserve the
+        flow identity in the backhaul frame's stream id instead.
+        """
+
+        observed = time.monotonic() if now is None else now
+        expired_streams: list[int] = []
+        with self.udp_lock:
+            existing = self.udp_by_address.get(address)
+            if existing is not None:
+                stream_id, _last_seen = existing
+                self.udp_by_address[address] = (stream_id, observed)
+                return stream_id
+
+            expired = [
+                candidate
+                for candidate, (_stream_id, last_seen) in self.udp_by_address.items()
+                if observed - last_seen > UDP_FLOW_TTL_SECONDS
+            ]
+            for candidate in expired:
+                stream_id, _last_seen = self.udp_by_address.pop(candidate)
+                self.udp_by_stream.pop(stream_id, None)
+                expired_streams.append(stream_id)
+            if len(self.udp_by_address) >= MAX_UDP_FLOWS:
+                raise ConnectionError("too many browser UDP flows")
+
+            stream_id = self.next_udp_stream
+            self.next_udp_stream += 1
+            self.udp_by_address[address] = (stream_id, observed)
+            self.udp_by_stream[stream_id] = address
+        for expired_stream in expired_streams:
+            try:
+                self.send(UDP_CLOSE, expired_stream)
+            except (ConnectionError, OSError):
+                pass
+        return stream_id
+
+    def browser_address_for(self, stream_id: int) -> tuple[str, int] | None:
+        with self.udp_lock:
+            return self.udp_by_stream.get(stream_id)
 
     def send(self, kind: int, stream_id: int, payload: bytes = b"") -> None:
         with self.condition:
@@ -113,6 +167,10 @@ class Backhaul:
                 if not payload:
                     break
                 self.send(DATA, stream_id, payload)
+        except OSError:
+            # detach() closes every loopback stream to unblock these worker
+            # threads when the pod backhaul reconnects.
+            pass
         finally:
             with self.stream_lock:
                 self.streams.pop(stream_id, None)
@@ -132,8 +190,10 @@ class Backhaul:
                 stream = self.streams.pop(stream_id, None)
             if stream is not None:
                 stream.close()
-        elif kind == UDP and self.public_udp is not None and self.browser_address is not None:
-            self.public_udp.sendto(payload, self.browser_address)
+        elif kind == UDP and self.public_udp is not None:
+            address = self.browser_address_for(stream_id)
+            if address is not None:
+                self.public_udp.sendto(payload, address)
 
 
 class _TCPHandler(socketserver.BaseRequestHandler):
@@ -196,9 +256,9 @@ def relay_udp(backhaul: Backhaul, *, stop: threading.Event) -> None:
                 payload, address = public.recvfrom(65536)
             except socket.timeout:
                 continue
-            backhaul.browser_address = address
             try:
-                backhaul.send(UDP, 0, payload)
+                stream_id = backhaul.udp_stream_for(address)
+                backhaul.send(UDP, stream_id, payload)
             except (ConnectionError, OSError):
                 continue
     finally:

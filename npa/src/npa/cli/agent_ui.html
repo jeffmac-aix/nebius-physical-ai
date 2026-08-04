@@ -2216,11 +2216,17 @@
       }
       function noteLeIsaacInput(event) {
         const key = String((event && event.key) || "").toUpperCase();
-        if (!leisaacStreamReady || !LEISAAC_KEYS.has(key) || (event && event.repeat)) return;
+        const host = document.getElementById("leisaacStreamHost");
+        const focused = host && (document.activeElement === host || host.contains(event && event.target));
+        if (!leisaacStreamReady || !focused || !LEISAAC_KEYS.has(key) || (event && event.repeat)) return;
         leisaacInputCount += 1;
         const label = document.getElementById("leisaacInputStatus");
         if (label) label.textContent = "Keyboard events sent: " + String(leisaacInputCount) + " · last " + key;
       }
+      // Register before the lazy-loaded NVIDIA client.  Its keyboard handler
+      // consumes events during capture, so a later bubbling listener cannot
+      // reliably report which controls were sent to the active stream.
+      window.addEventListener("keydown", noteLeIsaacInput, { capture: true });
       function loadLeIsaacClient(status) {
         if (window.OVWebStreamingLibrary && window.OVWebStreamingLibrary.AppStreamer) {
           return Promise.resolve(window.OVWebStreamingLibrary.AppStreamer);
@@ -2370,7 +2376,6 @@
           if (connectBtn) connectBtn.addEventListener("click", () => connectLeIsaac().catch((err) => showToast(String(err), "error")));
           if (disconnectBtn) disconnectBtn.addEventListener("click", () => disconnectLeIsaac());
           if (host) {
-            host.addEventListener("keydown", noteLeIsaacInput);
             host.addEventListener("click", () => host.focus());
           }
         }
