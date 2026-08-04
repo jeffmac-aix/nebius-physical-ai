@@ -62,7 +62,9 @@ def load_config(path: str | Path) -> dict[str, Any]:
     fingerprint = str(data.get("certificate_sha256") or "").lower()
     auth_user = str(data.get("auth_user") or "")
     auth_password = str(data.get("auth_password") or "")
-    if len(nonce) != 64 or any(character not in "0123456789abcdef" for character in nonce):
+    if len(nonce) != 64 or any(
+        character not in "0123456789abcdef" for character in nonce
+    ):
         raise ValueError("session nonce is invalid")
     if len(fingerprint) != 64 or any(
         character not in "0123456789abcdef" for character in fingerprint
@@ -181,7 +183,10 @@ class Client:
         self.streams: dict[int, socket.socket] = {}
         self.media_lock = threading.Lock()
         self.media: dict[int, socket.socket] = {}
-        self.media_target = (_pod_ipv4(), 47998)
+        # Public TURN control datagrams arrive through the authenticated agent
+        # backhaul. Coturn shares this pod's network namespace with Isaac Sim,
+        # so its relay allocation reaches the 47998 media peer without NAT.
+        self.media_target = (_pod_ipv4(), 3478)
         self.peer_public_ip = _public_ipv4()
 
     def send(self, kind: int, stream_id: int, payload: bytes = b"") -> None:

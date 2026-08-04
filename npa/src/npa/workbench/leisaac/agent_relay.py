@@ -2,8 +2,9 @@
 
 The GPU pod initiates one authenticated TLS connection to this process on the
 public agent VM. Status, signaling, and the peer-egress discovery endpoint stay
-loopback-only for nginx/the launcher. Browser media uses the separately
-authenticated, source-restricted TURN service installed for the same session.
+loopback-only for nginx/the launcher. The public, source-restricted TURN control
+socket is carried over the same authenticated backhaul to coturn beside the
+simulator; the allocation's media path remains private inside the GPU pod.
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ from typing import Any
 
 STATUS_LISTEN = ("127.0.0.1", 48080)
 SIGNAL_LISTEN = ("127.0.0.1", 49100)
-MEDIA_LISTEN = ("0.0.0.0", 47998)
+MEDIA_LISTEN = ("0.0.0.0", 3478)
 BACKHAUL_LISTEN = ("127.0.0.1", 48081)
 CONTROL_LISTEN = ("127.0.0.1", 48082)
 HELLO, OPEN, DATA, CLOSE, UDP, UDP_CLOSE = 1, 2, 3, 4, 5, 6
@@ -39,8 +40,12 @@ def load_config(path: str | Path) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise ValueError("relay config must be an object")
     nonce = str(data.get("session_nonce") or "")
-    if len(nonce) != 64 or any(character not in "0123456789abcdef" for character in nonce):
-        raise ValueError("relay session nonce must be 64 lowercase hexadecimal characters")
+    if len(nonce) != 64 or any(
+        character not in "0123456789abcdef" for character in nonce
+    ):
+        raise ValueError(
+            "relay session nonce must be 64 lowercase hexadecimal characters"
+        )
     result: dict[str, Any] = {"session_nonce": nonce}
     media_host = str(data.get("media_target_host") or "").strip()
     media_port = int(data.get("media_target_port") or 0)
@@ -48,7 +53,9 @@ def load_config(path: str | Path) -> dict[str, Any]:
         try:
             address = ipaddress.ip_address(media_host)
         except ValueError as exc:
-            raise ValueError("relay media target must be a private IPv4 address") from exc
+            raise ValueError(
+                "relay media target must be a private IPv4 address"
+            ) from exc
         if (
             address.version != 4
             or not address.is_private
@@ -145,7 +152,9 @@ class Backhaul:
             self.udp_by_address.clear()
             self.udp_by_stream.clear()
 
-    def udp_stream_for(self, address: tuple[str, int], *, now: float | None = None) -> int:
+    def udp_stream_for(
+        self, address: tuple[str, int], *, now: float | None = None
+    ) -> int:
         """Map each browser UDP socket to its own pod-side connected socket.
 
         NVIDIA's browser client creates several ICE transports.  Collapsing
@@ -346,9 +355,12 @@ class _ControlHandler(http.server.BaseHTTPRequestHandler):
             self.send_error(404)
             return
         peer = self.server.backhaul.peer_public_ip  # type: ignore[attr-defined]
-        payload = json.dumps(
-            {"connected": bool(peer), "peer_public_ip": peer}, sort_keys=True
-        ).encode("utf-8") + b"\n"
+        payload = (
+            json.dumps(
+                {"connected": bool(peer), "peer_public_ip": peer}, sort_keys=True
+            ).encode("utf-8")
+            + b"\n"
+        )
         self.send_response(200 if peer else 503)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(payload)))

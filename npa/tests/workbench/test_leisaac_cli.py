@@ -162,7 +162,7 @@ def test_relay_media_server_is_the_single_ready_pod_host(monkeypatch) -> None:
                 "metadata": {"name": "old", "deletionTimestamp": "now"},
                 "status": {
                     "phase": "Running",
-                    "hostIP": "10.96.0.1",
+                    "podIP": "10.96.34.1",
                     "containerStatuses": [{"name": "leisaac", "ready": True}],
                 },
             },
@@ -170,7 +170,7 @@ def test_relay_media_server_is_the_single_ready_pod_host(monkeypatch) -> None:
                 "metadata": {"name": "current"},
                 "status": {
                     "phase": "Running",
-                    "hostIP": "10.96.0.22",
+                    "podIP": "10.96.34.22",
                     "containerStatuses": [
                         {"name": "agent-relay-client", "ready": True},
                         {"name": "leisaac", "ready": True},
@@ -186,7 +186,7 @@ def test_relay_media_server_is_the_single_ready_pod_host(monkeypatch) -> None:
         ),
     )
 
-    assert _relay_media_server("cluster", "leisaac", "deployment") == "10.96.0.22"
+    assert _relay_media_server("cluster", "leisaac", "deployment") == "10.96.34.22"
 
 
 def test_gpu_egress_source_accepts_only_narrow_nebius_announced_route(
@@ -326,7 +326,11 @@ def _patch_launch(monkeypatch):
     monkeypatch.setattr("npa.cli.workbench.leisaac._wait_ready", lambda *_args: None)
     monkeypatch.setattr(
         "npa.cli.workbench.leisaac._relay_media_server",
-        lambda *_args: "10.96.0.22",
+        lambda *_args: "10.96.34.22",
+    )
+    monkeypatch.setattr(
+        "npa.cli.workbench.leisaac._remove_agent_turn",
+        lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(
         "npa.cli.workbench.leisaac._relay_peer_public_ip", lambda _ssh: "9.9.9.9"
@@ -473,17 +477,16 @@ def test_launch_agent_relay_wires_private_cluster_public_agent_and_manifest(
         for item in applied[2]["spec"]["template"]["spec"]["containers"][0]["env"]
     }
     assert deployment_env["NPA_LEISAAC_MEDIA_HOST"]["valueFrom"] == {
-        "fieldRef": {"fieldPath": "status.hostIP"}
+        "fieldRef": {"fieldPath": "status.podIP"}
     }
     media_port = next(
         item
         for item in applied[2]["spec"]["template"]["spec"]["containers"][0]["ports"]
         if item["name"] == "media"
     )
-    assert media_port["hostPort"] == 47998
+    assert "hostPort" not in media_port
     assert (
-        applied[-1]["metadata"]["annotations"]["npa.nebius.com/turn-peer-source"]
-        == "9.9.8.0/22"
+        "npa.nebius.com/turn-peer-source" not in applied[-1]["metadata"]["annotations"]
     )
     assert ingress_calls == [
         {
@@ -493,32 +496,16 @@ def test_launch_agent_relay_wires_private_cluster_public_agent_and_manifest(
             "tool": "leisaac-turn-control",
             "protocol": "UDP",
         },
-        {
-            "vm_id": "vm-agent",
-            "ports": (47999,),
-            "source": "9.9.8.0/22",
-            "tool": "leisaac-turn-media",
-            "protocol": "UDP",
-        },
     ]
     assert install_calls[0][0] == (ssh,)
     assert install_calls[0][1]["session_nonce"] == "a" * 64
     assert install_calls[0][1].get("media_target_host", "") == ""
     assert len(install_calls) == 1
-    assert turn_install_calls == [
-        (
-            (ssh,),
-            {
-                "run_id": "live-relay",
-                "session_nonce": "a" * 64,
-                "public_ip": "8.8.4.4",
-            },
-        )
-    ]
+    assert turn_install_calls == []
     assert manifests[0]["transport"] == "agent-relay"
     assert manifests[0]["signal_host"] == "127.0.0.1"
     assert manifests[0]["media_host"] == "8.8.4.4"
-    assert manifests[0]["media_server"] == "10.96.0.22"
+    assert manifests[0]["media_server"] == "10.96.34.22"
 
 
 def test_launch_fails_closed_before_deployment_when_registry_refresh_fails(
@@ -546,8 +533,8 @@ def test_failed_agent_relay_launch_removes_partial_relay_ingress_and_kubernetes(
         monkeypatch
     )
     monkeypatch.setattr(
-        "npa.cli.workbench.leisaac._install_agent_turn",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("install failed")),
+        "npa.cli.workbench.leisaac._put_manifest",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("publish failed")),
     )
     removed_relay = []
     removed_turn = []
@@ -573,14 +560,14 @@ def test_failed_agent_relay_launch_removes_partial_relay_ingress_and_kubernetes(
     result = runner.invoke(app, _args())
 
     assert result.exit_code == 1
-    assert "install failed" in result.output
+    assert "publish failed" in result.output
     assert removed_relay
     assert removed_turn
     assert removed_ingress
     assert removed_kubernetes == [("cluster", "leisaac", "leisaac-live-relay")]
 
 
-def test_relaunch_replaces_only_the_prior_recorded_gpu_egress_rule(monkeypatch) -> None:
+def test_relaunch_removes_only_the_prior_recorded_gpu_egress_rule(monkeypatch) -> None:
     applied, _ingress, _relay, _turn, _manifests, _ssh, _registry = _patch_launch(
         monkeypatch
     )
@@ -602,8 +589,7 @@ def test_relaunch_replaces_only_the_prior_recorded_gpu_egress_rule(monkeypatch) 
         == "4.4.4.0/24"
     )
     assert (
-        applied[-1]["metadata"]["annotations"]["npa.nebius.com/turn-peer-source"]
-        == "9.9.8.0/22"
+        "npa.nebius.com/turn-peer-source" not in applied[-1]["metadata"]["annotations"]
     )
     assert removals == [
         (

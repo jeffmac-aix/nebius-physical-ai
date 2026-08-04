@@ -4,8 +4,8 @@ The live session manifest is an artifact emitted by ``npa workbench leisaac``.
 It is intentionally treated as untrusted input here: TURN must be public,
 direct TCP endpoints must be public, relay TCP endpoints must be exact
 loopback addresses, ports are fixed to the Isaac Sim 5.1 WebRTC contract, and
-the browser sees only the private media peer reachable by the agent-hosted TURN
-relay plus same-origin, authenticated agent routes. Agent-relayed sessions
+the browser sees only the private media peer beside the GPU-local TURN
+allocation plus same-origin, authenticated agent routes. Agent-relayed sessions
 return one derived, ephemeral TURN
 credential from the authenticated no-store status route; the relay nonce and
 agent credentials are never returned.

@@ -136,6 +136,9 @@ def test_agent_relay_client_is_secret_mounted_as_non_gpu_sidecar() -> None:
     )
     assert secret["kind"] == "Secret"
     assert secret["stringData"]["config.json"]
+    assert "listening-port=3478" in secret["stringData"]["turnserver.conf"]
+    assert "min-port=47999" in secret["stringData"]["turnserver.conf"]
+    assert NONCE not in secret["stringData"]["turnserver.conf"]
     deployment = deployment_manifest(
         run_id="live-relay",
         namespace="leisaac",
@@ -154,14 +157,17 @@ def test_agent_relay_client_is_secret_mounted_as_non_gpu_sidecar() -> None:
         port for port in pod["containers"][0]["ports"] if port["name"] == "media"
     )
     assert media["containerPort"] == MEDIA_PORT
-    assert media["hostPort"] == MEDIA_PORT
+    assert "hostPort" not in media
     env = {item["name"]: item for item in pod["containers"][0]["env"]}
     assert env["NPA_LEISAAC_MEDIA_HOST"]["valueFrom"] == {
-        "fieldRef": {"fieldPath": "status.hostIP"}
+        "fieldRef": {"fieldPath": "status.podIP"}
     }
-    assert deployment["spec"]["strategy"]["rollingUpdate"] == {
-        "maxSurge": 0,
-        "maxUnavailable": 1,
+    turn = pod["containers"][2]
+    assert turn["name"] == "turn"
+    assert "@sha256:" in turn["image"]
+    assert {item["containerPort"] for item in turn["ports"]} == {
+        TURN_PORT,
+        TURN_RELAY_PORT,
     }
 
 

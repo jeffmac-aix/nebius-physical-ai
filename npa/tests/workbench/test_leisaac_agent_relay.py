@@ -45,7 +45,7 @@ def test_relay_configs_pin_nonce_public_agent_and_certificate(tmp_path: Path) ->
             {
                 "session_nonce": NONCE,
                 "media_target_host": "10.96.0.22",
-                "media_target_port": 47998,
+                "media_target_port": 3478,
             }
         ),
         encoding="utf-8",
@@ -53,11 +53,11 @@ def test_relay_configs_pin_nonce_public_agent_and_certificate(tmp_path: Path) ->
     assert load_server_config(server_path) == {
         "session_nonce": NONCE,
         "media_target_host": "10.96.0.22",
-        "media_target_port": 47998,
+        "media_target_port": 3478,
     }
     for host, port in (
-        ("8.8.8.8", 47998),
-        ("127.0.0.1", 47998),
+        ("8.8.8.8", 3478),
+        ("127.0.0.1", 3478),
         ("10.96.0.22", 49100),
     ):
         server_path.write_text(
@@ -112,9 +112,9 @@ def test_backhaul_rejects_wrong_nonce_and_multiplexes_loopback_tcp() -> None:
     server_connection, pod_connection = socket.socketpair()
 
     def pod() -> None:
-        hello = json.dumps(
-            {"nonce": NONCE, "peer_public_ip": "8.8.4.4"}
-        ).encode("ascii")
+        hello = json.dumps({"nonce": NONCE, "peer_public_ip": "8.8.4.4"}).encode(
+            "ascii"
+        )
         pod_connection.sendall(
             __import__("struct").pack("!BII", HELLO, 0, len(hello)) + hello
         )
@@ -145,9 +145,7 @@ def test_backhaul_rejects_wrong_nonce_and_multiplexes_loopback_tcp() -> None:
 def test_backhaul_rejects_unauthenticated_hello() -> None:
     backhaul = Backhaul(NONCE)
     server_connection, peer = socket.socketpair()
-    hello = json.dumps(
-        {"nonce": "b" * 64, "peer_public_ip": "8.8.4.4"}
-    ).encode("ascii")
+    hello = json.dumps({"nonce": "b" * 64, "peer_public_ip": "8.8.4.4"}).encode("ascii")
     peer.sendall(__import__("struct").pack("!BII", HELLO, 0, len(hello)) + hello)
     assert backhaul.attach(server_connection) is False
     peer.close()
@@ -168,7 +166,9 @@ def test_backhaul_preserves_multiple_browser_udp_flows() -> None:
     assert backhaul.browser_address_for(second_stream) == second
 
 
-def test_private_client_uses_one_connected_media_socket_per_udp_flow(monkeypatch) -> None:
+def test_private_client_uses_one_connected_media_socket_per_udp_flow(
+    monkeypatch,
+) -> None:
     created: list[object] = []
 
     class FakeSocket:
@@ -177,7 +177,7 @@ def test_private_client_uses_one_connected_media_socket_per_udp_flow(monkeypatch
             created.append(self)
 
         def connect(self, address: tuple[str, int]) -> None:
-            assert address == ("10.96.34.76", 47998)
+            assert address == ("10.96.34.76", 3478)
 
         def send(self, payload: bytes) -> None:
             self.sent.append(payload)
@@ -217,7 +217,9 @@ def test_private_client_uses_one_connected_media_socket_per_udp_flow(monkeypatch
     assert created[1].sent == [b"second"]  # type: ignore[attr-defined]
 
 
-def test_private_client_resolves_only_non_loopback_private_pod_ipv4(monkeypatch) -> None:
+def test_private_client_resolves_only_non_loopback_private_pod_ipv4(
+    monkeypatch,
+) -> None:
     monkeypatch.setattr(socket, "gethostname", lambda: "leisaac-pod")
     monkeypatch.setattr(
         socket,
@@ -253,9 +255,7 @@ def test_private_client_resolves_only_global_gpu_egress_ipv4(monkeypatch) -> Non
 def test_backhaul_rejects_private_peer_address() -> None:
     backhaul = Backhaul(NONCE)
     server_connection, peer = socket.socketpair()
-    hello = json.dumps(
-        {"nonce": NONCE, "peer_public_ip": "10.96.0.22"}
-    ).encode("ascii")
+    hello = json.dumps({"nonce": NONCE, "peer_public_ip": "10.96.0.22"}).encode("ascii")
     peer.sendall(__import__("struct").pack("!BII", HELLO, 0, len(hello)) + hello)
 
     assert backhaul.attach(server_connection) is False
@@ -292,7 +292,7 @@ def test_agent_uses_native_private_udp_per_browser_flow(monkeypatch) -> None:
     monkeypatch.setattr(
         "npa.workbench.leisaac.agent_relay.threading.Thread", FakeThread
     )
-    backhaul = Backhaul(NONCE, ("10.96.0.22", 47998))
+    backhaul = Backhaul(NONCE, ("10.96.0.22", 3478))
     first = ("198.51.100.10", 41001)
     second = ("198.51.100.10", 41002)
 
@@ -301,7 +301,7 @@ def test_agent_uses_native_private_udp_per_browser_flow(monkeypatch) -> None:
     backhaul.relay_browser_udp(b"again", first)
 
     assert len(created) == 2
-    assert created[0].target == ("10.96.0.22", 47998)  # type: ignore[attr-defined]
+    assert created[0].target == ("10.96.0.22", 3478)  # type: ignore[attr-defined]
     assert created[0].sent == [b"first", b"again"]  # type: ignore[attr-defined]
     assert created[1].sent == [b"second"]  # type: ignore[attr-defined]
 
@@ -317,7 +317,10 @@ def test_private_websocket_client_masks_outbound_and_reads_binary_reply() -> Non
         size = second & 0x7F
         mask = server_socket.recv(4)
         payload = server_socket.recv(size)
-        assert bytes(value ^ mask[index % 4] for index, value in enumerate(payload)) == b"hello"
+        assert (
+            bytes(value ^ mask[index % 4] for index, value in enumerate(payload))
+            == b"hello"
+        )
         server_socket.sendall(bytes((0x82, 5)) + b"world")
 
     threading.Thread(target=server, daemon=True).start()

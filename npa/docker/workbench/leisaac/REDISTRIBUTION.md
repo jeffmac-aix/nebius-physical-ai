@@ -6,6 +6,14 @@ commit `1651c321e9b0c1bb54233211fc7b3cd70d8373d5` and its OSS Python
 dependencies. It does not bake Isaac Sim, Isaac Lab, Omniverse Kit, the NVIDIA
 WebRTC browser client, or LeIsaac task assets.
 
+The agent-relay Kubernetes deployment references coturn `4.6.3-r3` by its
+immutable linux/amd64 image digest. Coturn and its image-bundled runtime
+dependencies permit binary redistribution under their included OSS licenses;
+the coturn image includes its BSD-3-Clause license at
+`/usr/share/licenses/coturn/LICENSE`. It contains no NVIDIA runtime, weights,
+or task assets and does not change this image's `redistribution: public`
+classification.
+
 At container startup, the operator must explicitly provide both
 `OMNI_KIT_ACCEPT_EULA=YES` and `ISAACSIM_ACCEPT_EULA=YES`. Only then does the
 shared NPA bootstrap fetch the pinned Isaac Sim 5.1.0.0 / Isaac Lab

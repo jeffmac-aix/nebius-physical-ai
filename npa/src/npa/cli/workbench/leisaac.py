@@ -171,7 +171,7 @@ def _delete_resources(context: str, namespace: str, name: str) -> None:
 
 
 def _relay_media_server(context: str, namespace: str, deployment: str) -> str:
-    """Return the private host IP of the one ready simulator pod."""
+    """Return the private pod IP shared by the simulator and TURN sidecar."""
 
     result = _kubectl(
         context,
@@ -196,12 +196,12 @@ def _relay_media_server(context: str, namespace: str, deployment: str) -> str:
         ):
             continue
         candidates.append(
-            validate_private_ip(status.get("hostIP"), "RTX node media address")
+            validate_private_ip(status.get("podIP"), "LeIsaac pod media address")
         )
     if len(candidates) != 1:
         raise RuntimeError(
             "LeIsaac relay requires exactly one ready simulator pod with a private "
-            "RTX node address"
+            "pod address"
         )
     return candidates[0]
 
@@ -784,6 +784,10 @@ def launch_cmd(
             )
             _apply(context, namespace, [service])
             relay_installed = True
+            # Sessions from the previous topology ran coturn on the public agent
+            # itself. Remove only this run's matching unit before the backhaul
+            # relay takes ownership of public UDP 3478.
+            _remove_agent_turn(ssh, run_id=run_id)
             _install_agent_relay(
                 ssh,
                 run_id=run_id,
@@ -829,7 +833,6 @@ def launch_cmd(
             if ssh is None:
                 raise RuntimeError("LeIsaac agent relay has no SSH transport")
             media_server = _relay_media_server(context, namespace, name)
-            turn_peer_source = _gpu_egress_source(_relay_peer_public_ip(ssh))
             for source in source_ranges:
                 ingress = ensure_ingress(
                     vm_id=instance_id,
@@ -850,17 +853,6 @@ def launch_cmd(
                     tool=_TURN_MEDIA_TOOL,
                     protocol="UDP",
                 )
-            ingress = ensure_ingress(
-                vm_id=instance_id,
-                ports=(TURN_RELAY_PORT,),
-                source=turn_peer_source,
-                tool=_TURN_MEDIA_TOOL,
-                protocol="UDP",
-            )
-            if ingress.changed:
-                created_ingress_specs.append(
-                    (TURN_RELAY_PORT, turn_peer_source, _TURN_MEDIA_TOOL, "UDP")
-                )
             _apply(
                 context,
                 namespace,
@@ -871,15 +863,8 @@ def launch_cmd(
                         agent_project=agent_project,
                         agent_name=agent_name,
                         source_ranges=source_ranges,
-                        turn_peer_source=turn_peer_source,
                     )
                 ],
-            )
-            _install_agent_turn(
-                ssh,
-                run_id=run_id,
-                session_nonce=nonce,
-                public_ip=media_host,
             )
         health = _relay_status(ssh) if ssh is not None else _status(signal_host)
         if (

@@ -21,6 +21,10 @@ SIGNAL_PORT = 49100
 MEDIA_PORT = 47998
 TURN_PORT = 3478
 TURN_RELAY_PORT = 47999
+TURN_IMAGE = (
+    "docker.io/coturn/coturn@"
+    "sha256:747ffd6c11fffad8c9c344a116d45f1365ee69a3e3af6475ce5c49e1024848f5"
+)
 SERVICE_PORT = 8080
 RELAY_SERVICE_PORT = 48080
 GPU_PRODUCT = "NVIDIA-RTX-PRO-6000-Blackwell-Server-Edition"
@@ -217,10 +221,10 @@ def relay_service_manifest(
 ) -> dict[str, Any]:
     """Build one private ClusterIP service for an agent-relayed session.
 
-    The service has no cloud load balancer or public address.  The authenticated
-    reverse sidecar carries status and signaling to the agent's fixed loopback
-    listeners. Browser media uses a session-scoped TURN allocation on the
-    public agent because the agent and GPU cluster can occupy isolated VPCs.
+    The service has no cloud load balancer or public address. The authenticated
+    reverse sidecar carries status, signaling, and TURN control datagrams to the
+    agent's fixed listeners. The TURN allocation itself stays beside the
+    simulator, so browser media does not require cross-VPC GPU ingress.
     """
 
     run_id = validate_run_id(run_id)
@@ -303,6 +307,25 @@ def relay_client_secret_manifest(
         raise LeIsaacConfigError("relay certificate fingerprint is invalid")
     if not auth_user or not auth_password or "\n" in auth_user + auth_password:
         raise LeIsaacConfigError("agent basic-auth credential is invalid")
+    turn_config = f"""listening-port={TURN_PORT}
+min-port={TURN_RELAY_PORT}
+max-port={TURN_RELAY_PORT}
+realm=npa-leisaac
+user={run_id}:{turn_credential(session_nonce)}
+fingerprint
+lt-cred-mech
+stale-nonce=600
+total-quota=1
+user-quota=1
+no-tcp
+no-tls
+no-dtls
+no-cli
+no-multicast-peers
+pidfile=/tmp/npa-leisaac-turn.pid
+simple-log
+log-file=stdout
+"""
     return {
         "apiVersion": "v1",
         "kind": "Secret",
@@ -328,6 +351,7 @@ def relay_client_secret_manifest(
                 },
                 sort_keys=True,
             ),
+            "turnserver.conf": turn_config,
         },
     }
 
@@ -374,13 +398,13 @@ def deployment_manifest(
         {"name": key, "value": value} for key, value in sorted(environment.items())
     ]
     if relay_client_secret:
-        # The TURN server runs on the agent VM and reaches the simulator through
-        # the RTX node's private address. The downward API keeps the advertised
-        # endpoint aligned with whichever eligible node actually schedules the pod.
+        # TURN runs in this pod. The browser reaches its control port through the
+        # authenticated agent backhaul, while its relay allocation and simulator
+        # exchange media directly inside the shared pod network namespace.
         environment_items.append(
             {
                 "name": "NPA_LEISAAC_MEDIA_HOST",
-                "valueFrom": {"fieldRef": {"fieldPath": "status.hostIP"}},
+                "valueFrom": {"fieldRef": {"fieldPath": "status.podIP"}},
             }
         )
     else:
@@ -392,8 +416,6 @@ def deployment_manifest(
         "containerPort": MEDIA_PORT,
         "protocol": "UDP",
     }
-    if relay_client_secret:
-        media_port["hostPort"] = MEDIA_PORT
     pod_spec: dict[str, Any] = {
         "nodeSelector": {"nvidia.com/gpu.product": GPU_PRODUCT},
         "containers": [
@@ -494,6 +516,52 @@ def deployment_manifest(
                 ],
             }
         )
+        pod_spec["containers"].append(
+            {
+                "name": "turn",
+                "image": TURN_IMAGE,
+                "imagePullPolicy": "IfNotPresent",
+                "command": ["turnserver"],
+                "args": ["-c", "/opt/npa-relay/turnserver.conf"],
+                "ports": [
+                    {
+                        "name": "turn-control",
+                        "containerPort": TURN_PORT,
+                        "protocol": "UDP",
+                    },
+                    {
+                        "name": "turn-media",
+                        "containerPort": TURN_RELAY_PORT,
+                        "protocol": "UDP",
+                    },
+                ],
+                "resources": {
+                    "requests": {"cpu": "50m", "memory": "64Mi"},
+                    "limits": {"cpu": "500m", "memory": "256Mi"},
+                },
+                "securityContext": {
+                    "allowPrivilegeEscalation": False,
+                    # The upstream image marks turnserver with
+                    # cap_net_bind_service. Keep only that file capability;
+                    # dropping the full bounding set makes Linux reject exec.
+                    "capabilities": {
+                        "drop": ["ALL"],
+                        "add": ["NET_BIND_SERVICE"],
+                    },
+                    "runAsNonRoot": True,
+                    "runAsUser": 65534,
+                    "runAsGroup": 65533,
+                    "seccompProfile": {"type": "RuntimeDefault"},
+                },
+                "volumeMounts": [
+                    {
+                        "name": "relay-client",
+                        "mountPath": "/opt/npa-relay",
+                        "readOnly": True,
+                    },
+                ],
+            }
+        )
         pod_spec["volumes"].append(
             {
                 "name": "relay-client",
@@ -511,14 +579,6 @@ def deployment_manifest(
         "metadata": {"name": name, "namespace": namespace, "labels": labels},
         "spec": {
             "replicas": 1,
-            "strategy": (
-                {
-                    "type": "RollingUpdate",
-                    "rollingUpdate": {"maxSurge": 0, "maxUnavailable": 1},
-                }
-                if relay_client_secret
-                else {"type": "RollingUpdate"}
-            ),
             "selector": {"matchLabels": {"app": name}},
             "template": {"metadata": {"labels": labels}, "spec": pod_spec},
         },
