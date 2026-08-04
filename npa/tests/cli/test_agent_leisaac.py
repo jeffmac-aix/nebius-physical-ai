@@ -296,6 +296,7 @@ def test_authenticated_backend_routes_gate_status_and_proxy_client(monkeypatch) 
 
 def test_signaling_proxy_preserves_only_upstream_sign_in_path() -> None:
     raw_manifest = _manifest()
+    health_checks_off_event_loop: list[bool] = []
 
     class FakeResponse:
         status_code = 200
@@ -343,13 +344,22 @@ def test_signaling_proxy_preserves_only_upstream_sign_in_path() -> None:
         connected.append(uri)
         return FakeUpstream()
 
+    def http_get(*_args, **_kwargs):
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            health_checks_off_event_loop.append(True)
+        else:
+            health_checks_off_event_loop.append(False)
+        return FakeResponse()
+
     api = FastAPI()
     register_leisaac_routes(
         api,
         LeIsaacDeps(
             load_state=lambda: {},
             resolve_manifest=lambda _run_id: raw_manifest,
-            http_get=lambda *_args, **_kwargs: FakeResponse(),
+            http_get=http_get,
             response=Response,
             websocket_connect=connect,
         ),
@@ -362,6 +372,7 @@ def test_signaling_proxy_preserves_only_upstream_sign_in_path() -> None:
     ) as websocket:
         assert websocket.receive_text() == '{"ackid":1}'
     assert connected == [f"ws://8.8.8.8:{LEISAAC_SIGNAL_PORT}/sign_in?{query}"]
+    assert health_checks_off_event_loop == [True]
 
     with pytest.raises(WebSocketDisconnect) as exc_info:
         with client.websocket_connect(

@@ -181,12 +181,16 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
             await websocket.close(code=1008)
             return
         run_id = str(websocket.query_params.get("run_id") or "")
-        manifest, reason = _resolve(deps, run_id)
+        # Storage discovery and the loopback health request are synchronous.
+        # In agent-relay mode their response also traverses the backhaul route
+        # on this ASGI event loop, so running either call inline can deadlock
+        # the WebSocket that is needed to return its own response.
+        manifest, reason = await asyncio.to_thread(_resolve, deps, run_id)
         if not manifest:
             LOG.warning("LeIsaac signaling rejected: %s", reason)
             await websocket.close(code=1008)
             return
-        health, reason = _health(deps, manifest)
+        health, reason = await asyncio.to_thread(_health, deps, manifest)
         if not health:
             LOG.warning("LeIsaac signaling rejected: %s", reason)
             await websocket.close(code=1013)
