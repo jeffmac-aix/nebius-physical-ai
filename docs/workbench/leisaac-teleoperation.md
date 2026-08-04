@@ -91,6 +91,9 @@ On a cold pod, the existing liveness probe preserves the licensed runtime fetch
 but restarts a simulator that remains in its first pre-ready reset. Kubernetes
 keeps the pod's `emptyDir` Isaac caches, so the deterministic retry uses the
 warmed collision/shader cache while `/status` remains unavailable until reset.
+A marker in the pod-local LeIsaac cache makes that recovery single-shot: the
+warmed retry stays live for as long as the real environment needs to finish its
+reset instead of entering a restart loop.
 The exact patch is commit-locked in the image build and named in runtime
 provenance. It
 refuses to start until the operator explicitly sets both

@@ -68,6 +68,7 @@ CACHE_ROOT = Path(os.environ.get("NPA_LEISAAC_CACHE_DIR", "/opt/leisaac-cache"))
 ASSETS_ROOT = CACHE_ROOT / "assets" / ASSET_RELEASE
 CLIENT_ROOT = CACHE_ROOT / "client" / "5.6.0"
 PROVENANCE_PATH = CACHE_ROOT / "provenance.json"
+COLD_RESET_PATH = CACHE_ROOT / ".cold-reset-attempted"
 READY_PATH = Path("/tmp/npa-leisaac-ready")
 INPUT_COUNTER_PATH = Path("/tmp/npa-leisaac-input-events")
 STATE_LOCK = threading.Lock()
@@ -76,6 +77,7 @@ STATE: dict[str, Any] = {
     "detail": "staging runtime",
     "webrtc_ready": False,
     "pid": 0,
+    "warm_retry": False,
     "gpu": "",
     "started_at": "",
 }
@@ -301,6 +303,8 @@ def run_simulation() -> None:
         environment["NPA_LEISAAC_BROWSER_TELEOP"] = "1"
         environment["NPA_LEISAAC_READY_PATH"] = str(READY_PATH)
         environment["NPA_LEISAAC_INPUT_COUNTER"] = str(INPUT_COUNTER_PATH)
+        warm_retry = COLD_RESET_PATH.is_file()
+        COLD_RESET_PATH.write_text(f"{utc_now()}\n", encoding="utf-8")
         READY_PATH.unlink(missing_ok=True)
         INPUT_COUNTER_PATH.write_text("0\n", encoding="utf-8")
         CHILD = subprocess.Popen(
@@ -311,7 +315,12 @@ def run_simulation() -> None:
             start_new_session=True,
             text=True,
         )
-        update_state(pid=CHILD.pid, gpu=detect_gpu(), started_at=utc_now())
+        update_state(
+            pid=CHILD.pid,
+            gpu=detect_gpu(),
+            started_at=utc_now(),
+            warm_retry=warm_retry,
+        )
         while CHILD.poll() is None:
             if tcp_ready(SIGNAL_PORT) and READY_PATH.is_file():
                 update_state(state="ready", detail="live", webrtc_ready=True)
@@ -354,12 +363,13 @@ def health_document() -> dict[str, Any]:
 
 
 def liveness_status() -> int:
-    """Restart a wedged first reset while preserving the pod's warm caches."""
+    """Restart only the cold reset while preserving the pod's warm caches."""
 
     with STATE_LOCK:
         state = str(STATE.get("state") or "")
         pid = int(STATE.get("pid") or 0)
-    if state == "failed" or (state == "starting" and pid > 0):
+        warm_retry = bool(STATE.get("warm_retry"))
+    if state == "failed" or (state == "starting" and pid > 0 and not warm_retry):
         return 503
     return 200
 

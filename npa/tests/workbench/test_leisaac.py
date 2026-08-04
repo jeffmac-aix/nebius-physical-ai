@@ -333,13 +333,15 @@ def test_health_reads_upstream_keyboard_counter(tmp_path: Path) -> None:
     assert health["seed"] == 42
 
 
-def test_liveness_preserves_runtime_fetch_and_restarts_wedged_reset() -> None:
+def test_liveness_restarts_only_cold_reset_and_preserves_warm_retry() -> None:
     server = _session_server_module()
 
-    server.STATE.update(state="starting", pid=0)
+    server.STATE.update(state="starting", pid=0, warm_retry=False)
     assert server.liveness_status() == 200
-    server.STATE.update(state="starting", pid=42)
+    server.STATE.update(state="starting", pid=42, warm_retry=False)
     assert server.liveness_status() == 503
+    server.STATE.update(state="starting", pid=42, warm_retry=True)
+    assert server.liveness_status() == 200
     server.STATE.update(state="ready", pid=42)
     assert server.liveness_status() == 200
     server.STATE.update(state="failed", pid=0)
