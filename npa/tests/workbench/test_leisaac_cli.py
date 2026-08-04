@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from typer.testing import CliRunner
 
 from npa.cli.workbench.leisaac import (
+    _agent_private_ipv4,
     _delete_resources,
     _install_agent_relay,
     _install_agent_turn,
@@ -63,7 +64,9 @@ def test_wait_ready_rejects_old_ready_replica_during_rollout(monkeypatch) -> Non
     assert calls == [5]
 
 
-def test_delete_resources_addresses_each_kubernetes_kind_explicitly(monkeypatch) -> None:
+def test_delete_resources_addresses_each_kubernetes_kind_explicitly(
+    monkeypatch,
+) -> None:
     calls = []
     monkeypatch.setattr(
         "npa.cli.workbench.leisaac._kubectl",
@@ -129,7 +132,9 @@ def test_install_turn_uses_session_config_and_fixed_public_mapping() -> None:
     assert "a" * 64 not in ssh.command
 
 
-def test_relay_peer_resolution_waits_for_authenticated_global_egress(monkeypatch) -> None:
+def test_relay_peer_resolution_waits_for_authenticated_global_egress(
+    monkeypatch,
+) -> None:
     class PeerSSH:
         responses = iter(
             [
@@ -148,6 +153,15 @@ def test_relay_peer_resolution_waits_for_authenticated_global_egress(monkeypatch
 
     assert _relay_peer_public_ip(PeerSSH()) == "9.9.9.9"
     assert sleeps == [2]
+
+
+def test_agent_private_media_address_comes_from_the_default_route() -> None:
+    class AgentSSH:
+        def run(self, command):
+            assert "route get 1.1.1.1" in command
+            return 0, "10.96.0.5\n", ""
+
+    assert _agent_private_ipv4(AgentSSH()) == "10.96.0.5"
 
 
 def test_gpu_egress_source_accepts_only_narrow_nebius_announced_route(
@@ -239,7 +253,9 @@ def _patch_launch(monkeypatch):
     )
     monkeypatch.setattr(
         "npa.cli.workbench.leisaac._kubectl",
-        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout="secret/x", stderr=""),
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0, stdout="secret/x", stderr=""
+        ),
     )
     applied = []
     monkeypatch.setattr(
@@ -249,7 +265,14 @@ def _patch_launch(monkeypatch):
     ssh = object()
     monkeypatch.setattr(
         "npa.cli.workbench.leisaac._agent_relay_context",
-        lambda *_args: ("vm-agent", "8.8.4.4", ssh, "npa", "secret"),
+        lambda *_args: (
+            "vm-agent",
+            "8.8.4.4",
+            "10.96.0.5",
+            ssh,
+            "npa",
+            "secret",
+        ),
     )
     storage = {
         "bucket": "bucket",
@@ -277,9 +300,7 @@ def _patch_launch(monkeypatch):
     install_calls = []
     monkeypatch.setattr(
         "npa.cli.workbench.leisaac._install_agent_relay",
-        lambda *args, **kwargs: (
-            install_calls.append((args, kwargs))
-        ),
+        lambda *args, **kwargs: install_calls.append((args, kwargs)),
     )
     monkeypatch.setattr(
         "npa.cli.workbench.leisaac._agent_certificate_sha256", lambda _ip: "f" * 64
@@ -314,7 +335,9 @@ def _patch_launch(monkeypatch):
         return "s3://bucket/checkpoints/live-relay/reports/leisaac-session.json"
 
     monkeypatch.setattr("npa.cli.workbench.leisaac._put_manifest", put)
-    monkeypatch.setattr("npa.cli.workbench.leisaac.secrets.token_hex", lambda _n: "a" * 64)
+    monkeypatch.setattr(
+        "npa.cli.workbench.leisaac.secrets.token_hex", lambda _n: "a" * 64
+    )
     # Make the attestation nonce exactly match the deterministic nonce above.
     monkeypatch.setattr(
         "npa.cli.workbench.leisaac._relay_status",
@@ -337,7 +360,9 @@ def _patch_launch(monkeypatch):
     )
 
 
-def test_agent_relay_manifest_uses_selected_agent_storage_not_shell_endpoint(monkeypatch) -> None:
+def test_agent_relay_manifest_uses_selected_agent_storage_not_shell_endpoint(
+    monkeypatch,
+) -> None:
     calls = []
 
     class S3:
@@ -362,9 +387,7 @@ def test_agent_relay_manifest_uses_selected_agent_storage_not_shell_endpoint(mon
         "region": "agent-region",
     }
 
-    uri = _put_manifest(
-        "s3://bucket/checkpoints", manifest, storage=storage
-    )
+    uri = _put_manifest("s3://bucket/checkpoints", manifest, storage=storage)
 
     assert uri == "s3://bucket/checkpoints/live-relay/reports/leisaac-session.json"
     assert client_calls[0][1]["endpoint_url"] == "https://agent-region.example"
@@ -392,7 +415,9 @@ def test_agent_relay_manifest_rejects_storage_scope_mismatch() -> None:
             raise AssertionError(f"storage scope mismatch was accepted: {uri}")
 
 
-def test_launch_agent_relay_wires_private_cluster_public_agent_and_manifest(monkeypatch) -> None:
+def test_launch_agent_relay_wires_private_cluster_public_agent_and_manifest(
+    monkeypatch,
+) -> None:
     (
         applied,
         ingress_calls,
@@ -421,9 +446,15 @@ def test_launch_agent_relay_wires_private_cluster_public_agent_and_manifest(monk
     assert applied[0]["spec"]["type"] == "ClusterIP"
     assert applied[1]["kind"] == "Secret"
     assert applied[2]["kind"] == "Deployment"
-    assert applied[-1]["metadata"]["annotations"][
-        "npa.nebius.com/turn-peer-source"
-    ] == "9.9.8.0/22"
+    deployment_env = {
+        item["name"]: item["value"]
+        for item in applied[2]["spec"]["template"]["spec"]["containers"][0]["env"]
+    }
+    assert deployment_env["NPA_LEISAAC_MEDIA_HOST"] == "10.96.0.5"
+    assert (
+        applied[-1]["metadata"]["annotations"]["npa.nebius.com/turn-peer-source"]
+        == "9.9.8.0/22"
+    )
     assert ingress_calls == [
         {
             "vm_id": "vm-agent",
@@ -457,6 +488,7 @@ def test_launch_agent_relay_wires_private_cluster_public_agent_and_manifest(monk
     assert manifests[0]["transport"] == "agent-relay"
     assert manifests[0]["signal_host"] == "127.0.0.1"
     assert manifests[0]["media_host"] == "8.8.4.4"
+    assert manifests[0]["media_server"] == "10.96.0.5"
 
 
 def test_launch_fails_closed_before_deployment_when_registry_refresh_fails(
@@ -535,12 +567,14 @@ def test_relaunch_replaces_only_the_prior_recorded_gpu_egress_rule(monkeypatch) 
     result = runner.invoke(app, _args())
 
     assert result.exit_code == 0, result.output
-    assert applied[0]["metadata"]["annotations"][
-        "npa.nebius.com/turn-peer-source"
-    ] == "4.4.4.0/24"
-    assert applied[-1]["metadata"]["annotations"][
-        "npa.nebius.com/turn-peer-source"
-    ] == "9.9.8.0/22"
+    assert (
+        applied[0]["metadata"]["annotations"]["npa.nebius.com/turn-peer-source"]
+        == "4.4.4.0/24"
+    )
+    assert (
+        applied[-1]["metadata"]["annotations"]["npa.nebius.com/turn-peer-source"]
+        == "9.9.8.0/22"
+    )
     assert removals == [
         (
             ("vm-agent",),
@@ -554,7 +588,9 @@ def test_relaunch_replaces_only_the_prior_recorded_gpu_egress_rule(monkeypatch) 
     ]
 
 
-def test_destroy_uses_service_metadata_to_remove_only_its_agent_relay(monkeypatch) -> None:
+def test_destroy_uses_service_metadata_to_remove_only_its_agent_relay(
+    monkeypatch,
+) -> None:
     relay_service = {
         "metadata": {
             "annotations": {

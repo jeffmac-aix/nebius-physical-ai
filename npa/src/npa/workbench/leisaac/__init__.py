@@ -76,15 +76,30 @@ def validate_public_ip(value: str, label: str) -> str:
     return address.compressed
 
 
+def validate_private_ip(value: str, label: str) -> str:
+    try:
+        address = ipaddress.ip_address(str(value or "").strip())
+    except ValueError as exc:
+        raise LeIsaacConfigError(f"{label} must be an IP address") from exc
+    if (
+        address.version != 4
+        or not address.is_private
+        or address.is_loopback
+        or address.is_link_local
+        or address.is_multicast
+        or address.is_unspecified
+    ):
+        raise LeIsaacConfigError(f"{label} must be a private IPv4 address")
+    return address.compressed
+
+
 def validate_source_ranges(values: list[str] | tuple[str, ...]) -> list[str]:
     result: list[str] = []
     for raw in values:
         try:
             network = ipaddress.ip_network(str(raw or "").strip(), strict=False)
         except ValueError as exc:
-            raise LeIsaacConfigError(
-                f"invalid LeIsaac source range: {raw}"
-            ) from exc
+            raise LeIsaacConfigError(f"invalid LeIsaac source range: {raw}") from exc
         # ``ipaddress`` changed its classification of the all-addresses
         # network across supported Python releases.  Reject an unrestricted
         # route explicitly instead of depending on that version-specific
@@ -93,9 +108,7 @@ def validate_source_ranges(values: list[str] | tuple[str, ...]) -> list[str]:
             raise LeIsaacConfigError(f"LeIsaac source range must be public: {network}")
         result.append(network.with_prefixlen)
     if not result:
-        raise LeIsaacConfigError(
-            "at least one agent/operator source range is required"
-        )
+        raise LeIsaacConfigError("at least one agent/operator source range is required")
     return sorted(set(result))
 
 
@@ -221,9 +234,7 @@ def relay_service_manifest(
     annotations = {
         "npa.nebius.com/agent-project": str(agent_project),
         "npa.nebius.com/agent-name": str(agent_name),
-        "npa.nebius.com/source-ranges": ",".join(
-            validate_source_ranges(source_ranges)
-        ),
+        "npa.nebius.com/source-ranges": ",".join(validate_source_ranges(source_ranges)),
     }
     if turn_peer_source:
         peer = validate_source_ranges([turn_peer_source])
@@ -328,12 +339,24 @@ def deployment_manifest(
     image: str,
     media_host: str,
     session_nonce: str,
+    media_server: str = "",
     image_pull_secret: str = "npa-registry",
     relay_client_secret: str = "",
 ) -> dict[str, Any]:
     run_id = validate_run_id(run_id)
     image = validate_image(image)
     media_host = validate_public_ip(media_host, "media host")
+    runtime_media_host = media_host
+    if relay_client_secret:
+        runtime_media_host = validate_private_ip(
+            media_server, "agent relay media server"
+        )
+    elif media_server:
+        runtime_media_host = validate_public_ip(media_server, "media server")
+        if runtime_media_host != media_host:
+            raise LeIsaacConfigError(
+                "public load-balancer media server must match the media host"
+            )
     if not re.fullmatch(r"[a-f0-9]{64}", session_nonce):
         raise LeIsaacConfigError(
             "session nonce must be 64 lowercase hexadecimal characters"
@@ -350,7 +373,7 @@ def deployment_manifest(
         "ISAACSIM_ACCEPT_EULA": "YES",
         "NPA_LEISAAC_RUN_ID": run_id,
         "NPA_LEISAAC_SESSION_NONCE": session_nonce,
-        "NPA_LEISAAC_MEDIA_HOST": media_host,
+        "NPA_LEISAAC_MEDIA_HOST": runtime_media_host,
         "NVIDIA_DRIVER_CAPABILITIES": "all",
     }
     pod_spec: dict[str, Any] = {
@@ -452,7 +475,11 @@ def deployment_manifest(
                     "seccompProfile": {"type": "RuntimeDefault"},
                 },
                 "volumeMounts": [
-                    {"name": "relay-client", "mountPath": "/opt/npa-relay", "readOnly": True}
+                    {
+                        "name": "relay-client",
+                        "mountPath": "/opt/npa-relay",
+                        "readOnly": True,
+                    }
                 ],
             }
         )
@@ -486,6 +513,7 @@ def session_manifest(
     signal_host: str,
     media_host: str,
     session_nonce: str,
+    media_server: str = "",
     expires_at: str = "",
     gpu: str = GPU_PRODUCT,
     created_at: str | None = None,
@@ -498,9 +526,16 @@ def session_manifest(
     if transport == TRANSPORT_AGENT_RELAY:
         if signal_host != "127.0.0.1":
             raise LeIsaacConfigError("agent-relay signaling must use 127.0.0.1")
+        media_server = validate_private_ip(media_server, "agent relay media server")
     else:
         signal_host = validate_public_ip(signal_host, "signal host")
     media_host = validate_public_ip(media_host, "media host")
+    if transport != TRANSPORT_AGENT_RELAY:
+        media_server = validate_public_ip(media_server or media_host, "media server")
+        if media_server != media_host:
+            raise LeIsaacConfigError(
+                "public load-balancer media server must match the media host"
+            )
     expires_at = validate_expiry(expires_at)
     if not re.fullmatch(r"[a-f0-9]{64}", session_nonce):
         raise LeIsaacConfigError(
@@ -516,6 +551,7 @@ def session_manifest(
         "signal_host": signal_host,
         "signal_port": SIGNAL_PORT,
         "media_host": media_host,
+        "media_server": media_server,
         "media_port": MEDIA_PORT,
         "turn_port": TURN_PORT,
         "turn_relay_port": TURN_RELAY_PORT,

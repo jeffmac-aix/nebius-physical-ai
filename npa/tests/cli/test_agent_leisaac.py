@@ -40,6 +40,7 @@ def _manifest(**overrides):
         "signal_host": "8.8.8.8",
         "signal_port": LEISAAC_SIGNAL_PORT,
         "media_host": "1.1.1.1",
+        "media_server": "1.1.1.1",
         "media_port": LEISAAC_MEDIA_PORT,
         "turn_port": LEISAAC_TURN_PORT,
         "turn_relay_port": LEISAAC_TURN_RELAY_PORT,
@@ -154,6 +155,7 @@ def test_agent_relay_manifest_accepts_only_fixed_loopback_tcp_contract() -> None
         _manifest(
             transport="agent-relay",
             signal_host="127.0.0.1",
+            media_server="10.96.0.5",
             service_url="http://127.0.0.1:48080",
         ),
         expected_run_id="leisaac-live-1",
@@ -175,6 +177,7 @@ def test_agent_relay_manifest_accepts_only_fixed_loopback_tcp_contract() -> None
         relay_values = {
             "transport": "agent-relay",
             "signal_host": "127.0.0.1",
+            "media_server": "10.96.0.5",
             "service_url": "http://127.0.0.1:48080",
         }
         relay_values.update(override)
@@ -218,6 +221,7 @@ def test_agent_relay_status_returns_only_derived_session_turn_credential() -> No
     manifest = _normalized(
         transport="agent-relay",
         signal_host="127.0.0.1",
+        media_server="10.96.0.5",
         service_url="http://127.0.0.1:48080",
     )
     health = {
@@ -229,6 +233,7 @@ def test_agent_relay_status_returns_only_derived_session_turn_credential() -> No
     payload = status_payload(manifest, health)
 
     assert payload["transport"] == "agent-relay"
+    assert payload["media_server"] == "10.96.0.5"
     assert payload["ice_transport_policy"] == "relay"
     assert payload["ice_servers"] == [
         {
@@ -319,9 +324,9 @@ def test_authenticated_backend_routes_gate_status_and_proxy_client(monkeypatch) 
         is WebSocket
     )
     assert (
-        get_type_hints(
-            websocket_routes["/leisaac/signal/{signal_path:path}"].endpoint
-        )["websocket"]
+        get_type_hints(websocket_routes["/leisaac/signal/{signal_path:path}"].endpoint)[
+            "websocket"
+        ]
         is WebSocket
     )
     assert (
@@ -331,9 +336,7 @@ def test_authenticated_backend_routes_gate_status_and_proxy_client(monkeypatch) 
     missing = client.get("/leisaac/status", params={"run_id": "other"})
     assert missing.status_code == 200
     assert missing.json()["available"] is False
-    insecure = client.get(
-        "/leisaac/status", params={"run_id": raw_manifest["run_id"]}
-    )
+    insecure = client.get("/leisaac/status", params={"run_id": raw_manifest["run_id"]})
     assert insecure.json()["available"] is False
     assert "HTTPS" in insecure.json()["reason"]
     status = client.get(

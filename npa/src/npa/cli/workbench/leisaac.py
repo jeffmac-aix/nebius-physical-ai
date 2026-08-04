@@ -48,6 +48,7 @@ from npa.workbench.leisaac import (
     turn_credential,
     validate_expiry,
     validate_image,
+    validate_private_ip,
     validate_public_ip,
     validate_run_id,
     validate_source_ranges,
@@ -207,7 +208,9 @@ def _relay_nodeports(context: str, namespace: str, service: str) -> dict[str, in
 
 def _agent_record(project: str, name: str) -> dict[str, Any]:
     project_record = list_projects().get(project, {})
-    agents = project_record.get("agents", {}) if isinstance(project_record, dict) else {}
+    agents = (
+        project_record.get("agents", {}) if isinstance(project_record, dict) else {}
+    )
     record = agents.get(name, {}) if isinstance(agents, dict) else {}
     if not isinstance(record, dict) or not record:
         raise LeIsaacConfigError(f"agent config not found for {project}/{name}")
@@ -247,9 +250,23 @@ def _agent_artifact_storage(project: str, name: str) -> dict[str, str]:
     return storage
 
 
+def _agent_private_ipv4(ssh: SSHClient) -> str:
+    code, stdout, stderr = ssh.run(
+        "ip -4 route get 1.1.1.1 | "
+        'awk \'{for (i=1;i<=NF;i++) if ($i=="src") '
+        "{print $(i+1); exit}}'"
+    )
+    if code:
+        detail = stderr.strip() or stdout.strip() or "route lookup failed"
+        raise LeIsaacConfigError(
+            f"agent private media address could not be resolved: {detail}"
+        )
+    return validate_private_ip(stdout.strip(), "agent private media address")
+
+
 def _agent_relay_context(
     project: str, name: str
-) -> tuple[str, str, SSHClient, str, str]:
+) -> tuple[str, str, str, SSHClient, str, str]:
     record = _agent_record(project, name)
     instance_id = str(record.get("instance_id") or "").strip()
     key_path = str(record.get("ssh_key_path") or "").strip()
@@ -284,7 +301,14 @@ def _agent_relay_context(
             key_path=key_path,
         )
     )
-    return instance_id, public_ip, ssh, auth_user, auth_password
+    return (
+        instance_id,
+        public_ip,
+        _agent_private_ipv4(ssh),
+        ssh,
+        auth_user,
+        auth_password,
+    )
 
 
 def _agent_certificate_sha256(public_ip: str) -> str:
@@ -413,8 +437,7 @@ def _gpu_egress_source(peer_ip: str) -> str:
     peer_ip = validate_public_ip(peer_ip, "GPU egress IP")
     try:
         with urllib.request.urlopen(  # noqa: S310 - fixed HTTPS endpoint
-            "https://stat.ripe.net/data/network-info/data.json?resource="
-            f"{peer_ip}",
+            f"https://stat.ripe.net/data/network-info/data.json?resource={peer_ip}",
             timeout=10,
         ) as response:
             route_payload = json.load(response)
@@ -432,8 +455,7 @@ def _gpu_egress_source(peer_ip: str) -> str:
             raise ValueError("route is not a narrow announced IPv4 prefix")
         asn = str(asns[0])
         with urllib.request.urlopen(  # noqa: S310 - fixed HTTPS endpoint
-            "https://stat.ripe.net/data/as-overview/data.json?resource=AS"
-            f"{asn}",
+            f"https://stat.ripe.net/data/as-overview/data.json?resource=AS{asn}",
             timeout=10,
         ) as response:
             as_payload = json.load(response)
@@ -460,9 +482,7 @@ def _turn_peer_source(value: str) -> str:
     return ranges[0]
 
 
-def _existing_turn_peer_source(
-    context: str, namespace: str, service: str
-) -> str:
+def _existing_turn_peer_source(context: str, namespace: str, service: str) -> str:
     result = _kubectl(context, namespace, ["get", "service", service, "-o", "json"])
     if result.returncode:
         return ""
@@ -731,9 +751,14 @@ def launch_cmd(
                 raise LeIsaacConfigError(
                     "agent-relay requires --agent-project and --agent-name"
                 )
-            instance_id, media_host, ssh, auth_user, auth_password = (
-                _agent_relay_context(agent_project, agent_name)
-            )
+            (
+                instance_id,
+                media_host,
+                media_server,
+                ssh,
+                auth_user,
+                auth_password,
+            ) = _agent_relay_context(agent_project, agent_name)
             turn_cleanup_required = True
             artifact_storage = _agent_artifact_storage(agent_project, agent_name)
             prior_turn_peer_source = _existing_turn_peer_source(
@@ -776,17 +801,17 @@ def launch_cmd(
             _apply(context, namespace, services)
             signal_host = _external_ip(context, namespace, f"{name}-tcp")
             media_host = _external_ip(context, namespace, f"{name}-media")
+            media_server = media_host
         deployment = deployment_manifest(
             run_id=run_id,
             namespace=namespace,
             image=image,
             media_host=media_host,
+            media_server=media_server,
             session_nonce=nonce,
             image_pull_secret=image_pull_secret,
             relay_client_secret=(
-                f"{name}-relay-client"
-                if transport == Transport.agent_relay
-                else ""
+                f"{name}-relay-client" if transport == Transport.agent_relay else ""
             ),
         )
         _apply(context, namespace, [deployment])
@@ -859,6 +884,7 @@ def launch_cmd(
             image=image,
             signal_host=signal_host,
             media_host=media_host,
+            media_server=media_server,
             session_nonce=nonce,
             expires_at=expires_at,
             gpu=str(health.get("gpu") or GPU_PRODUCT),

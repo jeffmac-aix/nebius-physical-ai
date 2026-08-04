@@ -1,11 +1,12 @@
 """Pure helpers for the agent's capability-gated LeIsaac teleoperation tab.
 
 The live session manifest is an artifact emitted by ``npa workbench leisaac``.
-It is intentionally treated as untrusted input here: media must be public,
+It is intentionally treated as untrusted input here: TURN must be public,
 direct TCP endpoints must be public, relay TCP endpoints must be exact
 loopback addresses, ports are fixed to the Isaac Sim 5.1 WebRTC contract, and
-the browser sees only public media endpoints and same-origin, authenticated
-agent routes. Agent-relayed sessions return one derived, ephemeral TURN
+the browser sees only the private media peer reachable by the agent-hosted TURN
+relay plus same-origin, authenticated agent routes. Agent-relayed sessions
+return one derived, ephemeral TURN
 credential from the authenticated no-store status route; the relay nonce and
 agent credentials are never returned.
 """
@@ -112,6 +113,24 @@ def _public_ip(value: Any) -> str:
     return address.compressed
 
 
+def _private_ip(value: Any) -> str:
+    raw = str(value or "").strip()
+    try:
+        address = ipaddress.ip_address(raw)
+    except ValueError:
+        return ""
+    if (
+        address.version != 4
+        or not address.is_private
+        or address.is_loopback
+        or address.is_link_local
+        or address.is_multicast
+        or address.is_unspecified
+    ):
+        return ""
+    return address.compressed
+
+
 def _service_url(value: Any, signal_host: str, transport: str) -> str:
     raw = str(value or "").strip()
     parsed = urlparse(raw)
@@ -186,12 +205,22 @@ def normalize_manifest(
     raw_signal_host = str(data.get("signal_host") or "").strip()
     signal_host = (
         "127.0.0.1"
-        if transport == LEISAAC_TRANSPORT_AGENT_RELAY
-        and raw_signal_host == "127.0.0.1"
+        if transport == LEISAAC_TRANSPORT_AGENT_RELAY and raw_signal_host == "127.0.0.1"
         else _public_ip(raw_signal_host)
     )
     media_host = _public_ip(data.get("media_host"))
-    if not signal_host or not media_host:
+    raw_media_server = data.get("media_server")
+    media_server = (
+        _private_ip(raw_media_server)
+        if transport == LEISAAC_TRANSPORT_AGENT_RELAY
+        else _public_ip(raw_media_server or media_host)
+    )
+    if (
+        not signal_host
+        or not media_host
+        or not media_server
+        or (transport == LEISAAC_TRANSPORT_LOAD_BALANCER and media_server != media_host)
+    ):
         return None, "LeIsaac session endpoints violate the fixed network contract"
     if _integer(data.get("signal_port")) != LEISAAC_SIGNAL_PORT:
         return None, "LeIsaac session has an unsupported signaling port"
@@ -234,6 +263,7 @@ def normalize_manifest(
         "signal_host": signal_host,
         "signal_port": LEISAAC_SIGNAL_PORT,
         "media_host": media_host,
+        "media_server": media_server,
         "media_port": LEISAAC_MEDIA_PORT,
         "turn_port": _integer(data.get("turn_port")) or 0,
         "turn_relay_port": _integer(data.get("turn_relay_port")) or 0,
@@ -297,7 +327,7 @@ def status_payload(
         "transport": manifest["transport"],
         "task": manifest["task"],
         "teleop_device": manifest["teleop_device"],
-        "media_server": manifest["media_host"],
+        "media_server": manifest["media_server"],
         "media_port": manifest["media_port"],
         "signaling_server": "same-origin",
         "signaling_port": 443,

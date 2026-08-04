@@ -142,6 +142,7 @@ def test_agent_relay_client_is_secret_mounted_as_non_gpu_sidecar() -> None:
         image=IMAGE,
         media_host="8.8.8.8",
         session_nonce=NONCE,
+        media_server="10.96.0.5",
         relay_client_secret=secret["metadata"]["name"],
     )
     pod = deployment["spec"]["template"]["spec"]
@@ -149,9 +150,13 @@ def test_agent_relay_client_is_secret_mounted_as_non_gpu_sidecar() -> None:
     assert sidecar["name"] == "agent-relay-client"
     assert "nvidia.com/gpu" not in sidecar["resources"]["requests"]
     assert pod["volumes"][-1]["secret"]["secretName"] == secret["metadata"]["name"]
-    media = next(port for port in pod["containers"][0]["ports"] if port["name"] == "media")
+    media = next(
+        port for port in pod["containers"][0]["ports"] if port["name"] == "media"
+    )
     assert media["containerPort"] == MEDIA_PORT
     assert "hostPort" not in media
+    env = {item["name"]: item["value"] for item in pod["containers"][0]["env"]}
+    assert env["NPA_LEISAAC_MEDIA_HOST"] == "10.96.0.5"
 
 
 def test_agent_relay_manifest_keeps_tcp_private_and_media_on_agent_public_ip() -> None:
@@ -161,6 +166,7 @@ def test_agent_relay_manifest_keeps_tcp_private_and_media_on_agent_public_ip() -
         signal_host="127.0.0.1",
         media_host="8.8.8.8",
         session_nonce=NONCE,
+        media_server="10.96.0.5",
         transport=TRANSPORT_AGENT_RELAY,
     )
 
@@ -168,6 +174,7 @@ def test_agent_relay_manifest_keeps_tcp_private_and_media_on_agent_public_ip() -
     assert manifest["signal_host"] == "127.0.0.1"
     assert manifest["service_url"] == "http://127.0.0.1:48080"
     assert manifest["media_host"] == "8.8.8.8"
+    assert manifest["media_server"] == "10.96.0.5"
     assert manifest["turn_port"] == TURN_PORT
     assert manifest["turn_relay_port"] == TURN_RELAY_PORT
 
@@ -180,6 +187,17 @@ def test_agent_relay_rejects_non_loopback_signal_or_missing_agent_identity() -> 
             signal_host="8.8.8.8",
             media_host="8.8.8.8",
             session_nonce=NONCE,
+            media_server="10.96.0.5",
+            transport=TRANSPORT_AGENT_RELAY,
+        )
+    with pytest.raises(LeIsaacConfigError, match="private IPv4"):
+        session_manifest(
+            run_id="live-relay",
+            image=IMAGE,
+            signal_host="127.0.0.1",
+            media_host="8.8.8.8",
+            session_nonce=NONCE,
+            media_server="8.8.8.8",
             transport=TRANSPORT_AGENT_RELAY,
         )
     with pytest.raises(LeIsaacConfigError, match="agent project and name"):
