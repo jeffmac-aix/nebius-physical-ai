@@ -294,6 +294,10 @@ def run_simulation() -> None:
                     f"--/app/livestream/minHostPort={MEDIA_PORT}",
                     f"--/app/livestream/maxHostPort={MEDIA_PORT}",
                     f"--/app/livestream/port={SIGNAL_PORT}",
+                    # The pod requests one RTX GPU.  Keeping Kit's renderer in
+                    # single-GPU mode avoids a CUDA-interoperability path that
+                    # can connect WebRTC while emitting no encoded frames.
+                    "--/renderer/multiGpu/enabled=False",
                 ]
             ),
         ]

@@ -91,9 +91,9 @@ describe("NPA agent LeIsaac capability tab", () => {
     cy.window().its("__LEISAAC_CONNECT_PROPS__.streamConfig.signalingPath").should("eq", "/api/leisaac/signal");
     cy.window().its("__LEISAAC_CONNECT_PROPS__.streamConfig.forceWSS").should("eq", true);
     cy.window().its("__LEISAAC_CONNECT_PROPS__.streamConfig.mediaPort").should("eq", 47998);
-    cy.window().its("__LEISAAC_CONNECT_PROPS__.streamConfig.width").should("eq", 1280);
-    cy.window().its("__LEISAAC_CONNECT_PROPS__.streamConfig.height").should("eq", 720);
-    cy.window().its("__LEISAAC_CONNECT_PROPS__.streamConfig.fps").should("eq", 30);
+    cy.window().its("__LEISAAC_CONNECT_PROPS__.streamConfig.width").should("eq", 1920);
+    cy.window().its("__LEISAAC_CONNECT_PROPS__.streamConfig.height").should("eq", 1080);
+    cy.window().its("__LEISAAC_CONNECT_PROPS__.streamConfig.fps").should("eq", 60);
     cy.window().its("__LEISAAC_PEER_CONFIG__.iceTransportPolicy").should("eq", "relay");
     cy.window().its("__LEISAAC_PEER_CONFIG__.iceServers.0.urls.0").should("eq", "turn:203.0.113.50:3478?transport=udp");
     cy.get("#leisaacStreamHost").trigger("keydown", { key: "W", code: "KeyW" });

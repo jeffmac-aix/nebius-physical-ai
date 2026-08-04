@@ -336,6 +336,7 @@ def test_container_never_bakes_eula_client_or_assets() -> None:
     assert "RENDER_WARMUP_SECONDS = 45" in server
     assert 'update_state(detail="warming RTX renderer")' in server
     assert "time.monotonic() - renderer_ready_at >= RENDER_WARMUP_SECONDS" in server
+    assert '"--/renderer/multiGpu/enabled=False"' in server
     assert "NPA_LEISAAC_INPUT_COUNTER" in server
     assert "feetech-servo-sdk" in dockerfile and "-m pip check" in dockerfile
     assert "git -C /opt/leisaac apply --check --unidiff-zero" in dockerfile
