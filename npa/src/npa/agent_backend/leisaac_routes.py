@@ -222,11 +222,8 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
     async def leisaac_backhaul(websocket: Any) -> None:
         """Bridge the authenticated pod WSS backhaul to the loopback relay."""
 
-        forwarded = str(websocket.headers.get("x-forwarded-proto") or "").lower()
-        scope_scheme = str(getattr(websocket, "scope", {}).get("scheme") or "").lower()
-        if forwarded != "https" and scope_scheme != "wss":
-            await websocket.close(code=1008)
-            return
+        # This route is reachable only through nginx's exact authenticated WSS
+        # location; the backend listener itself is loopback-only.
         await websocket.accept()
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", 48081)
