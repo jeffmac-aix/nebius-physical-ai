@@ -154,9 +154,9 @@ def launch_cmd(
         ..., "--artifact-uri", help="S3 prefix where the run manifest is written."
     ),
     expires_at: str = typer.Option(
-        ...,
+        "",
         "--expires-at",
-        help="Operator-chosen ISO-8601 expiry for UI capability discovery; no implicit lifetime is imposed.",
+        help="Optional operator-chosen ISO-8601 expiry for UI discovery; omitted sessions remain live until destroyed.",
     ),
     image_pull_secret: str = typer.Option(
         "npa-registry", "--image-pull-secret", help="Existing registry pull secret."
@@ -240,7 +240,7 @@ def launch_cmd(
             "signal_host": signal_host,
             "media_host": media_host,
             "artifact": manifest_uri,
-            "expires_at": expires_at,
+            "expires_at": expires_at or "none (service lifecycle)",
         },
         output,
     )

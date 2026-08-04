@@ -79,6 +79,18 @@ def test_manifest_records_exact_real_component_and_provenance() -> None:
     assert manifest["image"] == IMAGE
 
 
+def test_manifest_has_no_implicit_session_time_limit() -> None:
+    manifest = session_manifest(
+        run_id="live-unbounded",
+        image=IMAGE,
+        signal_host="8.8.8.8",
+        media_host="1.1.1.1",
+        session_nonce=NONCE,
+    )
+
+    assert "expires_at" not in manifest
+
+
 @pytest.mark.parametrize("value", ["", "latest", "x:tag", "x@sha256:bad"])
 def test_image_must_be_digest_pinned(value: str) -> None:
     with pytest.raises(LeIsaacConfigError, match="digest"):

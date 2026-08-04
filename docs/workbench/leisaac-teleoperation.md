@@ -53,8 +53,9 @@ EULA acceptance and proprietary bytes are never baked into an image.
 Rendering requires an RT-core GPU. Use L40S or RTX PRO 6000; the Kubernetes
 launcher hard-selects RTX PRO 6000 and never routes this path to H100/H200.
 The image must be pinned by digest and at least one public `/32` source range
-must be provided for the agent/operator. The operator chooses the capability
-expiry explicitly; the CLI imposes no session lifetime.
+must be provided for the agent/operator. The session has no implicit lifetime;
+an operator may add `--expires-at` as an explicit security policy, otherwise
+the live service lifecycle controls tab availability.
 
 Deploy or re-bootstrap the agent through the supported lifecycle command. A
 fresh deployment provisions a Nebius public IP; re-bootstrap resolves the
@@ -100,8 +101,7 @@ npa workbench leisaac launch \
   --context YOUR_KUBECTL_CONTEXT \
   --source-range AGENT_PUBLIC_IP/32 \
   --source-range OPERATOR_PUBLIC_IP/32 \
-  --artifact-uri s3://BUCKET/leisaac \
-  --expires-at 2026-08-05T12:00:00Z
+  --artifact-uri s3://BUCKET/leisaac
 ```
 
 This is an interactive, lifecycle-bearing service rather than a finite batch

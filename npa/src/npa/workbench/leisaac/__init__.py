@@ -81,6 +81,8 @@ def validate_source_ranges(values: list[str] | tuple[str, ...]) -> list[str]:
 
 def validate_expiry(value: str, *, now: datetime | None = None) -> str:
     raw = str(value or "").strip()
+    if not raw:
+        return ""
     try:
         parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
     except ValueError as exc:
@@ -291,7 +293,7 @@ def session_manifest(
     signal_host: str,
     media_host: str,
     session_nonce: str,
-    expires_at: str,
+    expires_at: str = "",
     gpu: str = GPU_PRODUCT,
     created_at: str | None = None,
 ) -> dict[str, Any]:
@@ -304,7 +306,7 @@ def session_manifest(
         raise LeIsaacConfigError(
             "session nonce must be 64 lowercase hexadecimal characters"
         )
-    return {
+    manifest = {
         "schema": SESSION_SCHEMA,
         "run_id": run_id,
         "provider": "nebius-kubernetes",
@@ -318,7 +320,6 @@ def session_manifest(
         "session_nonce": session_nonce,
         "created_at": created_at
         or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        "expires_at": expires_at,
         "source_version": SOURCE_VERSION,
         "source_commit": SOURCE_COMMIT,
         "isaac_sim_version": ISAAC_SIM_VERSION,
@@ -326,3 +327,6 @@ def session_manifest(
         "image": image,
         "gpu": gpu,
     }
+    if expires_at:
+        manifest["expires_at"] = expires_at
+    return manifest

@@ -99,6 +99,19 @@ def test_expired_or_cross_run_manifest_is_rejected() -> None:
     assert "expired" in reason
 
 
+def test_manifest_without_expiry_remains_lifecycle_gated() -> None:
+    now = datetime.now(timezone.utc)
+    normalized, reason = normalize_manifest(
+        _manifest(expires_at=None),
+        expected_run_id="leisaac-live-1",
+        now=now,
+    )
+
+    assert reason == ""
+    assert normalized is not None
+    assert normalized["expires_at"] == ""
+
+
 def test_live_health_attestation_gates_secret_free_status() -> None:
     manifest = _normalized()
     health, reason = validate_health(

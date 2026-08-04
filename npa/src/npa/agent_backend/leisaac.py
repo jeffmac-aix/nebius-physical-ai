@@ -143,11 +143,12 @@ def normalize_manifest(
     nonce = str(data.get("session_nonce") or "").strip()
     if not re.fullmatch(r"[A-Fa-f0-9]{32,128}", nonce):
         return None, "LeIsaac session attestation is invalid"
-    expires_at = _parse_utc(data.get("expires_at"))
-    if expires_at is None:
+    raw_expires_at = str(data.get("expires_at") or "").strip()
+    expires_at = _parse_utc(raw_expires_at) if raw_expires_at else None
+    if raw_expires_at and expires_at is None:
         return None, "LeIsaac session expiry is invalid"
     current = now or datetime.now(timezone.utc)
-    if expires_at <= current.astimezone(timezone.utc):
+    if expires_at is not None and expires_at <= current.astimezone(timezone.utc):
         return None, "LeIsaac session has expired"
 
     source_commit = str(data.get("source_commit") or "").strip().lower()
@@ -169,7 +170,9 @@ def normalize_manifest(
         "media_port": LEISAAC_MEDIA_PORT,
         "service_url": service_url,
         "session_nonce": nonce.lower(),
-        "expires_at": expires_at.isoformat().replace("+00:00", "Z"),
+        "expires_at": (
+            expires_at.isoformat().replace("+00:00", "Z") if expires_at else ""
+        ),
         "source_commit": source_commit,
         "source_version": str(data.get("source_version") or "").strip(),
         "isaac_sim_version": str(data.get("isaac_sim_version") or "").strip(),
