@@ -142,6 +142,67 @@ def remove_ingress_for_instance(
     )
 
 
+def remove_npa_ingress_for_instance_ports(
+    instance_id: str,
+    *,
+    ports: tuple[int, ...],
+    on_status: Callable[[str], None] | None = None,
+) -> list[str]:
+    """Remove exact NPA-managed ingress rules for internal-only ports.
+
+    Reused agent VMs may retain rules created by older NPA releases that
+    exposed the backend port.  Delete only a dedicated ``allow-npa-*`` TCP
+    rule whose destination ports are entirely within ``ports``.  An unmanaged,
+    mixed-purpose, or all-port rule is not safe to rewrite automatically, so
+    fail closed and let the operator resolve it explicitly.
+    """
+
+    protected = {int(port) for port in ports}
+    if not protected:
+        raise NetworkIngressError("at least one internal-only port is required")
+    instance = _get_instance(instance_id)
+    deleted: list[str] = []
+    for group_id in _instance_security_group_ids(instance):
+        for rule in _list_security_rules(group_id):
+            spec = rule.get("spec", {})
+            ingress = spec.get("ingress")
+            if not ingress or spec.get("access", "").upper() != "ALLOW":
+                continue
+            protocol = str(spec.get("protocol", "")).upper()
+            raw_ports = ingress.get("destination_ports") or []
+            destination_ports = {int(port) for port in raw_ports}
+            exposes_protected = protocol == "ANY" or bool(
+                protected.intersection(destination_ports)
+            )
+            if not exposes_protected:
+                continue
+            metadata = _metadata(rule)
+            name = str(metadata.get("name", ""))
+            rule_id = str(metadata.get("id", ""))
+            if (
+                protocol != "TCP"
+                or not destination_ports
+                or not destination_ports.issubset(protected)
+                or not name.startswith(NPA_INGRESS_RULE_PREFIX)
+                or not rule_id
+            ):
+                raise NetworkIngressError(
+                    f"security rule {name or rule_id or '<unnamed>'!r} exposes "
+                    f"internal agent port(s) {sorted(protected)} and is not a "
+                    "dedicated NPA-managed rule"
+                )
+            try:
+                nebius._run(["vpc", "security-rule", "delete", "--id", rule_id])
+            except NebiusError as exc:
+                raise NetworkIngressError(
+                    f"Could not remove internal-port ingress rule {rule_id}: {exc}"
+                ) from exc
+            deleted.append(rule_id)
+            if on_status:
+                on_status(f"Removed legacy internal-port ingress rule {name!r}.")
+    return deleted
+
+
 def ensure_ingress(
     *,
     vm_id: str | None = None,

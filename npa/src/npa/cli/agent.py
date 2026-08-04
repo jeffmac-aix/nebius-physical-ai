@@ -32,6 +32,7 @@ from npa.clients.network import (
     NetworkIngressError,
     ensure_ingress,
     remove_ingress_for_instance,
+    remove_npa_ingress_for_instance_ports,
     resolve_instance_network_context,
 )
 from npa.clients.ssh import SSHClient, SSHError
@@ -8968,6 +8969,11 @@ def deploy_cmd(
         ingress_ports.append(DEFAULT_HTTPS_PORT)
     try:
         ensure_ingress(vm_id=instance_id, ports=tuple(ingress_ports), tool="agent")
+        remove_npa_ingress_for_instance_ports(
+            instance_id,
+            ports=(backend_port,),
+            on_status=lambda message: typer.echo(f"  {message}"),
+        )
     except NetworkIngressError as exc:
         try:
             _destroy_agent_terraform(project, name, record=rollback_record)
@@ -9282,6 +9288,11 @@ def bootstrap_cmd(
             ingress_ports.append(DEFAULT_HTTPS_PORT)
         try:
             ensure_ingress(vm_id=instance_id, ports=tuple(ingress_ports), tool="agent")
+            remove_npa_ingress_for_instance_ports(
+                instance_id,
+                ports=(backend_port,),
+                on_status=lambda message: typer.echo(f"  {message}"),
+            )
         except NetworkIngressError as exc:
             _fail(f"npa network ensure-ingress failed: {exc}")
     urls = build_agent_urls(public_ip, agent_port=agent_port, public_https=public_https)

@@ -366,6 +366,9 @@ def test_deploy_persists_terraform_state_before_apply(monkeypatch, tmp_path) -> 
     monkeypatch.setattr("npa.cli.agent._resolve_operator_credentials", lambda: ("", ""))
     monkeypatch.setattr("npa.cli.agent._bootstrap_agent_stack", lambda **_kwargs: None)
     monkeypatch.setattr("npa.cli.agent.ensure_ingress", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        "npa.cli.agent.remove_npa_ingress_for_instance_ports", lambda *_args, **_kwargs: []
+    )
     monkeypatch.setattr("npa.cli.agent.write_config", _write_config)
 
     # Satisfy the fail-fast deploy prerequisites (terraform + SSH key pair) that
@@ -2097,6 +2100,9 @@ def test_deploy_seeds_cost_ordered_ladder_without_explicit_models(monkeypatch, t
     monkeypatch.setattr("npa.cli.agent._resolve_operator_credentials", lambda: ("", ""))
     monkeypatch.setattr("npa.cli.agent._bootstrap_agent_stack", lambda **k: None)
     monkeypatch.setattr("npa.cli.agent.ensure_ingress", lambda **k: None)
+    monkeypatch.setattr(
+        "npa.cli.agent.remove_npa_ingress_for_instance_ports", lambda *_args, **_kwargs: []
+    )
     monkeypatch.setattr("npa.cli.agent._store_agent_record", lambda project, name, rec: captured.update(rec))
 
     # Satisfy the fail-fast deploy prerequisites (terraform + SSH key pair).

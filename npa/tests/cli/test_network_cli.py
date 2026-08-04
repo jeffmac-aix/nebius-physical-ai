@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
 from typer.testing import CliRunner
 
 from npa.cli.main import app
+from npa.clients.network import NetworkIngressError
 from npa.clients.nebius import NebiusError
 
 
@@ -395,3 +397,54 @@ def test_remove_npa_ingress_rules_deletes_allow_npa_rules(mocker) -> None:
 
     assert deleted == ["rule-npa"]
     run.assert_called_once_with(["vpc", "security-rule", "delete", "--id", "rule-npa"])
+
+
+def test_remove_internal_agent_port_deletes_only_dedicated_npa_rule(mocker) -> None:
+    from npa.clients import network as network_client
+
+    mocker.patch("npa.clients.network._get_instance", return_value=_instance())
+    mocker.patch(
+        "npa.clients.network._list_security_rules",
+        return_value=[
+            _ingress_rule(
+                rule_id="rule-backend",
+                name="allow-npa-npa-agent-8787",
+                ports=[8787],
+            ),
+            _ingress_rule(rule_id="rule-https", name="allow-server", ports=[443]),
+        ],
+    )
+    run = mocker.patch("npa.clients.network.nebius._run")
+
+    deleted = network_client.remove_npa_ingress_for_instance_ports(
+        "computeinstance-test", ports=(8787,)
+    )
+
+    assert deleted == ["rule-backend"]
+    run.assert_called_once_with(
+        ["vpc", "security-rule", "delete", "--id", "rule-backend"]
+    )
+
+
+def test_remove_internal_agent_port_fails_closed_on_unmanaged_or_mixed_rule(
+    mocker,
+) -> None:
+    from npa.clients import network as network_client
+
+    mocker.patch("npa.clients.network._get_instance", return_value=_instance())
+    mocker.patch(
+        "npa.clients.network._list_security_rules",
+        return_value=[
+            _ingress_rule(
+                rule_id="rule-mixed", name="allow-server", ports=[443, 8787]
+            )
+        ],
+    )
+    run = mocker.patch("npa.clients.network.nebius._run")
+
+    with pytest.raises(NetworkIngressError, match="not a dedicated NPA-managed rule"):
+        network_client.remove_npa_ingress_for_instance_ports(
+            "computeinstance-test", ports=(8787,)
+        )
+
+    run.assert_not_called()

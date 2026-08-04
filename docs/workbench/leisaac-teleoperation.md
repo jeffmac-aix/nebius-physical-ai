@@ -75,8 +75,15 @@ listens only on VM loopback and is never exposed directly. Accept the
 self-signed certificate for the public IP, then verify the endpoint from the
 operator host:
 
+Deploy and re-bootstrap also remove a dedicated legacy `allow-npa-*` rule for
+the internal backend port if an older deployment left one behind. NPA refuses
+to rewrite an unmanaged or mixed-purpose rule and fails closed instead. HTTPS
+ingress is ensured through the existing agent security group; this path does
+not broaden SSH or publish the backend listener.
+
 ```bash
-source ~/.npa/agents/PROJECT_ALIAS/AGENT_NAME/auth.env
+AUTH_SECRET_PATH=/secure/path/reported-by-agent-deploy
+source "${AUTH_SECRET_PATH}"
 AGENT_URL="$(npa agent status --project PROJECT_ALIAS --name AGENT_NAME --json \
   | npa/.venv/bin/python -c 'import json,sys; print(json.load(sys.stdin)["public_url"].rstrip("/"))')"
 curl -sk "${AGENT_URL}/healthz"
