@@ -332,12 +332,14 @@ def test_container_never_bakes_eula_client_or_assets() -> None:
     assert 'environment["NPA_LEISAAC_BROWSER_TELEOP"] = "1"' in server
     assert "stdin=subprocess.DEVNULL" in server
     assert "start_new_session=True" in server
-    assert "tcp_ready(SIGNAL_PORT) and READY_PATH.is_file()" in server
-    assert "RENDER_WARMUP_SECONDS = 45" in server
+    assert "READY_PATH.is_file()" in server and "FRAME_PATH.is_file()" in server
     assert 'update_state(detail="warming RTX renderer")' in server
-    assert "time.monotonic() - renderer_ready_at >= RENDER_WARMUP_SECONDS" in server
+    assert 'stream_transport="jpeg-poll"' in server
     assert '"--/renderer/multiGpu/enabled=False"' in server
     assert "NPA_LEISAAC_INPUT_COUNTER" in server
+    assert "NPA_LEISAAC_APPLIED_COUNTER" in server
+    assert "NPA_LEISAAC_INPUT_QUEUE" in server
+    assert "NPA_LEISAAC_FRAME_PATH" in server
     assert "feetech-servo-sdk" in dockerfile and "-m pip check" in dockerfile
     assert "git -C /opt/leisaac apply --check --unidiff-zero" in dockerfile
     assert os.access(ROOT / "npa/docker/workbench/leisaac/build.sh", os.X_OK)
@@ -357,6 +359,11 @@ def test_observability_patch_is_exact_and_records_real_upstream_input() -> None:
     assert "NPA_LEISAAC_INPUT_COUNTER" in source
     assert "NPA_LEISAAC_READY_PATH" in source
     assert "NPA_LEISAAC_BROWSER_TELEOP" in source
+    assert "capture_viewport_to_buffer" in source
+    assert "NPA_LEISAAC_INPUT_QUEUE" in source
+    assert "NPA_LEISAAC_APPLIED_COUNTER" in source
+    assert "NPA_LEISAAC_FRAME_PATH" in source
+    assert "self._remote_pulses[key] = 8" in source
     assert "env_cfg.sim.use_fabric = False" in source
     assert "env_cfg.observations.policy.wrist = None" in source
     assert "env_cfg.observations.policy.front = None" in source
@@ -372,11 +379,20 @@ def test_health_reads_upstream_keyboard_counter(tmp_path: Path) -> None:
     server = _session_server_module()
     counter = tmp_path / "input-events"
     counter.write_text("13\n", encoding="utf-8")
+    applied = tmp_path / "applied-inputs"
+    applied.write_text("12\n", encoding="utf-8")
+    frame = tmp_path / "frame.jpg"
+    frame.write_bytes(b"\xff\xd8frame\xff\xd9")
     server.INPUT_COUNTER_PATH = counter
+    server.APPLIED_COUNTER_PATH = applied
+    server.FRAME_PATH = frame
 
     health = server.health_document()
 
     assert health["input_events"] == 13
+    assert health["applied_inputs"] == 12
+    assert health["stream_ready"] is True
+    assert health["stream_transport"] == "jpeg-poll"
     assert health["physics_device"] == "cpu"
     assert health["render_device"] == "cuda"
     assert health["seed"] == 42

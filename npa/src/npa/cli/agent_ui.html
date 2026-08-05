@@ -173,7 +173,8 @@
         outline: none;
       }
       .leisaac-stage:focus-visible { box-shadow: inset 0 0 0 3px var(--brand); }
-      .leisaac-stage video {
+      .leisaac-stage video,
+      .leisaac-stage img {
         display: block;
         width: 100%;
         height: calc(100dvh - 245px);
@@ -181,6 +182,8 @@
         object-fit: contain;
         background: #000;
       }
+      .leisaac-stage video[hidden],
+      .leisaac-stage img[hidden] { display: none; }
       .leisaac-stage audio { display: none; }
       .leisaac-overlay {
         position: absolute;
@@ -2171,6 +2174,8 @@
       let leisaacInputCount = 0;
       let leisaacStreamReady = false;
       let leisaacPeerConnectionRestore = null;
+      let leisaacFrameTimer = null;
+      let leisaacFrameSequence = 0;
       const LEISAAC_KEYS = new Set(["W", "S", "A", "D", "Q", "E", "J", "L", "I", "K", "U", "O", "R", "N"]);
       function leisaacPanelMarkup(status) {
         const runId = escapeHtml(String(status.run_id || ""));
@@ -2190,6 +2195,7 @@
             </div>
             <div id="leisaacStreamHost" class="leisaac-stage" tabindex="0" aria-label="Interactive LeIsaac simulation stream">
               <video id="leisaacVideo" autoplay playsinline></video>
+              <img id="leisaacFrame" alt="Live RTX-rendered LeIsaac simulation" hidden>
               <audio id="leisaacAudio" autoplay></audio>
               <div class="leisaac-overlay">
                 <div class="leisaac-overlay-card leisaac-controls">
@@ -2219,15 +2225,38 @@
         const key = String((event && event.key) || "").toUpperCase();
         const host = document.getElementById("leisaacStreamHost");
         const focused = host && (document.activeElement === host || host.contains(event && event.target));
-        if (!leisaacStreamReady || !focused || !LEISAAC_KEYS.has(key) || (event && event.repeat)) return;
+        if (!leisaacStreamReady || !focused || !LEISAAC_KEYS.has(key) || (event && event.repeat)) return false;
         leisaacInputCount += 1;
         const label = document.getElementById("leisaacInputStatus");
         if (label) label.textContent = "Keyboard events sent: " + String(leisaacInputCount) + " · last " + key;
+        return true;
+      }
+      function sendLeIsaacInput(event, kind) {
+        const status = leisaacCapability;
+        if (!status || String(status.stream_transport || "webrtc") !== "jpeg-poll") return;
+        const key = String((event && event.key) || "").toUpperCase();
+        const host = document.getElementById("leisaacStreamHost");
+        const focused = host && (document.activeElement === host || host.contains(event && event.target));
+        if (!leisaacStreamReady || !focused || !LEISAAC_KEYS.has(key) || (event && event.repeat)) return;
+        event.preventDefault();
+        fetch(String(status.input_url || ""), {
+          method: "POST",
+          credentials: "include",
+          cache: "no-store",
+          headers: { "Content-Type": "application/json", "X-NPA-LeIsaac-Control": "1" },
+          body: JSON.stringify({ key: key, event: kind }),
+        }).then((response) => {
+          if (!response.ok) throw new Error("LeIsaac control returned HTTP " + String(response.status));
+        }).catch((err) => setLeIsaacStreamState(String((err && err.message) || err), "error"));
       }
       // Register before the lazy-loaded NVIDIA client.  Its keyboard handler
       // consumes events during capture, so a later bubbling listener cannot
       // reliably report which controls were sent to the active stream.
-      window.addEventListener("keydown", noteLeIsaacInput, { capture: true });
+      window.addEventListener("keydown", (event) => {
+        noteLeIsaacInput(event);
+        sendLeIsaacInput(event, "press");
+      }, { capture: true });
+      window.addEventListener("keyup", (event) => sendLeIsaacInput(event, "release"), { capture: true });
       function restoreLeIsaacPeerConnection() {
         const restore = leisaacPeerConnectionRestore;
         leisaacPeerConnectionRestore = null;
@@ -2286,6 +2315,42 @@
         });
         return leisaacClientLoadPromise;
       }
+      function stopLeIsaacFrames() {
+        if (leisaacFrameTimer !== null) window.clearTimeout(leisaacFrameTimer);
+        leisaacFrameTimer = null;
+        const frame = document.getElementById("leisaacFrame");
+        if (frame) {
+          frame.onload = null;
+          frame.onerror = null;
+          frame.removeAttribute("src");
+          frame.hidden = true;
+        }
+      }
+      function connectLeIsaacFrames(status) {
+        const frame = document.getElementById("leisaacFrame");
+        const video = document.getElementById("leisaacVideo");
+        if (!frame) throw new Error("LeIsaac frame viewer is unavailable");
+        stopLeIsaacFrames();
+        if (video) video.hidden = true;
+        frame.hidden = false;
+        const refresh = () => {
+          leisaacFrameSequence += 1;
+          const separator = String(status.frame_url || "").includes("?") ? "&" : "?";
+          frame.src = String(status.frame_url || "") + separator + "frame=" + String(leisaacFrameSequence);
+        };
+        frame.onload = () => {
+          leisaacStreamReady = true;
+          setLeIsaacStreamState("Live · keyboard teleoperation active", "ready");
+          const host = document.getElementById("leisaacStreamHost");
+          if (host) host.focus();
+          leisaacFrameTimer = window.setTimeout(refresh, 150);
+        };
+        frame.onerror = () => {
+          if (!leisaacStreamReady) setLeIsaacStreamState("Waiting for RTX viewport frame…", "pending");
+          leisaacFrameTimer = window.setTimeout(refresh, 1000);
+        };
+        refresh();
+      }
       async function connectLeIsaac() {
         const status = leisaacCapability;
         if (!status || !status.available) throw new Error("No usable LeIsaac session is selected");
@@ -2295,6 +2360,11 @@
         leisaacStreamReady = false;
         setLeIsaacStreamState("Connecting to live simulation…", "pending");
         try {
+          if (String(status.stream_transport || "webrtc") === "jpeg-poll") {
+            connectLeIsaacFrames(status);
+            if (disconnectBtn) disconnectBtn.disabled = false;
+            return;
+          }
           const AppStreamer = await loadLeIsaacClient(status);
           // Install after NVIDIA's module has applied its adapter shims, but
           // before AppStreamer creates the live peer connection.
@@ -2369,6 +2439,9 @@
         const streamer = leisaacStreamer;
         leisaacStreamer = null;
         leisaacStreamReady = false;
+        stopLeIsaacFrames();
+        const video = document.getElementById("leisaacVideo");
+        if (video) video.hidden = false;
         if (streamer && streamer.terminate) {
           try { await streamer.terminate(false, true); } catch (_err) { /* already disconnected */ }
         }

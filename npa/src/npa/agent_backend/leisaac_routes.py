@@ -6,6 +6,8 @@ import asyncio
 import hashlib
 import json
 import logging
+import threading
+import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -47,6 +49,7 @@ class LeIsaacDeps:
     http_get: Callable[..., Any]
     response: Any
     websocket_connect: Callable[..., Any]
+    http_post: Callable[..., Any] | None = None
 
 
 def _resolve(deps: LeIsaacDeps, requested_run_id: str) -> tuple[dict | None, str]:
@@ -97,6 +100,22 @@ async def _relay_upstream_to_browser(browser: Any, upstream: Any) -> None:
 
 def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
     """Register the LeIsaac capability, client-module, and signaling routes."""
+
+    manifest_cache: dict[str, tuple[float, dict | None, str]] = {}
+    manifest_cache_lock = threading.Lock()
+
+    def cached_resolve(run_id: str) -> tuple[dict | None, str]:
+        """Bound high-rate frame polling to one capability lookup per five seconds."""
+
+        now = time.monotonic()
+        with manifest_cache_lock:
+            cached = manifest_cache.get(run_id)
+            if cached is not None and now - cached[0] < 5.0:
+                return cached[1], cached[2]
+        manifest, reason = _resolve(deps, run_id)
+        with manifest_cache_lock:
+            manifest_cache[run_id] = (now, manifest, reason)
+        return manifest, reason
 
     @app.get("/leisaac/status")
     def leisaac_status(request: Request, run_id: str = "") -> Any:
@@ -174,11 +193,134 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
             },
         )
 
+    @app.get("/leisaac/frame.jpg")
+    def leisaac_frame(request: Request, run_id: str = "") -> Any:
+        if str(request.headers.get("x-forwarded-proto") or "").lower() != "https":
+            return deps.response(
+                content=json.dumps({"detail": "public HTTPS is required"}),
+                status_code=400,
+                media_type="application/json",
+            )
+        manifest, reason = cached_resolve(run_id)
+        if not manifest:
+            return deps.response(
+                content=json.dumps({"detail": reason}),
+                status_code=404,
+                media_type="application/json",
+            )
+        try:
+            response = deps.http_get(
+                f"{manifest['service_url']}/frame.jpg",
+                timeout=5.0,
+                follow_redirects=False,
+                headers={"X-NPA-LeIsaac-Nonce": manifest["session_nonce"]},
+            )
+        except Exception:
+            response = None
+        if response is None or int(response.status_code) != 200:
+            return deps.response(
+                content=json.dumps({"detail": "LeIsaac frame is unavailable"}),
+                status_code=503,
+                media_type="application/json",
+            )
+        content = bytes(response.content)
+        if (
+            not content.startswith(b"\xff\xd8")
+            or not content.endswith(b"\xff\xd9")
+            or len(content) > 4 * 1024 * 1024
+        ):
+            return deps.response(
+                content=json.dumps({"detail": "LeIsaac frame failed validation"}),
+                status_code=502,
+                media_type="application/json",
+            )
+        return deps.response(
+            content=content,
+            status_code=200,
+            media_type="image/jpeg",
+            headers={
+                "Cache-Control": "private, no-store",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+
+    @app.post("/leisaac/input")
+    async def leisaac_input(request: Request, run_id: str = "") -> Any:
+        if (
+            str(request.headers.get("x-forwarded-proto") or "").lower() != "https"
+            or request.headers.get("x-npa-leisaac-control") != "1"
+        ):
+            return deps.response(
+                content=json.dumps(
+                    {"detail": "authenticated HTTPS control is required"}
+                ),
+                status_code=403,
+                media_type="application/json",
+            )
+        try:
+            payload = await request.json()
+        except ValueError:
+            payload = None
+        key = str(payload.get("key") if isinstance(payload, dict) else "").upper()
+        event = str(payload.get("event") if isinstance(payload, dict) else "")
+        if key not in {
+            "W",
+            "S",
+            "A",
+            "D",
+            "Q",
+            "E",
+            "J",
+            "L",
+            "I",
+            "K",
+            "U",
+            "O",
+            "R",
+            "N",
+        } or event not in {"press", "release"}:
+            return deps.response(
+                content=json.dumps({"detail": "invalid LeIsaac input"}),
+                status_code=400,
+                media_type="application/json",
+            )
+        manifest, reason = await asyncio.to_thread(cached_resolve, run_id)
+        if not manifest:
+            return deps.response(
+                content=json.dumps({"detail": reason}),
+                status_code=404,
+                media_type="application/json",
+            )
+        if deps.http_post is None:
+            upstream = None
+        else:
+            try:
+                upstream = await asyncio.to_thread(
+                    deps.http_post,
+                    f"{manifest['service_url']}/input",
+                    json={"key": key, "event": event},
+                    headers={"X-NPA-LeIsaac-Nonce": manifest["session_nonce"]},
+                    timeout=5.0,
+                    follow_redirects=False,
+                )
+            except Exception:
+                upstream = None
+        if upstream is None or int(upstream.status_code) != 202:
+            return deps.response(
+                content=json.dumps({"detail": "LeIsaac control is unavailable"}),
+                status_code=503,
+                media_type="application/json",
+            )
+        return deps.response(
+            content=json.dumps({"accepted": True}),
+            status_code=202,
+            media_type="application/json",
+            headers={"Cache-Control": "private, no-store"},
+        )
+
     @app.websocket("/leisaac/signal")
     @app.websocket("/leisaac/signal/{signal_path:path}")
-    async def leisaac_signal(
-        websocket: WebSocket, signal_path: str = ""
-    ) -> None:
+    async def leisaac_signal(websocket: WebSocket, signal_path: str = "") -> None:
         if str(websocket.headers.get("x-forwarded-proto") or "").lower() != "https":
             LOG.warning("LeIsaac signaling rejected: public HTTPS was not preserved")
             await websocket.close(code=1008)
@@ -278,7 +420,10 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
                 if message.get("type") == "websocket.disconnect":
                     return
                 payload = message.get("bytes")
-                if payload is None or len(payload) > _BACKHAUL_MAX_FRAME + _BACKHAUL_HEADER_SIZE:
+                if (
+                    payload is None
+                    or len(payload) > _BACKHAUL_MAX_FRAME + _BACKHAUL_HEADER_SIZE
+                ):
                     raise ValueError("invalid LeIsaac backhaul frame")
                 writer.write(payload)
                 await writer.drain()

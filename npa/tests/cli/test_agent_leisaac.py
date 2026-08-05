@@ -303,7 +303,15 @@ def test_authenticated_backend_routes_gate_status_and_proxy_client(monkeypatch) 
                     "input_events": 17,
                 }
             )
+        if url.endswith("/frame.jpg"):
+            return FakeResponse(content=b"\xff\xd8" + b"frame" * 3000 + b"\xff\xd9")
         return FakeResponse(content=client_content)
+
+    posted = []
+
+    def http_post(url: str, **kwargs):
+        posted.append((url, kwargs))
+        return FakeResponse(status_code=202)
 
     api = FastAPI()
     register_leisaac_routes(
@@ -314,6 +322,7 @@ def test_authenticated_backend_routes_gate_status_and_proxy_client(monkeypatch) 
                 raw_manifest if run_id == raw_manifest["run_id"] else None
             ),
             http_get=http_get,
+            http_post=http_post,
             response=Response,
             websocket_connect=lambda *_args, **_kwargs: None,
         ),
@@ -357,6 +366,36 @@ def test_authenticated_backend_routes_gate_status_and_proxy_client(monkeypatch) 
     assert module.status_code == 200
     assert module.headers["cache-control"] == "private, no-store"
     assert module.content == client_content
+    frame = client.get(
+        "/leisaac/frame.jpg",
+        params={"run_id": raw_manifest["run_id"]},
+        headers={"x-forwarded-proto": "https"},
+    )
+    assert frame.status_code == 200
+    assert frame.headers["content-type"] == "image/jpeg"
+    assert frame.content.startswith(b"\xff\xd8")
+    control = client.post(
+        "/leisaac/input",
+        params={"run_id": raw_manifest["run_id"]},
+        headers={
+            "x-forwarded-proto": "https",
+            "x-npa-leisaac-control": "1",
+        },
+        json={"key": "W", "event": "press"},
+    )
+    assert control.status_code == 202
+    assert posted[0][0].endswith("/input")
+    assert posted[0][1]["json"] == {"key": "W", "event": "press"}
+    assert posted[0][1]["headers"] == {
+        "X-NPA-LeIsaac-Nonce": raw_manifest["session_nonce"]
+    }
+    rejected_control = client.post(
+        "/leisaac/input",
+        params={"run_id": raw_manifest["run_id"]},
+        headers={"x-forwarded-proto": "https"},
+        json={"key": "W", "event": "press"},
+    )
+    assert rejected_control.status_code == 403
     monkeypatch.setattr(
         "npa.agent_backend.leisaac_routes.LEISAAC_CLIENT_JS_SHA256", "0" * 64
     )

@@ -109,4 +109,46 @@ describe("NPA agent LeIsaac capability tab", () => {
     cy.get("#panelLeIsaac").should("not.exist");
     cy.window().then((win) => expect(win.RTCPeerConnection).to.equal(win.__LEISAAC_NATIVE_PEER__));
   });
+
+  it("polls authenticated RTX frames and forwards keyboard controls", () => {
+    cy.intercept("GET", "/api/leisaac/status?run_id=mock-jpeg", {
+      statusCode: 200,
+      body: {
+        available: true,
+        run_id: "mock-jpeg",
+        task: "LeIsaac-SO101-PickOrange-v0",
+        teleop_device: "keyboard",
+        stream_transport: "jpeg-poll",
+        frame_url: "/api/leisaac/frame.jpg?run_id=mock-jpeg",
+        input_url: "/api/leisaac/input?run_id=mock-jpeg",
+        gpu: "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+      },
+    }).as("jpegStatus");
+    cy.intercept("GET", "/api/leisaac/frame.jpg?run_id=mock-jpeg&frame=*", {
+      statusCode: 200,
+      headers: { "content-type": "image/svg+xml", "cache-control": "no-store" },
+      body: '<svg xmlns="http://www.w3.org/2000/svg" width="800" height="450"><rect width="800" height="450" fill="#2563eb"/></svg>',
+    }).as("jpegFrame");
+    cy.intercept("POST", "/api/leisaac/input?run_id=mock-jpeg", {
+      statusCode: 202,
+      body: { accepted: true },
+    }).as("jpegInput");
+
+    cy.window().then((win) => win.__NPA_AGENT_TEST__.refreshLeIsaacCapability("mock-jpeg"));
+    cy.wait("@jpegStatus");
+    cy.get("#tabLeIsaac").click();
+    cy.get("#leisaacConnect").click();
+    cy.wait("@jpegFrame");
+    cy.get("#leisaacFrame")
+      .should("be.visible")
+      .and(($frame) => expect($frame[0].naturalWidth).to.equal(800));
+    cy.get("#leisaacStreamStatus").should("contain.text", "keyboard teleoperation active");
+    cy.get("#leisaacStreamHost").click().trigger("keydown", { key: "W", code: "KeyW" });
+    cy.wait("@jpegInput").then(({ request }) => {
+      expect(request.headers["x-npa-leisaac-control"]).to.equal("1");
+      expect(request.body).to.deep.equal({ key: "W", event: "press" });
+    });
+    cy.get("#leisaacInputStatus").should("contain.text", "Keyboard events sent: 1");
+    cy.get("#leisaacDisconnect").click();
+  });
 });

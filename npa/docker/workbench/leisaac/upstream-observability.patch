@@ -1,12 +1,18 @@
 diff --git a/scripts/environments/teleoperation/teleop_se3_agent.py b/scripts/environments/teleoperation/teleop_se3_agent.py
-index a467482..652d435 100644
+index a467482..d51b122 100644
 --- a/scripts/environments/teleoperation/teleop_se3_agent.py
 +++ b/scripts/environments/teleoperation/teleop_se3_agent.py
-@@ -159,3 +159,15 @@ def main():  # noqa: C901
+@@ -92,0 +93 @@ simulation_app = app_launcher.app
++import ctypes
+@@ -96,0 +98 @@ import torch
++from PIL import Image
+@@ -99,0 +102 @@ from isaaclab_tasks.utils import parse_env_cfg
++from omni.kit.viewport.utility import capture_viewport_to_buffer, get_active_viewport
+@@ -159,3 +162,15 @@ def main():  # noqa: C901
      env_cfg = parse_env_cfg(args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs)
      env_cfg.use_teleop_device(args_cli.teleop_device)
 +    if os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") == "1":
-+        # WebRTC renders the viewport; teleoperation does not consume policy images.
++        # Browser teleoperation renders the viewport and does not consume policy images.
 +        # Fabric cannot synchronize CPU PhysX reliably on the sm_120 renderer.
 +        env_cfg.sim.use_fabric = False
 +        env_cfg.observations.policy.wrist = None
@@ -14,11 +20,11 @@ index a467482..652d435 100644
 +        env_cfg.scene.wrist = None
 +        env_cfg.scene.front = None
 +        env_cfg.events.domain_randomize_4 = None
-+        # Headless WebRTC uses the viewport, not RTX camera observations. Isaac
-+        # Lab's default texture wait can remain true forever on this path.
++        # This uses the viewport, not RTX camera observations. Isaac Lab's
++        # default texture wait can remain true forever on this path.
 +        env_cfg.wait_for_textures = False
      env_cfg.seed = args_cli.seed if args_cli.seed is not None else int(time.time())
-@@ -312,4 +324,8 @@ def main():  # noqa: C901
+@@ -312,4 +327,62 @@ def main():  # noqa: C901
      if hasattr(env, "initialize"):
          env.initialize()
      env.reset()
@@ -27,22 +33,145 @@ index a467482..652d435 100644
 +    if ready_path:
 +        with open(ready_path, "w", encoding="utf-8") as ready_file:
 +            ready_file.write("ready\n")
-@@ -382,2 +398,4 @@ def main():  # noqa: C901
++
++    frame_path = os.environ.get("NPA_LEISAAC_FRAME_PATH", "")
++    capture_state = {"pending": False, "next_at": 0.0}
++    viewport = get_active_viewport() if frame_path else None
++    if viewport is not None:
++        viewport.resolution = (1280, 720)
++
++    def on_viewport_captured(buffer, buffer_size, width, height, _byte_format):
++        """Atomically publish one real RTX viewport frame for the agent relay."""
++        try:
++            pointer_type = ctypes.POINTER(ctypes.c_byte * buffer_size)
++            ctypes.pythonapi.PyCapsule_GetPointer.restype = pointer_type
++            ctypes.pythonapi.PyCapsule_GetPointer.argtypes = [ctypes.py_object, ctypes.c_char_p]
++            content = ctypes.pythonapi.PyCapsule_GetPointer(buffer, None)
++            image = Image.frombytes(
++                "RGBA", (width, height), content.contents
++            ).convert("RGB")
++            if image.width > 1280 or image.height > 720:
++                image.thumbnail((1280, 720), Image.Resampling.LANCZOS)
++            temporary = frame_path + ".tmp"
++            image.save(temporary, format="JPEG", quality=82, optimize=False)
++            os.replace(temporary, frame_path)
++        except Exception as exc:
++            print(
++                f"[WARN] Could not capture browser frame: "
++                f"{type(exc).__name__}: {exc}"
++            )
++        finally:
++            capture_state["pending"] = False
++            capture_state["next_at"] = time.monotonic() + 0.15
++
++    def schedule_browser_capture():
++        if (
++            viewport is None
++            or capture_state["pending"]
++            or time.monotonic() < capture_state["next_at"]
++        ):
++            return
++        capture_state["pending"] = True
++        try:
++            capture_viewport_to_buffer(viewport, on_viewport_captured)
++        except Exception as exc:
++            capture_state["pending"] = False
++            capture_state["next_at"] = time.monotonic() + 1.0
++            print(
++                f"[WARN] Could not schedule browser frame: "
++                f"{type(exc).__name__}: {exc}"
++            )
++
++    if frame_path:
++        if viewport is None:
++            raise RuntimeError("browser teleoperation requires an active RTX viewport")
++        env.render()
++        schedule_browser_capture()
+@@ -382,2 +455,5 @@ def main():  # noqa: C901
                      env.step(actions)
 +                    if os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") == "1":
 +                        env.render()
++                schedule_browser_capture()
                  if rate_limiter:
 diff --git a/source/leisaac/leisaac/devices/keyboard/so101_keyboard.py b/source/leisaac/leisaac/devices/keyboard/so101_keyboard.py
-index 1ecc934..cbb093a 100644
+index 1ecc934..f20a5ba 100644
 --- a/source/leisaac/leisaac/devices/keyboard/so101_keyboard.py
 +++ b/source/leisaac/leisaac/devices/keyboard/so101_keyboard.py
-@@ -1,2 +1,5 @@
+@@ -1,2 +1,6 @@
++import json
 +import os
 +from pathlib import Path
 +
  import carb
  import numpy as np
-@@ -69,6 +72,17 @@ class SO101Keyboard(Device):
+@@ -36,0 +41,8 @@ class SO101Keyboard(Device):
++        queue_name = os.environ.get("NPA_LEISAAC_INPUT_QUEUE", "")
++        counter_name = os.environ.get("NPA_LEISAAC_APPLIED_COUNTER", "")
++        self._remote_queue = Path(queue_name) if queue_name else None
++        self._remote_offset = 0
++        self._remote_pulses = {}
++        self._applied_counter = Path(counter_name) if counter_name else None
++        if os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") == "1":
++            self._started = True
+@@ -55,3 +67,0 @@ class SO101Keyboard(Device):
+-    def get_device_state(self):
+-        return self._convert_delta_from_frame(self._delta_action)
+-
+@@ -65,0 +75,53 @@ class SO101Keyboard(Device):
++    def _record_applied_input(self):
++        if self._applied_counter is None:
++            return
++        try:
++            current = self._applied_counter.read_text(encoding="utf-8").strip()
++            count = int(current or "0") + 1
++            temporary = self._applied_counter.with_suffix(".tmp")
++            temporary.write_text(f"{count}\n", encoding="utf-8")
++            temporary.replace(self._applied_counter)
++        except (OSError, ValueError):
++            pass
++
++    def _read_remote_inputs(self):
++        if self._remote_queue is None:
++            return
++        try:
++            with self._remote_queue.open("r", encoding="utf-8") as queue:
++                queue.seek(self._remote_offset)
++                records = queue.readlines()
++                self._remote_offset = queue.tell()
++        except OSError:
++            return
++        for record in records:
++            try:
++                payload = json.loads(record)
++            except ValueError:
++                continue
++            key = str(payload.get("key") or "").upper()
++            event = str(payload.get("event") or "")
++            if event != "press":
++                continue
++            if key in self._INPUT_KEY_MAPPING:
++                self._started = True
++                self._remote_pulses[key] = 8
++                self._record_applied_input()
++            elif key in {"R", "N"}:
++                self._started = False
++                self._reset_state = True
++                if key in self._additional_callbacks:
++                    self._additional_callbacks[key]()
++                self._record_applied_input()
++
++    def get_device_state(self):
++        self._read_remote_inputs()
++        remote_action = np.zeros(8)
++        for key, remaining in list(self._remote_pulses.items()):
++            if remaining <= 0:
++                self._remote_pulses.pop(key, None)
++                continue
++            remote_action += self._ACTION_DELTA_MAPPING[self._INPUT_KEY_MAPPING[key]]
++            self._remote_pulses[key] = remaining - 1
++        return self._convert_delta_from_frame(self._delta_action + remote_action)
++
+@@ -69,6 +131,17 @@ class SO101Keyboard(Device):
          if event.type == carb.input.KeyboardEventType.KEY_PRESS:
              if event.input.name in self._INPUT_KEY_MAPPING.keys():
                  self._delta_action += self._ACTION_DELTA_MAPPING[self._INPUT_KEY_MAPPING[event.input.name]]

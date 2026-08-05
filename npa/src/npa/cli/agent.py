@@ -7574,6 +7574,7 @@ register_leisaac_routes(
         load_state=_load_state,
         resolve_manifest=_leisaac_manifest_for_run,
         http_get=httpx.get,
+        http_post=httpx.post,
         response=Response,
         websocket_connect=_leisaac_websocket_connect,
     ),

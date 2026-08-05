@@ -41,6 +41,8 @@ LEISAAC_CLIENT_JS_SHA256 = (
 )
 LEISAAC_CLIENT_MODULE_PATH = "/api/leisaac/client/index.js"
 LEISAAC_SIGNAL_PATH = "/api/leisaac/signal"
+LEISAAC_FRAME_PATH = "/api/leisaac/frame.jpg"
+LEISAAC_INPUT_PATH = "/api/leisaac/input"
 
 _RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
@@ -294,7 +296,11 @@ def validate_health(manifest: dict, payload: dict | None) -> tuple[dict | None, 
     for key in ("run_id", "task", "source_commit", "session_nonce"):
         if str(data.get(key) or "") != str(manifest.get(key) or ""):
             return None, f"LeIsaac service attestation mismatch: {key}"
-    if str(data.get("state") or "") != "ready" or not bool(data.get("webrtc_ready")):
+    stream_ready = bool(data.get("stream_ready", data.get("webrtc_ready")))
+    stream_transport = str(data.get("stream_transport") or "webrtc")
+    if stream_transport not in {"webrtc", "jpeg-poll"}:
+        return None, "LeIsaac service returned an unsupported stream transport"
+    if str(data.get("state") or "") != "ready" or not stream_ready:
         detail = str(data.get("detail") or data.get("state") or "starting")
         return None, f"LeIsaac service is not ready: {detail}"
     if _integer(data.get("signal_port")) != LEISAAC_SIGNAL_PORT:
@@ -302,10 +308,15 @@ def validate_health(manifest: dict, payload: dict | None) -> tuple[dict | None, 
     return {
         "state": "ready",
         "webrtc_ready": True,
+        "stream_ready": True,
+        "stream_transport": stream_transport,
         "pid": _integer(data.get("pid")) or 0,
         "started_at": str(data.get("started_at") or ""),
         "gpu": str(data.get("gpu") or manifest.get("gpu") or ""),
         "input_events": _integer(data.get("input_events")) or 0,
+        "applied_inputs": _integer(data.get("applied_inputs")) or 0,
+        "frame_bytes": _integer(data.get("frame_bytes")) or 0,
+        "frame_updated_at": str(data.get("frame_updated_at") or ""),
     }, ""
 
 
@@ -336,6 +347,9 @@ def status_payload(
         "signaling_port": 443,
         "signaling_path": LEISAAC_SIGNAL_PATH,
         "client_module_url": f"{LEISAAC_CLIENT_MODULE_PATH}?run_id={run_id}",
+        "stream_transport": health.get("stream_transport", "webrtc"),
+        "frame_url": f"{LEISAAC_FRAME_PATH}?run_id={run_id}",
+        "input_url": f"{LEISAAC_INPUT_PATH}?run_id={run_id}",
         "source_version": manifest.get("source_version", ""),
         "source_commit": manifest.get("source_commit", ""),
         "isaac_sim_version": manifest.get("isaac_sim_version", ""),
@@ -344,6 +358,9 @@ def status_payload(
         "gpu": health.get("gpu") or manifest.get("gpu", ""),
         "started_at": health.get("started_at", ""),
         "input_events": health.get("input_events", 0),
+        "applied_inputs": health.get("applied_inputs", 0),
+        "frame_bytes": health.get("frame_bytes", 0),
+        "frame_updated_at": health.get("frame_updated_at", ""),
         "controls": {
             "translate": "W/S forward/back · A/D left/right · Q/E up/down",
             "rotate": "J/L yaw · K/I pitch",

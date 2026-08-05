@@ -9,12 +9,12 @@ of those bytes are part of the distributable image.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import http.server
 import json
 import os
 import shutil
 import signal
-import socket
 import subprocess
 import sys
 import tarfile
@@ -37,7 +37,6 @@ ISAAC_LAB_VERSION = "2.3.2.post1"
 SIGNAL_PORT = 49100
 MEDIA_PORT = 47998
 SERVICE_PORT = 8080
-RENDER_WARMUP_SECONDS = 45
 
 ASSET_RELEASE = "v0.1.0"
 ROBOT_URL = "https://github.com/LightwheelAI/leisaac/releases/download/v0.1.0/so101_follower.usd"
@@ -55,11 +54,9 @@ CLIENT_SOURCE_JS_SHA256 = (
 )
 CLIENT_JS_SHA256 = "e9ac6563db79d3aea8afe94c4f60e50571abc01e3470d9bafb4e2f8b54cbd2a5"
 UPSTREAM_OBSERVABILITY_PATCH_SHA256 = (
-    "2378574fadbc70039fae99e860f44fec02d6499f80148653b6d669743b7d61e3"
+    "5f48b8d723c31fd096d3fcbec03c713f363793a9f0d783c67189abf0bdcc6b5a"
 )
-CLIENT_WSS_PATCH_OLD = (
-    b"M=Yc(B)?D.AppLevelProtocol.HTTP:D.AppLevelProtocol.HTTPS;"
-)
+CLIENT_WSS_PATCH_OLD = b"M=Yc(B)?D.AppLevelProtocol.HTTP:D.AppLevelProtocol.HTTPS;"
 CLIENT_WSS_PATCH_NEW = (
     b"M=de===443?D.AppLevelProtocol.HTTPS:Yc(B)?"
     b"D.AppLevelProtocol.HTTP:D.AppLevelProtocol.HTTPS;"
@@ -71,7 +68,11 @@ CLIENT_ROOT = CACHE_ROOT / "client" / "5.6.0"
 PROVENANCE_PATH = CACHE_ROOT / "provenance.json"
 READY_PATH = Path("/tmp/npa-leisaac-ready")
 INPUT_COUNTER_PATH = Path("/tmp/npa-leisaac-input-events")
+APPLIED_COUNTER_PATH = Path("/tmp/npa-leisaac-applied-inputs")
+INPUT_QUEUE_PATH = Path("/tmp/npa-leisaac-input-queue.jsonl")
+FRAME_PATH = Path("/tmp/npa-leisaac-frame.jpg")
 STATE_LOCK = threading.Lock()
+INPUT_LOCK = threading.Lock()
 STATE: dict[str, Any] = {
     "state": "starting",
     "detail": "staging runtime",
@@ -236,14 +237,6 @@ def stage_runtime() -> None:
     )
 
 
-def tcp_ready(port: int) -> bool:
-    try:
-        with socket.create_connection(("127.0.0.1", port), timeout=1):
-            return True
-    except OSError:
-        return False
-
-
 def detect_gpu() -> str:
     try:
         result = subprocess.run(
@@ -306,8 +299,14 @@ def run_simulation() -> None:
         environment["NPA_LEISAAC_BROWSER_TELEOP"] = "1"
         environment["NPA_LEISAAC_READY_PATH"] = str(READY_PATH)
         environment["NPA_LEISAAC_INPUT_COUNTER"] = str(INPUT_COUNTER_PATH)
+        environment["NPA_LEISAAC_APPLIED_COUNTER"] = str(APPLIED_COUNTER_PATH)
+        environment["NPA_LEISAAC_INPUT_QUEUE"] = str(INPUT_QUEUE_PATH)
+        environment["NPA_LEISAAC_FRAME_PATH"] = str(FRAME_PATH)
         READY_PATH.unlink(missing_ok=True)
         INPUT_COUNTER_PATH.write_text("0\n", encoding="utf-8")
+        APPLIED_COUNTER_PATH.write_text("0\n", encoding="utf-8")
+        INPUT_QUEUE_PATH.write_text("", encoding="utf-8")
+        FRAME_PATH.unlink(missing_ok=True)
         CHILD = subprocess.Popen(
             command,
             cwd="/opt/leisaac",
@@ -317,17 +316,21 @@ def run_simulation() -> None:
             text=True,
         )
         update_state(pid=CHILD.pid, gpu=detect_gpu(), started_at=utc_now())
-        renderer_ready_at: float | None = None
         while CHILD.poll() is None:
-            if tcp_ready(SIGNAL_PORT) and READY_PATH.is_file():
-                if renderer_ready_at is None:
-                    renderer_ready_at = time.monotonic()
-                    update_state(detail="warming RTX renderer")
-                if time.monotonic() - renderer_ready_at >= RENDER_WARMUP_SECONDS:
-                    update_state(state="ready", detail="live", webrtc_ready=True)
-                    break
-            else:
-                renderer_ready_at = None
+            if (
+                READY_PATH.is_file()
+                and FRAME_PATH.is_file()
+                and FRAME_PATH.stat().st_size > 0
+            ):
+                update_state(
+                    state="ready",
+                    detail="live",
+                    webrtc_ready=True,
+                    stream_ready=True,
+                    stream_transport="jpeg-poll",
+                )
+                break
+            update_state(detail="warming RTX renderer")
             time.sleep(1)
         while CHILD.poll() is None:
             time.sleep(2)
@@ -345,6 +348,22 @@ def health_document() -> dict[str, Any]:
         )
     except (OSError, ValueError):
         input_events = 0
+    try:
+        applied_inputs = max(
+            0, int(APPLIED_COUNTER_PATH.read_text(encoding="utf-8").strip() or "0")
+        )
+    except (OSError, ValueError):
+        applied_inputs = 0
+    try:
+        frame_bytes = FRAME_PATH.stat().st_size
+        frame_updated_at = (
+            datetime.fromtimestamp(FRAME_PATH.stat().st_mtime, tz=timezone.utc)
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
+    except OSError:
+        frame_bytes = 0
+        frame_updated_at = ""
     return {
         "schema": SCHEMA,
         "run_id": os.environ.get("NPA_LEISAAC_RUN_ID", ""),
@@ -359,6 +378,11 @@ def health_document() -> dict[str, Any]:
         "signal_port": SIGNAL_PORT,
         "media_port": MEDIA_PORT,
         "input_events": input_events,
+        "applied_inputs": applied_inputs,
+        "stream_ready": bool(frame_bytes),
+        "stream_transport": "jpeg-poll",
+        "frame_bytes": frame_bytes,
+        "frame_updated_at": frame_updated_at,
         "physics_device": "cpu",
         "render_device": "cuda",
         **state,
@@ -372,9 +396,7 @@ def liveness_status() -> int:
         state = str(STATE.get("state") or "")
         pid = int(STATE.get("pid") or 0)
     child = CHILD
-    if state == "failed" or (
-        pid > 0 and (child is None or child.poll() is not None)
-    ):
+    if state == "failed" or (pid > 0 and (child is None or child.poll() is not None)):
         return 503
     return 200
 
@@ -391,6 +413,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(content)
 
+    def authorized(self) -> bool:
+        expected = os.environ.get("NPA_LEISAAC_SESSION_NONCE", "")
+        supplied = self.headers.get("X-NPA-LeIsaac-Nonce", "")
+        return bool(expected) and hmac.compare_digest(expected, supplied)
+
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         path = self.path.split("?", 1)[0]
         if path == "/healthz":
@@ -404,6 +431,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_bytes(
                 status, "application/json", (json.dumps(document) + "\n").encode()
             )
+            return
+        if path == "/frame.jpg":
+            if not self.authorized():
+                self.send_bytes(403, "application/json", b'{"detail":"forbidden"}\n')
+                return
+            try:
+                content = FRAME_PATH.read_bytes()
+            except OSError:
+                content = b""
+            if not content or len(content) > 4 * 1024 * 1024:
+                self.send_bytes(
+                    503, "application/json", b'{"detail":"frame unavailable"}\n'
+                )
+                return
+            self.send_bytes(200, "image/jpeg", content)
             return
         if path == "/client/index.js":
             self.send_bytes(
@@ -419,6 +461,72 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_bytes(200, "application/json", PROVENANCE_PATH.read_bytes())
             return
         self.send_bytes(404, "application/json", b'{"detail":"not found"}\n')
+
+    def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+        path = self.path.split("?", 1)[0]
+        if path != "/input":
+            self.send_bytes(404, "application/json", b'{"detail":"not found"}\n')
+            return
+        if not self.authorized():
+            self.send_bytes(403, "application/json", b'{"detail":"forbidden"}\n')
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            length = 0
+        if length <= 0 or length > 256:
+            self.send_bytes(400, "application/json", b'{"detail":"invalid body"}\n')
+            return
+        try:
+            payload = json.loads(self.rfile.read(length))
+        except (UnicodeDecodeError, ValueError):
+            payload = None
+        key = str(payload.get("key") if isinstance(payload, dict) else "").upper()
+        event = str(payload.get("event") if isinstance(payload, dict) else "")
+        if key not in {
+            "W",
+            "S",
+            "A",
+            "D",
+            "Q",
+            "E",
+            "J",
+            "L",
+            "I",
+            "K",
+            "U",
+            "O",
+            "R",
+            "N",
+        } or event not in {"press", "release"}:
+            self.send_bytes(400, "application/json", b'{"detail":"invalid input"}\n')
+            return
+        with STATE_LOCK:
+            ready = STATE.get("state") == "ready"
+        if not ready:
+            self.send_bytes(
+                503, "application/json", b'{"detail":"simulator not ready"}\n'
+            )
+            return
+        record = json.dumps({"key": key, "event": event}, separators=(",", ":")) + "\n"
+        with INPUT_LOCK:
+            with INPUT_QUEUE_PATH.open("a", encoding="utf-8") as queue:
+                queue.write(record)
+            if event == "press":
+                try:
+                    count = (
+                        int(
+                            INPUT_COUNTER_PATH.read_text(encoding="utf-8").strip()
+                            or "0"
+                        )
+                        + 1
+                    )
+                except (OSError, ValueError):
+                    count = 1
+                temporary = INPUT_COUNTER_PATH.with_suffix(".tmp")
+                temporary.write_text(f"{count}\n", encoding="utf-8")
+                temporary.replace(INPUT_COUNTER_PATH)
+        self.send_bytes(202, "application/json", b'{"accepted":true}\n')
 
     def log_message(self, format: str, *args: Any) -> None:
         sys.stderr.write("leisaac-http " + (format % args) + "\n")
