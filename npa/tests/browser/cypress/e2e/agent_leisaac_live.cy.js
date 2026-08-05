@@ -3,6 +3,7 @@ const requiredLiveEnv = [
   "NPA_AGENT_USER",
   "NPA_AGENT_PASSWORD",
   "NPA_AGENT_RUN_ID",
+  "NPA_AGENT_TASK",
 ];
 
 function hasLiveEnv() {

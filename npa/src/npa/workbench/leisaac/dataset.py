@@ -226,6 +226,27 @@ class EpisodeRecorder:
         self._last_command_id = ""
         self._last_command = ""
         self._command_revision = 0
+        self._processed_commands: dict[str, str] = {}
+        try:
+            prior_status = json.loads(self.status_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            prior_status = {}
+        if not isinstance(prior_status, dict):
+            prior_status = {}
+        prior_commands = prior_status.get("processed_commands", {})
+        if isinstance(prior_commands, dict):
+            self._processed_commands = {
+                str(request_id): str(command)
+                for request_id, command in prior_commands.items()
+                if request_id and command
+            }
+        self._last_command_id = str(prior_status.get("last_command_id") or "")
+        self._last_command = str(prior_status.get("last_command") or "")
+        self._command_revision = int(prior_status.get("command_revision") or 0)
+        if self._last_command_id and self._last_command:
+            self._processed_commands.setdefault(
+                self._last_command_id, self._last_command
+            )
         self.control_path.touch(exist_ok=True)
         self._write_status()
 
@@ -252,6 +273,9 @@ class EpisodeRecorder:
                 "last_command_id": self._last_command_id,
                 "last_command": self._last_command,
                 "command_revision": self._command_revision,
+                # The session server consumes this durable ledger directly. The
+                # public agent status allowlist deliberately omits it.
+                "processed_commands": dict(self._processed_commands),
             }
 
     def _pending_command_id(self) -> str:
@@ -448,8 +472,9 @@ class EpisodeRecorder:
                 command = str(payload.get("command") or "")
                 request_id = str(payload.get("request_id") or uuid.uuid4().hex)
                 with self._lock:
-                    if request_id == self._last_command_id:
-                        if command != self._last_command:
+                    processed_command = self._processed_commands.get(request_id)
+                    if processed_command is not None:
+                        if command != processed_command:
                             raise DatasetError(
                                 "recorder request ID was reused for a different command"
                             )
@@ -472,11 +497,13 @@ class EpisodeRecorder:
                     self._last_error = _safe_error(exc)
                     self._write_status()
             finally:
-                if request_id and request_id != self._last_command_id:
+                if request_id:
                     with self._lock:
-                        self._last_command_id = request_id
-                        self._last_command = command
-                        self._command_revision += 1
+                        if request_id not in self._processed_commands:
+                            self._processed_commands[request_id] = command
+                            self._last_command_id = request_id
+                            self._last_command = command
+                            self._command_revision += 1
                     self._clear_pending_command(request_id)
                     with self._lock:
                         self._write_status()
@@ -840,6 +867,101 @@ class S3DatasetStore:
     def _key(self, suffix: str) -> str:
         return f"{self.prefix}/{suffix.lstrip('/')}"
 
+    @staticmethod
+    def _is_missing_object(exc: Exception) -> bool:
+        if isinstance(exc, KeyError):
+            return True
+        response = getattr(exc, "response", {})
+        error = response.get("Error", {}) if isinstance(response, dict) else {}
+        return str(error.get("Code") or "") in {"404", "NoSuchKey", "NotFound"}
+
+    @staticmethod
+    def _is_precondition_failure(exc: Exception) -> bool:
+        response = getattr(exc, "response", {})
+        error = response.get("Error", {}) if isinstance(response, dict) else {}
+        code = str(error.get("Code") or "")
+        return code in {
+            "409",
+            "412",
+            "ConditionalRequestConflict",
+            "PreconditionFailed",
+        } or ("precondition" in str(exc).lower())
+
+    def _read_latest(self) -> tuple[dict[str, Any] | None, str]:
+        try:
+            response = self.client.get_object(
+                Bucket=self.bucket, Key=self._key("latest.json")
+            )
+        except Exception as exc:
+            if self._is_missing_object(exc):
+                return None, ""
+            raise DatasetError("could not read the current dataset pointer") from exc
+        try:
+            payload = json.loads(response["Body"].read())
+        except (KeyError, TypeError, ValueError) as exc:
+            raise DatasetError("current dataset pointer is malformed") from exc
+        try:
+            valid = (
+                isinstance(payload, dict)
+                and payload.get("schema") == "npa.leisaac.dataset-latest.v1"
+                and int(payload.get("episode_count", -1)) >= 0
+            )
+        except (TypeError, ValueError):
+            valid = False
+        if not valid:
+            raise DatasetError("current dataset pointer is malformed")
+        if not str(response.get("ETag") or ""):
+            raise DatasetError("current dataset pointer has no concurrency token")
+        return payload, str(response.get("ETag") or "")
+
+    def _manifest_from_latest(self, latest: dict[str, Any]) -> dict[str, Any]:
+        manifest_uri = str(latest.get("manifest_uri") or "")
+        bucket, key = split_s3_uri(manifest_uri, label="latest manifest URI")
+        if bucket != self.bucket or not key.startswith(self.prefix + "/versions/"):
+            raise DatasetError("current dataset pointer escaped the output prefix")
+        try:
+            response = self.client.get_object(Bucket=bucket, Key=key)
+            manifest = json.loads(response["Body"].read())
+        except Exception as exc:
+            raise DatasetError("current dataset manifest is unreadable") from exc
+        if (
+            not isinstance(manifest, dict)
+            or manifest.get("schema") != DATASET_SCHEMA
+            or int(manifest.get("episode_count", -1)) != int(latest["episode_count"])
+        ):
+            raise DatasetError("current dataset manifest does not match latest pointer")
+        return manifest
+
+    def _publish_latest_monotonic(
+        self, latest: dict[str, Any], manifest: dict[str, Any]
+    ) -> dict[str, Any]:
+        body = (json.dumps(latest, indent=2, sort_keys=True) + "\n").encode()
+        key = self._key("latest.json")
+        while True:
+            current, etag = self._read_latest()
+            if current is not None and int(current["episode_count"]) >= int(
+                latest["episode_count"]
+            ):
+                return self._manifest_from_latest(current)
+            condition = (
+                {"IfMatch": etag} if current is not None else {"IfNoneMatch": "*"}
+            )
+            try:
+                self.client.put_object(
+                    Bucket=self.bucket,
+                    Key=key,
+                    Body=body,
+                    Metadata={"sha256": hashlib.sha256(body).hexdigest()},
+                    **condition,
+                )
+                return manifest
+            except Exception as exc:
+                if self._is_precondition_failure(exc):
+                    continue
+                raise DatasetError(
+                    "could not publish the latest dataset pointer"
+                ) from exc
+
     def _put_file(self, key: str, path: Path) -> dict[str, Any]:
         checksum = sha256_file(path)
         with path.open("rb") as handle:
@@ -905,7 +1027,7 @@ class S3DatasetStore:
             episode_index = int(commit["episode_index"])
             return {
                 "episode_index": episode_index,
-                "completed_episode_count": len(commits),
+                "completed_episode_count": int(version["episode_count"]),
                 "dataset_version_uri": version["dataset_uri"],
                 "episode_commit_uri": f"s3://{self.bucket}/{self._key(f'commits/episode-{episode_index:06d}.json')}",
             }
@@ -947,7 +1069,7 @@ class S3DatasetStore:
         version = self._publish_version(commits)
         return {
             "episode_index": episode_index,
-            "completed_episode_count": len(commits),
+            "completed_episode_count": int(version["episode_count"]),
             "dataset_version_uri": version["dataset_uri"],
             "episode_commit_uri": f"s3://{self.bucket}/{self._key(f'commits/episode-{episode_index:06d}.json')}",
         }
@@ -1041,9 +1163,4 @@ class S3DatasetStore:
                 "episode_count": len(commits),
                 "updated_at": utc_now(),
             }
-            self.client.put_object(
-                Bucket=self.bucket,
-                Key=self._key("latest.json"),
-                Body=(json.dumps(latest, indent=2, sort_keys=True) + "\n").encode(),
-            )
-            return manifest
+            return self._publish_latest_monotonic(latest, manifest)

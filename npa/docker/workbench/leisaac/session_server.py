@@ -149,8 +149,14 @@ def enqueue_recorder_command(
             return 503, {"detail": "recorder unavailable"}
         if not isinstance(status, dict):
             return 503, {"detail": "recorder unavailable"}
-        if status.get("last_command_id") == request_id:
-            if status.get("last_command") != command:
+        processed_commands = status.get("processed_commands", {})
+        if not isinstance(processed_commands, dict):
+            processed_commands = {}
+        processed_command = processed_commands.get(request_id)
+        if processed_command is None and status.get("last_command_id") == request_id:
+            processed_command = status.get("last_command")
+        if processed_command is not None:
+            if processed_command != command:
                 return 409, {"detail": "recorder request ID was reused"}
             RECORDER_PENDING_PATH.unlink(missing_ok=True)
             return 202, {

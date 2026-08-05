@@ -2337,22 +2337,27 @@
         leisaacRecorderPending = { command: command, requestId: requestId };
         leisaacRecorderUiError = "";
         updateLeIsaacRecorder(status);
-        const response = await fetch(String(status.recorder_url), {
-          method: "POST",
-          credentials: "include",
-          cache: "no-store",
-          headers: { "Content-Type": "application/json", "X-NPA-LeIsaac-Control": "1" },
-          body: JSON.stringify({ command: command, request_id: requestId }),
-        });
-        const payload = await response.json().catch(() => ({}));
-        if (!response.ok) {
+        try {
+          const response = await fetch(String(status.recorder_url), {
+            method: "POST",
+            credentials: "include",
+            cache: "no-store",
+            headers: { "Content-Type": "application/json", "X-NPA-LeIsaac-Control": "1" },
+            body: JSON.stringify({ command: command, request_id: requestId }),
+          });
+          const payload = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            throw new Error(String(payload.detail || ("Recorder returned HTTP " + response.status)));
+          }
+          startLeIsaacRecorderPolling();
+          await pollLeIsaacRecorder();
+        } catch (err) {
           leisaacRecorderPending = null;
-          leisaacRecorderUiError = String(payload.detail || ("Recorder returned HTTP " + response.status));
+          leisaacRecorderUiError = "Recorder command failed; retry is available: "
+            + String((err && err.message) || err);
           updateLeIsaacRecorder(status);
           throw new Error(leisaacRecorderUiError);
         }
-        startLeIsaacRecorderPolling();
-        await pollLeIsaacRecorder();
       }
       function stopLeIsaacRecorderPolling() {
         if (leisaacRecorderTimer !== null) window.clearTimeout(leisaacRecorderTimer);
@@ -2381,7 +2386,9 @@
             throw new Error(String((status && status.reason) || "recorder status is unavailable"));
           }
           leisaacCapability = status;
-          leisaacRecorderUiError = "";
+          if (leisaacRecorderUiError.startsWith("Recorder status refresh failed")) {
+            leisaacRecorderUiError = "";
+          }
           updateLeIsaacRecorder(status);
           return status;
         } catch (err) {

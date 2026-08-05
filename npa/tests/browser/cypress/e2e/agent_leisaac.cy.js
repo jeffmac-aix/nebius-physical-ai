@@ -245,6 +245,85 @@ describe("NPA agent LeIsaac capability tab", () => {
       .and("contain.text", "completed: 1");
   });
 
+  it("unlocks controls after a rejected recorder request and allows retry", () => {
+    let recorderState = "idle";
+    let lastCommandId = "";
+    const status = () => ({
+      available: true,
+      run_id: "mock-network-retry",
+      task: "LeIsaac-SO101-PickOrange-v0",
+      environment_id: "counter-a",
+      environment_index: 0,
+      seed: 42,
+      recorder_url: "/api/leisaac/recorder?run_id=mock-network-retry",
+      recorder: {
+        state: recorderState,
+        active_episode: recorderState === "recording" ? "episode-retry" : null,
+        frame_count: recorderState === "recording" ? 3 : 0,
+        completed_episode_count: 0,
+        pending_outcome: "",
+        last_outcome: "",
+        last_upload_status:
+          recorderState === "recording" ? "recording" : "never",
+        last_error: "",
+        last_command_id: lastCommandId,
+        last_command: lastCommandId ? "start" : "",
+      },
+    });
+    cy.intercept("GET", "/api/leisaac/status*", (req) => {
+      req.reply(status());
+    }).as("networkRetryStatus");
+    cy.intercept("POST", "/api/leisaac/select", {
+      statusCode: 200,
+      body: { selected: true },
+    });
+    cy.intercept(
+      "POST",
+      "/api/leisaac/recorder?run_id=mock-network-retry",
+      (req) => {
+        recorderState = "recording";
+        lastCommandId = req.body.request_id;
+        req.reply({
+          statusCode: 202,
+          body: { accepted: true, request_id: lastCommandId },
+        });
+      },
+    ).as("networkRetryControl");
+
+    cy.window().then((win) => {
+      win.__NPA_AGENT_TEST__.selectActiveRunId("mock-network-retry");
+      return win.__NPA_AGENT_TEST__.refreshLeIsaacCapability(
+        "mock-network-retry",
+      );
+    });
+    cy.wait("@networkRetryStatus");
+    cy.get("#tabLeIsaac").click();
+    cy.window().then((win) => {
+      const originalFetch = win.fetch.bind(win);
+      let rejectRecorderRequest = true;
+      win.fetch = (url, options) => {
+        if (
+          rejectRecorderRequest &&
+          String(url).includes("/api/leisaac/recorder?") &&
+          options &&
+          options.method === "POST"
+        ) {
+          rejectRecorderRequest = false;
+          return Promise.reject(new TypeError("simulated network disconnect"));
+        }
+        return originalFetch(url, options);
+      };
+    });
+    cy.get("#leisaacRecordStart").should("not.be.disabled").click();
+    cy.get("#leisaacRecorderError")
+      .should("contain.text", "Recorder command failed")
+      .and("contain.text", "retry is available");
+    cy.get("#leisaacRecordStart").should("not.be.disabled").click();
+    cy.wait("@networkRetryControl");
+    cy.get("#leisaacRecorderStatus").should("contain.text", "State: recording");
+    cy.get("#leisaacRecordSuccess").should("not.be.disabled");
+  });
+
   it("appears only for a live run and drives the upstream keyboard client", () => {
     cy.intercept("GET", "/api/leisaac/status?run_id=mock-run", {
       statusCode: 200,

@@ -210,20 +210,71 @@ def test_recorder_command_ids_are_recoverable_and_idempotent(tmp_path: Path) -> 
     assert recorder.status()["state"] == "outcome-pending"
     assert recorder.status()["pending_outcome"] == "success"
 
+    with recorder.control_path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps({"request_id": request_id, "command": "start"}) + "\n")
+    recorder.process_commands()
+    assert recorder.status()["state"] == "outcome-pending"
+    assert recorder.status()["command_revision"] == 2
+    assert recorder.status()["processed_commands"] == {
+        request_id: "start",
+        "invalid-mark": "mark-success",
+    }
+
+    recovered = EpisodeRecorder(
+        root=tmp_path,
+        output_uri="s3://bucket/demos",
+        task="LeIsaac-SO101-PickOrange-v0",
+        environment_id="counter-a",
+        environment_index=0,
+        seed=7,
+        run_id="run-command-ids",
+        source_commit="1" * 40,
+        publisher=lambda _path, _metadata: {},
+    )
+    assert (
+        recovered.status()["processed_commands"]
+        == recorder.status()["processed_commands"]
+    )
+    recovered.process_commands()
+    assert recovered.status()["command_revision"] == 2
+
 
 class _FakeS3:
     def __init__(self) -> None:
         self.objects: dict[tuple[str, str], tuple[bytes, dict[str, str]]] = {}
+        self.fail_next_latest_precondition = False
+        self.latest_precondition_failures = 0
 
     def put_object(
-        self, *, Bucket, Key, Body, Metadata=None, IfNoneMatch=None, **_kwargs
+        self,
+        *,
+        Bucket,
+        Key,
+        Body,
+        Metadata=None,
+        IfNoneMatch=None,
+        IfMatch=None,
+        **_kwargs,
     ):
         target = (Bucket, Key)
         if IfNoneMatch == "*" and target in self.objects:
             raise RuntimeError("precondition failed")
         data = Body.read() if hasattr(Body, "read") else bytes(Body)
+        if IfMatch is not None:
+            current = self.objects.get(target)
+            current_etag = (
+                '"' + __import__("hashlib").sha256(current[0]).hexdigest() + '"'
+                if current is not None
+                else ""
+            )
+            if current_etag != IfMatch:
+                raise RuntimeError("precondition failed")
+        if Key.endswith("/latest.json") and self.fail_next_latest_precondition:
+            self.fail_next_latest_precondition = False
+            self.latest_precondition_failures += 1
+            raise RuntimeError("precondition failed")
         self.objects[target] = (data, dict(Metadata or {}))
-        return {"ETag": "test"}
+        return {"ETag": '"' + __import__("hashlib").sha256(data).hexdigest() + '"'}
 
     def list_objects_v2(self, *, Bucket, Prefix, **_kwargs):
         contents = [
@@ -234,7 +285,11 @@ class _FakeS3:
         return {"Contents": contents, "IsTruncated": False}
 
     def get_object(self, *, Bucket, Key):
-        return {"Body": io.BytesIO(self.objects[(Bucket, Key)][0])}
+        data = self.objects[(Bucket, Key)][0]
+        return {
+            "Body": io.BytesIO(data),
+            "ETag": '"' + __import__("hashlib").sha256(data).hexdigest() + '"',
+        }
 
     def download_file(self, bucket, key, destination):
         Path(destination).parent.mkdir(parents=True, exist_ok=True)
@@ -292,14 +347,16 @@ def test_s3_store_resumes_episode_numbers_and_publishes_lerobot_v3(
     second = _episode_dir(tmp_path, "LeIsaac-SO101-LiftCube-v0", "table-b", 1)
     result0 = store.publish_episode(*first)
     retried0 = store.publish_episode(*first)
+    fake.fail_next_latest_precondition = True
     result1 = store.publish_episode(*second)
     assert result0["episode_index"] == 0
     assert retried0["episode_index"] == 0
     assert retried0["completed_episode_count"] == 1
-    assert retried0["dataset_version_uri"] != result0["dataset_version_uri"]
+    assert retried0["dataset_version_uri"] == result0["dataset_version_uri"]
     assert result1["episode_index"] == 1
     assert result1["completed_episode_count"] == 2
     assert result0["dataset_version_uri"] != result1["dataset_version_uri"]
+    assert fake.latest_precondition_failures == 1
     commits = [
         key for bucket, key in fake.objects if bucket == "bucket" and "/commits/" in key
     ]
@@ -340,3 +397,10 @@ def test_s3_store_resumes_episode_numbers_and_publishes_lerobot_v3(
     assert table["environment.id"].to_pylist() == ["table-b"] * 3
     assert table["success"].to_pylist() == [False, False, False]
     assert table["reset_reason"].to_pylist()[-1] == "failure"
+
+    first_only = store._commits()[:1]
+    stale_result = store._publish_version(first_only)
+    latest = json.loads(fake.objects[("bucket", "demos/leisaac/latest.json")][0])
+    assert latest["episode_count"] == 2
+    assert stale_result["episode_count"] == 2
+    assert stale_result["dataset_uri"] == result1["dataset_version_uri"]

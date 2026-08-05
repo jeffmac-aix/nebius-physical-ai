@@ -462,6 +462,7 @@ def test_recorder_control_reservation_prevents_duplicate_commits(
                 "state": "recording",
                 "last_command_id": "request-1",
                 "last_command": "start",
+                "processed_commands": {"request-1": "start"},
             }
         ),
         encoding="utf-8",
@@ -478,6 +479,42 @@ def test_recorder_control_reservation_prevents_duplicate_commits(
     reused_status, reused = server.enqueue_recorder_command("mark-success", "request-3")
     assert reused_status == 409
     assert "in progress" in reused["detail"]
+
+    pending_path.unlink()
+    status_path.write_text(
+        json.dumps(
+            {
+                "state": "outcome-pending",
+                "last_command_id": "request-3",
+                "last_command": "mark-failure",
+                "processed_commands": {
+                    "request-1": "start",
+                    "request-3": "mark-failure",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    delayed_status, delayed = server.enqueue_recorder_command("start", "request-1")
+    assert delayed_status == 202
+    assert delayed["duplicate"] is True
+    assert delayed["processed"] is True
+    reused_status, reused = server.enqueue_recorder_command("mark-success", "request-1")
+    assert reused_status == 409
+    assert "reused" in reused["detail"]
+
+
+def test_live_browser_runner_includes_leisaac_journey_and_environment_bridge() -> None:
+    package = json.loads(
+        (ROOT / "npa/tests/browser/package.json").read_text(encoding="utf-8")
+    )
+    runner = (ROOT / "npa/scripts/run_agent_cypress.sh").read_text(encoding="utf-8")
+
+    assert "cypress/e2e/agent_leisaac_live.cy.js" in package["scripts"]["cy:live"]
+    assert 'CYPRESS_NPA_AGENT_RUN_ID="${LIVE_RUN_ID}"' in runner
+    assert 'CYPRESS_NPA_AGENT_TASK="${LIVE_TASK}"' in runner
+    assert 'CYPRESS_NPA_AGENT_ENVIRONMENT_ID="${LIVE_ENVIRONMENT_ID}"' in runner
+    assert 'CYPRESS_NPA_AGENT_COMPLETED_EPISODES="${LIVE_COMPLETED_EPISODES}"' in runner
 
 
 def test_liveness_preserves_live_initial_reset_and_restarts_dead_child() -> None:
