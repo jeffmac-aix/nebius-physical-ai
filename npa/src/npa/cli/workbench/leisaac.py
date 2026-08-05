@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import http.client
 import ipaddress
 import json
 import os
@@ -336,6 +337,80 @@ def _agent_certificate_sha256(public_ip: str) -> str:
     if not certificate:
         raise RuntimeError("public agent HTTPS endpoint returned no certificate")
     return hashlib.sha256(certificate).hexdigest()
+
+
+def _select_agent_leisaac_run(
+    public_ip: str,
+    *,
+    auth_user: str,
+    auth_password: str,
+    run_id: str,
+    certificate_sha256: str,
+) -> None:
+    """Register the live run through the selected agent's pinned TLS endpoint."""
+
+    host = validate_public_ip(public_ip, "agent public IP")
+    selected_run = validate_run_id(run_id)
+    expected_certificate = str(certificate_sha256 or "").strip().lower()
+    if len(expected_certificate) != 64:
+        raise LeIsaacConfigError("agent certificate fingerprint is invalid")
+    try:
+        bytes.fromhex(expected_certificate)
+    except ValueError as exc:
+        raise LeIsaacConfigError("agent certificate fingerprint is invalid") from exc
+
+    context = ssl.create_default_context()
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    raw = socket.create_connection((host, 443), timeout=10)
+    tls = context.wrap_socket(raw, server_hostname=host)
+    connection: http.client.HTTPConnection | None = None
+    try:
+        certificate = tls.getpeercert(binary_form=True)
+        actual_certificate = (
+            hashlib.sha256(certificate).hexdigest() if certificate else ""
+        )
+        if not secrets.compare_digest(actual_certificate, expected_certificate):
+            raise RuntimeError("public agent TLS certificate fingerprint changed")
+        connection = http.client.HTTPConnection(host, 443, timeout=10)
+        connection.sock = tls
+        payload = json.dumps({"run_id": selected_run}, separators=(",", ":"))
+        credential = base64.b64encode(
+            f"{auth_user}:{auth_password}".encode("utf-8")
+        ).decode("ascii")
+        connection.request(
+            "POST",
+            "/api/leisaac/select",
+            body=payload,
+            headers={
+                "Authorization": f"Basic {credential}",
+                "Content-Type": "application/json",
+                "X-NPA-LeIsaac-Control": "1",
+            },
+        )
+        response = connection.getresponse()
+        body = response.read(131073)
+        if response.status != 200 or len(body) > 131072:
+            raise RuntimeError(
+                f"public agent rejected LeIsaac run selection (HTTP {response.status})"
+            )
+        try:
+            result = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise RuntimeError(
+                "public agent returned an invalid LeIsaac selection response"
+            ) from exc
+        if (
+            not isinstance(result, dict)
+            or result.get("selected") is not True
+            or result.get("run_id") != selected_run
+        ):
+            raise RuntimeError("public agent did not persist the LeIsaac run selection")
+    finally:
+        if connection is not None:
+            connection.close()
+        else:
+            tls.close()
 
 
 def _relay_source(path: str) -> bytes:
@@ -731,6 +806,9 @@ def launch_cmd(
     instance_id = ""
     ssh: SSHClient | None = None
     artifact_storage: dict[str, str] | None = None
+    auth_user = ""
+    auth_password = ""
+    certificate_sha256 = ""
     relay_installed = False
     turn_cleanup_required = False
     turn_peer_source = ""
@@ -891,6 +969,14 @@ def launch_cmd(
             manifest,
             storage=artifact_storage,
         )
+        if transport == Transport.agent_relay:
+            _select_agent_leisaac_run(
+                media_host,
+                auth_user=auth_user,
+                auth_password=auth_password,
+                run_id=run_id,
+                certificate_sha256=certificate_sha256,
+            )
     except Exception as exc:  # noqa: BLE001 - CLI boundary reports SDK and kubectl failures
         cleanup_errors: list[str] = []
         if turn_cleanup_required and ssh is not None:

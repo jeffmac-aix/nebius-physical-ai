@@ -51,9 +51,14 @@ describe("NPA agent LeIsaac capability tab", () => {
         terminate: async function() { window.__LEISAAC_TERMINATED__ = true; }
       }};`,
     }).as("leisaacClient");
+    cy.intercept("POST", "/api/leisaac/select", {
+      statusCode: 200,
+      body: { selected: true, run_id: "mock-run", available: true },
+    }).as("leisaacSelect");
 
     cy.window().then((win) => win.__NPA_AGENT_TEST__.refreshLeIsaacCapability("mock-run"));
     cy.wait("@leisaacStatus");
+    cy.wait("@leisaacSelect");
     cy.get("#tabLeIsaac").should("exist").click();
     cy.get("#panelLeIsaac").should("have.class", "is-active");
     cy.intercept("GET", "/api/sim-viz/status?run_id=older-rerun-only-run", {
@@ -66,6 +71,31 @@ describe("NPA agent LeIsaac capability tab", () => {
         available_runs: [],
       },
     }).as("selectedRunRefresh");
+    cy.intercept("GET", "/api/leisaac/status?run_id=older-rerun-only-run", {
+      statusCode: 200,
+      body: { available: false, reason: "selected run is not LeIsaac" },
+    }).as("unrelatedLeisaacStatus");
+    cy.intercept("GET", "/api/leisaac/status", {
+      statusCode: 200,
+      body: {
+        available: true,
+        run_id: "mock-run",
+        transport: "agent-relay",
+        task: "LeIsaac-SO101-PickOrange-v0",
+        teleop_device: "keyboard",
+        media_server: "203.0.113.50",
+        media_port: 47998,
+        ice_transport_policy: "relay",
+        ice_servers: [{
+          urls: ["turn:203.0.113.50:3478?transport=udp"],
+          username: "mock-run",
+          credential: "ephemeral-test-credential",
+        }],
+        signaling_path: "/api/leisaac/signal",
+        client_module_url: "/api/leisaac/client/index.js?run_id=mock-run",
+        gpu: "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+      },
+    }).as("rememberedLeisaacStatus");
     cy.window().then((win) => {
       win.__NPA_AGENT_TEST__.selectActiveRunId("older-rerun-only-run");
       const pendingRefresh = win.__NPA_AGENT_TEST__.refresh();
@@ -76,6 +106,10 @@ describe("NPA agent LeIsaac capability tab", () => {
     cy.window().then((win) => {
       expect(win.__NPA_AGENT_TEST__.activeRunId()).to.equal("mock-run");
     });
+    cy.get("#tabLeIsaac").should("exist");
+    cy.window().then((win) => win.__NPA_AGENT_TEST__.refreshLeIsaacCapability("older-rerun-only-run"));
+    cy.wait("@unrelatedLeisaacStatus");
+    cy.wait("@rememberedLeisaacStatus");
     cy.get("#tabLeIsaac").should("exist");
     cy.window().then((win) => {
       function CapturingPeerConnection(config) {
@@ -103,8 +137,13 @@ describe("NPA agent LeIsaac capability tab", () => {
       statusCode: 200,
       body: { available: false, reason: "session expired" },
     }).as("leisaacGone");
+    cy.intercept("GET", "/api/leisaac/status", {
+      statusCode: 200,
+      body: { available: false, reason: "session expired" },
+    }).as("rememberedLeisaacGone");
     cy.window().then((win) => win.__NPA_AGENT_TEST__.refreshLeIsaacCapability("mock-run"));
     cy.wait("@leisaacGone");
+    cy.wait("@rememberedLeisaacGone");
     cy.get("#tabLeIsaac").should("not.exist");
     cy.get("#panelLeIsaac").should("not.exist");
     cy.window().then((win) => expect(win.RTCPeerConnection).to.equal(win.__LEISAAC_NATIVE_PEER__));
@@ -133,9 +172,14 @@ describe("NPA agent LeIsaac capability tab", () => {
       statusCode: 202,
       body: { accepted: true },
     }).as("jpegInput");
+    cy.intercept("POST", "/api/leisaac/select", {
+      statusCode: 200,
+      body: { selected: true, run_id: "mock-jpeg", available: true },
+    }).as("jpegSelect");
 
     cy.window().then((win) => win.__NPA_AGENT_TEST__.refreshLeIsaacCapability("mock-jpeg"));
     cy.wait("@jpegStatus");
+    cy.wait("@jpegSelect");
     cy.get("#tabLeIsaac").click();
     cy.get("#leisaacConnect").click();
     cy.wait("@jpegFrame");

@@ -50,6 +50,7 @@ class LeIsaacDeps:
     response: Any
     websocket_connect: Callable[..., Any]
     http_post: Callable[..., Any] | None = None
+    save_state: Callable[[dict], None] | None = None
 
 
 def _resolve(deps: LeIsaacDeps, requested_run_id: str) -> tuple[dict | None, str]:
@@ -139,6 +140,62 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
                 "Cache-Control": "private, no-store",
                 "X-Content-Type-Options": "nosniff",
             },
+        )
+
+    @app.post("/leisaac/select")
+    async def leisaac_select(request: Request) -> Any:
+        if (
+            str(request.headers.get("x-forwarded-proto") or "").lower() != "https"
+            or request.headers.get("x-npa-leisaac-control") != "1"
+        ):
+            return deps.response(
+                content=json.dumps(
+                    {"detail": "authenticated HTTPS capability selection is required"}
+                ),
+                status_code=403,
+                media_type="application/json",
+            )
+        try:
+            body = await request.json()
+        except ValueError:
+            body = None
+        run_id = str(body.get("run_id") if isinstance(body, dict) else "")
+        manifest, reason = _resolve(deps, run_id)
+        if not manifest:
+            return deps.response(
+                content=json.dumps({"detail": reason}),
+                status_code=404,
+                media_type="application/json",
+            )
+        health, reason = await asyncio.to_thread(_health, deps, manifest)
+        if not health:
+            return deps.response(
+                content=json.dumps({"detail": reason}),
+                status_code=503,
+                media_type="application/json",
+            )
+        if deps.save_state is None:
+            return deps.response(
+                content=json.dumps({"detail": "LeIsaac selection is unavailable"}),
+                status_code=503,
+                media_type="application/json",
+            )
+        state = deps.load_state()
+        if not isinstance(state, dict):
+            state = {}
+        state["leisaac"] = {"run_id": manifest["run_id"]}
+        deps.save_state(state)
+        return deps.response(
+            content=json.dumps(
+                {
+                    "selected": True,
+                    "run_id": manifest["run_id"],
+                    "available": True,
+                }
+            ),
+            status_code=200,
+            media_type="application/json",
+            headers={"Cache-Control": "private, no-store"},
         )
 
     @app.get(LEISAAC_CLIENT_MODULE_PATH.removeprefix("/api"))

@@ -2509,19 +2509,35 @@
       async function refreshLeIsaacCapability(runId) {
         const target = String(runId || "").trim();
         const generation = ++leisaacCapabilityGeneration;
-        if (!target) {
-          removeLeIsaacTab();
-          return null;
-        }
         try {
-          const status = await loadJson("/api/leisaac/status?run_id=" + encodeURIComponent(target));
+          let status = await loadJson(
+            target
+              ? "/api/leisaac/status?run_id=" + encodeURIComponent(target)
+              : "/api/leisaac/status"
+          );
+          // The LeIsaac capability is independent of whichever artifact run is
+          // open in Rerun/Voxel51.  If that run is unrelated, fall back to the
+          // live LeIsaac run registered by `workbench leisaac launch`.
+          if (target && !(status && status.available && String(status.run_id || "") === target)) {
+            status = await loadJson("/api/leisaac/status");
+          }
           if (generation !== leisaacCapabilityGeneration) return null;
-          if (!(status && status.available && String(status.run_id || "") === target)) {
+          if (!(status && status.available && String(status.run_id || ""))) {
             removeLeIsaacTab();
             return null;
           }
           leisaacCapability = status;
           ensureLeIsaacTab(status);
+          if (target && String(status.run_id || "") === target) {
+            apiJson("/api/leisaac/select", {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "X-NPA-LeIsaac-Control": "1",
+              },
+              body: JSON.stringify({ run_id: target }),
+            }).catch(() => null);
+          }
           return status;
         } catch (_err) {
           if (generation === leisaacCapabilityGeneration) removeLeIsaacTab();

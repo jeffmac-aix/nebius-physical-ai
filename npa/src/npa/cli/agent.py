@@ -7572,6 +7572,7 @@ register_leisaac_routes(
     app,
     LeIsaacDeps(
         load_state=_load_state,
+        save_state=_save_state,
         resolve_manifest=_leisaac_manifest_for_run,
         http_get=httpx.get,
         http_post=httpx.post,
@@ -9849,6 +9850,7 @@ def verify_live_cmd(
         "refreshLeIsaacCapability",
         "connectLeIsaac",
         "/api/leisaac/status",
+        "/api/leisaac/select",
     ):
         if marker not in ui_html:
             _fail(f"UI html missing wiring marker: {marker}")

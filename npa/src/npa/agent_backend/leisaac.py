@@ -89,15 +89,17 @@ def load_manifest_artifact(
 
 
 def selected_run_id(state: dict | None, requested: str = "") -> str:
-    """Resolve the run explicitly requested by the UI or selected in agent state."""
+    """Resolve an explicit run or the agent's registered live LeIsaac run."""
 
     explicit = str(requested or "").strip()
     if explicit:
         return explicit if _RUN_ID_RE.fullmatch(explicit) else ""
     data = state if isinstance(state, dict) else {}
+    leisaac = data.get("leisaac") if isinstance(data.get("leisaac"), dict) else {}
     sim_viz = data.get("sim_viz") if isinstance(data.get("sim_viz"), dict) else {}
     candidate = str(
-        sim_viz.get("active_run_id")
+        leisaac.get("run_id")
+        or sim_viz.get("active_run_id")
         or sim_viz.get("run_id")
         or data.get("active_run_id")
         or ""

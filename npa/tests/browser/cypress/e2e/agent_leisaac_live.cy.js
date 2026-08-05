@@ -21,11 +21,6 @@ function runId() {
 
   it("discovers, renders, and controls PickOrange through public authenticated HTTPS", () => {
     const selectedRun = runId();
-    cy.get("#stagesRunInput", { timeout: 30000 })
-      .clear()
-      .type(selectedRun, { delay: 0 });
-    cy.get("#stagesLoadRun").click();
-
     cy.get("#tabLeIsaac", { timeout: 30000 }).should("be.visible").click();
     cy.get("#panelLeIsaac")
       .should("have.class", "is-active")

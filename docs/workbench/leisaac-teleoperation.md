@@ -1,7 +1,7 @@
 # LeIsaac browser teleoperation
 
 NPA exposes [LightwheelAI/LeIsaac](https://github.com/LightwheelAI/leisaac)
-as a separate agent-UI tab only while the selected run has a usable live
+as a separate agent-UI tab while the agent has a registered, usable live
 session. The integration runs upstream LeIsaac v0.4.0 at commit
 `1651c321e9b0c1bb54233211fc7b3cd70d8373d5`, the real
 `LeIsaac-SO101-PickOrange-v0` environment, and upstream `SO101Keyboard`.
@@ -9,13 +9,18 @@ It is not a Cartpole or synthetic viewer demo.
 
 ## What makes the tab appear
 
-The `LeIsaac` tab is not present in the initial HTML. The browser asks the
-authenticated agent backend about the selected run. The backend discovers
+The `LeIsaac` tab is not present in the initial HTML. An agent-relay launch
+registers its live run through the agent's authenticated, certificate-pinned
+HTTPS API. The browser first asks about the selected artifact run, then falls
+back to that independently registered LeIsaac run. This keeps the tab visible
+when an operator opens an unrelated Rerun or Voxel51 artifact. The backend discovers
 exactly one `reports/leisaac-session.json` artifact, validates its schema,
 run/task/device, fixed transport endpoints, expiry, source commit, and
 digest-pinned image, then verifies the live service's matching nonce
 attestation. Any absent, stale, malformed, unreachable, mismatched, or
-non-ready session leaves the tab absent. Switching runs repeats this check.
+non-ready session leaves the tab absent. Selecting another live LeIsaac run
+updates the registered capability; switching unrelated artifact runs does not
+discard it.
 
 The browser receives no service nonce or agent credential. The live Isaac Sim
 5.1 path returns same-origin, authenticated `/api/leisaac/frame.jpg` and
@@ -196,8 +201,9 @@ stage, so it is intentionally launched and destroyed through the Workbench
 lifecycle command, not represented as an `npa.workflow` step that would report
 completion while the browser session still needs to remain alive.
 
-Select that run in the agent UI, open `LeIsaac`, and choose **Connect
-teleoperation**. Click the simulation to focus it. Controls are the upstream
+Reload the agent UI after launch, open `LeIsaac`, and choose **Connect
+teleoperation**. No run-ID entry is required. Click the simulation to focus it.
+Controls are the upstream
 bindings: `W/S`, `A/D`, `Q/E` translate; `J/L`, `K/I` rotate; `U/O` open/close
 the gripper; `R` resets; `N` marks success and resets.
 

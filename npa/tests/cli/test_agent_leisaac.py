@@ -77,6 +77,15 @@ def test_selected_run_requires_safe_exact_identifier() -> None:
     )
     assert selected_run_id({}, "../../etc/passwd") == ""
     assert selected_run_id({"sim_viz": {"run_id": "other"}}, "explicit") == "explicit"
+    assert (
+        selected_run_id(
+            {
+                "leisaac": {"run_id": "leisaac-live-1"},
+                "sim_viz": {"run_id": "unrelated-artifact-run"},
+            }
+        )
+        == "leisaac-live-1"
+    )
 
 
 def test_manifest_artifact_loader_requires_one_bounded_canonical_object() -> None:
@@ -313,11 +322,14 @@ def test_authenticated_backend_routes_gate_status_and_proxy_client(monkeypatch) 
         posted.append((url, kwargs))
         return FakeResponse(status_code=202)
 
+    state = {"sim_viz": {"active_run_id": raw_manifest["run_id"]}}
+    saved_states = []
     api = FastAPI()
     register_leisaac_routes(
         api,
         LeIsaacDeps(
-            load_state=lambda: {"sim_viz": {"active_run_id": raw_manifest["run_id"]}},
+            load_state=lambda: state,
+            save_state=lambda value: saved_states.append(dict(value)),
             resolve_manifest=lambda run_id: (
                 raw_manifest if run_id == raw_manifest["run_id"] else None
             ),
@@ -360,6 +372,32 @@ def test_authenticated_backend_routes_gate_status_and_proxy_client(monkeypatch) 
     assert status.json()["available"] is True
     assert status.json()["input_events"] == 17
     assert status.headers["cache-control"] == "private, no-store"
+    forbidden_selection = client.post(
+        "/leisaac/select",
+        headers={"x-forwarded-proto": "https"},
+        json={"run_id": raw_manifest["run_id"]},
+    )
+    assert forbidden_selection.status_code == 403
+    selection = client.post(
+        "/leisaac/select",
+        headers={
+            "x-forwarded-proto": "https",
+            "x-npa-leisaac-control": "1",
+        },
+        json={"run_id": raw_manifest["run_id"]},
+    )
+    assert selection.status_code == 200
+    assert selection.json() == {
+        "selected": True,
+        "run_id": raw_manifest["run_id"],
+        "available": True,
+    }
+    assert saved_states[-1]["leisaac"] == {"run_id": raw_manifest["run_id"]}
+    state["sim_viz"] = {"active_run_id": "unrelated-artifact-run"}
+    remembered = client.get("/leisaac/status", headers={"x-forwarded-proto": "https"})
+    assert remembered.status_code == 200
+    assert remembered.json()["available"] is True
+    assert remembered.json()["run_id"] == raw_manifest["run_id"]
     module = client.get(
         "/leisaac/client/index.js", params={"run_id": raw_manifest["run_id"]}
     )

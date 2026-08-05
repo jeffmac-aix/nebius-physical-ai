@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 from types import SimpleNamespace
 
+import pytest
 from typer.testing import CliRunner
 
 from npa.cli.workbench.leisaac import (
@@ -14,6 +16,7 @@ from npa.cli.workbench.leisaac import (
     _gpu_egress_source,
     _relay_media_server,
     _relay_peer_public_ip,
+    _select_agent_leisaac_run,
     _wait_ready,
     app,
 )
@@ -21,6 +24,87 @@ from npa.cli.workbench.leisaac import (
 
 IMAGE = "registry.example/npa-leisaac@sha256:" + "1" * 64
 runner = CliRunner()
+
+
+def test_select_agent_leisaac_run_pins_tls_before_sending_credentials(
+    monkeypatch,
+) -> None:
+    certificate = b"agent-certificate"
+    requests = []
+
+    class FakeTLS:
+        def getpeercert(self, *, binary_form=False):
+            assert binary_form is True
+            return certificate
+
+        def close(self):
+            pass
+
+    class FakeContext:
+        check_hostname = True
+        verify_mode = None
+
+        def wrap_socket(self, _raw, *, server_hostname):
+            assert server_hostname == "8.8.4.4"
+            return FakeTLS()
+
+    class FakeResponse:
+        status = 200
+
+        def read(self, limit):
+            assert limit == 131073
+            return b'{"selected":true,"run_id":"live-relay"}'
+
+    class FakeConnection:
+        def __init__(self, host, port, *, timeout):
+            assert (host, port, timeout) == ("8.8.4.4", 443, 10)
+            self.sock = None
+
+        def request(self, method, path, *, body, headers):
+            requests.append((method, path, body, headers))
+
+        def getresponse(self):
+            return FakeResponse()
+
+        def close(self):
+            self.sock.close()
+
+    monkeypatch.setattr(
+        "npa.cli.workbench.leisaac.ssl.create_default_context", FakeContext
+    )
+    monkeypatch.setattr(
+        "npa.cli.workbench.leisaac.socket.create_connection",
+        lambda address, *, timeout: object(),
+    )
+    monkeypatch.setattr(
+        "npa.cli.workbench.leisaac.http.client.HTTPConnection", FakeConnection
+    )
+
+    fingerprint = hashlib.sha256(certificate).hexdigest()
+    _select_agent_leisaac_run(
+        "8.8.4.4",
+        auth_user="npa",
+        auth_password="secret",
+        run_id="live-relay",
+        certificate_sha256=fingerprint,
+    )
+
+    assert len(requests) == 1
+    method, path, body, headers = requests[0]
+    assert (method, path) == ("POST", "/api/leisaac/select")
+    assert json.loads(body) == {"run_id": "live-relay"}
+    assert headers["Authorization"].startswith("Basic ")
+    assert headers["X-NPA-LeIsaac-Control"] == "1"
+
+    with pytest.raises(RuntimeError, match="fingerprint changed"):
+        _select_agent_leisaac_run(
+            "8.8.4.4",
+            auth_user="npa",
+            auth_password="secret",
+            run_id="live-relay",
+            certificate_sha256="0" * 64,
+        )
+    assert len(requests) == 1
 
 
 def test_wait_ready_rejects_old_ready_replica_during_rollout(monkeypatch) -> None:
@@ -361,6 +445,11 @@ def _patch_launch(monkeypatch):
         return "s3://bucket/checkpoints/live-relay/reports/leisaac-session.json"
 
     monkeypatch.setattr("npa.cli.workbench.leisaac._put_manifest", put)
+    selections = []
+    monkeypatch.setattr(
+        "npa.cli.workbench.leisaac._select_agent_leisaac_run",
+        lambda *args, **kwargs: selections.append((args, kwargs)),
+    )
     monkeypatch.setattr(
         "npa.cli.workbench.leisaac.secrets.token_hex", lambda _n: "a" * 64
     )
@@ -383,6 +472,7 @@ def _patch_launch(monkeypatch):
         manifests,
         ssh,
         registry_refreshes,
+        selections,
     )
 
 
@@ -452,6 +542,7 @@ def test_launch_agent_relay_wires_private_cluster_public_agent_and_manifest(
         manifests,
         ssh,
         registry_refreshes,
+        selections,
     ) = _patch_launch(monkeypatch)
 
     result = runner.invoke(app, _args())
@@ -506,6 +597,17 @@ def test_launch_agent_relay_wires_private_cluster_public_agent_and_manifest(
     assert manifests[0]["signal_host"] == "127.0.0.1"
     assert manifests[0]["media_host"] == "8.8.4.4"
     assert manifests[0]["media_server"] == "10.96.34.22"
+    assert selections == [
+        (
+            ("8.8.4.4",),
+            {
+                "auth_user": "npa",
+                "auth_password": "secret",
+                "run_id": "live-relay",
+                "certificate_sha256": "f" * 64,
+            },
+        )
+    ]
 
 
 def test_launch_fails_closed_before_deployment_when_registry_refresh_fails(
@@ -529,9 +631,16 @@ def test_launch_fails_closed_before_deployment_when_registry_refresh_fails(
 def test_failed_agent_relay_launch_removes_partial_relay_ingress_and_kubernetes(
     monkeypatch,
 ) -> None:
-    _applied, _ingress, _install, _turn, _manifests, _ssh, _registry = _patch_launch(
-        monkeypatch
-    )
+    (
+        _applied,
+        _ingress,
+        _install,
+        _turn,
+        _manifests,
+        _ssh,
+        _registry,
+        _selections,
+    ) = _patch_launch(monkeypatch)
     monkeypatch.setattr(
         "npa.cli.workbench.leisaac._put_manifest",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("publish failed")),
@@ -568,9 +677,16 @@ def test_failed_agent_relay_launch_removes_partial_relay_ingress_and_kubernetes(
 
 
 def test_relaunch_removes_only_the_prior_recorded_gpu_egress_rule(monkeypatch) -> None:
-    applied, _ingress, _relay, _turn, _manifests, _ssh, _registry = _patch_launch(
-        monkeypatch
-    )
+    (
+        applied,
+        _ingress,
+        _relay,
+        _turn,
+        _manifests,
+        _ssh,
+        _registry,
+        _selections,
+    ) = _patch_launch(monkeypatch)
     monkeypatch.setattr(
         "npa.cli.workbench.leisaac._existing_turn_peer_source",
         lambda *_args: "4.4.4.0/24",

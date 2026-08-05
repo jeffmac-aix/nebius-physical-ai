@@ -6,6 +6,7 @@ AGENT_LEISAAC_CONTRACT = (
     "refreshLeIsaacCapability",
     "connectLeIsaac",
     "/api/leisaac/status",
+    "/api/leisaac/select",
     "/api/leisaac/client/index.js",
     "/api/leisaac/signal",
     "LeIsaac-SO101-PickOrange-v0",
