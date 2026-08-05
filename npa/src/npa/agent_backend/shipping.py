@@ -21,6 +21,7 @@ SHIPPED_BACKEND_MODULES = (
     "foxglove_routes",
     "leisaac_registry",
     "leisaac",
+    "leisaac_transport",
     "leisaac_routes",
 )
 

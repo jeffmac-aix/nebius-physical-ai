@@ -1,5 +1,9 @@
 # LeIsaac browser teleoperation
 
+For the measured preferred WebSocket transport, fallback behavior, latency
+instrumentation, and security model, see
+[LeIsaac low-latency browser transport](guides/leisaac-transport-latency.md).
+
 NPA exposes [LightwheelAI/LeIsaac](https://github.com/LightwheelAI/leisaac)
 as a separate agent-UI tab while the agent has a registered, usable live
 session. The integration runs upstream LeIsaac v0.4.0 at commit

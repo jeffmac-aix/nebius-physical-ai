@@ -12,6 +12,7 @@ import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Callable
+from urllib.parse import urlparse
 
 from starlette.requests import Request
 from starlette.websockets import WebSocket
@@ -24,23 +25,51 @@ try:  # agent VM: /opt/npa-agent is on sys.path
     from agent_backend.leisaac import (
         LEISAAC_CLIENT_MODULE_PATH,
         LEISAAC_CLIENT_JS_SHA256,
+        LEISAAC_CONTROL_WS_PATH,
         LEISAAC_RECORDER_PATH,
         LEISAAC_SIGNAL_PORT,
+        LEISAAC_VIDEO_WS_PATH,
         normalize_manifest,
         selected_run_id,
         status_payload,
         validate_health,
     )
+    from agent_backend.leisaac_transport import (
+        AsyncLatestValue,
+        CONTROL_SUBPROTOCOL,
+        MAX_CONTROL_MESSAGE_BYTES,
+        MAX_FRAME_BYTES,
+        TransportMetrics,
+        TransportProtocolError,
+        VIDEO_SUBPROTOCOL,
+        parse_control_message,
+        stamp_agent_frame,
+        unpack_frame,
+    )
 except ImportError:  # repository tests
     from npa.agent_backend.leisaac import (
         LEISAAC_CLIENT_MODULE_PATH,
         LEISAAC_CLIENT_JS_SHA256,
+        LEISAAC_CONTROL_WS_PATH,
         LEISAAC_RECORDER_PATH,
         LEISAAC_SIGNAL_PORT,
+        LEISAAC_VIDEO_WS_PATH,
         normalize_manifest,
         selected_run_id,
         status_payload,
         validate_health,
+    )
+    from npa.agent_backend.leisaac_transport import (
+        AsyncLatestValue,
+        CONTROL_SUBPROTOCOL,
+        MAX_CONTROL_MESSAGE_BYTES,
+        MAX_FRAME_BYTES,
+        TransportMetrics,
+        TransportProtocolError,
+        VIDEO_SUBPROTOCOL,
+        parse_control_message,
+        stamp_agent_frame,
+        unpack_frame,
     )
 
 
@@ -83,6 +112,43 @@ def _health(deps: LeIsaacDeps, manifest: dict) -> tuple[dict | None, str]:
     return validate_health(manifest, payload)
 
 
+def _same_origin_websocket(websocket: WebSocket, subprotocol: str) -> bool:
+    """Validate the public HTTPS origin and exact NPA subprotocol."""
+
+    if str(websocket.headers.get("x-forwarded-proto") or "").lower() != "https":
+        return False
+    origin = str(websocket.headers.get("origin") or "")
+    host = str(websocket.headers.get("host") or "").lower()
+    try:
+        parsed = urlparse(origin)
+        origin_host = str(parsed.hostname or "").lower()
+        origin_port = parsed.port or (443 if parsed.scheme == "https" else 0)
+        host_name, _, raw_port = host.partition(":")
+        host_port = int(raw_port) if raw_port else 443
+    except (TypeError, ValueError):
+        return False
+    protocols = {
+        item.strip()
+        for item in str(websocket.headers.get("sec-websocket-protocol") or "").split(
+            ","
+        )
+        if item.strip()
+    }
+    return (
+        parsed.scheme == "https"
+        and origin_host == host_name
+        and origin_port == host_port
+        and protocols == {subprotocol}
+    )
+
+
+def _runtime_ws_uri(manifest: dict[str, Any], path: str) -> str:
+    base = str(manifest["service_url"])
+    if not base.startswith("http://"):
+        raise ValueError("LeIsaac runtime service URL is not loopback HTTP")
+    return "ws://" + base.removeprefix("http://").rstrip("/") + path
+
+
 async def _relay_browser_to_upstream(browser: Any, upstream: Any) -> None:
     while True:
         message = await browser.receive()
@@ -108,6 +174,7 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
 
     manifest_cache: dict[str, tuple[float, dict | None, str]] = {}
     manifest_cache_lock = threading.Lock()
+    transport_metrics = TransportMetrics()
 
     def cached_resolve(run_id: str) -> tuple[dict | None, str]:
         """Bound high-rate frame polling to one capability lookup per five seconds."""
@@ -136,6 +203,8 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
             else:
                 health, reason = _health(deps, manifest)
                 payload = status_payload(manifest, health, reason=reason)
+        if payload.get("available"):
+            payload["agent_transport_metrics"] = transport_metrics.snapshot()
         return deps.response(
             content=json.dumps(payload),
             status_code=200,
@@ -295,6 +364,7 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
                 status_code=502,
                 media_type="application/json",
             )
+        response_headers = getattr(response, "headers", {})
         return deps.response(
             content=content,
             status_code=200,
@@ -302,6 +372,15 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
             headers={
                 "Cache-Control": "private, no-store",
                 "X-Content-Type-Options": "nosniff",
+                **{
+                    header: str(response_headers.get(header))
+                    for header in (
+                        "X-NPA-Frame-Sequence",
+                        "X-NPA-Frame-Capture-Wall-Ns",
+                        "X-NPA-Frame-SHA256",
+                    )
+                    if response_headers.get(header)
+                },
             },
         )
 
@@ -316,6 +395,16 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
                     {"detail": "authenticated HTTPS control is required"}
                 ),
                 status_code=403,
+                media_type="application/json",
+            )
+        try:
+            content_length = int(request.headers.get("content-length") or "0")
+        except ValueError:
+            content_length = 0
+        if content_length <= 0 or content_length > MAX_CONTROL_MESSAGE_BYTES:
+            return deps.response(
+                content=json.dumps({"detail": "invalid LeIsaac input size"}),
+                status_code=400,
                 media_type="application/json",
             )
         try:
@@ -350,6 +439,20 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
                 status_code=404,
                 media_type="application/json",
             )
+        if isinstance(payload, dict) and payload.get("v") == 1:
+            try:
+                forwarded_payload = parse_control_message(
+                    json.dumps(payload, separators=(",", ":")),
+                    expected_run_id=str(manifest["run_id"]),
+                )
+            except TransportProtocolError as exc:
+                return deps.response(
+                    content=json.dumps(exc.payload()),
+                    status_code=400,
+                    media_type="application/json",
+                )
+        else:
+            forwarded_payload = {"key": key, "event": event}
         if deps.http_post is None:
             upstream = None
         else:
@@ -357,7 +460,7 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
                 upstream = await asyncio.to_thread(
                     deps.http_post,
                     f"{manifest['service_url']}/input",
-                    json={"key": key, "event": event},
+                    json=forwarded_payload,
                     headers={"X-NPA-LeIsaac-Nonce": manifest["session_nonce"]},
                     timeout=5.0,
                     follow_redirects=False,
@@ -370,8 +473,14 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
                 status_code=503,
                 media_type="application/json",
             )
+        try:
+            acknowledgement = upstream.json()
+        except Exception:
+            acknowledgement = {
+                "detail": "LeIsaac control returned an invalid acknowledgement"
+            }
         return deps.response(
-            content=json.dumps({"accepted": True}),
+            content=json.dumps(acknowledgement),
             status_code=202,
             media_type="application/json",
             headers={"Cache-Control": "private, no-store"},
@@ -450,6 +559,236 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
             media_type="application/json",
             headers={"Cache-Control": "private, no-store"},
         )
+
+    async def prepare_transport(
+        websocket: WebSocket, subprotocol: str
+    ) -> tuple[dict[str, Any] | None, str]:
+        if not _same_origin_websocket(websocket, subprotocol):
+            return None, "same-origin authenticated HTTPS WebSocket is required"
+        if set(websocket.query_params.keys()) != {"run_id"}:
+            return None, "only run_id is accepted"
+        run_id = str(websocket.query_params.get("run_id") or "")
+        manifest, reason = await asyncio.to_thread(_resolve, deps, run_id)
+        if not manifest:
+            return None, reason
+        health, reason = await asyncio.to_thread(_health, deps, manifest)
+        if not health:
+            return None, reason
+        if str(health.get("stream_transport") or "") != "websocket-v1":
+            return None, "preferred transport is unavailable for this session"
+        return manifest, ""
+
+    @app.websocket(LEISAAC_CONTROL_WS_PATH.removeprefix("/api"))
+    async def leisaac_transport_control(websocket: WebSocket) -> None:
+        manifest, reason = await prepare_transport(websocket, CONTROL_SUBPROTOCOL)
+        if not manifest:
+            LOG.warning("LeIsaac control transport rejected: %s", reason)
+            await websocket.close(code=1008)
+            return
+        run_id = str(manifest["run_id"])
+        try:
+            async with deps.websocket_connect(
+                _runtime_ws_uri(manifest, "/transport/control"),
+                subprotocols=[CONTROL_SUBPROTOCOL],
+                additional_headers={
+                    "X-NPA-LeIsaac-Nonce": manifest["session_nonce"],
+                    "X-NPA-LeIsaac-Run-ID": run_id,
+                },
+                open_timeout=5,
+                close_timeout=2,
+                max_size=MAX_CONTROL_MESSAGE_BYTES,
+                max_queue=4,
+                ping_interval=10,
+                ping_timeout=10,
+                compression=None,
+            ) as upstream:
+                if upstream.subprotocol != CONTROL_SUBPROTOCOL:
+                    raise TransportProtocolError(
+                        "subprotocol", "runtime rejected the control subprotocol"
+                    )
+                await websocket.accept(subprotocol=CONTROL_SUBPROTOCOL)
+                transport_metrics.increment("control_connections")
+
+                async def browser_to_runtime() -> None:
+                    while True:
+                        message = await websocket.receive()
+                        if message.get("type") == "websocket.disconnect":
+                            return
+                        raw = message.get("text")
+                        if raw is None:
+                            raise TransportProtocolError(
+                                "invalid_message", "control messages must be text"
+                            )
+                        parsed = parse_control_message(raw, expected_run_id=run_id)
+                        await upstream.send(json.dumps(parsed, separators=(",", ":")))
+
+                async def runtime_to_browser() -> None:
+                    async for raw in upstream:
+                        if (
+                            not isinstance(raw, str)
+                            or len(raw.encode("utf-8")) > MAX_CONTROL_MESSAGE_BYTES
+                        ):
+                            raise TransportProtocolError(
+                                "invalid_message",
+                                "runtime control acknowledgement is invalid",
+                            )
+                        try:
+                            payload = json.loads(raw)
+                        except json.JSONDecodeError as exc:
+                            raise TransportProtocolError(
+                                "invalid_message", "runtime acknowledgement is not JSON"
+                            ) from exc
+                        if (
+                            not isinstance(payload, dict)
+                            or str(payload.get("run_id") or run_id) != run_id
+                        ):
+                            raise TransportProtocolError(
+                                "run_mismatch", "runtime acknowledgement run mismatch"
+                            )
+                        payload["agent_received_mono_ns"] = str(time.monotonic_ns())
+                        payload["agent_send_mono_ns"] = str(time.monotonic_ns())
+                        await asyncio.wait_for(
+                            websocket.send_text(
+                                json.dumps(payload, separators=(",", ":"))
+                            ),
+                            timeout=2.0,
+                        )
+
+                tasks = {
+                    asyncio.create_task(browser_to_runtime()),
+                    asyncio.create_task(runtime_to_browser()),
+                }
+                done, pending = await asyncio.wait(
+                    tasks, return_when=asyncio.FIRST_COMPLETED
+                )
+                for task in pending:
+                    task.cancel()
+                results = await asyncio.gather(*done, *pending, return_exceptions=True)
+                for result in results:
+                    if isinstance(result, Exception) and not isinstance(
+                        result, asyncio.CancelledError
+                    ):
+                        raise result
+        except TransportProtocolError as exc:
+            transport_metrics.increment("control_errors")
+            try:
+                await websocket.send_text(
+                    json.dumps(exc.payload(), separators=(",", ":"))
+                )
+            except Exception as send_exc:
+                LOG.debug(
+                    "LeIsaac control protocol error could not be returned",
+                    exc_info=send_exc,
+                )
+            try:
+                await websocket.close(code=1008)
+            except Exception as close_exc:
+                LOG.debug(
+                    "LeIsaac control WebSocket was already closed",
+                    exc_info=close_exc,
+                )
+        except Exception as exc:
+            LOG.warning("LeIsaac control transport closed: %s", type(exc).__name__)
+            try:
+                await websocket.close(code=1013)
+            except Exception as close_exc:
+                LOG.debug(
+                    "LeIsaac control WebSocket was already closed",
+                    exc_info=close_exc,
+                )
+
+    @app.websocket(LEISAAC_VIDEO_WS_PATH.removeprefix("/api"))
+    async def leisaac_transport_video(websocket: WebSocket) -> None:
+        manifest, reason = await prepare_transport(websocket, VIDEO_SUBPROTOCOL)
+        if not manifest:
+            LOG.warning("LeIsaac video transport rejected: %s", reason)
+            await websocket.close(code=1008)
+            return
+        run_id = str(manifest["run_id"])
+        latest = AsyncLatestValue()
+        try:
+            async with deps.websocket_connect(
+                _runtime_ws_uri(manifest, "/transport/video"),
+                subprotocols=[VIDEO_SUBPROTOCOL],
+                additional_headers={
+                    "X-NPA-LeIsaac-Nonce": manifest["session_nonce"],
+                    "X-NPA-LeIsaac-Run-ID": run_id,
+                },
+                open_timeout=5,
+                close_timeout=2,
+                max_size=MAX_FRAME_BYTES + 256,
+                max_queue=2,
+                ping_interval=10,
+                ping_timeout=10,
+                compression=None,
+            ) as upstream:
+                if upstream.subprotocol != VIDEO_SUBPROTOCOL:
+                    raise TransportProtocolError(
+                        "subprotocol", "runtime rejected the video subprotocol"
+                    )
+                await websocket.accept(subprotocol=VIDEO_SUBPROTOCOL)
+                transport_metrics.increment("video_connections")
+
+                async def read_runtime() -> None:
+                    async for raw in upstream:
+                        if (
+                            not isinstance(raw, bytes)
+                            or len(raw) > MAX_FRAME_BYTES + 256
+                        ):
+                            raise TransportProtocolError(
+                                "invalid_frame", "runtime video message is invalid"
+                            )
+                        unpack_frame(raw)
+                        await latest.publish((raw, time.monotonic_ns()))
+
+                async def send_browser() -> None:
+                    generation = 0
+                    while True:
+                        generation, item, skipped = await latest.wait_after(
+                            generation, timeout=20.0
+                        )
+                        raw, received_mono_ns = item
+                        if skipped:
+                            transport_metrics.increment("frames_coalesced", skipped)
+                        stamped = stamp_agent_frame(
+                            raw,
+                            received_mono_ns=received_mono_ns,
+                            send_mono_ns=time.monotonic_ns(),
+                            additional_dropped=skipped,
+                        )
+                        try:
+                            await asyncio.wait_for(
+                                websocket.send_bytes(stamped), timeout=2.0
+                            )
+                        except asyncio.TimeoutError:
+                            transport_metrics.increment("slow_client_disconnects")
+                            raise
+                        transport_metrics.increment("frames_sent")
+
+                tasks = {
+                    asyncio.create_task(read_runtime()),
+                    asyncio.create_task(send_browser()),
+                }
+                done, pending = await asyncio.wait(
+                    tasks, return_when=asyncio.FIRST_COMPLETED
+                )
+                for task in pending:
+                    task.cancel()
+                results = await asyncio.gather(*done, *pending, return_exceptions=True)
+                for result in results:
+                    if isinstance(result, Exception) and not isinstance(
+                        result, asyncio.CancelledError
+                    ):
+                        raise result
+        except Exception as exc:
+            LOG.warning("LeIsaac video transport closed: %s", type(exc).__name__)
+            try:
+                await websocket.close(code=1013)
+            except Exception as close_exc:
+                LOG.debug(
+                    "LeIsaac video WebSocket was already closed",
+                    exc_info=close_exc,
+                )
 
     @app.websocket("/leisaac/signal")
     @app.websocket("/leisaac/signal/{signal_path:path}")

@@ -8,10 +8,12 @@ of those bytes are part of the distributable image.
 
 from __future__ import annotations
 
+import asyncio
+from contextlib import asynccontextmanager
 import hashlib
 import hmac
-import http.server
 import json
+import logging
 import os
 import re
 import secrets
@@ -27,6 +29,12 @@ import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from fastapi import FastAPI, Request, WebSocket
+from fastapi.responses import JSONResponse, Response
+from starlette.websockets import WebSocketDisconnect
+
+LOGGER = logging.getLogger("npa.leisaac.session")
 
 try:
     from leisaac_registry import (
@@ -49,6 +57,37 @@ except ImportError:  # Repository unit tests import the script directly.
         validate_num_envs,
         validate_seed,
         validate_task,
+    )
+
+try:
+    from leisaac_transport import (
+        AsyncLatestValue,
+        CONTROL_SUBPROTOCOL,
+        ControlLedger,
+        FrameEnvelope,
+        MAX_CLIENT_HISTORY,
+        MAX_CONTROL_MESSAGE_BYTES,
+        MAX_FRAME_BYTES,
+        TransportMetrics,
+        TransportProtocolError,
+        VIDEO_SUBPROTOCOL,
+        pack_frame,
+        parse_control_message,
+    )
+except ImportError:  # Repository unit tests import the script directly.
+    from npa.agent_backend.leisaac_transport import (
+        AsyncLatestValue,
+        CONTROL_SUBPROTOCOL,
+        ControlLedger,
+        FrameEnvelope,
+        MAX_CLIENT_HISTORY,
+        MAX_CONTROL_MESSAGE_BYTES,
+        MAX_FRAME_BYTES,
+        TransportMetrics,
+        TransportProtocolError,
+        VIDEO_SUBPROTOCOL,
+        pack_frame,
+        parse_control_message,
     )
 
 SCHEMA = "npa.leisaac.health.v2"
@@ -84,7 +123,7 @@ CLIENT_SOURCE_JS_SHA256 = (
 )
 CLIENT_JS_SHA256 = "e9ac6563db79d3aea8afe94c4f60e50571abc01e3470d9bafb4e2f8b54cbd2a5"
 UPSTREAM_OBSERVABILITY_PATCH_SHA256 = (
-    "9f8d4c8a5a5054b47944bdbd44f542f3333413791ad5a53cb40bb363bb2d338a"
+    "4f98d96ff97003344282c45d2840dd5c7078be32f880e920250d2046d0bc47bc"
 )
 CLIENT_WSS_PATCH_OLD = b"M=Yc(B)?D.AppLevelProtocol.HTTP:D.AppLevelProtocol.HTTPS;"
 CLIENT_WSS_PATCH_NEW = (
@@ -101,6 +140,8 @@ INPUT_COUNTER_PATH = Path("/tmp/npa-leisaac-input-events")
 APPLIED_COUNTER_PATH = Path("/tmp/npa-leisaac-applied-inputs")
 INPUT_QUEUE_PATH = Path("/tmp/npa-leisaac-input-queue.jsonl")
 FRAME_PATH = Path("/tmp/npa-leisaac-frame.jpg")
+FRAME_META_PATH = Path("/tmp/npa-leisaac-frame.json")
+APPLIED_ACK_PATH = Path("/tmp/npa-leisaac-input-applied.jsonl")
 RECORDER_ROOT = Path("/tmp/npa-leisaac-recorder")
 RECORDER_STATUS_PATH = RECORDER_ROOT / "status.json"
 RECORDER_CONTROL_PATH = RECORDER_ROOT / "control.jsonl"
@@ -108,6 +149,7 @@ RECORDER_PENDING_PATH = RECORDER_ROOT / "pending-command.json"
 STATE_LOCK = threading.Lock()
 INPUT_LOCK = threading.Lock()
 RECORDER_COMMAND_LOCK = threading.Lock()
+APPLIED_ACK_LOCK = threading.Lock()
 STATE: dict[str, Any] = {
     "state": "starting",
     "detail": "staging runtime",
@@ -117,6 +159,10 @@ STATE: dict[str, Any] = {
     "started_at": "",
 }
 CHILD: subprocess.Popen[str] | None = None
+CONTROL_LEDGER = ControlLedger()
+TRANSPORT_METRICS = TransportMetrics()
+FRAME_LATEST = AsyncLatestValue()
+APPLIED_ACK_OFFSET = 0
 
 
 def utc_now() -> str:
@@ -480,13 +526,17 @@ def run_simulation() -> None:
         environment["NPA_LEISAAC_INPUT_COUNTER"] = str(INPUT_COUNTER_PATH)
         environment["NPA_LEISAAC_APPLIED_COUNTER"] = str(APPLIED_COUNTER_PATH)
         environment["NPA_LEISAAC_INPUT_QUEUE"] = str(INPUT_QUEUE_PATH)
+        environment["NPA_LEISAAC_APPLIED_ACK_PATH"] = str(APPLIED_ACK_PATH)
         environment["NPA_LEISAAC_FRAME_PATH"] = str(FRAME_PATH)
+        environment["NPA_LEISAAC_FRAME_META_PATH"] = str(FRAME_META_PATH)
         environment["NPA_LEISAAC_RECORDER_ROOT"] = str(RECORDER_ROOT)
         READY_PATH.unlink(missing_ok=True)
         INPUT_COUNTER_PATH.write_text("0\n", encoding="utf-8")
         APPLIED_COUNTER_PATH.write_text("0\n", encoding="utf-8")
         INPUT_QUEUE_PATH.write_text("", encoding="utf-8")
+        APPLIED_ACK_PATH.write_text("", encoding="utf-8")
         FRAME_PATH.unlink(missing_ok=True)
+        FRAME_META_PATH.unlink(missing_ok=True)
         shutil.rmtree(RECORDER_ROOT, ignore_errors=True)
         RECORDER_ROOT.mkdir(parents=True, exist_ok=True)
         CHILD = subprocess.Popen(
@@ -509,7 +559,7 @@ def run_simulation() -> None:
                     detail="live",
                     webrtc_ready=True,
                     stream_ready=True,
-                    stream_transport="jpeg-poll",
+                    stream_transport="websocket-v1",
                 )
                 break
             update_state(detail="warming RTX renderer")
@@ -546,6 +596,11 @@ def health_document() -> dict[str, Any]:
     except OSError:
         frame_bytes = 0
         frame_updated_at = ""
+    try:
+        frame_metadata = json.loads(FRAME_META_PATH.read_text(encoding="utf-8"))
+        frame_sequence = int(frame_metadata.get("sequence") or 0)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        frame_sequence = 0
     try:
         recorder = json.loads(RECORDER_STATUS_PATH.read_text(encoding="utf-8"))
         if not isinstance(recorder, dict):
@@ -586,9 +641,11 @@ def health_document() -> dict[str, Any]:
         "input_events": input_events,
         "applied_inputs": applied_inputs,
         "stream_ready": bool(frame_bytes),
-        "stream_transport": "jpeg-poll",
+        "stream_transport": "websocket-v1",
         "frame_bytes": frame_bytes,
         "frame_updated_at": frame_updated_at,
+        "frame_sequence": frame_sequence,
+        "transport_metrics": TRANSPORT_METRICS.snapshot(),
         "physics_device": "cpu",
         "render_device": "cuda",
         "recorder": recorder,
@@ -608,145 +665,488 @@ def liveness_status() -> int:
     return 200
 
 
-class Handler(http.server.BaseHTTPRequestHandler):
-    server_version = "npa-leisaac/0.4.0"
+def _authorized(headers: Any) -> bool:
+    expected = os.environ.get("NPA_LEISAAC_SESSION_NONCE", "")
+    supplied = str(headers.get("x-npa-leisaac-nonce") or "")
+    return bool(expected) and hmac.compare_digest(expected, supplied)
 
-    def send_bytes(self, status: int, content_type: str, content: bytes) -> None:
-        self.send_response(status)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(content)))
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.end_headers()
-        self.wfile.write(content)
 
-    def authorized(self) -> bool:
-        expected = os.environ.get("NPA_LEISAAC_SESSION_NONCE", "")
-        supplied = self.headers.get("X-NPA-LeIsaac-Nonce", "")
-        return bool(expected) and hmac.compare_digest(expected, supplied)
+def _increment_input_counter() -> int:
+    try:
+        count = int(INPUT_COUNTER_PATH.read_text(encoding="utf-8").strip() or "0") + 1
+    except (OSError, ValueError):
+        count = 1
+    temporary = INPUT_COUNTER_PATH.with_suffix(".tmp")
+    temporary.write_text(f"{count}\n", encoding="utf-8")
+    temporary.replace(INPUT_COUNTER_PATH)
+    return count
 
-    def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
-        path = self.path.split("?", 1)[0]
-        if path == "/healthz":
-            status = liveness_status()
-            body = b'{"ok":true}\n' if status == 200 else b'{"ok":false}\n'
-            self.send_bytes(status, "application/json", body)
-            return
-        if path == "/status":
-            document = health_document()
-            status = 200 if document["state"] == "ready" else 503
-            self.send_bytes(
-                status, "application/json", (json.dumps(document) + "\n").encode()
-            )
-            return
-        if path == "/frame.jpg":
-            if not self.authorized():
-                self.send_bytes(403, "application/json", b'{"detail":"forbidden"}\n')
-                return
-            try:
-                content = FRAME_PATH.read_bytes()
-            except OSError:
-                content = b""
-            if not content or len(content) > 4 * 1024 * 1024:
-                self.send_bytes(
-                    503, "application/json", b'{"detail":"frame unavailable"}\n'
-                )
-                return
-            self.send_bytes(200, "image/jpeg", content)
-            return
-        if path == "/client/index.js":
-            self.send_bytes(
-                200, "text/javascript", (CLIENT_ROOT / "index.js").read_bytes()
-            )
-            return
-        if path == "/client/LICENSE.txt":
-            self.send_bytes(
-                200, "text/plain", (CLIENT_ROOT / "LICENSE.txt").read_bytes()
-            )
-            return
-        if path == "/provenance":
-            self.send_bytes(200, "application/json", PROVENANCE_PATH.read_bytes())
-            return
-        self.send_bytes(404, "application/json", b'{"detail":"not found"}\n')
 
-    def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
-        path = self.path.split("?", 1)[0]
-        if path not in {"/input", "/recorder/control"}:
-            self.send_bytes(404, "application/json", b'{"detail":"not found"}\n')
-            return
-        if not self.authorized():
-            self.send_bytes(403, "application/json", b'{"detail":"forbidden"}\n')
-            return
+def _append_input(record: dict[str, Any]) -> int:
+    serialized = json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n"
+    with INPUT_LOCK:
+        with INPUT_QUEUE_PATH.open("a", encoding="utf-8") as queue:
+            queue.write(serialized)
+            queue.flush()
+        return _increment_input_counter()
+
+
+def _read_consistent_frame() -> tuple[dict[str, Any], bytes] | None:
+    for _attempt in range(3):
         try:
-            length = int(self.headers.get("Content-Length", "0"))
+            first = json.loads(FRAME_META_PATH.read_text(encoding="utf-8"))
+            jpeg = FRAME_PATH.read_bytes()
+            second = json.loads(FRAME_META_PATH.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        if first != second or not isinstance(first, dict):
+            continue
+        digest = hashlib.sha256(jpeg).hexdigest()
+        if (
+            0 < len(jpeg) <= MAX_FRAME_BYTES
+            and jpeg.startswith(b"\xff\xd8")
+            and jpeg.endswith(b"\xff\xd9")
+            and digest == str(first.get("sha256") or "")
+            and len(jpeg) == int(first.get("bytes") or 0)
+        ):
+            return first, jpeg
+    return None
+
+
+async def _watch_frames() -> None:
+    sequence = 0
+    while True:
+        item = await asyncio.to_thread(_read_consistent_frame)
+        if item is not None:
+            metadata, jpeg = item
+            observed = int(metadata.get("sequence") or 0)
+            if observed > sequence:
+                sequence = observed
+                await FRAME_LATEST.publish((metadata, jpeg))
+                TRANSPORT_METRICS.increment("frames_published")
+        await asyncio.sleep(0.005)
+
+
+def _scan_applied_acks() -> None:
+    global APPLIED_ACK_OFFSET
+    with APPLIED_ACK_LOCK:
+        try:
+            with APPLIED_ACK_PATH.open("r", encoding="utf-8") as source:
+                source.seek(APPLIED_ACK_OFFSET)
+                lines = source.readlines()
+                APPLIED_ACK_OFFSET = source.tell()
+        except OSError:
+            return
+        for line in lines:
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict) and CONTROL_LEDGER.mark_applied(payload):
+                TRANSPORT_METRICS.increment("controls_applied")
+
+
+def _wait_for_applied(
+    client_id: str,
+    seq: int,
+    stop: threading.Event,
+    timeout: float = 30.0,
+) -> dict[str, Any] | None:
+    deadline = time.monotonic() + timeout
+    while not stop.is_set() and time.monotonic() < deadline:
+        _scan_applied_acks()
+        applied = CONTROL_LEDGER.applied(client_id, seq)
+        if applied is not None:
+            return applied
+        stop.wait(0.002)
+    return None
+
+
+def _runtime_ws_authorized(websocket: WebSocket, subprotocol: str) -> bool:
+    requested = {
+        item.strip()
+        for item in str(websocket.headers.get("sec-websocket-protocol") or "").split(
+            ","
+        )
+        if item.strip()
+    }
+    return (
+        _authorized(websocket.headers)
+        and str(websocket.headers.get("x-npa-leisaac-run-id") or "")
+        == os.environ.get("NPA_LEISAAC_RUN_ID", "")
+        and requested == {subprotocol}
+    )
+
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    watcher = asyncio.create_task(_watch_frames())
+    try:
+        yield
+    finally:
+        watcher.cancel()
+        await asyncio.gather(watcher, return_exceptions=True)
+
+
+def build_app() -> FastAPI:
+    application = FastAPI(lifespan=_lifespan)
+
+    @application.get("/healthz")
+    def healthz() -> Response:
+        status = liveness_status()
+        return JSONResponse(status_code=status, content={"ok": status == 200})
+
+    @application.get("/status")
+    def status() -> Response:
+        document = health_document()
+        return JSONResponse(
+            status_code=200 if document["state"] == "ready" else 503,
+            content=document,
+            headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+        )
+
+    @application.get("/frame.jpg")
+    def frame(request: Request) -> Response:
+        if not _authorized(request.headers):
+            return JSONResponse(status_code=403, content={"detail": "forbidden"})
+        item = _read_consistent_frame()
+        if item is None:
+            return JSONResponse(
+                status_code=503, content={"detail": "frame unavailable"}
+            )
+        metadata, content = item
+        return Response(
+            content=content,
+            media_type="image/jpeg",
+            headers={
+                "Cache-Control": "no-store",
+                "X-Content-Type-Options": "nosniff",
+                "X-NPA-Frame-Sequence": str(metadata["sequence"]),
+                "X-NPA-Frame-Capture-Wall-Ns": str(metadata["capture_wall_ns"]),
+                "X-NPA-Frame-SHA256": str(metadata["sha256"]),
+            },
+        )
+
+    @application.get("/client/index.js")
+    def client_module() -> Response:
+        return Response(
+            content=(CLIENT_ROOT / "index.js").read_bytes(),
+            media_type="text/javascript",
+        )
+
+    @application.get("/client/LICENSE.txt")
+    def client_license() -> Response:
+        return Response(
+            content=(CLIENT_ROOT / "LICENSE.txt").read_bytes(), media_type="text/plain"
+        )
+
+    @application.get("/provenance")
+    def provenance() -> Response:
+        return Response(
+            content=PROVENANCE_PATH.read_bytes(), media_type="application/json"
+        )
+
+    async def read_bounded_json(request: Request) -> dict[str, Any] | None:
+        raw_length = str(request.headers.get("content-length") or "")
+        try:
+            length = int(raw_length)
         except ValueError:
             length = 0
-        if length <= 0 or length > 1024:
-            self.send_bytes(400, "application/json", b'{"detail":"invalid body"}\n')
-            return
+        if length <= 0 or length > MAX_CONTROL_MESSAGE_BYTES:
+            return None
+        body = await request.body()
+        if len(body) != length or len(body) > MAX_CONTROL_MESSAGE_BYTES:
+            return None
         try:
-            payload = json.loads(self.rfile.read(length))
-        except (UnicodeDecodeError, ValueError):
-            payload = None
-        if path == "/recorder/control":
-            command = str(payload.get("command") if isinstance(payload, dict) else "")
-            request_id = str(
-                payload.get("request_id") if isinstance(payload, dict) else ""
-            ) or secrets.token_hex(16)
-            status_code, response = enqueue_recorder_command(command, request_id)
-            self.send_bytes(
-                status_code,
-                "application/json",
-                (json.dumps(response, sort_keys=True) + "\n").encode(),
+            payload = json.loads(body)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    @application.post("/input")
+    async def input_control(request: Request) -> Response:
+        if not _authorized(request.headers):
+            return JSONResponse(status_code=403, content={"detail": "forbidden"})
+        payload = await read_bounded_json(request)
+        if payload is None:
+            return JSONResponse(status_code=400, content={"detail": "invalid body"})
+        run_id = os.environ.get("NPA_LEISAAC_RUN_ID", "")
+        if payload.get("v") == 1:
+            raw = json.dumps(payload, separators=(",", ":"))
+        else:
+            raw = json.dumps(
+                {
+                    "v": 1,
+                    "type": "control",
+                    "run_id": run_id,
+                    "client_id": str(
+                        payload.get("client_id") or f"poll-{secrets.token_hex(8)}"
+                    ),
+                    "seq": payload.get("seq", 1),
+                    "key": payload.get("key"),
+                    "event": payload.get("event"),
+                    "client_mono_ns": payload.get("client_mono_ns", 0),
+                },
+                separators=(",", ":"),
             )
-            return
-        key = str(payload.get("key") if isinstance(payload, dict) else "").upper()
-        event = str(payload.get("event") if isinstance(payload, dict) else "")
-        if key not in {
-            "W",
-            "S",
-            "A",
-            "D",
-            "Q",
-            "E",
-            "J",
-            "L",
-            "I",
-            "K",
-            "U",
-            "O",
-        } or event not in {"press", "release"}:
-            self.send_bytes(400, "application/json", b'{"detail":"invalid input"}\n')
-            return
+        try:
+            message = parse_control_message(raw, expected_run_id=run_id)
+        except TransportProtocolError as exc:
+            return JSONResponse(
+                status_code=409
+                if exc.code.startswith("sequence") or exc.code == "out_of_order"
+                else 400,
+                content=exc.payload(),
+            )
         with STATE_LOCK:
             ready = STATE.get("state") == "ready"
         if not ready:
-            self.send_bytes(
-                503, "application/json", b'{"detail":"simulator not ready"}\n'
+            return JSONResponse(
+                status_code=503, content={"detail": "simulator not ready"}
             )
-            return
-        record = json.dumps({"key": key, "event": event}, separators=(",", ":")) + "\n"
-        with INPUT_LOCK:
-            with INPUT_QUEUE_PATH.open("a", encoding="utf-8") as queue:
-                queue.write(record)
-            if event == "press":
-                try:
-                    count = (
-                        int(
-                            INPUT_COUNTER_PATH.read_text(encoding="utf-8").strip()
-                            or "0"
-                        )
-                        + 1
-                    )
-                except (OSError, ValueError):
-                    count = 1
-                temporary = INPUT_COUNTER_PATH.with_suffix(".tmp")
-                temporary.write_text(f"{count}\n", encoding="utf-8")
-                temporary.replace(INPUT_COUNTER_PATH)
-        self.send_bytes(202, "application/json", b'{"accepted":true}\n')
+        try:
+            accepted, queued = CONTROL_LEDGER.accept(message)
+        except TransportProtocolError as exc:
+            return JSONResponse(
+                status_code=409
+                if exc.code.startswith("sequence") or exc.code == "out_of_order"
+                else 400,
+                content=exc.payload(),
+            )
+        if queued is not None:
+            await asyncio.to_thread(_append_input, queued)
+            TRANSPORT_METRICS.increment("controls_accepted")
+        else:
+            TRANSPORT_METRICS.increment("controls_duplicate")
+        return JSONResponse(
+            status_code=202, content=accepted, headers={"Cache-Control": "no-store"}
+        )
 
-    def log_message(self, format: str, *args: Any) -> None:
-        sys.stderr.write("leisaac-http " + (format % args) + "\n")
+    @application.post("/recorder/control")
+    async def recorder_control(request: Request) -> Response:
+        if not _authorized(request.headers):
+            return JSONResponse(status_code=403, content={"detail": "forbidden"})
+        payload = await read_bounded_json(request)
+        command = str(payload.get("command") if payload else "")
+        request_id = str(
+            payload.get("request_id") if payload else ""
+        ) or secrets.token_hex(16)
+        status_code, result = await asyncio.to_thread(
+            enqueue_recorder_command, command, request_id
+        )
+        return JSONResponse(
+            status_code=status_code,
+            content=result,
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @application.websocket("/transport/control")
+    async def transport_control(websocket: WebSocket) -> None:
+        if not _runtime_ws_authorized(websocket, CONTROL_SUBPROTOCOL):
+            await websocket.close(code=1008)
+            return
+        run_id = os.environ.get("NPA_LEISAAC_RUN_ID", "")
+        await websocket.accept(subprotocol=CONTROL_SUBPROTOCOL)
+        TRANSPORT_METRICS.increment("control_connections")
+        applied_queue: asyncio.Queue[tuple[str, int]] = asyncio.Queue(
+            maxsize=MAX_CLIENT_HISTORY
+        )
+        stop = threading.Event()
+        send_lock = asyncio.Lock()
+
+        async def send(payload: dict[str, Any]) -> None:
+            async with send_lock:
+                await asyncio.wait_for(
+                    websocket.send_text(json.dumps(payload, separators=(",", ":"))),
+                    timeout=2.0,
+                )
+
+        async def send_applied() -> None:
+            while True:
+                client_id, seq = await applied_queue.get()
+                payload = await asyncio.to_thread(
+                    _wait_for_applied, client_id, seq, stop
+                )
+                if payload is None:
+                    await send(
+                        {
+                            "v": 1,
+                            "type": "error",
+                            "code": "application_timeout",
+                            "run_id": run_id,
+                            "client_id": client_id,
+                            "seq": seq,
+                        }
+                    )
+                    continue
+                acknowledgement = dict(payload)
+                acknowledgement.update(v=1, type="ack", phase="applied", run_id=run_id)
+                await send(acknowledgement)
+
+        sender = asyncio.create_task(send_applied())
+        active_client_id = ""
+
+        async def release_all(
+            client_id: str, client_mono_ns: int = 0, client_wall_ns: int = 0
+        ) -> int:
+            released = 0
+            for key in CONTROL_LEDGER.keys_down(client_id):
+                next_seq = int(CONTROL_LEDGER.resume(client_id)["next_seq"])
+                message = {
+                    "v": 1,
+                    "type": "control",
+                    "run_id": run_id,
+                    "client_id": client_id,
+                    "seq": next_seq,
+                    "key": key,
+                    "event": "release",
+                    "client_mono_ns": client_mono_ns,
+                    "client_wall_ns": client_wall_ns,
+                }
+                _accepted, queued = CONTROL_LEDGER.accept(message)
+                if queued is not None:
+                    await asyncio.to_thread(_append_input, queued)
+                    TRANSPORT_METRICS.increment("controls_accepted")
+                    await applied_queue.put((client_id, next_seq))
+                    released += 1
+            return released
+
+        try:
+            while True:
+                raw = await websocket.receive_text()
+                try:
+                    message = parse_control_message(raw, expected_run_id=run_id)
+                    active_client_id = str(message["client_id"])
+                    if message["type"] == "ping":
+                        await send(
+                            {
+                                "v": 1,
+                                "type": "pong",
+                                "run_id": run_id,
+                                "client_id": message["client_id"],
+                                "nonce": message.get("nonce", ""),
+                                "client_mono_ns": str(message["client_mono_ns"]),
+                                "client_wall_ns": str(message["client_wall_ns"]),
+                                "runtime_mono_ns": str(time.monotonic_ns()),
+                                "runtime_wall_ns": str(time.time_ns()),
+                            }
+                        )
+                        continue
+                    if message["type"] == "resume":
+                        response = CONTROL_LEDGER.resume(str(message["client_id"]))
+                        response["run_id"] = run_id
+                        response["client_mono_ns"] = str(message["client_mono_ns"])
+                        response["client_wall_ns"] = str(message["client_wall_ns"])
+                        TRANSPORT_METRICS.increment("reconnects")
+                        await send(response)
+                        continue
+                    if message["type"] == "release-all":
+                        released = await release_all(
+                            active_client_id,
+                            int(message["client_mono_ns"]),
+                            int(message["client_wall_ns"]),
+                        )
+                        await send(
+                            {
+                                "v": 1,
+                                "type": "released",
+                                "run_id": run_id,
+                                "client_id": message["client_id"],
+                                "runtime_mono_ns": str(time.monotonic_ns()),
+                                "released_count": released,
+                            }
+                        )
+                        continue
+                    with STATE_LOCK:
+                        ready = STATE.get("state") == "ready"
+                    if not ready:
+                        await send(
+                            {
+                                "v": 1,
+                                "type": "error",
+                                "code": "simulator_not_ready",
+                                "detail": "simulator not ready",
+                            }
+                        )
+                        continue
+                    accepted, queued = CONTROL_LEDGER.accept(message)
+                    if queued is not None:
+                        await asyncio.to_thread(_append_input, queued)
+                        TRANSPORT_METRICS.increment("controls_accepted")
+                    else:
+                        TRANSPORT_METRICS.increment("controls_duplicate")
+                    await send(accepted)
+                    await applied_queue.put(
+                        (str(message["client_id"]), int(message["seq"]))
+                    )
+                except TransportProtocolError as exc:
+                    TRANSPORT_METRICS.increment("control_errors")
+                    await send(exc.payload())
+        except WebSocketDisconnect:
+            pass
+        finally:
+            if active_client_id:
+                try:
+                    await release_all(active_client_id)
+                except Exception:
+                    LOGGER.warning(
+                        "Failed to release LeIsaac controls during disconnect",
+                        exc_info=True,
+                    )
+            stop.set()
+            sender.cancel()
+            await asyncio.gather(sender, return_exceptions=True)
+
+    @application.websocket("/transport/video")
+    async def transport_video(websocket: WebSocket) -> None:
+        if not _runtime_ws_authorized(websocket, VIDEO_SUBPROTOCOL):
+            await websocket.close(code=1008)
+            return
+        await websocket.accept(subprotocol=VIDEO_SUBPROTOCOL)
+        TRANSPORT_METRICS.increment("video_connections")
+        generation = 0
+        previous_sequence = 0
+        try:
+            while True:
+                generation, item, coalesced = await FRAME_LATEST.wait_after(
+                    generation, timeout=20.0
+                )
+                metadata, jpeg = item
+                sequence = int(metadata["sequence"])
+                dropped = (
+                    max(coalesced, max(0, sequence - previous_sequence - 1))
+                    if previous_sequence
+                    else 0
+                )
+                previous_sequence = sequence
+                envelope = FrameEnvelope(
+                    sequence=sequence,
+                    capture_wall_ns=int(metadata["capture_wall_ns"]),
+                    capture_monotonic_ns=int(metadata["capture_monotonic_ns"]),
+                    encoded_wall_ns=int(metadata["encoded_wall_ns"]),
+                    encoded_monotonic_ns=int(metadata["encoded_monotonic_ns"]),
+                    runtime_send_monotonic_ns=time.monotonic_ns(),
+                    dropped_before=dropped,
+                    sha256=bytes.fromhex(str(metadata["sha256"])),
+                )
+                if dropped:
+                    TRANSPORT_METRICS.increment("frames_coalesced", dropped)
+                try:
+                    await asyncio.wait_for(
+                        websocket.send_bytes(pack_frame(envelope, jpeg)), timeout=2.0
+                    )
+                except asyncio.TimeoutError:
+                    TRANSPORT_METRICS.increment("slow_client_disconnects")
+                    await websocket.close(code=1013)
+                    return
+                TRANSPORT_METRICS.increment("frames_sent")
+        except (WebSocketDisconnect, asyncio.TimeoutError):
+            return
+
+    return application
+
+
+app = build_app()
 
 
 def stop_child(*_args: Any) -> None:
@@ -764,9 +1164,22 @@ def main() -> int:
         target=run_simulation, name="leisaac-simulation", daemon=True
     )
     worker.start()
-    server = http.server.ThreadingHTTPServer(("0.0.0.0", SERVICE_PORT), Handler)
     try:
-        server.serve_forever()
+        import uvicorn
+
+        uvicorn.run(
+            app,
+            host="0.0.0.0",
+            port=SERVICE_PORT,
+            ws="websockets",
+            ws_max_size=MAX_FRAME_BYTES + 256,
+            ws_max_queue=4,
+            ws_ping_interval=10.0,
+            ws_ping_timeout=10.0,
+            ws_per_message_deflate=False,
+            timeout_keep_alive=5,
+            access_log=False,
+        )
     finally:
         stop_child()
     return 0

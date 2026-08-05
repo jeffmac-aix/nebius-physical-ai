@@ -172,6 +172,43 @@ def nginx_agent_site_body(
     default_type text/html;
     add_header Cache-Control "no-store" always;
   }}
+  # Preferred LeIsaac transport uses two authenticated same-origin WebSockets.
+  # Separate sockets prevent a slow video client from head-of-line blocking
+  # ordered control acknowledgements. WebSocket frames must never be buffered.
+  location = /api/leisaac/transport/control {{
+    rewrite ^/api/(.*)$ /$1 break;
+    proxy_pass http://127.0.0.1:{backend_port}/;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_set_header Origin $http_origin;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_buffering off;
+    proxy_request_buffering off;
+    proxy_connect_timeout 10s;
+    proxy_read_timeout 60s;
+    proxy_send_timeout 60s;
+  }}
+  location = /api/leisaac/transport/video {{
+    rewrite ^/api/(.*)$ /$1 break;
+    proxy_pass http://127.0.0.1:{backend_port}/;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_set_header Origin $http_origin;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_buffering off;
+    proxy_request_buffering off;
+    proxy_connect_timeout 10s;
+    proxy_read_timeout 60s;
+    proxy_send_timeout 60s;
+  }}
   # Isaac Sim's browser client appends /sign_in to its configured signaling
   # path.  This narrow authenticated prefix carries only WebSocket upgrades;
   # the backend independently allowlists the bare path and /sign_in.

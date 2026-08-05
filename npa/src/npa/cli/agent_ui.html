@@ -174,7 +174,8 @@
       }
       .leisaac-stage:focus-visible { box-shadow: inset 0 0 0 3px var(--brand); }
       .leisaac-stage video,
-      .leisaac-stage img {
+      .leisaac-stage img,
+      .leisaac-stage canvas {
         display: block;
         width: 100%;
         height: calc(100dvh - 245px);
@@ -183,7 +184,8 @@
         background: #000;
       }
       .leisaac-stage video[hidden],
-      .leisaac-stage img[hidden] { display: none; }
+      .leisaac-stage img[hidden],
+      .leisaac-stage canvas[hidden] { display: none; }
       .leisaac-stage audio { display: none; }
       .leisaac-overlay {
         position: absolute;
@@ -2176,6 +2178,32 @@
       let leisaacPeerConnectionRestore = null;
       let leisaacFrameTimer = null;
       let leisaacFrameSequence = 0;
+      let leisaacControlSocket = null;
+      let leisaacVideoSocket = null;
+      let leisaacSocketGeneration = 0;
+      let leisaacReconnectAttempts = 0;
+      let leisaacReconnectTimer = null;
+      let leisaacHeartbeatTimer = null;
+      let leisaacActiveTransport = "disconnected";
+      let leisaacVideoPending = null;
+      let leisaacVideoDecoding = false;
+      let leisaacLastFrameSequence = 0;
+      let leisaacDeliveredFrames = 0;
+      let leisaacDroppedFrames = 0;
+      let leisaacLastFpsAt = 0;
+      let leisaacLastFpsFrames = 0;
+      let leisaacClockOffsetNs = 0;
+      let leisaacClockUncertaintyNs = 0;
+      let leisaacLastControlLatencyMs = 0;
+      let leisaacNextControlSequence = 1;
+      let leisaacClientId = "";
+      let leisaacClientRunId = "";
+      let leisaacReconnectPromise = null;
+      let leisaacManualDisconnect = false;
+      const leisaacUnackedControls = new Map();
+      const leisaacKeysDown = new Set();
+      const leisaacPings = new Map();
+      const leisaacTransportEvidence = { controls: [], frames: [], reconnects: 0, active: "disconnected" };
       let leisaacRecorderTimer = null;
       let leisaacRecorderPollInFlight = false;
       let leisaacRecorderPending = null;
@@ -2205,6 +2233,7 @@
             <div id="leisaacStreamHost" class="leisaac-stage" tabindex="0" aria-label="Interactive LeIsaac simulation stream">
               <video id="leisaacVideo" autoplay playsinline></video>
               <img id="leisaacFrame" alt="Live RTX-rendered LeIsaac simulation" hidden>
+              <canvas id="leisaacCanvas" width="1280" height="720" aria-label="Low-latency LeIsaac simulation" hidden></canvas>
               <audio id="leisaacAudio" autoplay></audio>
               <div class="leisaac-overlay">
                 <div class="leisaac-overlay-card leisaac-controls">
@@ -2215,6 +2244,8 @@
                 <div class="leisaac-overlay-card">
                   <span id="leisaacLiveDot" class="leisaac-live-dot"></span>
                   <span id="leisaacStreamStatus">Ready to connect</span><br>
+                  <span id="leisaacTransportStatus">Transport: disconnected</span><br>
+                  <span id="leisaacLatencyStatus">Latency: waiting for samples</span><br>
                   <span id="leisaacInputStatus">Keyboard events sent: 0</span>
                 </div>
               </div>
@@ -2422,23 +2453,130 @@
         if (label) label.textContent = "Keyboard events sent: " + String(leisaacInputCount) + " · last " + key;
         return true;
       }
-      function sendLeIsaacInput(event, kind) {
+      function leisaacMonoNs() {
+        return String(Math.round(performance.now() * 1000000));
+      }
+      function leisaacWallNs() {
+        return String(Date.now() * 1000000);
+      }
+      function leisaacWebSocketUrl(path) {
+        const target = new URL(String(path || ""), window.location.origin);
+        target.protocol = target.protocol === "https:" ? "wss:" : "ws:";
+        return target.toString();
+      }
+      function ensureLeIsaacClientIdentity(status) {
+        const runId = String(status.run_id || "");
+        if (leisaacClientRunId === runId && /^[A-Za-z0-9._:-]{1,96}$/.test(leisaacClientId)) return;
+        // A fresh page/tab gets a fresh identity; in-page reconnects retain it.
+        // This avoids sessionStorage cloning an identity into a newly opened tab.
+        leisaacNextControlSequence = 1;
+        leisaacUnackedControls.clear();
+        leisaacKeysDown.clear();
+        const random = new Uint8Array(16);
+        crypto.getRandomValues(random);
+        leisaacClientId = "browser-" + Array.from(random, (item) => item.toString(16).padStart(2, "0")).join("");
+        leisaacClientRunId = runId;
+      }
+      function updateLeIsaacTransportIndicator() {
+        const transport = document.getElementById("leisaacTransportStatus");
+        const latency = document.getElementById("leisaacLatencyStatus");
+        if (transport) {
+          const label = leisaacActiveTransport === "websocket-v1"
+            ? "WebSocket · preferred · latest-frame-wins"
+            : leisaacActiveTransport === "jpeg-poll"
+              ? "JPEG polling · fallback"
+              : "disconnected";
+          transport.textContent = "Transport: " + label;
+        }
+        if (latency) {
+          const now = performance.now();
+          const elapsed = Math.max(0.001, (now - leisaacLastFpsAt) / 1000);
+          const fps = leisaacLastFpsAt ? (leisaacDeliveredFrames - leisaacLastFpsFrames) / elapsed : 0;
+          const uncertaintyMs = leisaacClockUncertaintyNs / 1000000;
+          latency.textContent =
+            "Latency: control " + (leisaacLastControlLatencyMs ? leisaacLastControlLatencyMs.toFixed(1) + " ms" : "waiting") +
+            " · " + fps.toFixed(1) + " FPS · dropped/coalesced " + String(leisaacDroppedFrames) +
+            (uncertaintyMs ? " · clock ±" + uncertaintyMs.toFixed(1) + " ms" : "");
+          if (!leisaacLastFpsAt || elapsed >= 1) {
+            leisaacLastFpsAt = now;
+            leisaacLastFpsFrames = leisaacDeliveredFrames;
+          }
+        }
+        leisaacTransportEvidence.active = leisaacActiveTransport;
+      }
+      function leisaacControlPayload(key, event) {
+        const payload = {
+          v: 1,
+          type: "control",
+          run_id: String((leisaacCapability && leisaacCapability.run_id) || ""),
+          client_id: leisaacClientId,
+          seq: leisaacNextControlSequence,
+          key: key,
+          event: event,
+          client_mono_ns: leisaacMonoNs(),
+          client_wall_ns: leisaacWallNs(),
+        };
+        leisaacNextControlSequence += 1;
+        return payload;
+      }
+      function sendQueuedWebSocketControls() {
+        const socket = leisaacControlSocket;
+        if (!socket || socket.readyState !== WebSocket.OPEN) return;
+        for (const item of Array.from(leisaacUnackedControls.values()).sort((left, right) => left.payload.seq - right.payload.seq)) {
+          if (item.sentGeneration === leisaacSocketGeneration) continue;
+          socket.send(JSON.stringify(item.payload));
+          item.sentGeneration = leisaacSocketGeneration;
+        }
+      }
+      let leisaacFallbackFlush = null;
+      function flushLeIsaacFallbackControls() {
+        if (leisaacFallbackFlush || leisaacActiveTransport !== "jpeg-poll") return leisaacFallbackFlush;
         const status = leisaacCapability;
-        if (!status || String(status.stream_transport || "webrtc") !== "jpeg-poll") return;
+        leisaacFallbackFlush = (async () => {
+          for (const [seq, item] of Array.from(leisaacUnackedControls.entries()).sort((left, right) => left[0] - right[0])) {
+            const started = performance.now();
+            const response = await fetch(String(status.input_url || ""), {
+              method: "POST",
+              credentials: "include",
+              cache: "no-store",
+              headers: { "Content-Type": "application/json", "X-NPA-LeIsaac-Control": "1" },
+              body: JSON.stringify(item.payload),
+            });
+            if (!response.ok) throw new Error("LeIsaac fallback control returned HTTP " + String(response.status));
+            leisaacLastControlLatencyMs = performance.now() - started;
+            leisaacTransportEvidence.controls.push({
+              seq: seq,
+              phase: "fallback-accepted",
+              event_to_ack_ms: leisaacLastControlLatencyMs,
+            });
+            leisaacUnackedControls.delete(seq);
+            updateLeIsaacTransportIndicator();
+          }
+        })().catch((err) => {
+          setLeIsaacStreamState("Fallback control retrying: " + String((err && err.message) || err), "error");
+        }).finally(() => { leisaacFallbackFlush = null; });
+        return leisaacFallbackFlush;
+      }
+      function queueLeIsaacControl(key, event) {
+        if (!leisaacClientId) return;
+        const payload = leisaacControlPayload(key, event);
+        leisaacUnackedControls.set(payload.seq, {
+          payload: payload,
+          eventMonoMs: performance.now(),
+          sentGeneration: 0,
+        });
+        if (event === "press") leisaacKeysDown.add(key);
+        else leisaacKeysDown.delete(key);
+        if (leisaacActiveTransport === "websocket-v1") sendQueuedWebSocketControls();
+        else flushLeIsaacFallbackControls();
+      }
+      function sendLeIsaacInput(event, kind) {
         const key = String((event && event.key) || "").toUpperCase();
         const host = document.getElementById("leisaacStreamHost");
         const focused = host && (document.activeElement === host || host.contains(event && event.target));
         if (!leisaacStreamReady || !focused || !LEISAAC_KEYS.has(key) || (event && event.repeat)) return;
         event.preventDefault();
-        fetch(String(status.input_url || ""), {
-          method: "POST",
-          credentials: "include",
-          cache: "no-store",
-          headers: { "Content-Type": "application/json", "X-NPA-LeIsaac-Control": "1" },
-          body: JSON.stringify({ key: key, event: kind }),
-        }).then((response) => {
-          if (!response.ok) throw new Error("LeIsaac control returned HTTP " + String(response.status));
-        }).catch((err) => setLeIsaacStreamState(String((err && err.message) || err), "error"));
+        queueLeIsaacControl(key, kind);
       }
       // Register before the lazy-loaded NVIDIA client.  Its keyboard handler
       // consumes events during capture, so a later bubbling listener cannot
@@ -2516,6 +2654,8 @@
           frame.removeAttribute("src");
           frame.hidden = true;
         }
+        const canvas = document.getElementById("leisaacCanvas");
+        if (canvas) canvas.hidden = true;
       }
       function connectLeIsaacFrames(status) {
         const frame = document.getElementById("leisaacFrame");
@@ -2531,7 +2671,9 @@
         };
         frame.onload = () => {
           leisaacStreamReady = true;
-          setLeIsaacStreamState("Live · keyboard teleoperation active", "ready");
+          leisaacDeliveredFrames += 1;
+          setLeIsaacStreamState("Live fallback · keyboard teleoperation active", "ready");
+          updateLeIsaacTransportIndicator();
           const host = document.getElementById("leisaacStreamHost");
           if (host) host.focus();
           leisaacFrameTimer = window.setTimeout(refresh, 150);
@@ -2542,17 +2684,326 @@
         };
         refresh();
       }
+      function handleLeIsaacControlMessage(message) {
+        let payload;
+        try { payload = JSON.parse(String(message.data || "")); } catch (_err) { return; }
+        if (!payload || Number(payload.v || 0) !== 1) return;
+        if (payload.type === "resumed") {
+          const expected = Number(payload.next_seq || 1);
+          const lastApplied = Number(payload.last_applied_seq || 0);
+          for (const seq of Array.from(leisaacUnackedControls.keys())) {
+            if (seq <= lastApplied) leisaacUnackedControls.delete(seq);
+          }
+          const pendingSequences = Array.from(leisaacUnackedControls.keys());
+          const runtimeReset = pendingSequences.length && expected < Math.min(...pendingSequences);
+          if (runtimeReset) {
+            // A restarted runtime cannot safely apply movements from its predecessor.
+            leisaacUnackedControls.clear();
+            leisaacKeysDown.clear();
+            leisaacNextControlSequence = expected;
+          } else if (!pendingSequences.length || expected > leisaacNextControlSequence) {
+            leisaacNextControlSequence = expected;
+          }
+          // Accepted-but-not-yet-applied controls are resent as idempotent duplicates;
+          // the runtime then supplies their simulator-applied acknowledgement.
+          for (const item of leisaacUnackedControls.values()) item.sentGeneration = 0;
+          sendQueuedWebSocketControls();
+          return;
+        }
+        if (payload.type === "pong") {
+          const ping = leisaacPings.get(String(payload.nonce || ""));
+          if (!ping) return;
+          leisaacPings.delete(String(payload.nonce || ""));
+          const receivedWallNs = Date.now() * 1000000;
+          const runtimeWallNs = Number(payload.runtime_wall_ns || 0);
+          leisaacClockOffsetNs = runtimeWallNs - (ping.wallNs + receivedWallNs) / 2;
+          leisaacClockUncertaintyNs = (receivedWallNs - ping.wallNs) / 2;
+          return;
+        }
+        if (payload.type === "error") {
+          if (payload.code === "out_of_order" && Number(payload.expected_seq || 0) > 0) {
+            leisaacNextControlSequence = Number(payload.expected_seq);
+            leisaacUnackedControls.clear();
+            leisaacKeysDown.clear();
+          }
+          setLeIsaacStreamState("Control protocol: " + String(payload.detail || payload.code || "error"), "error");
+          return;
+        }
+        if (payload.type !== "ack") return;
+        const seq = Number(payload.seq || 0);
+        const pending = leisaacUnackedControls.get(seq);
+        if (!pending) return;
+        const latencyMs = performance.now() - pending.eventMonoMs;
+        leisaacTransportEvidence.controls.push({
+          seq: seq,
+          phase: String(payload.phase || ""),
+          key: String(payload.key || ""),
+          event: String(payload.event || ""),
+          event_to_ack_ms: latencyMs,
+          runtime_received_mono_ns: String(payload.runtime_received_mono_ns || ""),
+          runtime_received_wall_ns: String(payload.runtime_received_wall_ns || ""),
+          agent_received_mono_ns: String(payload.agent_received_mono_ns || ""),
+          agent_send_mono_ns: String(payload.agent_send_mono_ns || ""),
+          simulator_applied_mono_ns: String(payload.simulator_applied_mono_ns || ""),
+          simulator_applied_wall_ns: String(payload.simulator_applied_wall_ns || ""),
+          simulator_step: Number(payload.simulator_step || 0),
+        });
+        if (payload.phase === "applied") {
+          leisaacLastControlLatencyMs = latencyMs;
+          leisaacUnackedControls.delete(seq);
+          updateLeIsaacTransportIndicator();
+        }
+      }
+      function parseLeIsaacFrame(buffer) {
+        const view = new DataView(buffer);
+        if (
+          buffer.byteLength < 112 ||
+          view.getUint8(0) !== 0x4e || view.getUint8(1) !== 0x50 ||
+          view.getUint8(2) !== 0x41 || view.getUint8(3) !== 0x46 ||
+          view.getUint8(4) !== 1
+        ) throw new Error("invalid LeIsaac frame envelope");
+        const headerSize = view.getUint16(6, false);
+        const jpegSize = view.getUint32(72, false);
+        if (headerSize !== 112 || jpegSize <= 0 || headerSize + jpegSize !== buffer.byteLength || jpegSize > 4194304) {
+          throw new Error("invalid LeIsaac frame size");
+        }
+        return {
+          buffer: buffer,
+          headerSize: headerSize,
+          jpegSize: jpegSize,
+          sequence: Number(view.getBigUint64(8, false)),
+          captureWallNs: Number(view.getBigUint64(16, false)),
+          captureMonoNs: String(view.getBigUint64(24, false)),
+          encodedMonoNs: String(view.getBigUint64(40, false)),
+          runtimeSendMonoNs: String(view.getBigUint64(48, false)),
+          agentReceiveMonoNs: String(view.getBigUint64(56, false)),
+          agentSendMonoNs: String(view.getBigUint64(64, false)),
+          droppedBefore: view.getUint32(76, false),
+          receivedMonoMs: performance.now(),
+          receivedWallNs: Date.now() * 1000000,
+        };
+      }
+      async function decodeLatestLeIsaacFrame() {
+        if (leisaacVideoDecoding) return;
+        leisaacVideoDecoding = true;
+        try {
+          while (leisaacVideoPending) {
+            const frame = leisaacVideoPending;
+            leisaacVideoPending = null;
+            const blob = new Blob(
+              [frame.buffer.slice(frame.headerSize, frame.headerSize + frame.jpegSize)],
+              { type: "image/jpeg" },
+            );
+            const bitmap = await createImageBitmap(blob);
+            const canvas = document.getElementById("leisaacCanvas");
+            const image = document.getElementById("leisaacFrame");
+            const video = document.getElementById("leisaacVideo");
+            if (!canvas) { bitmap.close(); return; }
+            canvas.width = bitmap.width;
+            canvas.height = bitmap.height;
+            const context = canvas.getContext("2d", { alpha: false });
+            context.drawImage(bitmap, 0, 0);
+            bitmap.close();
+            canvas.hidden = false;
+            if (image) image.hidden = true;
+            if (video) video.hidden = true;
+            await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+            leisaacDeliveredFrames += 1;
+            const sequenceGap = leisaacLastFrameSequence
+              ? Math.max(0, frame.sequence - leisaacLastFrameSequence - 1)
+              : 0;
+            leisaacDroppedFrames += Math.max(Number(frame.droppedBefore || 0), sequenceGap);
+            leisaacLastFrameSequence = frame.sequence;
+            const paintMonoMs = performance.now();
+            const captureClientWallNs = frame.captureWallNs - leisaacClockOffsetNs;
+            const frameAgeMs = (Date.now() * 1000000 - captureClientWallNs) / 1000000;
+            leisaacTransportEvidence.frames.push({
+              sequence: frame.sequence,
+              bytes: frame.jpegSize,
+              capture_mono_ns: frame.captureMonoNs,
+              encoded_mono_ns: frame.encodedMonoNs,
+              runtime_send_mono_ns: frame.runtimeSendMonoNs,
+              agent_receive_mono_ns: frame.agentReceiveMonoNs,
+              agent_send_mono_ns: frame.agentSendMonoNs,
+              received_mono_ms: frame.receivedMonoMs,
+              painted_mono_ms: paintMonoMs,
+              frame_age_ms: frameAgeMs,
+              clock_uncertainty_ms: leisaacClockUncertaintyNs / 1000000,
+              dropped_before: frame.droppedBefore,
+            });
+            leisaacStreamReady = true;
+            setLeIsaacStreamState("Live WebSocket · keyboard teleoperation active", "ready");
+            const host = document.getElementById("leisaacStreamHost");
+            if (host) host.focus();
+            updateLeIsaacTransportIndicator();
+          }
+        } catch (err) {
+          setLeIsaacStreamState("Video decode failed: " + String((err && err.message) || err), "error");
+        } finally {
+          leisaacVideoDecoding = false;
+          if (leisaacVideoPending) decodeLatestLeIsaacFrame();
+        }
+      }
+      function handleLeIsaacVideoMessage(message) {
+        if (!(message.data instanceof ArrayBuffer)) return;
+        try {
+          const parsed = parseLeIsaacFrame(message.data);
+          if (leisaacVideoPending) leisaacDroppedFrames += 1;
+          leisaacVideoPending = parsed;
+          decodeLatestLeIsaacFrame();
+        } catch (err) {
+          setLeIsaacStreamState(String((err && err.message) || err), "error");
+        }
+      }
+      function stopLeIsaacHeartbeat() {
+        if (leisaacHeartbeatTimer !== null) window.clearInterval(leisaacHeartbeatTimer);
+        leisaacHeartbeatTimer = null;
+        leisaacPings.clear();
+      }
+      function startLeIsaacHeartbeat() {
+        stopLeIsaacHeartbeat();
+        const sendHeartbeat = () => {
+          if (leisaacActiveTransport === "jpeg-poll") {
+            flushLeIsaacFallbackControls();
+            return;
+          }
+          const socket = leisaacControlSocket;
+          if (!socket || socket.readyState !== WebSocket.OPEN) return;
+          const nonce = String(Date.now()) + "-" + String(Math.random()).slice(2);
+          const wallNs = Date.now() * 1000000;
+          leisaacPings.set(nonce, { wallNs: wallNs, monoMs: performance.now() });
+          socket.send(JSON.stringify({
+            v: 1,
+            type: "ping",
+            run_id: String((leisaacCapability && leisaacCapability.run_id) || ""),
+            client_id: leisaacClientId,
+            nonce: nonce,
+            client_mono_ns: leisaacMonoNs(),
+            client_wall_ns: String(wallNs),
+          }));
+        };
+        sendHeartbeat();
+        leisaacHeartbeatTimer = window.setInterval(sendHeartbeat, 5000);
+      }
+      function closeLeIsaacSockets() {
+        leisaacSocketGeneration += 1;
+        stopLeIsaacHeartbeat();
+        if (leisaacReconnectTimer !== null) window.clearTimeout(leisaacReconnectTimer);
+        leisaacReconnectTimer = null;
+        const sockets = [leisaacControlSocket, leisaacVideoSocket];
+        leisaacControlSocket = null;
+        leisaacVideoSocket = null;
+        for (const socket of sockets) {
+          if (!socket) continue;
+          socket.onopen = socket.onclose = socket.onerror = socket.onmessage = null;
+          try { socket.close(1000, "client disconnect"); } catch (_err) { /* already closed */ }
+        }
+      }
+      function openLeIsaacSocketPair(status) {
+        closeLeIsaacSockets();
+        const generation = leisaacSocketGeneration;
+        const control = new WebSocket(leisaacWebSocketUrl(status.control_ws_url), "npa.leisaac.control.v1");
+        const video = new WebSocket(leisaacWebSocketUrl(status.video_ws_url), "npa.leisaac.video.v1");
+        video.binaryType = "arraybuffer";
+        leisaacControlSocket = control;
+        leisaacVideoSocket = video;
+        return new Promise((resolve, reject) => {
+          let controlOpen = false;
+          let videoOpen = false;
+          let settled = false;
+          const timeout = window.setTimeout(() => finish(new Error("WebSocket connection timed out")), 8000);
+          const finish = (error) => {
+            if (settled) return;
+            if (!error && (!controlOpen || !videoOpen)) return;
+            settled = true;
+            window.clearTimeout(timeout);
+            if (error) reject(error); else resolve();
+          };
+          control.onopen = () => {
+            if (generation !== leisaacSocketGeneration) return;
+            controlOpen = true;
+            control.send(JSON.stringify({
+              v: 1,
+              type: "resume",
+              run_id: String(status.run_id || ""),
+              client_id: leisaacClientId,
+              last_acked_seq: Math.max(0, leisaacNextControlSequence - 1),
+              keys_down: Array.from(leisaacKeysDown),
+              client_mono_ns: leisaacMonoNs(),
+              client_wall_ns: leisaacWallNs(),
+            }));
+            finish();
+          };
+          video.onopen = () => { videoOpen = true; finish(); };
+          control.onmessage = handleLeIsaacControlMessage;
+          video.onmessage = handleLeIsaacVideoMessage;
+          const failed = () => finish(new Error("preferred WebSocket transport unavailable"));
+          control.onerror = failed;
+          video.onerror = failed;
+          control.onclose = () => {
+            if (!settled) failed();
+            else if (generation === leisaacSocketGeneration && leisaacActiveTransport === "websocket-v1") recoverLeIsaacPreferred(status);
+          };
+          video.onclose = () => {
+            if (!settled) failed();
+            else if (generation === leisaacSocketGeneration && leisaacActiveTransport === "websocket-v1") recoverLeIsaacPreferred(status);
+          };
+        });
+      }
+      async function connectLeIsaacPreferred(status) {
+        let lastError = null;
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          if (leisaacManualDisconnect) return false;
+          try {
+            if (attempt) await new Promise((resolve) => window.setTimeout(resolve, 250 * (2 ** (attempt - 1))));
+            await openLeIsaacSocketPair(status);
+            leisaacReconnectAttempts = attempt;
+            leisaacActiveTransport = "websocket-v1";
+            leisaacTransportEvidence.reconnects += attempt;
+            startLeIsaacHeartbeat();
+            updateLeIsaacTransportIndicator();
+            return true;
+          } catch (err) {
+            lastError = err;
+            closeLeIsaacSockets();
+          }
+        }
+        setLeIsaacStreamState("Preferred transport unavailable; using tested polling fallback", "pending");
+        leisaacActiveTransport = "jpeg-poll";
+        updateLeIsaacTransportIndicator();
+        connectLeIsaacFrames(status);
+        startLeIsaacHeartbeat();
+        if (lastError) console.warn("LeIsaac preferred transport failed", lastError);
+        return false;
+      }
+      function recoverLeIsaacPreferred(status) {
+        if (leisaacReconnectPromise) return leisaacReconnectPromise;
+        leisaacStreamReady = false;
+        setLeIsaacStreamState("Reconnecting preferred transport…", "pending");
+        leisaacReconnectPromise = connectLeIsaacPreferred(status).finally(() => { leisaacReconnectPromise = null; });
+        return leisaacReconnectPromise;
+      }
       async function connectLeIsaac() {
         const status = leisaacCapability;
         if (!status || !status.available) throw new Error("No usable LeIsaac session is selected");
         const connectBtn = document.getElementById("leisaacConnect");
         const disconnectBtn = document.getElementById("leisaacDisconnect");
         if (connectBtn) connectBtn.disabled = true;
+        leisaacManualDisconnect = false;
         leisaacStreamReady = false;
         setLeIsaacStreamState("Connecting to live simulation…", "pending");
         try {
+          ensureLeIsaacClientIdentity(status);
+          if (String(status.stream_transport || "webrtc") === "websocket-v1") {
+            await connectLeIsaacPreferred(status);
+            if (disconnectBtn) disconnectBtn.disabled = false;
+            return;
+          }
           if (String(status.stream_transport || "webrtc") === "jpeg-poll") {
+            leisaacActiveTransport = "jpeg-poll";
             connectLeIsaacFrames(status);
+            startLeIsaacHeartbeat();
+            updateLeIsaacTransportIndicator();
             if (disconnectBtn) disconnectBtn.disabled = false;
             return;
           }
@@ -2627,10 +3078,29 @@
         }
       }
       async function disconnectLeIsaac() {
+        leisaacManualDisconnect = true;
+        const controlSocket = leisaacControlSocket;
+        if (controlSocket && controlSocket.readyState === WebSocket.OPEN && leisaacClientId) {
+          try {
+            controlSocket.send(JSON.stringify({
+              v: 1,
+              type: "release-all",
+              run_id: String((leisaacCapability && leisaacCapability.run_id) || ""),
+              client_id: leisaacClientId,
+              client_mono_ns: leisaacMonoNs(),
+              client_wall_ns: leisaacWallNs(),
+            }));
+          } catch (_err) { /* server disconnect cleanup also releases keys */ }
+        }
         const streamer = leisaacStreamer;
         leisaacStreamer = null;
         leisaacStreamReady = false;
         stopLeIsaacFrames();
+        closeLeIsaacSockets();
+        leisaacActiveTransport = "disconnected";
+        leisaacKeysDown.clear();
+        leisaacUnackedControls.clear();
+        updateLeIsaacTransportIndicator();
         const video = document.getElementById("leisaacVideo");
         if (video) video.hidden = false;
         if (streamer && streamer.terminate) {
@@ -7654,6 +8124,8 @@
           removeLeIsaacTab,
           connectLeIsaac,
           disconnectLeIsaac,
+          leisaacTransportEvidence: () => JSON.parse(JSON.stringify(leisaacTransportEvidence)),
+          leisaacActiveTransport: () => leisaacActiveTransport,
           refresh,
           activeRunId: () => activeRunId,
           selectActiveRunId,

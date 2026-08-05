@@ -46,6 +46,8 @@ RUN apt-get update \
       boto3==1.43.63 \
       pyarrow==25.0.0 \
       pyserial==3.5 \
+      fastapi==0.136.3 \
+      "uvicorn[standard]==0.46.0" \
     && /opt/npa/sim/venv/bin/python -m pip install --no-cache-dir --no-deps /opt/leisaac/source/leisaac \
     && ! /opt/npa/sim/venv/bin/python -m pip show feetech-servo-sdk \
     && /opt/npa/sim/venv/bin/python -m pip check \
@@ -60,12 +62,14 @@ RUN apt-get update \
 COPY --chown=ubuntu:ubuntu docker/workbench/leisaac/session_server.py /opt/npa/leisaac/session_server.py
 COPY --chown=ubuntu:ubuntu docker/workbench/leisaac/smoke_functional.py /opt/npa/leisaac/smoke_functional.py
 COPY --chown=ubuntu:ubuntu src/npa/agent_backend/leisaac_registry.py /opt/npa/leisaac/leisaac_registry.py
+COPY --chown=ubuntu:ubuntu src/npa/agent_backend/leisaac_transport.py /opt/npa/leisaac/leisaac_transport.py
 COPY --chown=ubuntu:ubuntu src/npa/workbench/leisaac/dataset.py /opt/npa/leisaac/leisaac_dataset.py
 
 RUN /opt/npa/sim/venv/bin/python -m py_compile \
       /opt/npa/leisaac/session_server.py \
       /opt/npa/leisaac/smoke_functional.py \
       /opt/npa/leisaac/leisaac_registry.py \
+      /opt/npa/leisaac/leisaac_transport.py \
       /opt/npa/leisaac/leisaac_dataset.py \
     && test ! -e /opt/leisaac-cache/client/5.6.0/index.js \
     && test ! -e /opt/leisaac-cache/assets/runtime/robots/so101_follower.usd

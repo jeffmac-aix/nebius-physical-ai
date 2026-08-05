@@ -123,7 +123,7 @@ SUPPORTED_TOOL_VERSIONS = {
     "lerobot-policy": "0.1.1",
     "genesis": "cuda13-b300-0.4.6-sm80-sm90-sm100-sm103-sm120-20260803T034152Z",
     "isaac-lab": "2.3.2.post1",
-    "leisaac": "0.4.0-20260805T204323Z",
+    "leisaac": "0.4.0-20260805T222348Z",
     "cosmos": "cu128-torch27-sm100-1.0.9-20260803T002017Z",
     "cosmos2-transfer": "2.5.1-skypilot-ready-20260801T053000Z",
     # cosmos-framework 1.2.2 (pinned commit 5e67049c) + torch cu130 inference env.

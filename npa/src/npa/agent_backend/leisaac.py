@@ -67,6 +67,8 @@ LEISAAC_SIGNAL_PATH = "/api/leisaac/signal"
 LEISAAC_FRAME_PATH = "/api/leisaac/frame.jpg"
 LEISAAC_INPUT_PATH = "/api/leisaac/input"
 LEISAAC_RECORDER_PATH = "/api/leisaac/recorder"
+LEISAAC_CONTROL_WS_PATH = "/api/leisaac/transport/control"
+LEISAAC_VIDEO_WS_PATH = "/api/leisaac/transport/video"
 
 _RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
@@ -390,7 +392,7 @@ def validate_health(manifest: dict, payload: dict | None) -> tuple[dict | None, 
             return None, f"LeIsaac service attestation mismatch: {key}"
     stream_ready = bool(data.get("stream_ready", data.get("webrtc_ready")))
     stream_transport = str(data.get("stream_transport") or "webrtc")
-    if stream_transport not in {"webrtc", "jpeg-poll"}:
+    if stream_transport not in {"webrtc", "jpeg-poll", "websocket-v1"}:
         return None, "LeIsaac service returned an unsupported stream transport"
     if str(data.get("state") or "") != "ready" or not stream_ready:
         detail = str(data.get("detail") or data.get("state") or "starting")
@@ -444,6 +446,19 @@ def validate_health(manifest: dict, payload: dict | None) -> tuple[dict | None, 
         "applied_inputs": _integer(data.get("applied_inputs")) or 0,
         "frame_bytes": _integer(data.get("frame_bytes")) or 0,
         "frame_updated_at": str(data.get("frame_updated_at") or ""),
+        "frame_sequence": _integer(data.get("frame_sequence")) or 0,
+        "transport_metrics": (
+            {
+                str(key): int(value)
+                for key, value in data.get("transport_metrics", {}).items()
+                if isinstance(key, str)
+                and isinstance(value, int)
+                and not isinstance(value, bool)
+                and 0 <= value <= 2**63 - 1
+            }
+            if isinstance(data.get("transport_metrics"), dict)
+            else {}
+        ),
         "recorder": safe_recorder,
     }, ""
 
@@ -482,6 +497,9 @@ def status_payload(
         "signaling_path": LEISAAC_SIGNAL_PATH,
         "client_module_url": f"{LEISAAC_CLIENT_MODULE_PATH}?run_id={run_id}",
         "stream_transport": health.get("stream_transport", "webrtc"),
+        "preferred_transport": "websocket-v1",
+        "control_ws_url": f"{LEISAAC_CONTROL_WS_PATH}?run_id={run_id}",
+        "video_ws_url": f"{LEISAAC_VIDEO_WS_PATH}?run_id={run_id}",
         "frame_url": f"{LEISAAC_FRAME_PATH}?run_id={run_id}",
         "input_url": f"{LEISAAC_INPUT_PATH}?run_id={run_id}",
         "recorder_url": f"{LEISAAC_RECORDER_PATH}?run_id={run_id}",
@@ -497,6 +515,8 @@ def status_payload(
         "applied_inputs": health.get("applied_inputs", 0),
         "frame_bytes": health.get("frame_bytes", 0),
         "frame_updated_at": health.get("frame_updated_at", ""),
+        "frame_sequence": health.get("frame_sequence", 0),
+        "transport_metrics": health.get("transport_metrics", {}),
         "controls": {
             "translate": "W/S forward/back · A/D left/right · Q/E up/down",
             "rotate": "J/L yaw · K/I pitch",

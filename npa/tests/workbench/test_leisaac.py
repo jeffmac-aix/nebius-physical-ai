@@ -349,7 +349,7 @@ def test_container_never_bakes_eula_client_or_assets() -> None:
     assert "start_new_session=True" in server
     assert "READY_PATH.is_file()" in server and "FRAME_PATH.is_file()" in server
     assert 'update_state(detail="warming RTX renderer")' in server
-    assert 'stream_transport="jpeg-poll"' in server
+    assert 'stream_transport="websocket-v1"' in server
     assert '"--/renderer/multiGpu/enabled=False"' in server
     assert "NPA_LEISAAC_INPUT_COUNTER" in server
     assert "NPA_LEISAAC_APPLIED_COUNTER" in server
@@ -410,7 +410,7 @@ def test_health_reads_upstream_keyboard_counter(tmp_path: Path) -> None:
     assert health["input_events"] == 13
     assert health["applied_inputs"] == 12
     assert health["stream_ready"] is True
-    assert health["stream_transport"] == "jpeg-poll"
+    assert health["stream_transport"] == "websocket-v1"
     assert health["physics_device"] == "cpu"
     assert health["render_device"] == "cuda"
     assert health["seed"] == 42
