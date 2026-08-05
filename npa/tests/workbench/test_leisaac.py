@@ -353,6 +353,7 @@ def test_container_never_bakes_eula_client_or_assets() -> None:
     assert "NPA_LEISAAC_APPLIED_COUNTER" in server
     assert "NPA_LEISAAC_INPUT_QUEUE" in server
     assert "NPA_LEISAAC_FRAME_PATH" in server
+    assert "pandas==2.3.3" in dockerfile
     assert "feetech-servo-sdk" in dockerfile and "-m pip check" in dockerfile
     assert "git -C /opt/leisaac apply --check --unidiff-zero" in dockerfile
     assert os.access(ROOT / "npa/docker/workbench/leisaac/build.sh", os.X_OK)

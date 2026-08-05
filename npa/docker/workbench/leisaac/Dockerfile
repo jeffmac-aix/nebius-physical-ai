@@ -41,6 +41,7 @@ RUN apt-get update \
       deepdiff==8.6.1 \
       osqp==1.0.4 \
       packaging==25.0 \
+      pandas==2.3.3 \
       pygame==2.6.1 \
       boto3==1.43.63 \
       pyarrow==25.0.0 \
