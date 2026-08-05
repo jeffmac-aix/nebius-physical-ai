@@ -77,12 +77,15 @@ function runId() {
       expect(bytes[0]).to.equal(0xff);
       expect(bytes[1]).to.equal(0xd8);
 
-      const frame = win.document.getElementById("leisaacFrame");
+      const bitmap = await win.createImageBitmap(
+        new win.Blob([bytes], { type: "image/jpeg" })
+      );
       const canvas = win.document.createElement("canvas");
       canvas.width = 160;
       canvas.height = 90;
       const context = canvas.getContext("2d", { willReadFrequently: true });
-      context.drawImage(frame, 0, 0, canvas.width, canvas.height);
+      context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+      bitmap.close();
       const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
       let minimum = 255;
       let maximum = 0;
