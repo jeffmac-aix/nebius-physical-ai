@@ -511,7 +511,8 @@ def test_live_browser_runner_includes_leisaac_journey_and_environment_bridge() -
     runner = (ROOT / "npa/scripts/run_agent_cypress.sh").read_text(encoding="utf-8")
 
     assert "cypress/e2e/agent_leisaac_live.cy.js" in package["scripts"]["cy:live"]
-    assert 'CYPRESS_NPA_AGENT_RUN_ID="${LIVE_RUN_ID}"' in runner
+    assert 'CYPRESS_NPA_AGENT_CYPRESS_RUN_ID="${LIVE_SIM2REAL_RUN_ID}"' in runner
+    assert 'CYPRESS_NPA_AGENT_RUN_ID="${LIVE_LEISAAC_RUN_ID}"' in runner
     assert 'CYPRESS_NPA_AGENT_TASK="${LIVE_TASK}"' in runner
     assert 'CYPRESS_NPA_AGENT_ENVIRONMENT_ID="${LIVE_ENVIRONMENT_ID}"' in runner
     assert 'CYPRESS_NPA_AGENT_COMPLETED_EPISODES="${LIVE_COMPLETED_EPISODES}"' in runner
