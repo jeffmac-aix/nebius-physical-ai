@@ -7,6 +7,8 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
+from npa.workbench.leisaac import dataset as leisaac_dataset
+from npa.workbench.leisaac import paidf as leisaac_paidf
 from npa.workbench.leisaac.dataset import DatasetError, _encode_frames, sha256_file
 from npa.workbench.leisaac.paidf import (
     assert_temporal_alignment,
@@ -285,6 +287,21 @@ def test_temporal_alignment_rejects_frame_count_mismatch_and_nonblank_passes(
     short = _video(tmp_path, "short", [(20, 20, 20), (200, 200, 200)])
     with pytest.raises(DatasetError, match="frame-count mismatch"):
         assert_temporal_alignment(source, short)
+
+
+def test_packaged_ffmpeg_fallback_encodes_probes_and_decodes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(leisaac_dataset.shutil, "which", lambda _name: None)
+    video = _video(
+        tmp_path,
+        "packaged-runtime",
+        [(20, 30, 40), (90, 110, 130), (180, 200, 220)],
+    )
+
+    timestamps = leisaac_paidf._video_timestamps(video)
+    assert timestamps == pytest.approx([0.0, 0.0625, 0.125])
+    leisaac_paidf._assert_nonblank(video)
 
 
 def test_materialize_replaces_only_visual_modality_after_real_engine_proof(

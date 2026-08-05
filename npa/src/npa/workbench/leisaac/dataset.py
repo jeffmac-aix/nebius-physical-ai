@@ -53,6 +53,25 @@ class DatasetError(RuntimeError):
     """Raised when an episode cannot be safely recorded or published."""
 
 
+def _ffmpeg_executable() -> str:
+    """Resolve a real ffmpeg binary without requiring a system package."""
+
+    executable = shutil.which("ffmpeg")
+    if executable:
+        return executable
+    try:
+        import imageio_ffmpeg
+
+        executable = imageio_ffmpeg.get_ffmpeg_exe()
+    except (ImportError, RuntimeError) as exc:
+        raise DatasetError(
+            "ffmpeg is unavailable; install the npa runtime dependencies"
+        ) from exc
+    if not executable or not Path(executable).is_file():
+        raise DatasetError("the packaged ffmpeg executable is unavailable")
+    return executable
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -592,7 +611,7 @@ def _load_records(path: Path) -> list[dict[str, Any]]:
 def _encode_frames(frame_dir: Path, destination: Path, fps: int = FPS) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     command = [
-        "ffmpeg",
+        _ffmpeg_executable(),
         "-hide_banner",
         "-loglevel",
         "error",

@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
+import shutil
 import subprocess
 import tempfile
 import uuid
@@ -16,6 +18,7 @@ from npa.workbench.leisaac.dataset import (
     LEROBOT_TARGET_VERSION,
     VIDEO_KEY,
     DatasetError,
+    _ffmpeg_executable,
     sha256_file,
     split_s3_uri,
     utc_now,
@@ -241,27 +244,58 @@ def export_episode_to_paidf(
 
 
 def _video_timestamps(path: Path) -> list[float]:
-    result = subprocess.run(
-        [
-            "ffprobe",
-            "-v",
-            "error",
-            "-select_streams",
-            "v:0",
-            "-show_entries",
-            "frame=best_effort_timestamp_time",
-            "-of",
-            "json",
-            str(path),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode:
-        raise DatasetError(f"ffprobe failed for {path.name}: {result.stderr.strip()}")
-    frames = json.loads(result.stdout).get("frames", [])
-    values = [float(item["best_effort_timestamp_time"]) for item in frames]
+    ffprobe = shutil.which("ffprobe")
+    if ffprobe:
+        result = subprocess.run(
+            [
+                ffprobe,
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "frame=best_effort_timestamp_time",
+                "-of",
+                "json",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode:
+            raise DatasetError(
+                f"ffprobe failed for {path.name}: {result.stderr.strip()}"
+            )
+        frames = json.loads(result.stdout).get("frames", [])
+        values = [float(item["best_effort_timestamp_time"]) for item in frames]
+    else:
+        result = subprocess.run(
+            [
+                _ffmpeg_executable(),
+                "-hide_banner",
+                "-loglevel",
+                "info",
+                "-i",
+                str(path),
+                "-vf",
+                "showinfo",
+                "-f",
+                "null",
+                "-",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode:
+            raise DatasetError(
+                f"ffmpeg failed to inspect {path.name}: {result.stderr.strip()}"
+            )
+        values = [
+            float(value)
+            for value in re.findall(r"\bpts_time:([-+0-9.eE]+)", result.stderr)
+        ]
     if len(values) < 2:
         raise DatasetError("video has fewer than two decoded frames")
     return values
@@ -270,7 +304,7 @@ def _video_timestamps(path: Path) -> list[float]:
 def _assert_nonblank(path: Path) -> None:
     result = subprocess.run(
         [
-            "ffmpeg",
+            _ffmpeg_executable(),
             "-hide_banner",
             "-loglevel",
             "info",
