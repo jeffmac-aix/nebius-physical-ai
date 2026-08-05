@@ -186,6 +186,7 @@ class EpisodeRecorder:
         image: str = "",
         registry_fingerprint: str = "",
         publisher: Callable[[Path, dict[str, Any]], dict[str, Any]] | None = None,
+        status_loader: Callable[[], dict[str, Any]] | None = None,
     ) -> None:
         split_s3_uri(output_uri, label="output path")
         self.root = Path(root)
@@ -202,7 +203,13 @@ class EpisodeRecorder:
         self.isaac_lab_version = isaac_lab_version
         self.image = image
         self.registry_fingerprint = registry_fingerprint
-        self.publisher = publisher or S3DatasetStore(self.output_uri).publish_episode
+        if publisher is None:
+            store = S3DatasetStore(self.output_uri)
+            self.publisher = store.publish_episode
+            self._status_loader = store.resume_status
+        else:
+            self.publisher = publisher
+            self._status_loader = status_loader
         self.control_path = self.root / "control.jsonl"
         self.status_path = self.root / "status.json"
         self.pending_command_path = self.root / "pending-command.json"
@@ -226,6 +233,7 @@ class EpisodeRecorder:
         self._last_command_id = ""
         self._last_command = ""
         self._command_revision = 0
+        self._recovery_error = ""
         self._processed_commands: dict[str, str] = {}
         try:
             prior_status = json.loads(self.status_path.read_text(encoding="utf-8"))
@@ -248,7 +256,32 @@ class EpisodeRecorder:
                 self._last_command_id, self._last_command
             )
         self.control_path.touch(exist_ok=True)
+        self._recover_dataset_status()
         self._write_status()
+
+    def _recover_dataset_status(self) -> None:
+        if self._status_loader is None:
+            return
+        try:
+            recovered = self._status_loader()
+            self._completed = int(recovered["completed_episode_count"])
+            self._last_episode_index = recovered.get("last_episode_index")
+            self._last_outcome = str(recovered.get("last_outcome") or "")
+            self._last_upload_status = str(
+                recovered.get("last_upload_status") or "never"
+            )
+            self._dataset_version_uri = str(recovered.get("dataset_version_uri") or "")
+            self._last_episode_commit_uri = str(
+                recovered.get("last_episode_commit_uri") or ""
+            )
+            self._recovery_error = ""
+            self._last_error = ""
+        except Exception as exc:
+            self._recovery_error = _safe_error(exc)
+            self._last_error = (
+                "Dataset state recovery failed; retry Start episode after storage "
+                f"recovers: {self._recovery_error}"
+            )
 
     def status(self) -> dict[str, Any]:
         with self._lock:
@@ -298,6 +331,10 @@ class EpisodeRecorder:
 
     def start(self) -> None:
         with self._lock:
+            if self._recovery_error:
+                self._recover_dataset_status()
+            if self._recovery_error:
+                raise DatasetError(self._last_error)
             if self._state != "idle":
                 raise DatasetError("an episode is already active")
             self._episode_uuid = uuid.uuid4().hex
@@ -972,6 +1009,60 @@ class S3DatasetStore:
                 Metadata={"sha256": checksum},
             )
         return {"key": self._key(key), "sha256": checksum, "bytes": path.stat().st_size}
+
+    def resume_status(self) -> dict[str, Any]:
+        """Load the recorder's last committed state from the authoritative pointer."""
+
+        latest, _etag = self._read_latest()
+        if latest is None:
+            return {
+                "completed_episode_count": 0,
+                "last_episode_index": None,
+                "last_outcome": "",
+                "last_upload_status": "never",
+                "dataset_version_uri": "",
+                "last_episode_commit_uri": "",
+            }
+        manifest = self._manifest_from_latest(latest)
+        completed = int(manifest["episode_count"])
+        commit_uris = manifest.get("episode_commits")
+        if (
+            completed <= 0
+            or not isinstance(commit_uris, list)
+            or len(commit_uris) != completed
+        ):
+            raise DatasetError("current dataset manifest has invalid episode commits")
+        commit_uri = str(commit_uris[-1] or "")
+        bucket, key = split_s3_uri(commit_uri, label="latest episode commit URI")
+        if bucket != self.bucket or not key.startswith(self.prefix + "/commits/"):
+            raise DatasetError("latest episode commit escaped the output prefix")
+        try:
+            response = self.client.get_object(Bucket=bucket, Key=key)
+            commit = json.loads(response["Body"].read())
+        except Exception as exc:
+            raise DatasetError("latest episode commit is unreadable") from exc
+        metadata = commit.get("metadata") if isinstance(commit, dict) else None
+        outcome = (
+            str(metadata.get("outcome") or "") if isinstance(metadata, dict) else ""
+        )
+        episode_index = (
+            int(commit.get("episode_index", -1)) if isinstance(commit, dict) else -1
+        )
+        schema = commit.get("schema") if isinstance(commit, dict) else None
+        if (
+            schema != "npa.leisaac.episode-commit.v1"
+            or episode_index != completed - 1
+            or outcome not in _OUTCOMES
+        ):
+            raise DatasetError("latest episode commit does not match dataset version")
+        return {
+            "completed_episode_count": completed,
+            "last_episode_index": episode_index,
+            "last_outcome": outcome,
+            "last_upload_status": "uploaded",
+            "dataset_version_uri": str(manifest["dataset_uri"]),
+            "last_episode_commit_uri": commit_uri,
+        }
 
     def _commits(self) -> list[dict[str, Any]]:
         prefix = self._key("commits/episode-")

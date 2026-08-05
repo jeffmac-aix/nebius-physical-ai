@@ -165,6 +165,44 @@ def test_recorder_can_retry_a_failed_immutable_upload(tmp_path: Path) -> None:
     assert observed_metadata[0]["recorded_at"]
 
 
+def test_recorder_retries_failed_authoritative_status_recovery(tmp_path: Path) -> None:
+    attempts = 0
+
+    def recover() -> dict:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise DatasetError("temporary latest pointer failure")
+        return {
+            "completed_episode_count": 0,
+            "last_episode_index": None,
+            "last_outcome": "",
+            "last_upload_status": "never",
+            "dataset_version_uri": "",
+            "last_episode_commit_uri": "",
+        }
+
+    recorder = EpisodeRecorder(
+        root=tmp_path,
+        output_uri="s3://bucket/demos",
+        task="LeIsaac-SO101-PickOrange-v0",
+        environment_id="counter-a",
+        environment_index=0,
+        seed=7,
+        run_id="run-recover",
+        source_commit="1" * 40,
+        publisher=lambda _path, _metadata: {},
+        status_loader=recover,
+    )
+    assert "Dataset state recovery failed" in recorder.status()["last_error"]
+
+    recorder.start()
+
+    assert attempts == 2
+    assert recorder.status()["state"] == "recording"
+    assert recorder.status()["last_error"] == ""
+
+
 def test_recorder_command_ids_are_recoverable_and_idempotent(tmp_path: Path) -> None:
     recorder = EpisodeRecorder(
         root=tmp_path,
@@ -357,6 +395,35 @@ def test_s3_store_resumes_episode_numbers_and_publishes_lerobot_v3(
     assert result1["completed_episode_count"] == 2
     assert result0["dataset_version_uri"] != result1["dataset_version_uri"]
     assert fake.latest_precondition_failures == 1
+    resumed = store.resume_status()
+    assert resumed == {
+        "completed_episode_count": 2,
+        "last_episode_index": 1,
+        "last_outcome": "failure",
+        "last_upload_status": "uploaded",
+        "dataset_version_uri": result1["dataset_version_uri"],
+        "last_episode_commit_uri": (
+            "s3://bucket/demos/leisaac/commits/episode-000001.json"
+        ),
+    }
+    recovered_recorder = EpisodeRecorder(
+        root=tmp_path / "recovered-recorder",
+        output_uri="s3://bucket/demos/leisaac",
+        task="LeIsaac-SO101-LiftCube-v0",
+        environment_id="table-b",
+        environment_index=1,
+        seed=41,
+        run_id="run-recovered",
+        source_commit="1" * 40,
+        publisher=store.publish_episode,
+        status_loader=store.resume_status,
+    )
+    assert recovered_recorder.status()["completed_episode_count"] == 2
+    assert recovered_recorder.status()["last_outcome"] == "failure"
+    assert (
+        recovered_recorder.status()["dataset_version_uri"]
+        == result1["dataset_version_uri"]
+    )
     commits = [
         key for bucket, key in fake.objects if bucket == "bucket" and "/commits/" in key
     ]
