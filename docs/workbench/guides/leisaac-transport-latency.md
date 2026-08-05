@@ -74,6 +74,11 @@ connect. The HTTP frame/input routes remain authenticated and tested.
 Security properties:
 
 - nginx Basic Auth remains the public authentication boundary;
+- because the browser WebSocket constructor cannot attach an authorization
+  header, the Basic-authenticated API mints a 120-second `Secure`, `HttpOnly`,
+  `SameSite=Strict` cookie scoped only to `/api/leisaac/transport`; FastAPI
+  verifies its HMAC, expiry, run ID, and nginx-attested client address before
+  resolving or contacting a runtime;
 - no password, nonce, or long-lived secret appears in a WebSocket URL;
 - the public adapter requires HTTPS, exact `Origin == Host`, one exact
   subprotocol, one bounded `run_id` query parameter, a valid selected manifest,

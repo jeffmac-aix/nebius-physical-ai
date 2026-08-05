@@ -2950,12 +2950,28 @@
           };
         });
       }
+      async function authorizeLeIsaacSocketPair(status) {
+        const runId = String(status.run_id || "");
+        const response = await fetch(
+          "/api/leisaac/ws-session?run_id=" + encodeURIComponent(runId),
+          {
+            method: "POST",
+            credentials: "same-origin",
+            cache: "no-store",
+            headers: { "X-NPA-LeIsaac-Control": "1" },
+          },
+        );
+        if (response.status !== 204) {
+          throw new Error("preferred transport authorization failed (HTTP " + response.status + ")");
+        }
+      }
       async function connectLeIsaacPreferred(status) {
         let lastError = null;
         for (let attempt = 0; attempt < 3; attempt += 1) {
           if (leisaacManualDisconnect) return false;
           try {
             if (attempt) await new Promise((resolve) => window.setTimeout(resolve, 250 * (2 ** (attempt - 1))));
+            await authorizeLeIsaacSocketPair(status);
             await openLeIsaacSocketPair(status);
             leisaacReconnectAttempts = attempt;
             leisaacActiveTransport = "websocket-v1";

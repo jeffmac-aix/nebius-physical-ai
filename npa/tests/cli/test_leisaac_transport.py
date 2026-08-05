@@ -14,7 +14,11 @@ import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
-from npa.agent_backend.leisaac_routes import _same_origin_websocket
+from npa.agent_backend.leisaac_routes import (
+    _mint_ws_session,
+    _same_origin_websocket,
+    _valid_ws_session,
+)
 from npa.agent_backend.leisaac_transport import (
     AsyncLatestValue,
     CONTROL_SUBPROTOCOL,
@@ -229,6 +233,24 @@ def test_public_websocket_requires_exact_origin_and_subprotocol(
 ) -> None:
     websocket = SimpleNamespace(headers=headers)
     assert _same_origin_websocket(websocket, CONTROL_SUBPROTOCOL) is allowed
+
+
+def test_short_lived_ws_session_is_signed_and_bound_to_run_address_and_time() -> None:
+    secret = b"deterministic-test-secret"
+    token = _mint_ws_session(secret, RUN_ID, "203.0.113.7", now=1_000)
+
+    assert _valid_ws_session(secret, token, RUN_ID, "203.0.113.7", now=1_000)
+    assert _valid_ws_session(secret, token, RUN_ID, "203.0.113.7", now=1_120)
+    assert not _valid_ws_session(secret, token, "other-run", "203.0.113.7", now=1_000)
+    assert not _valid_ws_session(secret, token, RUN_ID, "203.0.113.8", now=1_000)
+    assert not _valid_ws_session(secret, token, RUN_ID, "203.0.113.7", now=1_121)
+    assert not _valid_ws_session(
+        secret,
+        token[:-1] + ("A" if token[-1] != "A" else "B"),
+        RUN_ID,
+        "203.0.113.7",
+        now=1_000,
+    )
 
 
 def _prepare_runtime(monkeypatch, tmp_path: Path):

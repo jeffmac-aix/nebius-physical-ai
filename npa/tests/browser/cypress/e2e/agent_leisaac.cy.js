@@ -1,5 +1,8 @@
 describe("NPA agent LeIsaac capability tab", () => {
   beforeEach(() => {
+    cy.intercept("POST", "/api/leisaac/ws-session*", {
+      statusCode: 204,
+    }).as("wsSession");
     cy.visitMockAgent();
     cy.wait("@session");
   });

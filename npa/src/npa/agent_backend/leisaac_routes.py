@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import hashlib
+import hmac
 import json
 import logging
 import re
@@ -20,6 +23,8 @@ from starlette.websockets import WebSocket
 LOG = logging.getLogger(__name__)
 _BACKHAUL_HEADER_SIZE = 9
 _BACKHAUL_MAX_FRAME = 4 * 1024 * 1024
+_WS_SESSION_COOKIE = "npa_leisaac_ws"
+_WS_SESSION_TTL_SECONDS = 120
 
 try:  # agent VM: /opt/npa-agent is on sys.path
     from agent_backend.leisaac import (
@@ -112,13 +117,13 @@ def _health(deps: LeIsaacDeps, manifest: dict) -> tuple[dict | None, str]:
     return validate_health(manifest, payload)
 
 
-def _same_origin_websocket(websocket: WebSocket, subprotocol: str) -> bool:
-    """Validate the public HTTPS origin and exact NPA subprotocol."""
+def _same_https_origin(headers: Any) -> bool:
+    """Validate that an nginx-forwarded browser request has the public HTTPS origin."""
 
-    if str(websocket.headers.get("x-forwarded-proto") or "").lower() != "https":
+    if str(headers.get("x-forwarded-proto") or "").lower() != "https":
         return False
-    origin = str(websocket.headers.get("origin") or "")
-    host = str(websocket.headers.get("host") or "").lower()
+    origin = str(headers.get("origin") or "")
+    host = str(headers.get("host") or "").lower()
     try:
         parsed = urlparse(origin)
         origin_host = str(parsed.hostname or "").lower()
@@ -127,6 +132,16 @@ def _same_origin_websocket(websocket: WebSocket, subprotocol: str) -> bool:
         host_port = int(raw_port) if raw_port else 443
     except (TypeError, ValueError):
         return False
+    return (
+        parsed.scheme == "https"
+        and origin_host == host_name
+        and origin_port == host_port
+    )
+
+
+def _same_origin_websocket(websocket: WebSocket, subprotocol: str) -> bool:
+    """Validate the public HTTPS origin and exact NPA subprotocol."""
+
     protocols = {
         item.strip()
         for item in str(websocket.headers.get("sec-websocket-protocol") or "").split(
@@ -134,11 +149,90 @@ def _same_origin_websocket(websocket: WebSocket, subprotocol: str) -> bool:
         )
         if item.strip()
     }
+    return _same_https_origin(websocket.headers) and protocols == {subprotocol}
+
+
+def _client_address(headers: Any, client: Any) -> str:
+    """Return the nginx-attested public client address without trusting browser input."""
+
+    address = str(headers.get("x-real-ip") or "").strip()
+    if address:
+        return address[:128]
+    return str(getattr(client, "host", "") or "")[:128]
+
+
+def _mint_ws_session(
+    secret: bytes,
+    run_id: str,
+    client_address: str,
+    *,
+    now: int | None = None,
+) -> str:
+    """Mint a short-lived opaque-to-the-browser transport authorization."""
+
+    issued_at = int(time.time() if now is None else now)
+    payload = json.dumps(
+        {
+            "client": client_address,
+            "expires": issued_at + _WS_SESSION_TTL_SECONDS,
+            "nonce": secrets.token_urlsafe(12),
+            "run_id": run_id,
+            "v": 1,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    body = base64.urlsafe_b64encode(payload).rstrip(b"=").decode("ascii")
+    signature = (
+        base64.urlsafe_b64encode(
+            hmac.new(secret, body.encode("ascii"), hashlib.sha256).digest()
+        )
+        .rstrip(b"=")
+        .decode("ascii")
+    )
+    return f"{body}.{signature}"
+
+
+def _valid_ws_session(
+    secret: bytes,
+    token: str,
+    run_id: str,
+    client_address: str,
+    *,
+    now: int | None = None,
+) -> bool:
+    """Validate the signed run/address binding and its deliberately short lifetime."""
+
+    try:
+        body, signature = token.split(".", 1)
+        expected = (
+            base64.urlsafe_b64encode(
+                hmac.new(secret, body.encode("ascii"), hashlib.sha256).digest()
+            )
+            .rstrip(b"=")
+            .decode("ascii")
+        )
+        if not hmac.compare_digest(signature, expected):
+            return False
+        padding = "=" * (-len(body) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(body + padding))
+        current = int(time.time() if now is None else now)
+        expires = int(payload.get("expires", 0))
+    except (
+        UnicodeEncodeError,
+        ValueError,
+        TypeError,
+        json.JSONDecodeError,
+        binascii.Error,
+    ):
+        return False
     return (
-        parsed.scheme == "https"
-        and origin_host == host_name
-        and origin_port == host_port
-        and protocols == {subprotocol}
+        payload.get("v") == 1
+        and payload.get("run_id") == run_id
+        and payload.get("client") == client_address
+        and isinstance(payload.get("nonce"), str)
+        and 1 <= len(payload["nonce"]) <= 64
+        and current <= expires <= current + _WS_SESSION_TTL_SECONDS + 5
     )
 
 
@@ -175,6 +269,7 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
     manifest_cache: dict[str, tuple[float, dict | None, str]] = {}
     manifest_cache_lock = threading.Lock()
     transport_metrics = TransportMetrics()
+    ws_session_secret = secrets.token_bytes(32)
 
     def cached_resolve(run_id: str) -> tuple[dict | None, str]:
         """Bound high-rate frame polling to one capability lookup per five seconds."""
@@ -322,6 +417,51 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
                 "X-Content-Type-Options": "nosniff",
             },
         )
+
+    @app.post("/leisaac/ws-session")
+    async def leisaac_ws_session(request: Request, run_id: str = "") -> Any:
+        """Issue a short-lived HttpOnly credential for nginx-auth-free WS upgrades."""
+
+        if (
+            not _same_https_origin(request.headers)
+            or request.headers.get("x-npa-leisaac-control") != "1"
+        ):
+            return deps.response(
+                content=json.dumps(
+                    {"detail": "same-origin authenticated HTTPS is required"}
+                ),
+                status_code=403,
+                media_type="application/json",
+                headers={"Cache-Control": "private, no-store"},
+            )
+        manifest, reason = await asyncio.to_thread(_resolve, deps, run_id)
+        if not manifest:
+            return deps.response(
+                content=json.dumps({"detail": reason}),
+                status_code=404,
+                media_type="application/json",
+                headers={"Cache-Control": "private, no-store"},
+            )
+        token = _mint_ws_session(
+            ws_session_secret,
+            str(manifest["run_id"]),
+            _client_address(request.headers, request.client),
+        )
+        response = deps.response(
+            content=b"",
+            status_code=204,
+            headers={"Cache-Control": "private, no-store"},
+        )
+        response.set_cookie(
+            _WS_SESSION_COOKIE,
+            token,
+            max_age=_WS_SESSION_TTL_SECONDS,
+            path="/api/leisaac/transport",
+            secure=True,
+            httponly=True,
+            samesite="strict",
+        )
+        return response
 
     @app.get("/leisaac/frame.jpg")
     def leisaac_frame(request: Request, run_id: str = "") -> Any:
@@ -568,6 +708,13 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
         if set(websocket.query_params.keys()) != {"run_id"}:
             return None, "only run_id is accepted"
         run_id = str(websocket.query_params.get("run_id") or "")
+        if not _valid_ws_session(
+            ws_session_secret,
+            str(websocket.cookies.get(_WS_SESSION_COOKIE) or ""),
+            run_id,
+            _client_address(websocket.headers, websocket.client),
+        ):
+            return None, "valid short-lived transport session is required"
         manifest, reason = await asyncio.to_thread(_resolve, deps, run_id)
         if not manifest:
             return None, reason

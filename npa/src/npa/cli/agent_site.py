@@ -176,6 +176,10 @@ def nginx_agent_site_body(
   # Separate sockets prevent a slow video client from head-of-line blocking
   # ordered control acknowledgements. WebSocket frames must never be buffered.
   location = /api/leisaac/transport/control {{
+    # Browser WebSocket APIs cannot attach Basic auth headers. A short-lived,
+    # same-origin HttpOnly cookie minted by the authenticated API is verified
+    # by FastAPI before the runtime is resolved or contacted.
+    auth_basic off;
     rewrite ^/api/(.*)$ /$1 break;
     proxy_pass http://127.0.0.1:{backend_port}/;
     proxy_http_version 1.1;
@@ -193,6 +197,7 @@ def nginx_agent_site_body(
     proxy_send_timeout 60s;
   }}
   location = /api/leisaac/transport/video {{
+    auth_basic off;
     rewrite ^/api/(.*)$ /$1 break;
     proxy_pass http://127.0.0.1:{backend_port}/;
     proxy_http_version 1.1;

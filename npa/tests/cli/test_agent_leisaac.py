@@ -493,6 +493,33 @@ def test_authenticated_backend_routes_gate_status_and_proxy_client(monkeypatch) 
         "available": True,
     }
     assert saved_states[-1]["leisaac"] == {"run_id": raw_manifest["run_id"]}
+    ws_session_headers = {
+        "host": "testserver",
+        "origin": "https://testserver",
+        "x-forwarded-proto": "https",
+        "x-npa-leisaac-control": "1",
+        "x-real-ip": "203.0.113.7",
+    }
+    ws_session = client.post(
+        "/leisaac/ws-session",
+        params={"run_id": raw_manifest["run_id"]},
+        headers=ws_session_headers,
+    )
+    assert ws_session.status_code == 204
+    assert ws_session.content == b""
+    cookie = ws_session.headers["set-cookie"]
+    assert "npa_leisaac_ws=" in cookie
+    assert "HttpOnly" in cookie
+    assert "Max-Age=120" in cookie
+    assert "Path=/api/leisaac/transport" in cookie
+    assert "SameSite=strict" in cookie
+    assert "Secure" in cookie
+    forbidden_ws_session = client.post(
+        "/leisaac/ws-session",
+        params={"run_id": raw_manifest["run_id"]},
+        headers={**ws_session_headers, "origin": "https://evil.example"},
+    )
+    assert forbidden_ws_session.status_code == 403
     state["sim_viz"] = {"active_run_id": "unrelated-artifact-run"}
     remembered = client.get("/leisaac/status", headers={"x-forwarded-proto": "https"})
     assert remembered.status_code == 200
