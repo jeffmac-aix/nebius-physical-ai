@@ -45,6 +45,21 @@ def _json_object(client: Any, bucket: str, key: str) -> dict[str, Any]:
     return payload
 
 
+def _metadata_sha256(response: dict[str, Any]) -> str:
+    """Read S3 user metadata without assuming a provider's key casing."""
+
+    metadata = response.get("Metadata")
+    if not isinstance(metadata, dict):
+        return ""
+    return str(
+        next(
+            (value for key, value in metadata.items() if str(key).lower() == "sha256"),
+            "",
+        )
+        or ""
+    )
+
+
 def _dataset_manifest(client: Any, dataset_uri: str) -> tuple[str, str, dict[str, Any]]:
     bucket, prefix = split_s3_uri(dataset_uri, label="dataset version URI")
     manifest = _json_object(client, bucket, f"{prefix}/npa-dataset.json")
@@ -92,16 +107,13 @@ def export_episode_to_paidf(
     manifest_head = client.head_object(
         Bucket=source_bucket, Key=f"{source_prefix}/npa-dataset.json"
     )
-    manifest_sha256 = str(manifest_head.get("Metadata", {}).get("sha256") or "")
+    manifest_sha256 = _metadata_sha256(manifest_head)
     if len(manifest_sha256) != 64:
         raise DatasetError("source dataset manifest has no SHA-256 object metadata")
     commit_uri = str(manifest["episode_commits"][episode_index])
     commit_bucket, commit_key = split_s3_uri(commit_uri, label="episode commit URI")
-    commit_sha256 = str(
+    commit_sha256 = _metadata_sha256(
         client.head_object(Bucket=commit_bucket, Key=commit_key)
-        .get("Metadata", {})
-        .get("sha256")
-        or ""
     )
     frames = commit.get("objects", {}).get("frames")
     if (
@@ -137,6 +149,33 @@ def export_episode_to_paidf(
         MetadataDirective="COPY",
         IfNoneMatch="*",
     )
+    annotation_count = min(8, len(frames))
+    annotation_indexes = (
+        [0]
+        if annotation_count == 1
+        else [
+            round(index * (len(frames) - 1) / (annotation_count - 1))
+            for index in range(annotation_count)
+        ]
+    )
+    annotation_frames: list[dict[str, Any]] = []
+    for frame_index in annotation_indexes:
+        frame = frames[frame_index]
+        annotation_key = f"{output_prefix}/input/leisaac-frame-{frame_index:06d}.jpg"
+        client.copy_object(
+            Bucket=output_bucket,
+            Key=annotation_key,
+            CopySource={"Bucket": source_bucket, "Key": frame["key"]},
+            MetadataDirective="COPY",
+            IfNoneMatch="*",
+        )
+        annotation_frames.append(
+            {
+                "frame_index": frame_index,
+                "uri": f"s3://{output_bucket}/{annotation_key}",
+                "sha256": frame["sha256"],
+            }
+        )
     lineage = {
         "schema": "npa.leisaac.paidf-input.v1",
         "created_at": utc_now(),
@@ -160,6 +199,7 @@ def export_episode_to_paidf(
             "run_id": paidf_run_id,
             "run_uri": f"s3://{output_bucket}/{output_prefix}",
             "input_uri": f"s3://{output_bucket}/{input_key}",
+            "annotation_frames": annotation_frames,
             "required_tool_ref": "workbench.cosmos2.transfer_execute",
             "required_engine": "cosmos_transfer2.5_gpu",
             "condition_on_input": True,
@@ -195,6 +235,7 @@ def export_episode_to_paidf(
         "workflow": "npa/workflows/physical-ai-data-factory.yaml",
         "tool_ref": "workbench.cosmos2.transfer_execute",
         "condition_on_input": True,
+        "annotation_frame_count": len(annotation_frames),
         "command": command,
     }
 
@@ -320,20 +361,15 @@ def materialize_paidf_dataset(
     source_manifest_head = client.head_object(
         Bucket=source_bucket, Key=f"{source_prefix}/npa-dataset.json"
     )
-    source_manifest_sha256 = str(
-        source_manifest_head.get("Metadata", {}).get("sha256") or ""
-    )
+    source_manifest_sha256 = _metadata_sha256(source_manifest_head)
     source = lineage.get("source", {})
     source_commit_uri = str(source.get("episode_commit_uri") or "")
     try:
         source_commit_bucket, source_commit_key = split_s3_uri(
             source_commit_uri, label="source episode commit URI"
         )
-        source_commit_sha256 = str(
+        source_commit_sha256 = _metadata_sha256(
             client.head_object(Bucket=source_commit_bucket, Key=source_commit_key)
-            .get("Metadata", {})
-            .get("sha256")
-            or ""
         )
     except Exception as exc:
         raise DatasetError("source episode commit checksum is unavailable") from exc

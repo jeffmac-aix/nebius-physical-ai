@@ -148,6 +148,13 @@ def _source(fake: FakeS3, video: Path) -> tuple[str, dict]:
     fake.add(
         "bucket", "source/episodes/000000/episode.mp4", video_bytes, sha256=video_sha
     )
+    for frame in frame_objects:
+        fake.add(
+            "bucket",
+            frame["key"],
+            b"jpeg",
+            sha256=frame["sha256"],
+        )
     fake.add(
         "bucket", "source/versions/v000001-test/meta/info.json", b"{}", sha256="c" * 64
     )
@@ -195,6 +202,16 @@ def test_export_paidf_is_input_conditioned_and_preserves_source_lineage(
     assert lineage["source"]["video_sha256"] == commit["objects"]["video"]["sha256"]
     assert lineage["source"]["task"] == "LeIsaac-SO101-PickOrange-v0"
     assert lineage["paidf"]["required_engine"] == "cosmos_transfer2.5_gpu"
+    assert result["annotation_frame_count"] == 3
+    assert [item["frame_index"] for item in lineage["paidf"]["annotation_frames"]] == [
+        0,
+        1,
+        2,
+    ]
+    assert all(
+        item["sha256"] == commit["objects"]["frames"][item["frame_index"]]["sha256"]
+        for item in lineage["paidf"]["annotation_frames"]
+    )
     nested = export_episode_to_paidf(
         dataset_uri=dataset_uri,
         episode_index=0,
@@ -221,6 +238,37 @@ def test_export_paidf_is_input_conditioned_and_preserves_source_lineage(
             paidf_output_path="s3://bucket/random/place",
             client=fake,
         )
+
+
+def test_export_paidf_accepts_provider_normalized_metadata_casing(
+    tmp_path: Path,
+) -> None:
+    fake = FakeS3()
+    source_video = _video(
+        tmp_path, "source", [(30, 30, 30), (100, 80, 60), (180, 150, 120)]
+    )
+    dataset_uri, _commit = _source(fake, source_video)
+    for key, (body, metadata) in list(fake.objects.items()):
+        fake.objects[key] = (
+            body,
+            {
+                (name.capitalize() if name.lower() == "sha256" else name): value
+                for name, value in metadata.items()
+            },
+        )
+
+    result = export_episode_to_paidf(
+        dataset_uri=dataset_uri,
+        episode_index=0,
+        paidf_run_id="paidf-metadata-casing",
+        paidf_output_path=(
+            "s3://bucket/physical-ai-data-factory/paidf-metadata-casing"
+        ),
+        client=fake,
+    )
+
+    assert result["status"] == "exported"
+    assert result["condition_on_input"] is True
 
 
 def test_temporal_alignment_rejects_frame_count_mismatch_and_nonblank_passes(
