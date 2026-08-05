@@ -19,7 +19,7 @@ index a467482..1636d68 100644
  from isaaclab.managers import DatasetExportMode, TerminationTermCfg
  from isaaclab_tasks.utils import parse_env_cfg
  from leisaac.enhance.managers import EnhanceDatasetExportMode, StreamingRecorderManager
-@@ -158,6 +163,18 @@ def main():  # noqa: C901
+@@ -158,6 +163,21 @@ def main():  # noqa: C901
 
      env_cfg = parse_env_cfg(args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs)
      env_cfg.use_teleop_device(args_cli.teleop_device)
@@ -32,13 +32,16 @@ index a467482..1636d68 100644
 +        env_cfg.scene.wrist = None
 +        env_cfg.scene.front = None
 +        env_cfg.events.domain_randomize_4 = None
++        # LiftCube's second reset randomizer targets the removed policy camera.
++        if args_cli.task == "LeIsaac-SO101-LiftCube-v0":
++            env_cfg.events.domain_randomize_1 = None
 +        # This uses the viewport, not RTX camera observations. Isaac Lab's
 +        # default texture wait can remain true forever on this path.
 +        env_cfg.wait_for_textures = False
      env_cfg.seed = args_cli.seed if args_cli.seed is not None else int(time.time())
      task_name = args_cli.task
 
-@@ -312,6 +329,81 @@ def main():  # noqa: C901
+@@ -312,6 +332,81 @@ def main():  # noqa: C901
          env.initialize()
      env.reset()
      teleop_interface.reset()
@@ -120,7 +123,7 @@ index a467482..1636d68 100644
 
      resume_recorded_demo_count = 0
      if args_cli.record and args_cli.resume:
-@@ -379,7 +471,19 @@ def main():  # noqa: C901
+@@ -379,7 +474,19 @@ def main():  # noqa: C901
                          if args_cli.record:
                              print("Start Recording!!!")
                          start_record_state = True

@@ -384,6 +384,8 @@ def test_observability_patch_is_exact_and_records_real_upstream_input() -> None:
     assert "env_cfg.scene.wrist = None" in source
     assert "env_cfg.scene.front = None" in source
     assert "env_cfg.events.domain_randomize_4 = None" in source
+    assert 'args_cli.task == "LeIsaac-SO101-LiftCube-v0"' in source
+    assert "env_cfg.events.domain_randomize_1 = None" in source
     assert "env_cfg.wait_for_textures = False" in source
     assert 'if os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") == "1":' in source
     assert "env.render()" in source
