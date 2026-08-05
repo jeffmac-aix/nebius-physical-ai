@@ -8420,7 +8420,7 @@ EnvironmentFile=-/opt/npa-agent/nebius.env
 EnvironmentFile=-/opt/npa-agent/s3.env
 EnvironmentFile=-/opt/npa-agent/public.env
 EnvironmentFile=-/opt/npa-agent/foxglove.env
-ExecStart=/opt/npa-agent/venv/bin/uvicorn backend:app --host 127.0.0.1 --port {backend_port} --ws websockets --ws-max-size 4194304 --ws-max-queue 4 --ws-ping-interval 10 --ws-ping-timeout 10 --no-ws-per-message-deflate
+ExecStart=/opt/npa-agent/venv/bin/uvicorn backend:app --host 127.0.0.1 --port {backend_port} --ws websockets --ws-max-size 4194304 --ws-max-queue 4 --ws-ping-interval 10 --ws-ping-timeout 10 --ws-per-message-deflate false
 WorkingDirectory=/opt/npa-agent
 Restart=always
 [Install]

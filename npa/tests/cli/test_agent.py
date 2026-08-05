@@ -1836,6 +1836,8 @@ def test_bootstrap_emitted_ui_script_is_valid_javascript(monkeypatch) -> None:
     )
 
     setup_script = captured["setup_script"]
+    assert "--ws-per-message-deflate false" in setup_script
+    assert "--no-ws-per-message-deflate" not in setup_script
     html_match = re.search(
         r"cat <<'HTML' \| sudo tee /opt/npa-agent/ui\.html >/dev/null\n(?P<html>.*?)\nHTML",
         setup_script,
