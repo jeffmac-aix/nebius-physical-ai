@@ -520,6 +520,28 @@ def test_authenticated_backend_routes_gate_status_and_proxy_client(monkeypatch) 
         headers={**ws_session_headers, "origin": "https://evil.example"},
     )
     assert forbidden_ws_session.status_code == 403
+    fetch_metadata_session = client.post(
+        "/leisaac/ws-session",
+        params={"run_id": raw_manifest["run_id"]},
+        headers={
+            **ws_session_headers,
+            "origin": "",
+            "referer": "https://testserver/",
+            "sec-fetch-site": "same-origin",
+        },
+    )
+    assert fetch_metadata_session.status_code == 204
+    cross_site_metadata_session = client.post(
+        "/leisaac/ws-session",
+        params={"run_id": raw_manifest["run_id"]},
+        headers={
+            **ws_session_headers,
+            "origin": "",
+            "referer": "https://testserver/",
+            "sec-fetch-site": "cross-site",
+        },
+    )
+    assert cross_site_metadata_session.status_code == 403
     state["sim_viz"] = {"active_run_id": "unrelated-artifact-run"}
     remembered = client.get("/leisaac/status", headers={"x-forwarded-proto": "https"})
     assert remembered.status_code == 200

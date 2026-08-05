@@ -139,6 +139,18 @@ def _same_https_origin(headers: Any) -> bool:
     )
 
 
+def _same_origin_session_request(headers: Any) -> bool:
+    """Accept exact Origin or Chromium's same-origin Fetch Metadata + referrer."""
+
+    if _same_https_origin(headers):
+        return True
+    if str(headers.get("sec-fetch-site") or "").lower() != "same-origin":
+        return False
+    forwarded = dict(headers)
+    forwarded["origin"] = str(headers.get("referer") or "")
+    return _same_https_origin(forwarded)
+
+
 def _same_origin_websocket(websocket: WebSocket, subprotocol: str) -> bool:
     """Validate the public HTTPS origin and exact NPA subprotocol."""
 
@@ -423,7 +435,7 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
         """Issue a short-lived HttpOnly credential for nginx-auth-free WS upgrades."""
 
         if (
-            not _same_https_origin(request.headers)
+            not _same_origin_session_request(request.headers)
             or request.headers.get("x-npa-leisaac-control") != "1"
         ):
             return deps.response(
