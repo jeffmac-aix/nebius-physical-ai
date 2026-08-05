@@ -13,6 +13,8 @@ import hmac
 import http.server
 import json
 import os
+import re
+import secrets
 import shutil
 import signal
 import subprocess
@@ -102,8 +104,10 @@ FRAME_PATH = Path("/tmp/npa-leisaac-frame.jpg")
 RECORDER_ROOT = Path("/tmp/npa-leisaac-recorder")
 RECORDER_STATUS_PATH = RECORDER_ROOT / "status.json"
 RECORDER_CONTROL_PATH = RECORDER_ROOT / "control.jsonl"
+RECORDER_PENDING_PATH = RECORDER_ROOT / "pending-command.json"
 STATE_LOCK = threading.Lock()
 INPUT_LOCK = threading.Lock()
+RECORDER_COMMAND_LOCK = threading.Lock()
 STATE: dict[str, Any] = {
     "state": "starting",
     "detail": "staging runtime",
@@ -117,6 +121,105 @@ CHILD: subprocess.Popen[str] | None = None
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    temporary.replace(path)
+
+
+def enqueue_recorder_command(
+    command: str, request_id: str
+) -> tuple[int, dict[str, Any]]:
+    """Validate and reserve exactly one asynchronous recorder transition."""
+
+    if command not in {"start", "mark-success", "mark-failure", "finalize"}:
+        return 400, {"detail": "invalid recorder command"}
+    if not re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", request_id):
+        return 400, {"detail": "invalid recorder request ID"}
+    with RECORDER_COMMAND_LOCK:
+        try:
+            status = json.loads(RECORDER_STATUS_PATH.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return 503, {"detail": "recorder unavailable"}
+        if not isinstance(status, dict):
+            return 503, {"detail": "recorder unavailable"}
+        if status.get("last_command_id") == request_id:
+            if status.get("last_command") != command:
+                return 409, {"detail": "recorder request ID was reused"}
+            RECORDER_PENDING_PATH.unlink(missing_ok=True)
+            return 202, {
+                "accepted": True,
+                "duplicate": True,
+                "processed": True,
+                "request_id": request_id,
+            }
+        try:
+            pending = json.loads(RECORDER_PENDING_PATH.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            pending = None
+        if isinstance(pending, dict):
+            if (
+                pending.get("request_id") == request_id
+                and pending.get("command") == command
+            ):
+                return 202, {
+                    "accepted": True,
+                    "duplicate": True,
+                    "processed": False,
+                    "request_id": request_id,
+                }
+            return 409, {
+                "detail": "another recorder transition is already in progress",
+                "pending_command": str(pending.get("command") or ""),
+            }
+        state = str(status.get("state") or "")
+        valid = {
+            "start": state == "idle",
+            "mark-success": state in {"recording", "outcome-pending"},
+            "mark-failure": state in {"recording", "outcome-pending"},
+            "finalize": state in {"outcome-pending", "upload-failed"},
+        }
+        if not valid[command]:
+            return 409, {
+                "detail": "invalid recorder transition",
+                "state": state,
+            }
+        pending = {
+            "schema": "npa.leisaac.recorder-command.v1",
+            "request_id": request_id,
+            "command": command,
+            "state_before": state,
+            "accepted_at": utc_now(),
+        }
+        try:
+            _write_json_atomic(RECORDER_PENDING_PATH, pending)
+            record = (
+                json.dumps(
+                    {"command": command, "request_id": request_id},
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                + "\n"
+            )
+            with RECORDER_CONTROL_PATH.open("a", encoding="utf-8") as queue:
+                queue.write(record)
+                queue.flush()
+                os.fsync(queue.fileno())
+        except OSError:
+            RECORDER_PENDING_PATH.unlink(missing_ok=True)
+            return 503, {"detail": "recorder command queue is unavailable"}
+        return 202, {
+            "accepted": True,
+            "duplicate": False,
+            "processed": False,
+            "request_id": request_id,
+        }
 
 
 def require_operator_eula() -> None:
@@ -581,39 +684,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
             payload = None
         if path == "/recorder/control":
             command = str(payload.get("command") if isinstance(payload, dict) else "")
-            if command not in {"start", "mark-success", "mark-failure", "finalize"}:
-                self.send_bytes(
-                    400, "application/json", b'{"detail":"invalid recorder command"}\n'
-                )
-                return
-            try:
-                status = json.loads(RECORDER_STATUS_PATH.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                self.send_bytes(
-                    503, "application/json", b'{"detail":"recorder unavailable"}\n'
-                )
-                return
-            state = str(status.get("state") or "")
-            valid = {
-                "start": state == "idle",
-                "mark-success": state in {"recording", "outcome-pending"},
-                "mark-failure": state in {"recording", "outcome-pending"},
-                "finalize": state in {"outcome-pending", "upload-failed"},
-            }
-            if not valid[command]:
-                self.send_bytes(
-                    409,
-                    "application/json",
-                    b'{"detail":"invalid recorder transition"}\n',
-                )
-                return
-            record = json.dumps({"command": command}, separators=(",", ":")) + "\n"
-            with INPUT_LOCK:
-                with RECORDER_CONTROL_PATH.open("a", encoding="utf-8") as queue:
-                    queue.write(record)
-                    queue.flush()
-                    os.fsync(queue.fileno())
-            self.send_bytes(202, "application/json", b'{"accepted":true}\n')
+            request_id = str(
+                payload.get("request_id") if isinstance(payload, dict) else ""
+            ) or secrets.token_hex(16)
+            status_code, response = enqueue_recorder_command(command, request_id)
+            self.send_bytes(
+                status_code,
+                "application/json",
+                (json.dumps(response, sort_keys=True) + "\n").encode(),
+            )
             return
         key = str(payload.get("key") if isinstance(payload, dict) else "").upper()
         event = str(payload.get("event") if isinstance(payload, dict) else "")

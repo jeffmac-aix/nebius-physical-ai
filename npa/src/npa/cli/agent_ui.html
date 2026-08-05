@@ -2176,6 +2176,10 @@
       let leisaacPeerConnectionRestore = null;
       let leisaacFrameTimer = null;
       let leisaacFrameSequence = 0;
+      let leisaacRecorderTimer = null;
+      let leisaacRecorderPollInFlight = false;
+      let leisaacRecorderPending = null;
+      let leisaacRecorderUiError = "";
       const LEISAAC_KEYS = new Set(["W", "S", "A", "D", "Q", "E", "J", "L", "I", "K", "U", "O"]);
       function leisaacPanelMarkup(status) {
         const runId = escapeHtml(String(status.run_id || ""));
@@ -2218,21 +2222,39 @@
             <div class="leisaac-head">
               <div>
                 <strong>Episode recorder</strong>
-                <p id="leisaacRecorderStatus" class="hint">Loading recorder status…</p>
-                <p id="leisaacRecorderError" class="hint"></p>
+                <p id="leisaacRecorderStatus" class="hint" aria-live="polite">Loading recorder status…</p>
+                <p id="leisaacRecorderGuidance" class="hint">Start an episode before choosing its outcome.</p>
+                <p id="leisaacRecorderArtifact" class="hint"></p>
+                <p id="leisaacRecorderError" class="hint" role="alert"></p>
               </div>
               <div class="leisaac-actions">
-                <button id="leisaacRecordStart" class="btn btn-primary" type="button">Start episode</button>
-                <button id="leisaacRecordSuccess" class="btn" type="button" disabled>Mark success</button>
-                <button id="leisaacRecordFailure" class="btn" type="button" disabled>Mark failure</button>
-                <button id="leisaacRecordFinalize" class="btn" type="button" disabled>Finalize &amp; upload</button>
+                <button id="leisaacRecordStart" class="btn btn-primary" type="button" title="Start recording a new episode">Start episode</button>
+                <button id="leisaacRecordSuccess" class="btn" type="button" aria-pressed="false" title="Start an episode before marking its outcome" disabled>Mark success</button>
+                <button id="leisaacRecordFailure" class="btn" type="button" aria-pressed="false" title="Start an episode before marking its outcome" disabled>Mark failure</button>
+                <button id="leisaacRecordFinalize" class="btn" type="button" title="Mark success or failure before finalizing" disabled>Finalize &amp; upload</button>
               </div>
             </div>
           </section>`;
       }
+      function setLeIsaacRecorderButton(button, enabled, reason) {
+        if (!button) return;
+        const busy = Boolean(leisaacRecorderPending);
+        button.disabled = busy || !enabled;
+        button.setAttribute("aria-disabled", button.disabled ? "true" : "false");
+        button.title = busy
+          ? "Waiting for " + String(leisaacRecorderPending.command || "recorder transition")
+          : String(reason || "Ready");
+        button.setAttribute("data-disabled-reason", button.disabled ? button.title : "");
+      }
       function updateLeIsaacRecorder(status) {
         const recorder = (status && status.recorder) || {};
         const state = String(recorder.state || "unavailable");
+        if (
+          leisaacRecorderPending
+          && String(recorder.last_command_id || "") === String(leisaacRecorderPending.requestId || "")
+        ) {
+          leisaacRecorderPending = null;
+        }
         const label = document.getElementById("leisaacRecorderStatus");
         if (label) {
           label.textContent = "State: " + state
@@ -2242,31 +2264,137 @@
             + " · last outcome/upload: " + String(recorder.last_outcome || "none")
             + "/" + String(recorder.last_upload_status || "never");
         }
+        const guidance = document.getElementById("leisaacRecorderGuidance");
+        if (guidance) {
+          const messages = {
+            idle: recorder.last_upload_status === "uploaded"
+              ? "Upload complete. Start episode is ready for another demonstration."
+              : "Ready. Start an episode, teleoperate the robot, then choose success or failure.",
+            recording: "Recording live simulator frames. Teleoperate now, then mark success or failure; finalization stays locked until an outcome is selected.",
+            "outcome-pending": "Outcome selected: " + String(recorder.pending_outcome || "unknown") + ". The episode is preserved locally; use Finalize & upload to commit it.",
+            uploading: "Finalizing records and H.264 video, then publishing the immutable S3 episode commit and dataset version.",
+            "upload-failed": "Upload failed without discarding the episode. Use Finalize & upload to retry the same immutable episode.",
+            starting: "Recorder is starting. Controls will become available when authoritative backend state is ready.",
+            unavailable: "Recorder status is temporarily unavailable; reconnect/polling will recover backend state automatically.",
+          };
+          guidance.textContent = messages[state] || ("Recorder state: " + state + ". Waiting for an actionable transition.");
+        }
+        const artifact = document.getElementById("leisaacRecorderArtifact");
+        if (artifact) {
+          const version = String(recorder.dataset_version_uri || "");
+          const commit = String(recorder.last_episode_commit_uri || "");
+          artifact.textContent = version
+            ? "Immutable dataset: " + version
+              + (recorder.last_episode_index === null || recorder.last_episode_index === undefined
+                ? ""
+                : " · episode " + String(recorder.last_episode_index))
+              + (commit ? " · commit " + commit : "")
+            : "No finalized dataset version for this recorder session yet.";
+        }
         const error = document.getElementById("leisaacRecorderError");
-        if (error) error.textContent = String(recorder.last_error || "");
+        if (error) error.textContent = String(leisaacRecorderUiError || recorder.last_error || "");
         const start = document.getElementById("leisaacRecordStart");
         const success = document.getElementById("leisaacRecordSuccess");
         const failure = document.getElementById("leisaacRecordFailure");
         const finalize = document.getElementById("leisaacRecordFinalize");
-        if (start) start.disabled = state !== "idle";
-        if (success) success.disabled = !(state === "recording" || state === "outcome-pending");
-        if (failure) failure.disabled = !(state === "recording" || state === "outcome-pending");
-        if (finalize) finalize.disabled = !(state === "outcome-pending" || state === "upload-failed");
+        const outcomeReady = state === "recording" || state === "outcome-pending";
+        setLeIsaacRecorderButton(
+          start,
+          state === "idle",
+          state === "idle" ? "Start recording a new episode" : "Finish the active episode before starting another",
+        );
+        setLeIsaacRecorderButton(
+          success,
+          outcomeReady,
+          outcomeReady ? "Persist success as the active episode outcome" : "Start an episode before marking its outcome",
+        );
+        setLeIsaacRecorderButton(
+          failure,
+          outcomeReady,
+          outcomeReady ? "Persist failure as the active episode outcome" : "Start an episode before marking its outcome",
+        );
+        setLeIsaacRecorderButton(
+          finalize,
+          state === "outcome-pending" || state === "upload-failed",
+          state === "upload-failed"
+            ? "Retry finalizing and uploading the same episode"
+            : state === "outcome-pending"
+              ? "Finalize records and H.264 video, then upload one immutable episode commit"
+              : "Mark success or failure before finalizing",
+        );
+        if (success) success.setAttribute("aria-pressed", recorder.pending_outcome === "success" ? "true" : "false");
+        if (failure) failure.setAttribute("aria-pressed", recorder.pending_outcome === "failure" ? "true" : "false");
+      }
+      function leisaacRecorderRequestId() {
+        if (window.crypto && typeof window.crypto.randomUUID === "function") return window.crypto.randomUUID();
+        return "recorder-" + String(Date.now()) + "-" + Math.random().toString(16).slice(2);
       }
       async function sendLeIsaacRecorder(command) {
         const status = leisaacCapability;
         if (!status || !status.recorder_url) throw new Error("LeIsaac recorder is unavailable");
+        if (leisaacRecorderPending) throw new Error("A recorder transition is already in progress");
+        const requestId = leisaacRecorderRequestId();
+        leisaacRecorderPending = { command: command, requestId: requestId };
+        leisaacRecorderUiError = "";
+        updateLeIsaacRecorder(status);
         const response = await fetch(String(status.recorder_url), {
           method: "POST",
           credentials: "include",
           cache: "no-store",
           headers: { "Content-Type": "application/json", "X-NPA-LeIsaac-Control": "1" },
-          body: JSON.stringify({ command: command }),
+          body: JSON.stringify({ command: command, request_id: requestId }),
         });
         const payload = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(String(payload.detail || ("Recorder returned HTTP " + response.status)));
-        await new Promise((resolve) => window.setTimeout(resolve, command === "finalize" ? 1000 : 200));
-        await refreshLeIsaacCapability(String(status.run_id || ""));
+        if (!response.ok) {
+          leisaacRecorderPending = null;
+          leisaacRecorderUiError = String(payload.detail || ("Recorder returned HTTP " + response.status));
+          updateLeIsaacRecorder(status);
+          throw new Error(leisaacRecorderUiError);
+        }
+        startLeIsaacRecorderPolling();
+        await pollLeIsaacRecorder();
+      }
+      function stopLeIsaacRecorderPolling() {
+        if (leisaacRecorderTimer !== null) window.clearTimeout(leisaacRecorderTimer);
+        leisaacRecorderTimer = null;
+      }
+      function startLeIsaacRecorderPolling() {
+        if (leisaacRecorderTimer !== null || leisaacRecorderPollInFlight || !leisaacCapability) return;
+        const state = String(((leisaacCapability || {}).recorder || {}).state || "unavailable");
+        const active = Boolean(leisaacRecorderPending)
+          || ["recording", "outcome-pending", "uploading", "upload-failed"].includes(state);
+        leisaacRecorderTimer = window.setTimeout(() => {
+          leisaacRecorderTimer = null;
+          pollLeIsaacRecorder().catch(() => null);
+        }, active ? 500 : 2000);
+      }
+      async function pollLeIsaacRecorder() {
+        if (leisaacRecorderPollInFlight || !leisaacCapability) return null;
+        const runId = String(leisaacCapability.run_id || "");
+        if (!runId) return null;
+        leisaacRecorderPollInFlight = true;
+        try {
+          const status = await loadJson(
+            "/api/leisaac/status?run_id=" + encodeURIComponent(runId),
+          );
+          if (!(status && status.available && String(status.run_id || "") === runId)) {
+            throw new Error(String((status && status.reason) || "recorder status is unavailable"));
+          }
+          leisaacCapability = status;
+          leisaacRecorderUiError = "";
+          updateLeIsaacRecorder(status);
+          return status;
+        } catch (err) {
+          leisaacRecorderUiError = "Recorder status refresh failed; retrying automatically: " + String(err);
+          const stale = (leisaacCapability && leisaacCapability.recorder) || {};
+          updateLeIsaacRecorder({
+            recorder: Object.assign({}, stale, { state: "unavailable" }),
+          });
+          return null;
+        } finally {
+          leisaacRecorderPollInFlight = false;
+          startLeIsaacRecorderPolling();
+        }
       }
       function setLeIsaacStreamState(text, tone) {
         const label = document.getElementById("leisaacStreamStatus");
@@ -2516,6 +2644,9 @@
         let panel = document.getElementById("panelLeIsaac");
         const changedRun = panel && panel.getAttribute("data-run-id") !== String(status.run_id || "");
         if (changedRun) {
+          stopLeIsaacRecorderPolling();
+          leisaacRecorderPending = null;
+          leisaacRecorderUiError = "";
           disconnectLeIsaac().catch(() => {});
           panel.remove();
           panel = null;
@@ -2563,15 +2694,19 @@
           }
         }
         updateLeIsaacRecorder(status);
+        startLeIsaacRecorderPolling();
       }
       function removeLeIsaacTab() {
         const tab = document.getElementById("tabLeIsaac");
         const panel = document.getElementById("panelLeIsaac");
         if (activeMainTab === "leisaac") activateMainTab("main", { skipEnsure: true });
+        stopLeIsaacRecorderPolling();
         disconnectLeIsaac().catch(() => {});
         if (tab) tab.remove();
         if (panel) panel.remove();
         leisaacCapability = null;
+        leisaacRecorderPending = null;
+        leisaacRecorderUiError = "";
       }
       async function refreshLeIsaacCapability(runId) {
         const target = String(runId || "").trim();
@@ -7506,6 +7641,8 @@
           markLichtblickLayoutSeeded,
           LICHTBLICK_LAYOUT_SEED_KEY,
           refreshLeIsaacCapability,
+          pollLeIsaacRecorder,
+          sendLeIsaacRecorder,
           ensureLeIsaacTab,
           removeLeIsaacTab,
           connectLeIsaac,

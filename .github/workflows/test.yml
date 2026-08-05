@@ -28,6 +28,15 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      - name: Install video runtime
+        # LeIsaac and the adapter exercise real H.264 encode/probe paths. Keep
+        # the same system ffmpeg contract used by the runtime image in CI.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          ffmpeg -version
+          ffprobe -version
+
       - name: Install npa
         run: cd npa && pip install -e ".[dev,adapter]"
 

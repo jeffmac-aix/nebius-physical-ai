@@ -126,10 +126,12 @@ def test_recorder_requires_outcome_and_atomically_finalizes(tmp_path: Path) -> N
 
 def test_recorder_can_retry_a_failed_immutable_upload(tmp_path: Path) -> None:
     attempts = 0
+    observed_metadata = []
 
-    def publish(_path: Path, _metadata: dict) -> dict:
+    def publish(_path: Path, metadata: dict) -> dict:
         nonlocal attempts
         attempts += 1
+        observed_metadata.append(dict(metadata))
         if attempts == 1:
             raise DatasetError("temporary object-store failure")
         return {
@@ -159,6 +161,54 @@ def test_recorder_can_retry_a_failed_immutable_upload(tmp_path: Path) -> None:
     assert recorder.status()["state"] == "upload-failed"
     assert recorder.finalize()["episode_index"] == 0
     assert recorder.status()["state"] == "idle"
+    assert observed_metadata[0] == observed_metadata[1]
+    assert observed_metadata[0]["recorded_at"]
+
+
+def test_recorder_command_ids_are_recoverable_and_idempotent(tmp_path: Path) -> None:
+    recorder = EpisodeRecorder(
+        root=tmp_path,
+        output_uri="s3://bucket/demos",
+        task="LeIsaac-SO101-PickOrange-v0",
+        environment_id="counter-a",
+        environment_index=0,
+        seed=7,
+        run_id="run-command-ids",
+        source_commit="1" * 40,
+        publisher=lambda _path, _metadata: {},
+    )
+    request_id = "start-command-1"
+    recorder.pending_command_path.write_text(
+        json.dumps({"request_id": request_id, "command": "start"}),
+        encoding="utf-8",
+    )
+    recorder.control_path.write_text(
+        "".join(
+            json.dumps({"request_id": request_id, "command": "start"}) + "\n"
+            for _ in range(2)
+        ),
+        encoding="utf-8",
+    )
+
+    recorder.process_commands()
+
+    status = recorder.status()
+    assert status["state"] == "recording"
+    assert status["active_episode"]
+    assert status["last_command_id"] == request_id
+    assert status["last_command"] == "start"
+    assert status["command_revision"] == 1
+    assert status["pending_command_id"] == ""
+    assert not recorder.pending_command_path.exists()
+
+    recorder.control_path.write_text(
+        json.dumps({"request_id": "invalid-mark", "command": "mark-success"}) + "\n",
+        encoding="utf-8",
+    )
+    recorder._control_offset = 0
+    recorder.process_commands()
+    assert recorder.status()["state"] == "outcome-pending"
+    assert recorder.status()["pending_outcome"] == "success"
 
 
 class _FakeS3:

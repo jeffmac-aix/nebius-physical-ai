@@ -5,8 +5,10 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import io
+import json
 import os
 import tarfile
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -412,6 +414,70 @@ def test_health_reads_upstream_keyboard_counter(tmp_path: Path) -> None:
     assert health["physics_device"] == "cpu"
     assert health["render_device"] == "cuda"
     assert health["seed"] == 42
+
+
+def test_recorder_control_reservation_prevents_duplicate_commits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    server = _session_server_module()
+    status_path = tmp_path / "status.json"
+    control_path = tmp_path / "control.jsonl"
+    pending_path = tmp_path / "pending-command.json"
+    status_path.write_text(
+        json.dumps(
+            {
+                "state": "idle",
+                "last_command_id": "",
+                "last_command": "",
+            }
+        ),
+        encoding="utf-8",
+    )
+    control_path.write_text("", encoding="utf-8")
+    monkeypatch.setattr(server, "RECORDER_STATUS_PATH", status_path)
+    monkeypatch.setattr(server, "RECORDER_CONTROL_PATH", control_path)
+    monkeypatch.setattr(server, "RECORDER_PENDING_PATH", pending_path)
+    monkeypatch.setattr(server, "RECORDER_COMMAND_LOCK", threading.Lock())
+
+    first_status, first = server.enqueue_recorder_command("start", "request-1")
+    duplicate_status, duplicate = server.enqueue_recorder_command("start", "request-1")
+    competing_status, competing = server.enqueue_recorder_command("start", "request-2")
+
+    assert first_status == duplicate_status == 202
+    assert first == {
+        "accepted": True,
+        "duplicate": False,
+        "processed": False,
+        "request_id": "request-1",
+    }
+    assert duplicate["duplicate"] is True
+    assert competing_status == 409
+    assert "in progress" in competing["detail"]
+    queued = [json.loads(line) for line in control_path.read_text().splitlines()]
+    assert queued == [{"command": "start", "request_id": "request-1"}]
+
+    status_path.write_text(
+        json.dumps(
+            {
+                "state": "recording",
+                "last_command_id": "request-1",
+                "last_command": "start",
+            }
+        ),
+        encoding="utf-8",
+    )
+    acknowledged_status, acknowledged = server.enqueue_recorder_command(
+        "start", "request-1"
+    )
+    assert acknowledged_status == 202
+    assert acknowledged["processed"] is True
+    assert not pending_path.exists()
+
+    mark_status, _mark = server.enqueue_recorder_command("mark-failure", "request-3")
+    assert mark_status == 202
+    reused_status, reused = server.enqueue_recorder_command("mark-success", "request-3")
+    assert reused_status == 409
+    assert "in progress" in reused["detail"]
 
 
 def test_liveness_preserves_live_initial_reset_and_restarts_dead_child() -> None:

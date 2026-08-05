@@ -236,6 +236,24 @@ and do not discard the pod-local episode; **Finalize & upload** becomes a retry
 when the prior conditional publication attempt failed. Marking an outcome
 freezes the episode boundary before upload.
 
+The authenticated UI polls authoritative recorder status continuously and
+recovers the same state after a refresh or reconnect. Its transition contract
+is:
+
+| State | Enabled controls | Meaning |
+| --- | --- | --- |
+| `idle` | **Start episode** | No active episode; outcome and finalize controls explain what must happen first. |
+| `recording` | **Mark success**, **Mark failure** | An active episode exists and synchronized frame count advances. |
+| `outcome-pending` | outcome controls, **Finalize & upload** | The selected outcome is persisted and the local episode is frozen, but nothing is uploaded implicitly. |
+| `uploading` | none | Records, raw frames, and H.264 video are being published. |
+| `upload-failed` | **Finalize & upload** | Retry the same episode without creating a second commit. |
+
+Every browser transition carries an idempotency request ID. The session server
+atomically reserves one pending command before appending it to the simulator
+queue, so double-clicks and concurrent requests cannot enqueue duplicate
+episode commits. The final idle status exposes the immutable dataset version,
+episode index, and episode-commit URI.
+
 ## LeRobot demonstration dataset
 
 Every captured JPEG comes from the real RTX viewport and is paired with the

@@ -404,6 +404,7 @@ def validate_health(manifest: dict, payload: dict | None) -> tuple[dict | None, 
             "state",
             "dataset_uri",
             "dataset_version_uri",
+            "last_episode_commit_uri",
             "task",
             "environment_id",
             "environment_index",
@@ -416,6 +417,10 @@ def validate_health(manifest: dict, payload: dict | None) -> tuple[dict | None, 
             "last_outcome",
             "last_upload_status",
             "last_error",
+            "pending_command_id",
+            "last_command_id",
+            "last_command",
+            "command_revision",
         )
     }
     if health_schema == LEISAAC_HEALTH_SCHEMA and (

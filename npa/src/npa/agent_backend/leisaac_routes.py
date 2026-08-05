@@ -6,6 +6,8 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
+import secrets
 import threading
 import time
 from dataclasses import dataclass
@@ -399,6 +401,15 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
                 status_code=400,
                 media_type="application/json",
             )
+        request_id = str(
+            payload.get("request_id") if isinstance(payload, dict) else ""
+        ) or secrets.token_hex(16)
+        if not re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", request_id):
+            return deps.response(
+                content=json.dumps({"detail": "invalid recorder request ID"}),
+                status_code=400,
+                media_type="application/json",
+            )
         manifest, reason = await asyncio.to_thread(cached_resolve, run_id)
         if not manifest:
             return deps.response(
@@ -413,7 +424,7 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
                 upstream = await asyncio.to_thread(
                     deps.http_post,
                     f"{manifest['service_url']}/recorder/control",
-                    json={"command": command},
+                    json={"command": command, "request_id": request_id},
                     headers={"X-NPA-LeIsaac-Nonce": manifest["session_nonce"]},
                     timeout=10.0,
                     follow_redirects=False,

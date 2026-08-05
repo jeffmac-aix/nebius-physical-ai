@@ -27,6 +27,161 @@ function expectedCompletedEpisodes() {
   return Number(Cypress.env("NPA_AGENT_COMPLETED_EPISODES") || 0);
 }
 
+function loadRecorderStatus() {
+  const selectedRun = runId();
+  return cy.window().then(async (win) => {
+    const response = await win.fetch(
+      "/api/leisaac/status?run_id=" + encodeURIComponent(selectedRun),
+      { credentials: "include", cache: "no-store" },
+    );
+    if (!response.ok) {
+      throw new Error(
+        "recorder status returned HTTP " + String(response.status),
+      );
+    }
+    return response.json();
+  });
+}
+
+function waitForRecorder(predicate) {
+  return loadRecorderStatus().then((status) => {
+    const recorder = status.recorder || {};
+    if (predicate(recorder, status)) return status;
+    if (recorder.last_error) {
+      throw new Error(
+        "recorder transition failed: " + String(recorder.last_error),
+      );
+    }
+    return cy.wait(500).then(() => waitForRecorder(predicate));
+  });
+}
+
+function dispatchTeleoperation(keys) {
+  cy.get("#leisaacStreamHost")
+    .click()
+    .then(($host) => {
+      for (const key of keys) {
+        $host[0].dispatchEvent(
+          new KeyboardEvent("keydown", { key, bubbles: true }),
+        );
+        $host[0].dispatchEvent(
+          new KeyboardEvent("keyup", { key, bubbles: true }),
+        );
+      }
+    });
+}
+
+function recordEpisode(outcome, episodeNumber, completedBefore) {
+  cy.get("#leisaacRecordStart").should("not.be.disabled").click();
+  return waitForRecorder(
+    (recorder) =>
+      recorder.state === "recording" &&
+      Boolean(recorder.active_episode) &&
+      Number(recorder.frame_count || 0) >= 2,
+  )
+    .then((recordingStatus) => {
+      cy.get("#leisaacRecorderStatus")
+        .should("contain.text", "State: recording")
+        .and("not.contain.text", "active: none");
+      cy.get("#leisaacRecordStart").should("be.disabled");
+      cy.get("#leisaacRecordSuccess").should("not.be.disabled");
+      cy.get("#leisaacRecordFailure").should("not.be.disabled");
+      cy.get("#leisaacRecordFinalize")
+        .should("be.disabled")
+        .and("have.attr", "title")
+        .and("contain", "Mark success or failure");
+      cy.get("#leisaacRecorderGuidance").should(
+        "contain.text",
+        "Recording live simulator frames",
+      );
+      cy.screenshot(
+        `0${4 + episodeNumber * 4}-episode-${episodeNumber}-${outcome}-recording`,
+        { capture: "viewport" },
+      );
+
+      const inputBefore = Number(recordingStatus.input_events || 0);
+      const framesBefore = Number(recordingStatus.recorder.frame_count || 0);
+      dispatchTeleoperation(
+        outcome === "success" ? ["W", "A", "U"] : ["S", "D", "O"],
+      );
+      return waitForRecorder(
+        (recorder, status) =>
+          recorder.state === "recording" &&
+          Number(recorder.frame_count || 0) > framesBefore &&
+          Number(status.input_events || 0) >= inputBefore + 3 &&
+          Number(status.input_events || 0) ===
+            Number(status.applied_inputs || 0),
+      );
+    })
+    .then((appliedStatus) => {
+      expect(appliedStatus.input_events, "accepted inputs").to.equal(
+        appliedStatus.applied_inputs,
+      );
+      cy.get(
+        outcome === "success"
+          ? "#leisaacRecordSuccess"
+          : "#leisaacRecordFailure",
+      )
+        .should("not.be.disabled")
+        .click();
+      return waitForRecorder(
+        (recorder) =>
+          recorder.state === "outcome-pending" &&
+          recorder.pending_outcome === outcome,
+      );
+    })
+    .then(() => {
+      cy.get("#leisaacRecorderStatus").should(
+        "contain.text",
+        "State: outcome-pending",
+      );
+      cy.get("#leisaacRecorderGuidance").should(
+        "contain.text",
+        `Outcome selected: ${outcome}`,
+      );
+      cy.get("#leisaacRecordFinalize").should("not.be.disabled");
+      cy.get("#leisaacRecordStart").should("be.disabled");
+      cy.screenshot(
+        `0${5 + episodeNumber * 4}-episode-${episodeNumber}-${outcome}-selected`,
+        { capture: "viewport" },
+      );
+      cy.get("#leisaacRecordFinalize").click();
+      return waitForRecorder(
+        (recorder) =>
+          recorder.state === "idle" &&
+          recorder.last_upload_status === "uploaded" &&
+          recorder.last_outcome === outcome &&
+          Number(recorder.completed_episode_count || 0) ===
+            completedBefore + 1 &&
+          Boolean(recorder.dataset_version_uri) &&
+          Boolean(recorder.last_episode_commit_uri),
+      );
+    })
+    .then((completedStatus) => {
+      cy.get("#leisaacRecorderStatus")
+        .should("contain.text", "State: idle")
+        .and("contain.text", `completed: ${completedBefore + 1}`)
+        .and("contain.text", `${outcome}/uploaded`);
+      cy.get("#leisaacRecorderArtifact")
+        .should("contain.text", "Immutable dataset")
+        .and(
+          "contain.text",
+          String(completedStatus.recorder.dataset_version_uri),
+        );
+      cy.get("#leisaacRecorderGuidance").should(
+        "contain.text",
+        "Upload complete",
+      );
+      cy.get("#leisaacRecordStart").should("not.be.disabled");
+      cy.get("#leisaacRecordFinalize").should("be.disabled");
+      cy.screenshot(
+        `0${6 + episodeNumber * 4}-episode-${episodeNumber}-${outcome}-uploaded`,
+        { capture: "viewport" },
+      );
+      return completedStatus;
+    });
+}
+
 (hasLiveEnv() ? describe : describe.skip)(
   "NPA agent live LeIsaac teleoperation",
   () => {
@@ -196,6 +351,8 @@ function expectedCompletedEpisodes() {
               Number(initial.input_events || 0) + 13 &&
             Number(status.applied_inputs || 0) >=
               Number(initial.applied_inputs || 0) + 13 &&
+            Number(status.input_events || 0) ===
+              Number(status.applied_inputs || 0) &&
             String(status.frame_updated_at || "") >
               String(initial.frame_updated_at || "")
           ) {
@@ -213,6 +370,11 @@ function expectedCompletedEpisodes() {
         .its("__LEISAAC_SERVER_INPUT_EVENTS__")
         .should("be.at.least", 13);
       cy.window().its("__LEISAAC_APPLIED_INPUTS__").should("be.at.least", 13);
+      cy.window().then((win) => {
+        expect(win.__LEISAAC_SERVER_INPUT_EVENTS__, "accepted inputs").to.equal(
+          win.__LEISAAC_APPLIED_INPUTS__,
+        );
+      });
       cy.get("#leisaacFrame").should(($frame) => {
         expect($frame[0].complete, "post-input decoded frame").to.equal(true);
         expect($frame[0].naturalWidth).to.be.greaterThan(640);
@@ -220,6 +382,25 @@ function expectedCompletedEpisodes() {
       cy.screenshot("03-public-leisaac-after-keyboard-input", {
         capture: "viewport",
       });
+
+      cy.get("#leisaacRecordStart").should("not.be.disabled");
+      cy.get("#leisaacRecordSuccess")
+        .should("be.disabled")
+        .and("have.attr", "title")
+        .and("contain", "Start an episode");
+      cy.get("#leisaacRecordFinalize")
+        .should("be.disabled")
+        .and("have.attr", "title")
+        .and("contain", "Mark success or failure");
+      cy.get("#leisaacRecorderGuidance").should(
+        "contain.text",
+        "Start an episode",
+      );
+      cy.screenshot("04-recorder-idle-start-enabled", { capture: "viewport" });
+
+      recordEpisode("success", 0, completedEpisodes).then(() =>
+        recordEpisode("failure", 1, completedEpisodes + 1),
+      );
     });
   },
 );

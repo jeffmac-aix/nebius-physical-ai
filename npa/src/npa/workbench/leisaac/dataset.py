@@ -205,6 +205,7 @@ class EpisodeRecorder:
         self.publisher = publisher or S3DatasetStore(self.output_uri).publish_episode
         self.control_path = self.root / "control.jsonl"
         self.status_path = self.root / "status.json"
+        self.pending_command_path = self.root / "pending-command.json"
         self._control_offset = 0
         self._lock = threading.RLock()
         self._state = "idle"
@@ -221,6 +222,10 @@ class EpisodeRecorder:
         self._last_upload_status = "never"
         self._last_error = ""
         self._dataset_version_uri = ""
+        self._last_episode_commit_uri = ""
+        self._last_command_id = ""
+        self._last_command = ""
+        self._command_revision = 0
         self.control_path.touch(exist_ok=True)
         self._write_status()
 
@@ -230,6 +235,7 @@ class EpisodeRecorder:
                 "state": self._state,
                 "dataset_uri": self.output_uri,
                 "dataset_version_uri": self._dataset_version_uri,
+                "last_episode_commit_uri": self._last_episode_commit_uri,
                 "task": self.task,
                 "environment_id": self.environment_id,
                 "environment_index": self.environment_index,
@@ -242,7 +248,26 @@ class EpisodeRecorder:
                 "last_outcome": self._last_outcome,
                 "last_upload_status": self._last_upload_status,
                 "last_error": self._last_error,
+                "pending_command_id": self._pending_command_id(),
+                "last_command_id": self._last_command_id,
+                "last_command": self._last_command,
+                "command_revision": self._command_revision,
             }
+
+    def _pending_command_id(self) -> str:
+        try:
+            payload = json.loads(self.pending_command_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return ""
+        return str(payload.get("request_id") or "") if isinstance(payload, dict) else ""
+
+    def _clear_pending_command(self, request_id: str) -> None:
+        try:
+            payload = json.loads(self.pending_command_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        if isinstance(payload, dict) and payload.get("request_id") == request_id:
+            self.pending_command_path.unlink(missing_ok=True)
 
     def _write_status(self) -> None:
         _atomic_json(self.status_path, self.status())
@@ -272,6 +297,7 @@ class EpisodeRecorder:
                 raise DatasetError("episode outcome must be success or failure")
             self._outcome = outcome
             self._state = "outcome-pending"
+            self._last_error = ""
             self._write_status()
 
     def observe(self, record: dict[str, Any]) -> None:
@@ -330,34 +356,56 @@ class EpisodeRecorder:
                 )
             if self._frames < 2 or self._episode_dir is None:
                 raise DatasetError("an episode needs at least two synchronized frames")
+            metadata_path = self._episode_dir / "episode.json"
+            if metadata_path.is_file():
+                try:
+                    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+                except (OSError, ValueError) as exc:
+                    raise DatasetError(
+                        "persisted episode metadata is unreadable"
+                    ) from exc
+                expected = {
+                    "episode_uuid": self._episode_uuid,
+                    "run_id": self.run_id,
+                    "outcome": self._outcome,
+                    "frame_count": self._frames,
+                }
+                if not isinstance(metadata, dict) or any(
+                    metadata.get(key) != value for key, value in expected.items()
+                ):
+                    raise DatasetError(
+                        "persisted episode metadata does not match the active episode"
+                    )
+            else:
+                metadata = {
+                    "schema": EPISODE_SCHEMA,
+                    "episode_uuid": self._episode_uuid,
+                    "run_id": self.run_id,
+                    "task": self.task,
+                    "environment_id": self.environment_id,
+                    "environment_index": self.environment_index,
+                    "seed": self.seed,
+                    "outcome": self._outcome,
+                    "frame_count": self._frames,
+                    "fps": FPS,
+                    "source_commit": self.source_commit,
+                    "provenance": {
+                        "leisaac_version": self.source_version,
+                        "leisaac_commit": self.source_commit,
+                        "isaac_sim_version": self.isaac_sim_version,
+                        "isaac_lab_version": self.isaac_lab_version,
+                        "image": self.image,
+                        "task_registry_fingerprint": self.registry_fingerprint,
+                    },
+                    "recorded_at": utc_now(),
+                    "visual_source": "real RTX viewport JPEG capture",
+                    "alignment": "each JPEG is paired with the most recent completed real env.step",
+                }
+                _atomic_json(metadata_path, metadata)
             self._state = "uploading"
             self._last_upload_status = "uploading"
+            self._last_error = ""
             self._write_status()
-            metadata = {
-                "schema": EPISODE_SCHEMA,
-                "episode_uuid": self._episode_uuid,
-                "run_id": self.run_id,
-                "task": self.task,
-                "environment_id": self.environment_id,
-                "environment_index": self.environment_index,
-                "seed": self.seed,
-                "outcome": self._outcome,
-                "frame_count": self._frames,
-                "fps": FPS,
-                "source_commit": self.source_commit,
-                "provenance": {
-                    "leisaac_version": self.source_version,
-                    "leisaac_commit": self.source_commit,
-                    "isaac_sim_version": self.isaac_sim_version,
-                    "isaac_lab_version": self.isaac_lab_version,
-                    "image": self.image,
-                    "task_registry_fingerprint": self.registry_fingerprint,
-                },
-                "recorded_at": utc_now(),
-                "visual_source": "real RTX viewport JPEG capture",
-                "alignment": "each JPEG is paired with the most recent completed real env.step",
-            }
-            _atomic_json(self._episode_dir / "episode.json", metadata)
         try:
             result = self.publisher(self._episode_dir, metadata)
         except Exception as exc:
@@ -371,6 +419,7 @@ class EpisodeRecorder:
             self._completed = int(result["completed_episode_count"])
             self._last_episode_index = int(result["episode_index"])
             self._dataset_version_uri = str(result["dataset_version_uri"])
+            self._last_episode_commit_uri = str(result.get("episode_commit_uri") or "")
             self._last_outcome = self._outcome
             self._last_upload_status = "uploaded"
             self._last_error = ""
@@ -392,8 +441,20 @@ class EpisodeRecorder:
         except OSError:
             return
         for raw in records:
+            request_id = ""
+            command = ""
             try:
-                command = str(json.loads(raw).get("command") or "")
+                payload = json.loads(raw)
+                command = str(payload.get("command") or "")
+                request_id = str(payload.get("request_id") or uuid.uuid4().hex)
+                with self._lock:
+                    if request_id == self._last_command_id:
+                        if command != self._last_command:
+                            raise DatasetError(
+                                "recorder request ID was reused for a different command"
+                            )
+                        self._clear_pending_command(request_id)
+                        continue
                 if command == "start":
                     self.start()
                 elif command == "mark-success":
@@ -410,6 +471,15 @@ class EpisodeRecorder:
                 with self._lock:
                     self._last_error = _safe_error(exc)
                     self._write_status()
+            finally:
+                if request_id and request_id != self._last_command_id:
+                    with self._lock:
+                        self._last_command_id = request_id
+                        self._last_command = command
+                        self._command_revision += 1
+                    self._clear_pending_command(request_id)
+                    with self._lock:
+                        self._write_status()
 
 
 def _load_records(path: Path) -> list[dict[str, Any]]:

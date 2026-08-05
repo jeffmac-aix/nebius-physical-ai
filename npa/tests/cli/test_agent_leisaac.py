@@ -534,11 +534,14 @@ def test_authenticated_backend_routes_gate_status_and_proxy_client(monkeypatch) 
             "x-forwarded-proto": "https",
             "x-npa-leisaac-control": "1",
         },
-        json={"command": "mark-success"},
+        json={"command": "mark-success", "request_id": "route-test-command"},
     )
     assert recorder_control.status_code == 202
     assert posted[1][0].endswith("/recorder/control")
-    assert posted[1][1]["json"] == {"command": "mark-success"}
+    assert posted[1][1]["json"] == {
+        "command": "mark-success",
+        "request_id": "route-test-command",
+    }
     rejected_control = client.post(
         "/leisaac/input",
         params={"run_id": raw_manifest["run_id"]},
