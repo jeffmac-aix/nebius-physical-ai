@@ -1,14 +1,26 @@
 diff --git a/scripts/environments/teleoperation/teleop_se3_agent.py b/scripts/environments/teleoperation/teleop_se3_agent.py
-index a467482..d51b122 100644
+index a467482..1636d68 100644
 --- a/scripts/environments/teleoperation/teleop_se3_agent.py
 +++ b/scripts/environments/teleoperation/teleop_se3_agent.py
-@@ -92,0 +93 @@ simulation_app = app_launcher.app
+@@ -90,11 +90,16 @@ app_launcher = AppLauncher(app_launcher_args)
+ simulation_app = app_launcher.app
+
+ import os
 +import ctypes
-@@ -96,0 +98 @@ import torch
++from leisaac_dataset import FPS, EpisodeRecorder, extract_step
++from pathlib import Path
+ import time
+
 +from PIL import Image
-@@ -99,0 +102 @@ from isaaclab_tasks.utils import parse_env_cfg
+ import gymnasium as gym
+ import torch
+ from isaaclab.envs import DirectRLEnv, ManagerBasedRLEnv
 +from omni.kit.viewport.utility import capture_viewport_to_buffer, get_active_viewport
-@@ -159,3 +162,15 @@ def main():  # noqa: C901
+ from isaaclab.managers import DatasetExportMode, TerminationTermCfg
+ from isaaclab_tasks.utils import parse_env_cfg
+ from leisaac.enhance.managers import EnhanceDatasetExportMode, StreamingRecorderManager
+@@ -158,6 +163,18 @@ def main():  # noqa: C901
+
      env_cfg = parse_env_cfg(args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs)
      env_cfg.use_teleop_device(args_cli.teleop_device)
 +    if os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") == "1":
@@ -24,11 +36,28 @@ index a467482..d51b122 100644
 +        # default texture wait can remain true forever on this path.
 +        env_cfg.wait_for_textures = False
      env_cfg.seed = args_cli.seed if args_cli.seed is not None else int(time.time())
-@@ -312,4 +327,62 @@ def main():  # noqa: C901
-     if hasattr(env, "initialize"):
+     task_name = args_cli.task
+
+@@ -312,6 +329,81 @@ def main():  # noqa: C901
          env.initialize()
      env.reset()
      teleop_interface.reset()
++    recorder = EpisodeRecorder(
++        root=Path(os.environ["NPA_LEISAAC_RECORDER_ROOT"]),
++        output_uri=os.environ["NPA_LEISAAC_OUTPUT_PATH"],
++        task=args_cli.task,
++        environment_id=os.environ["NPA_LEISAAC_ENVIRONMENT_ID"],
++        environment_index=int(os.environ["NPA_LEISAAC_ENVIRONMENT_INDEX"]),
++        seed=int(env_cfg.seed),
++        run_id=os.environ["NPA_LEISAAC_RUN_ID"],
++        source_commit=os.environ["NPA_LEISAAC_SOURCE_COMMIT"],
++        source_version=os.environ["NPA_LEISAAC_SOURCE_VERSION"],
++        isaac_sim_version=os.environ["NPA_LEISAAC_ISAAC_SIM_VERSION"],
++        isaac_lab_version=os.environ["NPA_LEISAAC_ISAAC_LAB_VERSION"],
++        image=os.environ["NPA_LEISAAC_IMAGE"],
++        registry_fingerprint=os.environ["NPA_LEISAAC_REGISTRY_FINGERPRINT"],
++    )
++    sim_step = 0
 +    ready_path = os.environ.get("NPA_LEISAAC_READY_PATH", "")
 +    if ready_path:
 +        with open(ready_path, "w", encoding="utf-8") as ready_file:
@@ -55,6 +84,7 @@ index a467482..d51b122 100644
 +            temporary = frame_path + ".tmp"
 +            image.save(temporary, format="JPEG", quality=82, optimize=False)
 +            os.replace(temporary, frame_path)
++            recorder.frame(Path(frame_path).read_bytes())
 +        except Exception as exc:
 +            print(
 +                f"[WARN] Could not capture browser frame: "
@@ -62,7 +92,7 @@ index a467482..d51b122 100644
 +            )
 +        finally:
 +            capture_state["pending"] = False
-+            capture_state["next_at"] = time.monotonic() + 0.15
++            capture_state["next_at"] = time.monotonic() + (1.0 / FPS)
 +
 +    def schedule_browser_capture():
 +        if (
@@ -87,24 +117,46 @@ index a467482..d51b122 100644
 +            raise RuntimeError("browser teleoperation requires an active RTX viewport")
 +        env.render()
 +        schedule_browser_capture()
-@@ -382,2 +455,5 @@ def main():  # noqa: C901
-                     env.step(actions)
+
+     resume_recorded_demo_count = 0
+     if args_cli.record and args_cli.resume:
+@@ -379,7 +471,19 @@ def main():  # noqa: C901
+                         if args_cli.record:
+                             print("Start Recording!!!")
+                         start_record_state = True
+-                    env.step(actions)
++                    step_result = env.step(actions)
++                    sim_step += 1
++                    recorder.observe(
++                        extract_step(
++                            step_result,
++                            actions,
++                            sim_step=sim_step,
++                        )
++                    )
 +                    if os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") == "1":
 +                        env.render()
 +                schedule_browser_capture()
++                recorder.process_commands(reset=env.reset)
                  if rate_limiter:
+                     rate_limiter.sleep(env)
+             if interrupted:
 diff --git a/source/leisaac/leisaac/devices/keyboard/so101_keyboard.py b/source/leisaac/leisaac/devices/keyboard/so101_keyboard.py
-index 1ecc934..f20a5ba 100644
+index 1ecc934..726d31b 100644
 --- a/source/leisaac/leisaac/devices/keyboard/so101_keyboard.py
 +++ b/source/leisaac/leisaac/devices/keyboard/so101_keyboard.py
-@@ -1,2 +1,6 @@
+@@ -1,3 +1,7 @@
 +import json
 +import os
 +from pathlib import Path
 +
  import carb
  import numpy as np
-@@ -36,0 +41,8 @@ class SO101Keyboard(Device):
+
+@@ -34,6 +38,14 @@ class SO101Keyboard(Device):
+
+         # command buffers (dx, dy, dz, droll, dpitch, dyaw, d_shoulder_pan, d_gripper)
+         self._delta_action = np.zeros(8)
 +        queue_name = os.environ.get("NPA_LEISAAC_INPUT_QUEUE", "")
 +        counter_name = os.environ.get("NPA_LEISAAC_APPLIED_COUNTER", "")
 +        self._remote_queue = Path(queue_name) if queue_name else None
@@ -113,11 +165,19 @@ index 1ecc934..f20a5ba 100644
 +        self._applied_counter = Path(counter_name) if counter_name else None
 +        if os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") == "1":
 +            self._started = True
-@@ -55,3 +67,0 @@ class SO101Keyboard(Device):
+
+         # initialize the target frame
+         self.asset_name = "robot"
+@@ -57,18 +69,79 @@ class SO101Keyboard(Device):
+         self._display_controls_table.add_row(["U", "gripper_open"])
+         self._display_controls_table.add_row(["O", "gripper_close"])
+
 -    def get_device_state(self):
 -        return self._convert_delta_from_frame(self._delta_action)
 -
-@@ -65,0 +75,53 @@ class SO101Keyboard(Device):
+     def reset(self):
+         self._delta_action[:] = 0.0
+
 +    def _record_applied_input(self):
 +        if self._applied_counter is None:
 +            return
@@ -171,7 +231,9 @@ index 1ecc934..f20a5ba 100644
 +            self._remote_pulses[key] = remaining - 1
 +        return self._convert_delta_from_frame(self._delta_action + remote_action)
 +
-@@ -69,6 +131,17 @@ class SO101Keyboard(Device):
+     def _on_keyboard_event(self, event, *args, **kwargs):
+         super()._on_keyboard_event(event, *args, **kwargs)
+         # apply the command when pressed
          if event.type == carb.input.KeyboardEventType.KEY_PRESS:
              if event.input.name in self._INPUT_KEY_MAPPING.keys():
                  self._delta_action += self._ACTION_DELTA_MAPPING[self._INPUT_KEY_MAPPING[event.input.name]]

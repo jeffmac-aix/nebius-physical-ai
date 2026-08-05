@@ -311,6 +311,7 @@ _AGENT_FOXGLOVE_SHIP = "__NPA_AGENT_FOXGLOVE_SHIP__"
 _AGENT_FOXGLOVE_ROUTES_SHIP = "__NPA_AGENT_FOXGLOVE_ROUTES_SHIP__"
 _AGENT_LEISAAC_SHIP = "__NPA_AGENT_LEISAAC_SHIP__"
 _AGENT_LEISAAC_ROUTES_SHIP = "__NPA_AGENT_LEISAAC_ROUTES_SHIP__"
+_AGENT_LEISAAC_REGISTRY_SHIP = "__NPA_AGENT_LEISAAC_REGISTRY_SHIP__"
 _AGENT_WORKFLOW_EMBED = "__NPA_AGENT_WORKFLOW_EMBED__"
 _AGENT_ARTIFACTS_EMBED = "__NPA_AGENT_ARTIFACTS_EMBED__"
 _AGENT_ROUTING_EMBED = "__NPA_AGENT_ROUTING_EMBED__"
@@ -1718,13 +1719,8 @@ def _bootstrap_agent_stack(
     agent_recordings_source = _embedded_agent_recordings_source()
     agent_sim2real_loop_source = _embedded_agent_sim2real_loop_source()
     agent_semantic_router_source = _embedded_agent_semantic_router_source()
-    agent_memory_ship_source = _shipped_agent_backend_module_source("memory")
-    agent_retrieval_ship_source = _shipped_agent_backend_module_source("retrieval")
-    agent_trace_ship_source = _shipped_agent_backend_module_source("trace")
-    agent_foxglove_ship_source = _shipped_agent_backend_module_source("foxglove")
-    agent_foxglove_routes_ship_source = _shipped_agent_backend_module_source("foxglove_routes")
-    agent_leisaac_ship_source = _shipped_agent_backend_module_source("leisaac")
-    agent_leisaac_routes_ship_source = _shipped_agent_backend_module_source("leisaac_routes")
+    shipped_names = ("memory", "retrieval", "trace", "foxglove", "foxglove_routes", "leisaac", "leisaac_routes", "leisaac_registry")
+    shipped_sources = {name: _shipped_agent_backend_module_source(name) for name in shipped_names}
     agent_workflow_source = _embedded_agent_workflow_source()
     agent_artifacts_source = _embedded_agent_artifacts_source()
     agent_routing_source = _embedded_agent_routing_source()
@@ -1876,6 +1872,9 @@ cat <<'PY' | sudo tee /opt/npa-agent/agent_backend/leisaac.py >/dev/null
 PY
 cat <<'PY' | sudo tee /opt/npa-agent/agent_backend/leisaac_routes.py >/dev/null
 {_AGENT_LEISAAC_ROUTES_SHIP}
+PY
+cat <<'PY' | sudo tee /opt/npa-agent/agent_backend/leisaac_registry.py >/dev/null
+{_AGENT_LEISAAC_REGISTRY_SHIP}
 PY
 cat <<'PY' | sudo tee /opt/npa-agent/backend.py >/dev/null
 import json
@@ -8581,13 +8580,14 @@ sudo systemctl enable --now npa-lichtblick 2>/dev/null || echo "npa-lichtblick s
         .replace(_AGENT_RECORDINGS_EMBED, agent_recordings_source)
         .replace(_AGENT_SIM2REAL_LOOP_EMBED, agent_sim2real_loop_source)
         .replace(_AGENT_SEMANTIC_ROUTER_EMBED, agent_semantic_router_source)
-        .replace(_AGENT_MEMORY_SHIP, agent_memory_ship_source)
-        .replace(_AGENT_RETRIEVAL_SHIP, agent_retrieval_ship_source)
-        .replace(_AGENT_TRACE_SHIP, agent_trace_ship_source)
-        .replace(_AGENT_FOXGLOVE_SHIP, agent_foxglove_ship_source)
-        .replace(_AGENT_FOXGLOVE_ROUTES_SHIP, agent_foxglove_routes_ship_source)
-        .replace(_AGENT_LEISAAC_SHIP, agent_leisaac_ship_source)
-        .replace(_AGENT_LEISAAC_ROUTES_SHIP, agent_leisaac_routes_ship_source)
+        .replace(_AGENT_MEMORY_SHIP, shipped_sources["memory"])
+        .replace(_AGENT_RETRIEVAL_SHIP, shipped_sources["retrieval"])
+        .replace(_AGENT_TRACE_SHIP, shipped_sources["trace"])
+        .replace(_AGENT_FOXGLOVE_SHIP, shipped_sources["foxglove"])
+        .replace(_AGENT_FOXGLOVE_ROUTES_SHIP, shipped_sources["foxglove_routes"])
+        .replace(_AGENT_LEISAAC_SHIP, shipped_sources["leisaac"])
+        .replace(_AGENT_LEISAAC_ROUTES_SHIP, shipped_sources["leisaac_routes"])
+        .replace(_AGENT_LEISAAC_REGISTRY_SHIP, shipped_sources["leisaac_registry"])
         .replace(_AGENT_WORKFLOW_EMBED, agent_workflow_source)
         .replace(_AGENT_ARTIFACTS_EMBED, agent_artifacts_source)
         .replace(_AGENT_ROUTING_EMBED, agent_routing_source)

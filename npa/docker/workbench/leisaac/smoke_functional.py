@@ -10,12 +10,21 @@ import time
 import urllib.error
 import urllib.request
 
+from leisaac_registry import REGISTRY_FINGERPRINT
+
 
 def main() -> int:
     environment = os.environ.copy()
     environment.setdefault("NPA_LEISAAC_RUN_ID", "leisaac-golden-eval")
     environment.setdefault("NPA_LEISAAC_SESSION_NONCE", "a" * 64)
     environment.setdefault("NPA_LEISAAC_MEDIA_HOST", "127.0.0.1")
+    environment.setdefault("NPA_LEISAAC_TASK", "LeIsaac-SO101-PickOrange-v0")
+    environment.setdefault("NPA_LEISAAC_ENVIRONMENT_ID", "golden-eval")
+    environment.setdefault("NPA_LEISAAC_ENVIRONMENT_INDEX", "0")
+    environment.setdefault("NPA_LEISAAC_SEED", "42")
+    environment.setdefault("NPA_LEISAAC_NUM_ENVS", "1")
+    environment.setdefault("NPA_LEISAAC_REGISTRY_FINGERPRINT", REGISTRY_FINGERPRINT)
+    environment.setdefault("NPA_LEISAAC_OUTPUT_PATH", "s3://npa-smoke/leisaac")
     process = subprocess.Popen(
         [
             "/opt/npa/sim/venv/bin/python",

@@ -22,6 +22,7 @@ try:  # agent VM: /opt/npa-agent is on sys.path
     from agent_backend.leisaac import (
         LEISAAC_CLIENT_MODULE_PATH,
         LEISAAC_CLIENT_JS_SHA256,
+        LEISAAC_RECORDER_PATH,
         LEISAAC_SIGNAL_PORT,
         normalize_manifest,
         selected_run_id,
@@ -32,6 +33,7 @@ except ImportError:  # repository tests
     from npa.agent_backend.leisaac import (
         LEISAAC_CLIENT_MODULE_PATH,
         LEISAAC_CLIENT_JS_SHA256,
+        LEISAAC_RECORDER_PATH,
         LEISAAC_SIGNAL_PORT,
         normalize_manifest,
         selected_run_id,
@@ -333,8 +335,6 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
             "K",
             "U",
             "O",
-            "R",
-            "N",
         } or event not in {"press", "release"}:
             return deps.response(
                 content=json.dumps({"detail": "invalid LeIsaac input"}),
@@ -371,6 +371,71 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
         return deps.response(
             content=json.dumps({"accepted": True}),
             status_code=202,
+            media_type="application/json",
+            headers={"Cache-Control": "private, no-store"},
+        )
+
+    @app.post(LEISAAC_RECORDER_PATH.removeprefix("/api"))
+    async def leisaac_recorder(request: Request, run_id: str = "") -> Any:
+        if (
+            str(request.headers.get("x-forwarded-proto") or "").lower() != "https"
+            or request.headers.get("x-npa-leisaac-control") != "1"
+        ):
+            return deps.response(
+                content=json.dumps(
+                    {"detail": "authenticated HTTPS control is required"}
+                ),
+                status_code=403,
+                media_type="application/json",
+            )
+        try:
+            payload = await request.json()
+        except ValueError:
+            payload = None
+        command = str(payload.get("command") if isinstance(payload, dict) else "")
+        if command not in {"start", "mark-success", "mark-failure", "finalize"}:
+            return deps.response(
+                content=json.dumps({"detail": "invalid recorder command"}),
+                status_code=400,
+                media_type="application/json",
+            )
+        manifest, reason = await asyncio.to_thread(cached_resolve, run_id)
+        if not manifest:
+            return deps.response(
+                content=json.dumps({"detail": reason}),
+                status_code=404,
+                media_type="application/json",
+            )
+        if deps.http_post is None:
+            upstream = None
+        else:
+            try:
+                upstream = await asyncio.to_thread(
+                    deps.http_post,
+                    f"{manifest['service_url']}/recorder/control",
+                    json={"command": command},
+                    headers={"X-NPA-LeIsaac-Nonce": manifest["session_nonce"]},
+                    timeout=10.0,
+                    follow_redirects=False,
+                )
+            except Exception:
+                upstream = None
+        if upstream is None:
+            status_code = 503
+            content = {"detail": "LeIsaac recorder is unavailable"}
+        else:
+            status_code = int(upstream.status_code)
+            try:
+                content = upstream.json()
+            except Exception:
+                content = {"detail": "LeIsaac recorder returned an invalid response"}
+                status_code = 502
+        if status_code not in {202, 400, 409, 503}:
+            status_code = 502
+            content = {"detail": "LeIsaac recorder returned an invalid status"}
+        return deps.response(
+            content=json.dumps(content),
+            status_code=status_code,
             media_type="application/json",
             headers={"Cache-Control": "private, no-store"},
         )

@@ -10,9 +10,20 @@ from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse
 
-SESSION_SCHEMA = "npa.leisaac.session.v1"
-TASK = "LeIsaac-SO101-PickOrange-v0"
-TELEOP_DEVICE = "keyboard"
+from npa.agent_backend.leisaac_registry import (
+    DEFAULT_ENVIRONMENT_ID,
+    DEFAULT_TASK,
+    REGISTRY_FINGERPRINT,
+    TELEOP_DEVICE,
+    validate_environment_id,
+    validate_environment_index,
+    validate_num_envs,
+    validate_seed,
+    validate_task,
+)
+
+SESSION_SCHEMA = "npa.leisaac.session.v2"
+TASK = DEFAULT_TASK  # compatibility alias for callers that predate the registry
 SOURCE_VERSION = "0.4.0"
 SOURCE_COMMIT = "1651c321e9b0c1bb54233211fc7b3cd70d8373d5"
 ISAAC_SIM_VERSION = "5.1.0.0"
@@ -63,6 +74,15 @@ def turn_credential(session_nonce: str) -> str:
     if not re.fullmatch(r"[a-f0-9]{64}", nonce):
         raise LeIsaacConfigError("session nonce is invalid")
     return hashlib.sha256(f"npa-leisaac-turn:{nonce}".encode()).hexdigest()
+
+
+def session_attestation(session_nonce: str) -> str:
+    """Derive a public health attestation without returning the bearer nonce."""
+
+    nonce = str(session_nonce or "").strip().lower()
+    if not re.fullmatch(r"[a-f0-9]{64}", nonce):
+        raise LeIsaacConfigError("session nonce is invalid")
+    return hashlib.sha256(f"npa-leisaac-session:{nonce}".encode()).hexdigest()
 
 
 def validate_image(image: str) -> str:
@@ -137,8 +157,48 @@ def validate_expiry(value: str, *, now: datetime | None = None) -> str:
 def split_s3_uri(uri: str) -> tuple[str, str]:
     parsed = urlparse(str(uri or ""))
     if parsed.scheme != "s3" or not parsed.netloc or not parsed.path.strip("/"):
-        raise LeIsaacConfigError("artifact-uri must be s3://BUCKET/PREFIX")
+        raise LeIsaacConfigError("S3 path must be s3://BUCKET/PREFIX")
     return parsed.netloc, parsed.path.strip("/")
+
+
+def recorder_secret_manifest(
+    *,
+    run_id: str,
+    namespace: str,
+    output_path: str = "",
+    endpoint: str,
+    access_key: str,
+    secret_key: str,
+    region: str,
+) -> dict[str, Any]:
+    """Create the run-scoped Secret used only by the recorder process."""
+
+    name = resource_name(validate_run_id(run_id))
+    split_s3_uri(output_path)
+    if not endpoint or not access_key or not secret_key:
+        raise LeIsaacConfigError("recorder storage credentials are incomplete")
+    return {
+        "apiVersion": "v1",
+        "kind": "Secret",
+        "metadata": {
+            "name": f"{name}-recorder",
+            "namespace": namespace,
+            "labels": {
+                "app.kubernetes.io/name": "leisaac",
+                "app.kubernetes.io/instance": name,
+                "app.kubernetes.io/managed-by": "npa",
+                "npa.nebius.com/transient": "true",
+            },
+        },
+        "type": "Opaque",
+        "stringData": {
+            "AWS_ENDPOINT_URL_S3": endpoint,
+            "AWS_ACCESS_KEY_ID": access_key,
+            "AWS_SECRET_ACCESS_KEY": secret_key,
+            "AWS_REGION": region or "eu-north1",
+            "NPA_LEISAAC_OUTPUT_PATH": output_path.rstrip("/"),
+        },
+    }
 
 
 def service_manifests(
@@ -368,9 +428,27 @@ def deployment_manifest(
     media_server: str = "",
     image_pull_secret: str = "npa-registry",
     relay_client_secret: str = "",
+    recorder_secret: str = "",
+    task: str = DEFAULT_TASK,
+    environment_id: str = DEFAULT_ENVIRONMENT_ID,
+    environment_index: int = 0,
+    seed: int = 42,
+    num_envs: int = 1,
 ) -> dict[str, Any]:
     run_id = validate_run_id(run_id)
     image = validate_image(image)
+    try:
+        task = validate_task(task)
+        environment_id = validate_environment_id(environment_id)
+        environment_index = validate_environment_index(environment_index)
+        seed = validate_seed(seed)
+        num_envs = validate_num_envs(num_envs)
+    except ValueError as exc:
+        raise LeIsaacConfigError(str(exc)) from exc
+    if not recorder_secret:
+        raise LeIsaacConfigError(
+            "LeIsaac demonstration collection requires a recorder Secret"
+        )
     media_host = validate_public_ip(media_host, "media host")
     if not relay_client_secret and media_server:
         media_server = validate_public_ip(media_server, "media server")
@@ -388,17 +466,43 @@ def deployment_manifest(
         "app.kubernetes.io/name": "leisaac",
         "app.kubernetes.io/instance": name,
         "app.kubernetes.io/managed-by": "npa",
+        "npa.nebius.com/leisaac-task": task,
+        "npa.nebius.com/environment-id": environment_id,
     }
     environment = {
         "OMNI_KIT_ACCEPT_EULA": "YES",
         "ISAACSIM_ACCEPT_EULA": "YES",
         "NPA_LEISAAC_RUN_ID": run_id,
         "NPA_LEISAAC_SESSION_NONCE": session_nonce,
+        "NPA_LEISAAC_TASK": task,
+        "NPA_LEISAAC_ENVIRONMENT_ID": environment_id,
+        "NPA_LEISAAC_ENVIRONMENT_INDEX": str(environment_index),
+        "NPA_LEISAAC_SEED": str(seed),
+        "NPA_LEISAAC_NUM_ENVS": str(num_envs),
+        "NPA_LEISAAC_REGISTRY_FINGERPRINT": REGISTRY_FINGERPRINT,
+        "NPA_LEISAAC_SOURCE_COMMIT": SOURCE_COMMIT,
+        "NPA_LEISAAC_SOURCE_VERSION": SOURCE_VERSION,
+        "NPA_LEISAAC_ISAAC_SIM_VERSION": ISAAC_SIM_VERSION,
+        "NPA_LEISAAC_ISAAC_LAB_VERSION": ISAAC_LAB_VERSION,
+        "NPA_LEISAAC_IMAGE": image,
         "NVIDIA_DRIVER_CAPABILITIES": "all",
     }
     environment_items: list[dict[str, Any]] = [
         {"name": key, "value": value} for key, value in sorted(environment.items())
     ]
+    for key in (
+        "AWS_ENDPOINT_URL_S3",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_REGION",
+        "NPA_LEISAAC_OUTPUT_PATH",
+    ):
+        environment_items.append(
+            {
+                "name": key,
+                "valueFrom": {"secretKeyRef": {"name": recorder_secret, "key": key}},
+            }
+        )
     if relay_client_secret:
         # TURN runs in this pod. The browser reaches its control port through the
         # authenticated agent backhaul, while its relay allocation and simulator
@@ -599,9 +703,24 @@ def session_manifest(
     gpu: str = GPU_PRODUCT,
     created_at: str | None = None,
     transport: str = TRANSPORT_LOAD_BALANCER,
+    task: str = DEFAULT_TASK,
+    environment_id: str = DEFAULT_ENVIRONMENT_ID,
+    environment_index: int = 0,
+    seed: int = 42,
+    num_envs: int = 1,
+    output_path: str,
 ) -> dict[str, Any]:
     run_id = validate_run_id(run_id)
     image = validate_image(image)
+    try:
+        task = validate_task(task)
+        environment_id = validate_environment_id(environment_id)
+        environment_index = validate_environment_index(environment_index)
+        seed = validate_seed(seed)
+        num_envs = validate_num_envs(num_envs)
+    except ValueError as exc:
+        raise LeIsaacConfigError(str(exc)) from exc
+    split_s3_uri(output_path)
     if transport not in (TRANSPORT_LOAD_BALANCER, TRANSPORT_AGENT_RELAY):
         raise LeIsaacConfigError(f"unsupported LeIsaac transport: {transport}")
     if transport == TRANSPORT_AGENT_RELAY:
@@ -627,8 +746,22 @@ def session_manifest(
         "run_id": run_id,
         "provider": "nebius-kubernetes",
         "transport": transport,
-        "task": TASK,
+        "task": task,
+        "task_registry_fingerprint": REGISTRY_FINGERPRINT,
         "teleop_device": TELEOP_DEVICE,
+        "environment": {
+            "id": environment_id,
+            "index": environment_index,
+            "seed": seed,
+            "num_envs": num_envs,
+            "model": "named-sequential",
+        },
+        "dataset": {
+            "output_path": output_path.rstrip("/"),
+            "format": "LeRobotDataset",
+            "lerobot_version": "0.5.1",
+            "codebase_version": "v3.0",
+        },
         "signal_host": signal_host,
         "signal_port": SIGNAL_PORT,
         "media_host": media_host,
@@ -643,6 +776,7 @@ def session_manifest(
             else f"http://{signal_host}:{SERVICE_PORT}"
         ),
         "session_nonce": session_nonce,
+        "session_attestation": session_attestation(session_nonce),
         "created_at": created_at
         or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "source_version": SOURCE_VERSION,

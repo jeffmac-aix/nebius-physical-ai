@@ -9,6 +9,70 @@ describe("NPA agent LeIsaac capability tab", () => {
     cy.get("#panelLeIsaac").should("not.exist");
   });
 
+  it("shows task/environment metadata and enforces recorder transitions", () => {
+    let recorderState = "idle";
+    let pendingOutcome = "";
+    let completed = 1;
+    const statusBody = () => ({
+      available: true,
+      run_id: "mock-recorder",
+      task: "LeIsaac-SO101-LiftCube-v0",
+      environment_id: "table-b",
+      environment_index: 1,
+      seed: 43,
+      dataset_uri: "s3://bucket/datasets/leisaac",
+      stream_transport: "jpeg-poll",
+      frame_url: "/api/leisaac/frame.jpg?run_id=mock-recorder",
+      input_url: "/api/leisaac/input?run_id=mock-recorder",
+      recorder_url: "/api/leisaac/recorder?run_id=mock-recorder",
+      recorder: {
+        state: recorderState,
+        active_episode: recorderState === "idle" ? null : "episode-uuid",
+        frame_count: recorderState === "idle" ? 0 : 7,
+        completed_episode_count: completed,
+        pending_outcome: pendingOutcome,
+        last_outcome: completed > 1 ? "success" : "failure",
+        last_upload_status: completed > 1 ? "uploaded" : "never",
+        last_error: "",
+      },
+      gpu: "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+    });
+    cy.intercept("GET", "/api/leisaac/status?run_id=mock-recorder", (req) => req.reply(statusBody())).as("recorderStatus");
+    cy.intercept("POST", "/api/leisaac/select", { statusCode: 200, body: { selected: true } });
+    cy.intercept("POST", "/api/leisaac/recorder?run_id=mock-recorder", (req) => {
+      expect(req.headers["x-npa-leisaac-control"]).to.equal("1");
+      if (req.body.command === "start" && recorderState === "idle") recorderState = "recording";
+      else if (req.body.command === "mark-success" && recorderState === "recording") {
+        recorderState = "outcome-pending";
+        pendingOutcome = "success";
+      } else if (req.body.command === "finalize" && recorderState === "outcome-pending") {
+        recorderState = "idle";
+        pendingOutcome = "";
+        completed += 1;
+      } else {
+        req.reply({ statusCode: 409, body: { detail: "invalid transition" } });
+        return;
+      }
+      req.reply({ statusCode: 202, body: { accepted: true } });
+    }).as("recorderControl");
+
+    cy.window().then((win) => win.__NPA_AGENT_TEST__.refreshLeIsaacCapability("mock-recorder"));
+    cy.wait("@recorderStatus");
+    cy.get("#tabLeIsaac").click();
+    cy.get("#panelLeIsaac").should("contain.text", "LeIsaac-SO101-LiftCube-v0");
+    cy.get("#panelLeIsaac").should("contain.text", "table-b [1]");
+    cy.get("#panelLeIsaac").should("contain.text", "s3://bucket/datasets/leisaac");
+    cy.get("#leisaacRecordFinalize").should("be.disabled");
+    cy.get("#leisaacRecordStart").click();
+    cy.wait("@recorderControl");
+    cy.get("#leisaacRecordSuccess").should("not.be.disabled").click();
+    cy.wait("@recorderControl");
+    cy.get("#leisaacRecordFinalize").should("not.be.disabled").click();
+    cy.wait("@recorderControl");
+    cy.get("#leisaacRecorderStatus").should("contain.text", "completed: 2");
+    cy.screenshot("leisaac-recorder-transition");
+  });
+
   it("appears only for a live run and drives the upstream keyboard client", () => {
     cy.intercept("GET", "/api/leisaac/status?run_id=mock-run", {
       statusCode: 200,

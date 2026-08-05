@@ -2176,17 +2176,22 @@
       let leisaacPeerConnectionRestore = null;
       let leisaacFrameTimer = null;
       let leisaacFrameSequence = 0;
-      const LEISAAC_KEYS = new Set(["W", "S", "A", "D", "Q", "E", "J", "L", "I", "K", "U", "O", "R", "N"]);
+      const LEISAAC_KEYS = new Set(["W", "S", "A", "D", "Q", "E", "J", "L", "I", "K", "U", "O"]);
       function leisaacPanelMarkup(status) {
         const runId = escapeHtml(String(status.run_id || ""));
         const task = escapeHtml(String(status.task || ""));
+        const environmentId = escapeHtml(String(status.environment_id || ""));
+        const environmentIndex = escapeHtml(String(status.environment_index ?? ""));
+        const seed = escapeHtml(String(status.seed ?? ""));
+        const dataset = escapeHtml(String(status.dataset_uri || ""));
         const gpu = escapeHtml(String(status.gpu || "RT-core GPU"));
         return `
           <section class="panel leisaac-panel">
             <div class="leisaac-head">
               <div>
                 <h3>LeIsaac teleoperation</h3>
-                <p class="hint">Run <strong>${runId}</strong> · ${task} · ${gpu}</p>
+                <p class="hint">Run <strong>${runId}</strong> · ${task} · environment ${environmentId} [${environmentIndex}] · seed ${seed} · ${gpu}</p>
+                <p class="hint">Dataset <code>${dataset}</code></p>
               </div>
               <div class="leisaac-actions">
                 <button id="leisaacConnect" class="btn btn-primary" type="button">Connect teleoperation</button>
@@ -2201,7 +2206,7 @@
                 <div class="leisaac-overlay-card leisaac-controls">
                   Position <kbd>W</kbd><kbd>S</kbd><kbd>A</kbd><kbd>D</kbd><kbd>Q</kbd><kbd>E</kbd>
                   · rotate <kbd>J</kbd><kbd>L</kbd><kbd>K</kbd><kbd>I</kbd>
-                  · gripper <kbd>U</kbd><kbd>O</kbd> · reset <kbd>R</kbd> · success/reset <kbd>N</kbd>
+                  · gripper <kbd>U</kbd><kbd>O</kbd>
                 </div>
                 <div class="leisaac-overlay-card">
                   <span id="leisaacLiveDot" class="leisaac-live-dot"></span>
@@ -2210,7 +2215,58 @@
                 </div>
               </div>
             </div>
+            <div class="leisaac-head">
+              <div>
+                <strong>Episode recorder</strong>
+                <p id="leisaacRecorderStatus" class="hint">Loading recorder status…</p>
+                <p id="leisaacRecorderError" class="hint"></p>
+              </div>
+              <div class="leisaac-actions">
+                <button id="leisaacRecordStart" class="btn btn-primary" type="button">Start episode</button>
+                <button id="leisaacRecordSuccess" class="btn" type="button" disabled>Mark success</button>
+                <button id="leisaacRecordFailure" class="btn" type="button" disabled>Mark failure</button>
+                <button id="leisaacRecordFinalize" class="btn" type="button" disabled>Finalize &amp; upload</button>
+              </div>
+            </div>
           </section>`;
+      }
+      function updateLeIsaacRecorder(status) {
+        const recorder = (status && status.recorder) || {};
+        const state = String(recorder.state || "unavailable");
+        const label = document.getElementById("leisaacRecorderStatus");
+        if (label) {
+          label.textContent = "State: " + state
+            + " · active: " + String(recorder.active_episode || "none")
+            + " · frames: " + String(recorder.frame_count || 0)
+            + " · completed: " + String(recorder.completed_episode_count || 0)
+            + " · last outcome/upload: " + String(recorder.last_outcome || "none")
+            + "/" + String(recorder.last_upload_status || "never");
+        }
+        const error = document.getElementById("leisaacRecorderError");
+        if (error) error.textContent = String(recorder.last_error || "");
+        const start = document.getElementById("leisaacRecordStart");
+        const success = document.getElementById("leisaacRecordSuccess");
+        const failure = document.getElementById("leisaacRecordFailure");
+        const finalize = document.getElementById("leisaacRecordFinalize");
+        if (start) start.disabled = state !== "idle";
+        if (success) success.disabled = !(state === "recording" || state === "outcome-pending");
+        if (failure) failure.disabled = !(state === "recording" || state === "outcome-pending");
+        if (finalize) finalize.disabled = !(state === "outcome-pending" || state === "upload-failed");
+      }
+      async function sendLeIsaacRecorder(command) {
+        const status = leisaacCapability;
+        if (!status || !status.recorder_url) throw new Error("LeIsaac recorder is unavailable");
+        const response = await fetch(String(status.recorder_url), {
+          method: "POST",
+          credentials: "include",
+          cache: "no-store",
+          headers: { "Content-Type": "application/json", "X-NPA-LeIsaac-Control": "1" },
+          body: JSON.stringify({ command: command }),
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(String(payload.detail || ("Recorder returned HTTP " + response.status)));
+        await new Promise((resolve) => window.setTimeout(resolve, command === "finalize" ? 1000 : 200));
+        await refreshLeIsaacCapability(String(status.run_id || ""));
       }
       function setLeIsaacStreamState(text, tone) {
         const label = document.getElementById("leisaacStreamStatus");
@@ -2495,7 +2551,18 @@
           if (host) {
             host.addEventListener("click", () => host.focus());
           }
+          const recorderButtons = {
+            leisaacRecordStart: "start",
+            leisaacRecordSuccess: "mark-success",
+            leisaacRecordFailure: "mark-failure",
+            leisaacRecordFinalize: "finalize",
+          };
+          for (const [id, command] of Object.entries(recorderButtons)) {
+            const button = panel.querySelector("#" + id);
+            if (button) button.addEventListener("click", () => sendLeIsaacRecorder(command).catch((err) => showToast(String(err), "error")));
+          }
         }
+        updateLeIsaacRecorder(status);
       }
       function removeLeIsaacTab() {
         const tab = document.getElementById("tabLeIsaac");

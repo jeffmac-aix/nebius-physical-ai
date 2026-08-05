@@ -28,6 +28,7 @@ from npa.agent_backend.leisaac import (
     validate_health,
 )
 from npa.agent_backend.leisaac_routes import LeIsaacDeps, register_leisaac_routes
+from npa.agent_backend.leisaac_registry import REGISTRY_FINGERPRINT
 
 
 def _manifest(**overrides):
@@ -70,6 +71,32 @@ def _normalized(**overrides):
     return manifest
 
 
+def _manifest_v2(**overrides):
+    nonce = "a" * 64
+    data = _manifest(
+        schema="npa.leisaac.session.v2",
+        session_attestation=hashlib.sha256(
+            f"npa-leisaac-session:{nonce}".encode()
+        ).hexdigest(),
+        task_registry_fingerprint=REGISTRY_FINGERPRINT,
+        environment={
+            "id": "kitchen-a",
+            "index": 3,
+            "seed": 47,
+            "num_envs": 1,
+            "model": "named-sequential",
+        },
+        dataset={
+            "output_path": "s3://bucket/datasets/leisaac",
+            "format": "LeRobotDataset",
+            "lerobot_version": "0.5.1",
+            "codebase_version": "v3.0",
+        },
+    )
+    data.update(overrides)
+    return data
+
+
 def test_selected_run_requires_safe_exact_identifier() -> None:
     assert (
         selected_run_id({"sim_viz": {"active_run_id": "leisaac-live-1"}})
@@ -104,6 +131,26 @@ def test_manifest_artifact_loader_requires_one_bounded_canonical_object() -> Non
         find_artifacts=lambda *_args, **_kwargs: ("bucket", [artifact]),
     )
     assert loaded == {"schema": "npa.leisaac.session.v1"}
+
+    historical = SimpleNamespace(
+        key="runs/live/reports/leisaac-session.json/live/reports/leisaac-session.json"
+    )
+    historical_loaded = load_manifest_artifact(
+        "live",
+        validate_run_id=lambda value: value,
+        s3_client=lambda: (S3(), {"prefix": "runs"}),
+        s3_buckets=lambda _s3, _settings: ["bucket"],
+        find_artifacts=lambda *_args, **_kwargs: ("bucket", [historical]),
+    )
+    assert historical_loaded == {"schema": "npa.leisaac.session.v1"}
+    preferred_loaded = load_manifest_artifact(
+        "live",
+        validate_run_id=lambda value: value,
+        s3_client=lambda: (S3(), {"prefix": "runs"}),
+        s3_buckets=lambda _s3, _settings: ["bucket"],
+        find_artifacts=lambda *_args, **_kwargs: ("bucket", [historical, artifact]),
+    )
+    assert preferred_loaded == {"schema": "npa.leisaac.session.v1"}
 
     duplicated = load_manifest_artifact(
         "live",
@@ -227,6 +274,59 @@ def test_live_health_attestation_gates_secret_free_status() -> None:
     serialized = repr(payload)
     assert manifest["session_nonce"] not in serialized
     assert manifest["service_url"] not in serialized
+
+
+def test_v2_manifest_and_health_bind_task_environment_dataset_and_recorder() -> None:
+    manifest, reason = normalize_manifest(
+        _manifest_v2(), expected_run_id="leisaac-live-1"
+    )
+    assert reason == "" and manifest is not None
+    recorder = {
+        "state": "recording",
+        "dataset_uri": "s3://bucket/datasets/leisaac",
+        "dataset_version_uri": "",
+        "task": LEISAAC_TASK,
+        "environment_id": "kitchen-a",
+        "environment_index": 3,
+        "seed": 47,
+        "active_episode": "episode-uuid",
+        "last_episode_index": None,
+        "frame_count": 12,
+        "completed_episode_count": 2,
+        "pending_outcome": "",
+        "last_outcome": "success",
+        "last_upload_status": "recording",
+        "last_error": "",
+    }
+    health, reason = validate_health(
+        manifest,
+        {
+            "schema": "npa.leisaac.health.v2",
+            "state": "ready",
+            "stream_ready": True,
+            "stream_transport": "jpeg-poll",
+            "run_id": manifest["run_id"],
+            "task": manifest["task"],
+            "source_commit": manifest["source_commit"],
+            "session_attestation": manifest["session_attestation"],
+            "task_registry_fingerprint": REGISTRY_FINGERPRINT,
+            "environment_id": "kitchen-a",
+            "environment_index": 3,
+            "seed": 47,
+            "signal_port": LEISAAC_SIGNAL_PORT,
+            "recorder": recorder,
+        },
+    )
+    assert reason == "" and health is not None
+    payload = status_payload(manifest, health)
+    assert payload["environment_id"] == "kitchen-a"
+    assert payload["dataset_uri"] == "s3://bucket/datasets/leisaac"
+    assert payload["recorder"]["frame_count"] == 12
+    assert "session_nonce" not in repr(payload)
+
+    stale = dict(_manifest_v2())
+    stale["task_registry_fingerprint"] = "0" * 64
+    assert normalize_manifest(stale, expected_run_id="leisaac-live-1")[0] is None
 
 
 def test_agent_relay_status_returns_only_derived_session_turn_credential() -> None:
@@ -427,6 +527,18 @@ def test_authenticated_backend_routes_gate_status_and_proxy_client(monkeypatch) 
     assert posted[0][1]["headers"] == {
         "X-NPA-LeIsaac-Nonce": raw_manifest["session_nonce"]
     }
+    recorder_control = client.post(
+        "/leisaac/recorder",
+        params={"run_id": raw_manifest["run_id"]},
+        headers={
+            "x-forwarded-proto": "https",
+            "x-npa-leisaac-control": "1",
+        },
+        json={"command": "mark-success"},
+    )
+    assert recorder_control.status_code == 202
+    assert posted[1][0].endswith("/recorder/control")
+    assert posted[1][1]["json"] == {"command": "mark-success"}
     rejected_control = client.post(
         "/leisaac/input",
         params={"run_id": raw_manifest["run_id"]},

@@ -21,8 +21,31 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 from urllib.parse import urlparse
 
-LEISAAC_SESSION_SCHEMA = "npa.leisaac.session.v1"
-LEISAAC_HEALTH_SCHEMA = "npa.leisaac.health.v1"
+try:  # Shipped agent modules use the top-level package name.
+    from agent_backend.leisaac_registry import (  # type: ignore[import-not-found]
+        DEFAULT_ENVIRONMENT_ID,
+        REGISTRY_FINGERPRINT,
+        registry_payload,
+        validate_environment_id,
+        validate_environment_index,
+        validate_seed,
+        validate_task,
+    )
+except ImportError:  # Repository package imports use the npa namespace.
+    from npa.agent_backend.leisaac_registry import (
+        DEFAULT_ENVIRONMENT_ID,
+        REGISTRY_FINGERPRINT,
+        registry_payload,
+        validate_environment_id,
+        validate_environment_index,
+        validate_seed,
+        validate_task,
+    )
+
+LEISAAC_SESSION_SCHEMA = "npa.leisaac.session.v2"
+LEISAAC_LEGACY_SESSION_SCHEMA = "npa.leisaac.session.v1"
+LEISAAC_HEALTH_SCHEMA = "npa.leisaac.health.v2"
+LEISAAC_LEGACY_HEALTH_SCHEMA = "npa.leisaac.health.v1"
 LEISAAC_MANIFEST_NAME = "leisaac-session.json"
 LEISAAC_SIGNAL_PORT = 49100
 LEISAAC_MEDIA_PORT = 47998
@@ -43,6 +66,7 @@ LEISAAC_CLIENT_MODULE_PATH = "/api/leisaac/client/index.js"
 LEISAAC_SIGNAL_PATH = "/api/leisaac/signal"
 LEISAAC_FRAME_PATH = "/api/leisaac/frame.jpg"
 LEISAAC_INPUT_PATH = "/api/leisaac/input"
+LEISAAC_RECORDER_PATH = "/api/leisaac/recorder"
 
 _RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
@@ -75,9 +99,15 @@ def load_manifest_artifact(
     matches = [
         item for item in artifacts if is_leisaac_manifest_key(str(item.key or ""))
     ]
-    if not bucket or len(matches) != 1:
+    preferred = [
+        item
+        for item in matches
+        if f"/{LEISAAC_MANIFEST_NAME}/" not in str(item.key or "").replace("\\", "/")
+    ]
+    selected = preferred if preferred else matches
+    if not bucket or len(selected) != 1:
         return None
-    response = s3.get_object(Bucket=bucket, Key=str(matches[0].key or ""))
+    response = s3.get_object(Bucket=bucket, Key=str(selected[0].key or ""))
     body = response["Body"].read(131073)
     if len(body) > 131072:
         return None
@@ -187,7 +217,8 @@ def normalize_manifest(
     """Validate a live-session artifact and return its internal normalized form."""
 
     data = payload if isinstance(payload, dict) else {}
-    if data.get("schema") != LEISAAC_SESSION_SCHEMA:
+    schema = str(data.get("schema") or "")
+    if schema not in {LEISAAC_SESSION_SCHEMA, LEISAAC_LEGACY_SESSION_SCHEMA}:
         return None, "selected run has no LeIsaac session capability"
     run_id = str(data.get("run_id") or "").strip()
     if not _RUN_ID_RE.fullmatch(run_id):
@@ -196,7 +227,10 @@ def normalize_manifest(
         return None, "LeIsaac session does not belong to the selected run"
     if str(data.get("provider") or "") != "nebius-kubernetes":
         return None, "LeIsaac session provider is unsupported"
-    if str(data.get("task") or "") != LEISAAC_TASK:
+    task = str(data.get("task") or "")
+    try:
+        task = validate_task(task)
+    except ValueError:
         return None, "LeIsaac session does not expose the supported task"
     if str(data.get("teleop_device") or "") != LEISAAC_TELEOP_DEVICE:
         return None, "LeIsaac session is not keyboard-teleoperation capable"
@@ -244,6 +278,39 @@ def normalize_manifest(
     nonce = str(data.get("session_nonce") or "").strip()
     if not re.fullmatch(r"[A-Fa-f0-9]{32,128}", nonce):
         return None, "LeIsaac session attestation is invalid"
+    expected_attestation = hashlib.sha256(
+        f"npa-leisaac-session:{nonce.lower()}".encode()
+    ).hexdigest()
+    if schema == LEISAAC_SESSION_SCHEMA:
+        if str(data.get("session_attestation") or "") != expected_attestation:
+            return None, "LeIsaac session public attestation is invalid"
+        if str(data.get("task_registry_fingerprint") or "") != REGISTRY_FINGERPRINT:
+            return None, "LeIsaac session task registry is stale"
+        environment = data.get("environment")
+        dataset = data.get("dataset")
+        if not isinstance(environment, dict) or not isinstance(dataset, dict):
+            return None, "LeIsaac session environment or dataset contract is missing"
+        try:
+            environment_id = validate_environment_id(environment.get("id"))
+            environment_index = validate_environment_index(environment.get("index"))
+            seed = validate_seed(environment.get("seed"))
+        except (TypeError, ValueError):
+            return None, "LeIsaac session environment is invalid"
+        if _integer(environment.get("num_envs")) != 1:
+            return None, "LeIsaac session parallel environment routing is unsupported"
+        dataset_uri = str(dataset.get("output_path") or "").rstrip("/")
+        parsed_dataset = urlparse(dataset_uri)
+        if (
+            parsed_dataset.scheme != "s3"
+            or not parsed_dataset.netloc
+            or not parsed_dataset.path.strip("/")
+        ):
+            return None, "LeIsaac session dataset destination is invalid"
+    else:
+        environment_id = DEFAULT_ENVIRONMENT_ID
+        environment_index = 0
+        seed = _integer(data.get("seed")) or 42
+        dataset_uri = ""
     raw_expires_at = str(data.get("expires_at") or "").strip()
     expires_at = _parse_utc(raw_expires_at) if raw_expires_at else None
     if raw_expires_at and expires_at is None:
@@ -260,11 +327,14 @@ def normalize_manifest(
         return None, "LeIsaac session image is not digest pinned"
 
     return {
-        "schema": LEISAAC_SESSION_SCHEMA,
+        "schema": schema,
         "run_id": run_id,
         "provider": "nebius-kubernetes",
         "transport": transport,
-        "task": LEISAAC_TASK,
+        "task": task,
+        "task_registry_fingerprint": (
+            REGISTRY_FINGERPRINT if schema == LEISAAC_SESSION_SCHEMA else "legacy"
+        ),
         "teleop_device": LEISAAC_TELEOP_DEVICE,
         "signal_host": signal_host,
         "signal_port": LEISAAC_SIGNAL_PORT,
@@ -276,6 +346,12 @@ def normalize_manifest(
         "turn_relay_max_port": _integer(data.get("turn_relay_max_port")) or 0,
         "service_url": service_url,
         "session_nonce": nonce.lower(),
+        "session_attestation": expected_attestation,
+        "environment_id": environment_id,
+        "environment_index": environment_index,
+        "seed": seed,
+        "num_envs": 1,
+        "dataset_uri": dataset_uri,
         "expires_at": (
             expires_at.isoformat().replace("+00:00", "Z") if expires_at else ""
         ),
@@ -293,9 +369,23 @@ def validate_health(manifest: dict, payload: dict | None) -> tuple[dict | None, 
     """Validate the service's live attestation against the S3 capability artifact."""
 
     data = payload if isinstance(payload, dict) else {}
-    if data.get("schema") != LEISAAC_HEALTH_SCHEMA:
+    health_schema = str(data.get("schema") or "")
+    if health_schema not in {LEISAAC_HEALTH_SCHEMA, LEISAAC_LEGACY_HEALTH_SCHEMA}:
         return None, "LeIsaac service returned an invalid health document"
-    for key in ("run_id", "task", "source_commit", "session_nonce"):
+    attestation_keys = ["run_id", "task", "source_commit"]
+    if health_schema == LEISAAC_HEALTH_SCHEMA:
+        attestation_keys.extend(
+            [
+                "session_attestation",
+                "task_registry_fingerprint",
+                "environment_id",
+                "environment_index",
+                "seed",
+            ]
+        )
+    else:
+        attestation_keys.append("session_nonce")
+    for key in attestation_keys:
         if str(data.get(key) or "") != str(manifest.get(key) or ""):
             return None, f"LeIsaac service attestation mismatch: {key}"
     stream_ready = bool(data.get("stream_ready", data.get("webrtc_ready")))
@@ -307,6 +397,36 @@ def validate_health(manifest: dict, payload: dict | None) -> tuple[dict | None, 
         return None, f"LeIsaac service is not ready: {detail}"
     if _integer(data.get("signal_port")) != LEISAAC_SIGNAL_PORT:
         return None, "LeIsaac service signaling port mismatch"
+    recorder = data.get("recorder") if isinstance(data.get("recorder"), dict) else {}
+    safe_recorder = {
+        key: recorder.get(key)
+        for key in (
+            "state",
+            "dataset_uri",
+            "dataset_version_uri",
+            "task",
+            "environment_id",
+            "environment_index",
+            "seed",
+            "active_episode",
+            "last_episode_index",
+            "frame_count",
+            "completed_episode_count",
+            "pending_outcome",
+            "last_outcome",
+            "last_upload_status",
+            "last_error",
+        )
+    }
+    if health_schema == LEISAAC_HEALTH_SCHEMA and (
+        safe_recorder.get("task") != manifest.get("task")
+        or safe_recorder.get("environment_id") != manifest.get("environment_id")
+        or _integer(safe_recorder.get("environment_index"))
+        != manifest.get("environment_index")
+        or str(safe_recorder.get("dataset_uri") or "").rstrip("/")
+        != manifest.get("dataset_uri")
+    ):
+        return None, "LeIsaac recorder identity does not match the selected manifest"
     return {
         "state": "ready",
         "webrtc_ready": True,
@@ -319,6 +439,7 @@ def validate_health(manifest: dict, payload: dict | None) -> tuple[dict | None, 
         "applied_inputs": _integer(data.get("applied_inputs")) or 0,
         "frame_bytes": _integer(data.get("frame_bytes")) or 0,
         "frame_updated_at": str(data.get("frame_updated_at") or ""),
+        "recorder": safe_recorder,
     }, ""
 
 
@@ -342,6 +463,12 @@ def status_payload(
         "run_id": run_id,
         "transport": manifest["transport"],
         "task": manifest["task"],
+        "task_registry": registry_payload(),
+        "environment_id": manifest.get("environment_id", DEFAULT_ENVIRONMENT_ID),
+        "environment_index": manifest.get("environment_index", 0),
+        "seed": manifest.get("seed", 42),
+        "num_envs": 1,
+        "dataset_uri": manifest.get("dataset_uri", ""),
         "teleop_device": manifest["teleop_device"],
         "media_server": manifest["media_server"],
         "media_port": manifest["media_port"],
@@ -352,6 +479,8 @@ def status_payload(
         "stream_transport": health.get("stream_transport", "webrtc"),
         "frame_url": f"{LEISAAC_FRAME_PATH}?run_id={run_id}",
         "input_url": f"{LEISAAC_INPUT_PATH}?run_id={run_id}",
+        "recorder_url": f"{LEISAAC_RECORDER_PATH}?run_id={run_id}",
+        "recorder": health.get("recorder", {}),
         "source_version": manifest.get("source_version", ""),
         "source_commit": manifest.get("source_commit", ""),
         "isaac_sim_version": manifest.get("isaac_sim_version", ""),
@@ -367,7 +496,7 @@ def status_payload(
             "translate": "W/S forward/back · A/D left/right · Q/E up/down",
             "rotate": "J/L yaw · K/I pitch",
             "gripper": "U/O open/close",
-            "episode": "R reset episode · N mark success and reset",
+            "episode": "Use explicit start, outcome, and finalize controls",
         },
     }
     if manifest.get("transport") == LEISAAC_TRANSPORT_AGENT_RELAY:

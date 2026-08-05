@@ -4,8 +4,18 @@ NPA exposes [LightwheelAI/LeIsaac](https://github.com/LightwheelAI/leisaac)
 as a separate agent-UI tab while the agent has a registered, usable live
 session. The integration runs upstream LeIsaac v0.4.0 at commit
 `1651c321e9b0c1bb54233211fc7b3cd70d8373d5`, the real
-`LeIsaac-SO101-PickOrange-v0` environment, and upstream `SO101Keyboard`.
-It is not a Cartpole or synthetic viewer demo.
+upstream `SO101Keyboard`. The checked-in registry advertises only the two tasks
+at that commit that use this exact single-arm control and asset path:
+
+- `LeIsaac-SO101-PickOrange-v0`;
+- `LeIsaac-SO101-LiftCube-v0`.
+
+Inspect the machine-readable source of truth with
+`npa workbench leisaac list-tasks --output json`. A session runs one environment
+at a time. `--num-envs` is intentionally restricted to `1`; collect named
+sequential instances with stable `--environment-id`, `--environment-index`, and
+`--seed` values into the same dataset prefix instead of presenting unsupported
+parallel control routing.
 
 ## What makes the tab appear
 
@@ -16,8 +26,10 @@ back to that independently registered LeIsaac run. This keeps the tab visible
 when an operator opens an unrelated Rerun or Voxel51 artifact. The backend discovers
 exactly one `reports/leisaac-session.json` artifact, validates its schema,
 run/task/device, fixed transport endpoints, expiry, source commit, and
-digest-pinned image, then verifies the live service's matching nonce
-attestation. Any absent, stale, malformed, unreachable, mismatched, or
+digest-pinned image, registry fingerprint, task/environment identity, and S3
+dataset destination, then verifies the live service's matching one-way nonce
+attestation. The raw nonce never appears in `/status` or the browser. Any
+absent, stale, malformed, unreachable, mismatched, or
 non-ready session leaves the tab absent. Selecting another live LeIsaac run
 updates the registered capability; switching unrelated artifact runs does not
 discard it.
@@ -106,8 +118,8 @@ The pod requests 16 CPU cores and may use up to 32 so
 the USD-backed first reset is not throttled by the previous eight-core limit. The
 session supervisor starts Kit in an isolated process session with closed stdin
 so HTTP-service signal handling cannot interfere with upstream teleoperation.
-The browser service pins upstream seed `42` and reports it in `/status`; this
-avoids nondeterministic PickOrange reset states and makes evidence reproducible.
+The browser service uses the explicit launch seed (default `42`) and reports it
+with the stable environment identity in `/status` and every recorded frame.
 On a cold pod, liveness remains healthy while the supervised simulator process
 is alive, including during the licensed runtime fetch and first reset. Readiness
 and `/status` remain unavailable until the real reset and a non-empty captured
@@ -118,7 +130,7 @@ The exact patch is commit-locked in the image build and named in runtime
 provenance. It
 refuses to start until the operator explicitly sets both
 `OMNI_KIT_ACCEPT_EULA=YES` and `ISAACSIM_ACCEPT_EULA=YES`. Only then are Isaac,
-the NVIDIA client, and the two task assets fetched into mounted caches. The
+the NVIDIA client, the SO101 asset, and both scene assets fetched into mounted caches. The
 assets and client are hash-verified and recorded in runtime `provenance.json`;
 EULA acceptance and proprietary bytes are never baked into an image.
 
@@ -184,8 +196,21 @@ npa workbench leisaac launch \
   --transport agent-relay \
   --agent-project PROJECT_ALIAS \
   --agent-name AGENT_NAME \
-  --artifact-uri s3://BUCKET/leisaac
+  --task LeIsaac-SO101-PickOrange-v0 \
+  --environment-id kitchen-a \
+  --environment-index 0 \
+  --seed 42 \
+  --num-envs 1 \
+  --output-path s3://BUCKET/datasets/leisaac-demo \
+  --manifest-prefix s3://BUCKET/checkpoints
 ```
+
+`--output-path` is always a dataset prefix. `--manifest-prefix` is the
+capability publication prefix; it may also be an exact
+`.../reports/leisaac-session.json` leaf. The deprecated `--artifact-uri` alias
+retains those exact leaf semantics, fixing the older duplicated
+`leisaac-session.json/<run>/reports/leisaac-session.json` behavior without
+hiding already-written historical objects from discovery.
 
 `agent-relay` resolves the agent IP from live provider state and refuses a
 stale saved address, missing SSH key or agent auth, unrestricted source range,
@@ -203,9 +228,91 @@ completion while the browser session still needs to remain alive.
 
 Reload the agent UI after launch, open `LeIsaac`, and choose **Connect
 teleoperation**. No run-ID entry is required. Click the simulation to focus it.
-Controls are the upstream
-bindings: `W/S`, `A/D`, `Q/E` translate; `J/L`, `K/I` rotate; `U/O` open/close
-the gripper; `R` resets; `N` marks success and resets.
+Controls are the upstream bindings: `W/S`, `A/D`, `Q/E` translate; `J/L`,
+`K/I` rotate; `U/O` open/close the gripper. Episode state is explicit: **Start
+episode**, **Mark success** or **Mark failure**, then **Finalize & upload**.
+Finalize is disabled until an outcome is selected. Upload errors stay visible
+and do not discard the pod-local episode; **Finalize & upload** becomes a retry
+when the prior conditional publication attempt failed. Marking an outcome
+freezes the episode boundary before upload.
+
+## LeRobot demonstration dataset
+
+Every captured JPEG comes from the real RTX viewport and is paired with the
+most recent completed real `env.step`. Its Parquet record contains the real
+six-joint observation, exact eight-dimensional action passed to `env.step`,
+reward, terminated/truncated/done values, simulator step, seed,
+task/environment identity, source-frame SHA-256, and monotonic
+and wall-clock nanosecond timestamps. The fixed 16 FPS `timestamp` field is the
+LeRobot video clock; the original clocks remain separate audit features.
+
+Finalization encodes synchronized JPEGs as H.264 and uploads both the ordered
+raw JPEGs and a unique raw episode bundle. Their per-frame hashes are tied to
+the records and commit, so frame/action alignment remains independently
+auditable after lossy H.264 encoding. A conditional
+`commits/episode-NNNNNN.json` object makes the
+episode durable before a new immutable `versions/vNNNNNN-UUID/` LeRobot tree is
+published. A crash can leave an unreferenced bundle but cannot overwrite a
+completed commit or prior version. The next session resumes numbering from the
+commit objects and can add a different supported task/environment to the same
+prefix. `latest.json` is only a pointer; version contents are immutable.
+
+The output targets `LeRobotDataset` 0.5.1 / format `v3.0`. Download one
+immutable version and validate it with the supported loader (Python 3.12+):
+
+```bash
+python3.12 -m venv /tmp/lerobot-051
+/tmp/lerobot-051/bin/pip install 'lerobot==0.5.1'
+/tmp/lerobot-051/bin/python - <<'PY'
+from lerobot.datasets.lerobot_dataset import LeRobotDataset
+dataset = LeRobotDataset(repo_id="local/leisaac", root="/path/to/version")
+print(len(dataset), dataset.meta.total_episodes, dataset.meta.video_keys)
+PY
+```
+
+## PAIDF appearance augmentation
+
+Export a finalized episode directly from its immutable S3 version; no local
+operator download is needed:
+
+```bash
+npa workbench leisaac export-paidf \
+  --dataset-uri s3://BUCKET/datasets/leisaac-demo/versions/v000002-UUID \
+  --episode 0 --run-id paidf-leisaac-001 \
+  --output-path s3://BUCKET/physical-ai-data-factory/paidf-leisaac-001 \
+  --output json
+```
+
+The result reports the exact runnable
+`npa/workflows/physical-ai-data-factory.yaml` command with
+`NPA_COSMOS_CONDITION_ON_INPUT=1`. The workflow invokes the real
+`workbench.cosmos2.transfer_execute` toolRef with
+`--condition-on-input --execute`; a manifest-only stub is not accepted.
+Source dataset/version/episode/task/environment/checksums are written to
+`input/leisaac-lineage.json` and carried into the PAIDF final report. Config
+generation detects that lineage and uses an orange-pick or cube-lift
+appearance-only prompt instead of the blueprint's default cloth-folding scene.
+An agent-scoped base prefix is allowed before the exact
+`physical-ai-data-factory/<run-id>` suffix.
+
+After a real run, materialize one variant:
+
+```bash
+npa workbench leisaac materialize-paidf \
+  --dataset-uri s3://BUCKET/datasets/leisaac-demo/versions/v000002-UUID \
+  --episode 0 \
+  --paidf-run-uri s3://BUCKET/physical-ai-data-factory/paidf-leisaac-001 \
+  --variant 0 --output-path s3://BUCKET/datasets/leisaac-derived \
+  --output json
+```
+
+Materialization requires `mode=cosmos_transfer2.5_gpu`, `status=executed`, and
+`input_conditioned=true`, decodes a nonblank augmented clip, and rejects any
+frame-count or timestamp difference greater than 1 ms. Only then does it copy
+the parent Parquet labels byte-for-byte and replace the selected visual object
+in a new immutable version. Cosmos Transfer appearance conditioning preserves
+the demonstrated motion structurally; it is not action augmentation and adds
+no robot state, reward, label, or task-success evidence.
 
 ## Status and cleanup
 
@@ -214,7 +321,9 @@ npa workbench leisaac status --run-id leisaac-teleop-example --context YOUR_KUBE
 npa workbench leisaac destroy --run-id leisaac-teleop-example --context YOUR_KUBECTL_CONTEXT
 ```
 
-Destroy removes only that run's transient Deployment and Services. For an
+Destroy removes only that run's transient Deployment, Services, relay Secret,
+and dedicated recorder credential Secret. Completed S3 episodes, dataset
+versions, and PAIDF evidence are preserved. For an
 agent-relayed run it reads the owning agent and source CIDRs from Kubernetes
 metadata, stops only the matching relay unit, and deletes only the matching
 relay and any compatibility TURN unit, and deletes only the matching

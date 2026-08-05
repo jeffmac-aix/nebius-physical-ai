@@ -302,6 +302,29 @@ def test_generate_configs_feeds_first_augmentation_to_transfer(tmp_path: Path) -
     assert combo["prompt"]
 
 
+def test_generate_configs_uses_leisaac_task_lineage_for_conditioning(tmp_path: Path) -> None:
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    (input_dir / "leisaac-lineage.json").write_text(
+        json.dumps(
+            {
+                "schema": "npa.leisaac.paidf-input.v1",
+                "source": {
+                    "task": "LeIsaac-SO101-LiftCube-v0",
+                    "dataset_uri": "s3://bucket/dataset/versions/v1",
+                    "episode_index": 0,
+                },
+            }
+        )
+    )
+    manifest = dfs.generate_configs(str(tmp_path / "configs") + "/", 1, seed="lift")
+    combo = manifest["augmentations"][0]
+    assert set(combo) == {"lighting", "background", "surface", "prompt"}
+    assert "red-cube lift motion" in combo["prompt"]
+    assert "preserve every frame's geometry" in combo["prompt"]
+    assert manifest["source_leisaac"]["episode_index"] == 0
+
+
 def test_generate_configs_non_numeric_count_falls_back(tmp_path: Path) -> None:
     manifest = dfs.generate_configs(str(tmp_path / "c") + "/", "not-a-number", seed="s")
     assert manifest["n_augmentations"] == 2

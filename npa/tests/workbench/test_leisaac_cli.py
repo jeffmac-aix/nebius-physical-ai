@@ -20,6 +20,7 @@ from npa.cli.workbench.leisaac import (
     _wait_ready,
     app,
 )
+from npa.agent_backend.leisaac_registry import REGISTRY_FINGERPRINT
 
 
 IMAGE = "registry.example/npa-leisaac@sha256:" + "1" * 64
@@ -169,6 +170,7 @@ def test_delete_resources_addresses_each_kubernetes_kind_explicitly(
         "service/leisaac-live-media",
         "service/leisaac-live-relay",
         "secret/leisaac-live-relay-client",
+        "secret/leisaac-live-recorder",
         "--ignore-not-found=true",
     ]
 
@@ -343,6 +345,8 @@ def _args() -> list[str]:
         "8.8.8.8/32",
         "--artifact-uri",
         "s3://bucket/checkpoints",
+        "--output-path",
+        "s3://bucket/checkpoints/datasets/leisaac",
         "--transport",
         "agent-relay",
         "--agent-project",
@@ -460,7 +464,13 @@ def _patch_launch(monkeypatch):
             "state": "ready",
             "task": "LeIsaac-SO101-PickOrange-v0",
             "source_commit": "1651c321e9b0c1bb54233211fc7b3cd70d8373d5",
-            "session_nonce": "a" * 64,
+            "task_registry_fingerprint": REGISTRY_FINGERPRINT,
+            "session_attestation": hashlib.sha256(
+                ("npa-leisaac-session:" + "a" * 64).encode()
+            ).hexdigest(),
+            "environment_id": "operator-0",
+            "environment_index": 0,
+            "seed": 42,
             "gpu": "NVIDIA-RTX-PRO-6000-Blackwell-Server-Edition",
         },
     )
@@ -531,6 +541,39 @@ def test_agent_relay_manifest_rejects_storage_scope_mismatch() -> None:
             raise AssertionError(f"storage scope mismatch was accepted: {uri}")
 
 
+def test_put_manifest_treats_an_explicit_manifest_leaf_as_a_leaf(monkeypatch) -> None:
+    calls = []
+
+    class S3:
+        def put_object(self, **kwargs):
+            calls.append(kwargs)
+
+    monkeypatch.setattr("boto3.client", lambda *_args, **_kwargs: S3())
+    uri = _put_manifest(
+        "s3://bucket/checkpoints/live/reports/leisaac-session.json",
+        {"run_id": "live"},
+    )
+    assert uri == "s3://bucket/checkpoints/live/reports/leisaac-session.json"
+    assert calls[0]["Key"] == "checkpoints/live/reports/leisaac-session.json"
+
+
+def test_list_tasks_json_is_machine_readable_and_parallel_launch_is_rejected(
+    monkeypatch,
+) -> None:
+    listed = runner.invoke(app, ["list-tasks", "--output", "json"])
+    assert listed.exit_code == 0
+    payload = json.loads(listed.output)
+    assert {item["task"] for item in payload["tasks"]} == {
+        "LeIsaac-SO101-PickOrange-v0",
+        "LeIsaac-SO101-LiftCube-v0",
+    }
+    monkeypatch.setenv("OMNI_KIT_ACCEPT_EULA", "YES")
+    monkeypatch.setenv("ISAACSIM_ACCEPT_EULA", "YES")
+    rejected = runner.invoke(app, [*_args(), "--num-envs", "2"])
+    assert rejected.exit_code == 1
+    assert "exactly one active environment" in rejected.output
+
+
 def test_launch_agent_relay_wires_private_cluster_public_agent_and_manifest(
     monkeypatch,
 ) -> None:
@@ -562,17 +605,19 @@ def test_launch_agent_relay_wires_private_cluster_public_agent_and_manifest(
     ]
     assert applied[0]["spec"]["type"] == "ClusterIP"
     assert applied[1]["kind"] == "Secret"
-    assert applied[2]["kind"] == "Deployment"
+    assert applied[2]["kind"] == "Secret"
+    assert applied[2]["metadata"]["name"].endswith("-recorder")
+    deployment = next(item for item in applied if item["kind"] == "Deployment")
     deployment_env = {
         item["name"]: item
-        for item in applied[2]["spec"]["template"]["spec"]["containers"][0]["env"]
+        for item in deployment["spec"]["template"]["spec"]["containers"][0]["env"]
     }
     assert deployment_env["NPA_LEISAAC_MEDIA_HOST"]["valueFrom"] == {
         "fieldRef": {"fieldPath": "status.podIP"}
     }
     media_port = next(
         item
-        for item in applied[2]["spec"]["template"]["spec"]["containers"][0]["ports"]
+        for item in deployment["spec"]["template"]["spec"]["containers"][0]["ports"]
         if item["name"] == "media"
     )
     assert "hostPort" not in media_port

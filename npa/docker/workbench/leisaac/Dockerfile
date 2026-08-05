@@ -28,7 +28,7 @@ COPY docker/workbench/leisaac/upstream-observability.patch /tmp/leisaac-upstream
 # for leader hardware. The packaging-only sed below removes that metadata edge;
 # real SO101Keyboard/task source stays byte-for-byte at the pinned commit.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libxrandr2 \
+    && apt-get install -y --no-install-recommends ffmpeg libxrandr2 \
     && rm -rf /var/lib/apt/lists/* \
     && git clone --filter=blob:none --no-checkout https://github.com/LightwheelAI/leisaac.git /opt/leisaac \
     && git -C /opt/leisaac checkout "${LEISAAC_COMMIT}" \
@@ -42,6 +42,8 @@ RUN apt-get update \
       osqp==1.0.4 \
       packaging==25.0 \
       pygame==2.6.1 \
+      boto3==1.43.63 \
+      pyarrow==25.0.0 \
       pyserial==3.5 \
     && /opt/npa/sim/venv/bin/python -m pip install --no-cache-dir --no-deps /opt/leisaac/source/leisaac \
     && ! /opt/npa/sim/venv/bin/python -m pip show feetech-servo-sdk \
@@ -56,15 +58,19 @@ RUN apt-get update \
 
 COPY --chown=ubuntu:ubuntu docker/workbench/leisaac/session_server.py /opt/npa/leisaac/session_server.py
 COPY --chown=ubuntu:ubuntu docker/workbench/leisaac/smoke_functional.py /opt/npa/leisaac/smoke_functional.py
+COPY --chown=ubuntu:ubuntu src/npa/agent_backend/leisaac_registry.py /opt/npa/leisaac/leisaac_registry.py
+COPY --chown=ubuntu:ubuntu src/npa/workbench/leisaac/dataset.py /opt/npa/leisaac/leisaac_dataset.py
 
 RUN /opt/npa/sim/venv/bin/python -m py_compile \
       /opt/npa/leisaac/session_server.py \
       /opt/npa/leisaac/smoke_functional.py \
+      /opt/npa/leisaac/leisaac_registry.py \
+      /opt/npa/leisaac/leisaac_dataset.py \
     && test ! -e /opt/leisaac-cache/client/5.6.0/index.js \
-    && test ! -e /opt/leisaac-cache/assets/v0.1.0/robots/so101_follower.usd
+    && test ! -e /opt/leisaac-cache/assets/runtime/robots/so101_follower.usd
 
 ENV NPA_LEISAAC_CACHE_DIR=/opt/leisaac-cache \
-    LEISAAC_ASSETS_ROOT=/opt/leisaac-cache/assets/v0.1.0 \
+    LEISAAC_ASSETS_ROOT=/opt/leisaac-cache/assets/runtime \
     NVIDIA_DRIVER_CAPABILITIES=all \
     PATH=/usr/bin:/opt/npa/sim/venv/bin:$PATH \
     PYTHONUNBUFFERED=1

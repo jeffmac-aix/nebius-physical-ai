@@ -21,6 +21,17 @@ from typing import Any
 
 import typer
 
+from npa.agent_backend.leisaac_registry import (
+    DEFAULT_ENVIRONMENT_ID,
+    DEFAULT_TASK,
+    REGISTRY_FINGERPRINT,
+    registry_payload,
+    validate_environment_id,
+    validate_environment_index,
+    validate_num_envs,
+    validate_seed,
+    validate_task,
+)
 from npa.clients.config import SSHConfig, list_projects
 from npa.clients.network import (
     ensure_ingress,
@@ -31,7 +42,6 @@ from npa.clients.ssh import SSHClient
 from npa.workbench.leisaac import (
     GPU_PRODUCT,
     SOURCE_COMMIT,
-    TASK,
     LeIsaacConfigError,
     MEDIA_PORT,
     RELAY_SERVICE_PORT,
@@ -41,10 +51,12 @@ from npa.workbench.leisaac import (
     TRANSPORT_LOAD_BALANCER,
     deployment_manifest,
     relay_client_secret_manifest,
+    recorder_secret_manifest,
     relay_service_manifest,
     resource_name,
     service_manifests,
     session_manifest,
+    session_attestation,
     split_s3_uri,
     turn_credential,
     validate_expiry,
@@ -53,6 +65,10 @@ from npa.workbench.leisaac import (
     validate_public_ip,
     validate_run_id,
     validate_source_ranges,
+)
+from npa.workbench.leisaac.paidf import (
+    export_episode_to_paidf,
+    materialize_paidf_dataset,
 )
 from npa.workflows.sim2real.registry_auth import ensure_registry_pull_secret_for_images
 
@@ -164,6 +180,7 @@ def _delete_resources(context: str, namespace: str, name: str) -> None:
             f"service/{name}-media",
             f"service/{name}-relay",
             f"secret/{name}-relay-client",
+            f"secret/{name}-recorder",
             "--ignore-not-found=true",
         ],
     )
@@ -723,7 +740,16 @@ def _put_manifest(
             "region_name": storage.get("region") or None,
         }
         client_kwargs["aws" + "_secret_access_key"] = storage["secret_key"]
-    key = f"{prefix.rstrip('/')}/{manifest['run_id']}/reports/leisaac-session.json"
+    leaf = "reports/leisaac-session.json"
+    # A deprecated launch accepted a leaf URI but treated it as a prefix,
+    # producing .../leisaac-session.json/<run>/reports/leisaac-session.json.
+    # Honor leaf semantics for new writes while discovery continues to find
+    # historical objects by their canonical basename.
+    key = (
+        prefix.rstrip("/")
+        if prefix.rstrip("/").endswith(leaf)
+        else f"{prefix.rstrip('/')}/{manifest['run_id']}/{leaf}"
+    )
     if storage is None:
         client_kwargs["endpoint_url"] = (
             os.environ.get("NEBIUS_S3_ENDPOINT")
@@ -748,6 +774,72 @@ def _emit(payload: dict[str, Any], output: OutputFormat) -> None:
         typer.echo(f"{key}: {value}")
 
 
+@app.command("list-tasks")
+def list_tasks_cmd(
+    output: OutputFormat = typer.Option(OutputFormat.text, "--output"),
+) -> None:
+    """List the pinned SO101 tasks that support browser keyboard control."""
+
+    payload = registry_payload()
+    if output == OutputFormat.json:
+        typer.echo(json.dumps(payload, indent=2, sort_keys=True))
+        return
+    for task in payload["tasks"]:
+        typer.echo(f"{task['task']}: {task['description']}")
+    typer.echo(
+        "environment_model: named-sequential (one active environment per launch)"
+    )
+
+
+@app.command("export-paidf")
+def export_paidf_cmd(
+    dataset_uri: str = typer.Option(..., "--dataset-uri"),
+    episode: int = typer.Option(..., "--episode", min=0),
+    run_id: str = typer.Option(..., "--run-id"),
+    output_path: str = typer.Option(..., "--output-path"),
+    output: OutputFormat = typer.Option(OutputFormat.text, "--output"),
+) -> None:
+    """Export one finalized episode directly from S3 into a PAIDF run input."""
+
+    try:
+        run_id = validate_run_id(run_id)
+        result = export_episode_to_paidf(
+            dataset_uri=dataset_uri,
+            episode_index=episode,
+            paidf_run_id=run_id,
+            paidf_output_path=output_path,
+        )
+    except Exception as exc:  # noqa: BLE001 - CLI boundary
+        _fail(str(exc))
+        return
+    _emit(result, output)
+
+
+@app.command("materialize-paidf")
+def materialize_paidf_cmd(
+    dataset_uri: str = typer.Option(..., "--dataset-uri"),
+    episode: int = typer.Option(..., "--episode", min=0),
+    paidf_run_uri: str = typer.Option(..., "--paidf-run-uri"),
+    output_path: str = typer.Option(..., "--output-path"),
+    variant: int = typer.Option(0, "--variant", min=0),
+    output: OutputFormat = typer.Option(OutputFormat.text, "--output"),
+) -> None:
+    """Create an immutable derived dataset after strict PAIDF video alignment."""
+
+    try:
+        result = materialize_paidf_dataset(
+            dataset_uri=dataset_uri,
+            episode_index=episode,
+            paidf_run_uri=paidf_run_uri,
+            output_path=output_path,
+            variant_index=variant,
+        )
+    except Exception as exc:  # noqa: BLE001 - CLI boundary
+        _fail(str(exc))
+        return
+    _emit(result, output)
+
+
 @app.command("launch")
 def launch_cmd(
     run_id: str = typer.Option(
@@ -767,8 +859,41 @@ def launch_cmd(
         "--source-range",
         help="Public operator CIDR allowed to reach the session; repeat when needed.",
     ),
+    output_path: str = typer.Option(
+        ...,
+        "--output-path",
+        help="Operator-owned S3 prefix for immutable LeRobot demonstration datasets.",
+    ),
+    manifest_prefix: str = typer.Option(
+        "",
+        "--manifest-prefix",
+        help="S3 prefix (or exact .../reports/leisaac-session.json leaf) for capability publication.",
+    ),
     artifact_uri: str = typer.Option(
-        ..., "--artifact-uri", help="S3 prefix where the run manifest is written."
+        "",
+        "--artifact-uri",
+        help="Deprecated alias for --manifest-prefix; exact leaf URIs retain leaf semantics.",
+    ),
+    task: str = typer.Option(
+        DEFAULT_TASK, "--task", help="Pinned task returned by list-tasks."
+    ),
+    environment_id: str = typer.Option(
+        DEFAULT_ENVIRONMENT_ID,
+        "--environment-id",
+        help="Stable sequential environment identity.",
+    ),
+    environment_index: int = typer.Option(
+        0,
+        "--environment-index",
+        min=0,
+        max=2**31 - 1,
+        help="Stable non-negative environment index.",
+    ),
+    seed: int = typer.Option(42, "--seed", min=0, max=2**32 - 1),
+    num_envs: int = typer.Option(
+        1,
+        "--num-envs",
+        help="Must be 1; browser control and episode boundaries are not parallel-routed.",
     ),
     expires_at: str = typer.Option(
         "",
@@ -793,7 +918,7 @@ def launch_cmd(
         OutputFormat.text, "--output", help="Output format."
     ),
 ) -> None:
-    """Launch PickOrange with upstream keyboard teleoperation and publish its UI capability."""
+    """Launch a supported SO101 task and publish its secure collector capability."""
 
     if (
         os.environ.get("OMNI_KIT_ACCEPT_EULA") != "YES"
@@ -817,9 +942,22 @@ def launch_cmd(
     try:
         run_id = validate_run_id(run_id)
         image = validate_image(image)
+        task = validate_task(task)
+        environment_id = validate_environment_id(environment_id)
+        environment_index = validate_environment_index(environment_index)
+        seed = validate_seed(seed)
+        num_envs = validate_num_envs(num_envs)
         expires_at = validate_expiry(expires_at)
         source_ranges = validate_source_ranges(source_range)
-        split_s3_uri(artifact_uri)
+        split_s3_uri(output_path)
+        if manifest_prefix and artifact_uri:
+            raise LeIsaacConfigError(
+                "use --manifest-prefix or deprecated --artifact-uri, not both"
+            )
+        resolved_manifest_prefix = manifest_prefix or artifact_uri
+        if not resolved_manifest_prefix:
+            raise LeIsaacConfigError("--manifest-prefix is required")
+        split_s3_uri(resolved_manifest_prefix)
         name = resource_name(run_id)
         nonce = secrets.token_hex(32)
         if image_pull_secret:
@@ -849,6 +987,19 @@ def launch_cmd(
             )
             turn_cleanup_required = True
             artifact_storage = _agent_artifact_storage(agent_project, agent_name)
+            dataset_bucket, dataset_prefix = split_s3_uri(output_path)
+            if dataset_bucket != artifact_storage["bucket"]:
+                raise LeIsaacConfigError(
+                    "agent-relay output path bucket must match the selected agent's bucket"
+                )
+            agent_prefix = artifact_storage["prefix"]
+            if agent_prefix and not (
+                dataset_prefix == agent_prefix
+                or dataset_prefix.startswith(agent_prefix + "/")
+            ):
+                raise LeIsaacConfigError(
+                    "agent-relay output path must be inside the selected agent's artifact prefix"
+                )
             prior_turn_peer_source = _existing_turn_peer_source(
                 context, namespace, f"{name}-relay"
             )
@@ -885,6 +1036,17 @@ def launch_cmd(
             _apply(context, namespace, [relay_secret])
             signal_host = "127.0.0.1"
         else:
+            artifact_storage = {
+                "bucket": split_s3_uri(output_path)[0],
+                "prefix": "",
+                "endpoint": os.environ.get("AWS_ENDPOINT_URL_S3")
+                or os.environ.get("NEBIUS_S3_ENDPOINT")
+                or os.environ.get("AWS_ENDPOINT_URL")
+                or "",
+                "access_key": os.environ.get("AWS_ACCESS_KEY_ID") or "",
+                "secret_key": os.environ.get("AWS_SECRET_ACCESS_KEY") or "",
+                "region": os.environ.get("AWS_REGION") or "eu-north1",
+            }
             services = service_manifests(
                 run_id=run_id,
                 namespace=namespace,
@@ -894,6 +1056,18 @@ def launch_cmd(
             signal_host = _external_ip(context, namespace, f"{name}-tcp")
             media_host = _external_ip(context, namespace, f"{name}-media")
             media_server = media_host
+        if artifact_storage is None:
+            raise LeIsaacConfigError("recorder storage configuration is unavailable")
+        recorder_secret = recorder_secret_manifest(
+            run_id=run_id,
+            namespace=namespace,
+            output_path=output_path,
+            endpoint=artifact_storage["endpoint"],
+            access_key=artifact_storage["access_key"],
+            secret_key=artifact_storage["secret_key"],
+            region=artifact_storage["region"],
+        )
+        _apply(context, namespace, [recorder_secret])
         deployment = deployment_manifest(
             run_id=run_id,
             namespace=namespace,
@@ -904,6 +1078,12 @@ def launch_cmd(
             relay_client_secret=(
                 f"{name}-relay-client" if transport == Transport.agent_relay else ""
             ),
+            recorder_secret=f"{name}-recorder",
+            task=task,
+            environment_id=environment_id,
+            environment_index=environment_index,
+            seed=seed,
+            num_envs=num_envs,
         )
         _apply(context, namespace, [deployment])
         _wait_ready(context, namespace, name)
@@ -947,9 +1127,13 @@ def launch_cmd(
         health = _relay_status(ssh) if ssh is not None else _status(signal_host)
         if (
             health.get("state") != "ready"
-            or health.get("task") != TASK
+            or health.get("task") != task
             or health.get("source_commit") != SOURCE_COMMIT
-            or health.get("session_nonce") != nonce
+            or health.get("task_registry_fingerprint") != REGISTRY_FINGERPRINT
+            or health.get("session_attestation") != session_attestation(nonce)
+            or health.get("environment_id") != environment_id
+            or int(health.get("environment_index", -1)) != environment_index
+            or int(health.get("seed", -1)) != seed
         ):
             raise RuntimeError(f"LeIsaac live attestation failed: {health}")
         manifest = session_manifest(
@@ -963,9 +1147,15 @@ def launch_cmd(
             gpu=str(health.get("gpu") or GPU_PRODUCT),
             created_at=str(health.get("started_at") or "") or None,
             transport=transport.value,
+            task=task,
+            environment_id=environment_id,
+            environment_index=environment_index,
+            seed=seed,
+            num_envs=num_envs,
+            output_path=output_path,
         )
         manifest_uri = _put_manifest(
-            artifact_uri,
+            resolved_manifest_prefix,
             manifest,
             storage=artifact_storage,
         )
@@ -1013,7 +1203,11 @@ def launch_cmd(
         {
             "status": "ready",
             "run_id": run_id,
-            "task": TASK,
+            "task": task,
+            "environment_id": environment_id,
+            "environment_index": environment_index,
+            "seed": seed,
+            "dataset": output_path.rstrip("/"),
             "gpu": health.get("gpu"),
             "image": image,
             "transport": transport.value,

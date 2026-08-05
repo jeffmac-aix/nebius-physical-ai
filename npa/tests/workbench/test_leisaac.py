@@ -32,6 +32,8 @@ from npa.workbench.leisaac import (
 ROOT = Path(__file__).resolve().parents[3]
 IMAGE = "registry.example/npa-leisaac@sha256:" + "1" * 64
 NONCE = "a" * 64
+OUTPUT_PATH = "s3://bucket/datasets/leisaac"
+RECORDER_SECRET = "leisaac-live-recorder"
 
 
 def _session_server_module():
@@ -79,6 +81,7 @@ def test_deployment_is_real_rt_core_leisaac_and_operator_eula_runtime_config() -
         image=IMAGE,
         media_host="1.1.1.1",
         session_nonce=NONCE,
+        recorder_secret=RECORDER_SECRET,
     )
     pod = deployment["spec"]["template"]["spec"]
     assert pod["nodeSelector"] == {"nvidia.com/gpu.product": GPU_PRODUCT}
@@ -87,7 +90,7 @@ def test_deployment_is_real_rt_core_leisaac_and_operator_eula_runtime_config() -
     assert container["resources"]["limits"]["cpu"] == "32"
     assert container["resources"]["limits"]["nvidia.com/gpu"] == "1"
     assert container["securityContext"]["runAsNonRoot"] is True
-    env = {item["name"]: item["value"] for item in container["env"]}
+    env = {item["name"]: item["value"] for item in container["env"] if "value" in item}
     assert env["OMNI_KIT_ACCEPT_EULA"] == "YES"
     assert env["ISAACSIM_ACCEPT_EULA"] == "YES"
     assert env["NPA_LEISAAC_MEDIA_HOST"] == "1.1.1.1"
@@ -151,6 +154,7 @@ def test_agent_relay_client_is_secret_mounted_as_non_gpu_sidecar() -> None:
         session_nonce=NONCE,
         media_server="10.96.0.5",
         relay_client_secret=secret["metadata"]["name"],
+        recorder_secret=RECORDER_SECRET,
     )
     pod = deployment["spec"]["template"]["spec"]
     sidecar = pod["containers"][1]
@@ -184,6 +188,7 @@ def test_agent_relay_manifest_keeps_tcp_private_and_media_on_agent_public_ip() -
         session_nonce=NONCE,
         media_server="10.96.0.5",
         transport=TRANSPORT_AGENT_RELAY,
+        output_path=OUTPUT_PATH,
     )
 
     assert manifest["transport"] == TRANSPORT_AGENT_RELAY
@@ -206,6 +211,7 @@ def test_agent_relay_rejects_non_loopback_signal_or_missing_agent_identity() -> 
             session_nonce=NONCE,
             media_server="10.96.0.5",
             transport=TRANSPORT_AGENT_RELAY,
+            output_path=OUTPUT_PATH,
         )
     with pytest.raises(LeIsaacConfigError, match="private IPv4"):
         session_manifest(
@@ -216,6 +222,7 @@ def test_agent_relay_rejects_non_loopback_signal_or_missing_agent_identity() -> 
             session_nonce=NONCE,
             media_server="8.8.8.8",
             transport=TRANSPORT_AGENT_RELAY,
+            output_path=OUTPUT_PATH,
         )
     with pytest.raises(LeIsaacConfigError, match="agent project and name"):
         relay_service_manifest(
@@ -242,6 +249,7 @@ def test_manifest_records_exact_real_component_and_provenance() -> None:
         media_host="1.1.1.1",
         session_nonce=NONCE,
         expires_at=(datetime.now(timezone.utc) + timedelta(days=1)).isoformat(),
+        output_path=OUTPUT_PATH,
     )
     assert manifest["task"] == "LeIsaac-SO101-PickOrange-v0"
     assert manifest["teleop_device"] == "keyboard"
@@ -258,6 +266,7 @@ def test_manifest_has_no_implicit_session_time_limit() -> None:
         signal_host="8.8.8.8",
         media_host="1.1.1.1",
         session_nonce=NONCE,
+        output_path=OUTPUT_PATH,
     )
 
     assert "expires_at" not in manifest
@@ -272,6 +281,7 @@ def test_image_must_be_digest_pinned(value: str) -> None:
             image=value,
             media_host="1.1.1.1",
             session_nonce=NONCE,
+            recorder_secret=RECORDER_SECRET,
         )
 
 
@@ -289,6 +299,7 @@ def test_private_or_unrestricted_tcp_endpoints_are_rejected() -> None:
             image=IMAGE,
             media_host="127.0.0.1",
             session_nonce=NONCE,
+            recorder_secret=RECORDER_SECRET,
         )
 
 

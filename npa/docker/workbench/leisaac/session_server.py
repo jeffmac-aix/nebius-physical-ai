@@ -26,10 +26,36 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-SCHEMA = "npa.leisaac.health.v1"
-TASK = "LeIsaac-SO101-PickOrange-v0"
+try:
+    from leisaac_registry import (
+        REGISTRY_FINGERPRINT,
+        RUNTIME_ASSETS,
+        registry_payload,
+        validate_environment_id,
+        validate_environment_index,
+        validate_num_envs,
+        validate_seed,
+        validate_task,
+    )
+except ImportError:  # Repository unit tests import the script directly.
+    from npa.agent_backend.leisaac_registry import (
+        REGISTRY_FINGERPRINT,
+        RUNTIME_ASSETS,
+        registry_payload,
+        validate_environment_id,
+        validate_environment_index,
+        validate_num_envs,
+        validate_seed,
+        validate_task,
+    )
+
+SCHEMA = "npa.leisaac.health.v2"
+TASK = os.environ.get("NPA_LEISAAC_TASK", "LeIsaac-SO101-PickOrange-v0")
+ENVIRONMENT_ID = os.environ.get("NPA_LEISAAC_ENVIRONMENT_ID", "operator-0")
+ENVIRONMENT_INDEX = int(os.environ.get("NPA_LEISAAC_ENVIRONMENT_INDEX", "0"))
 TELEOP_DEVICE = "keyboard"
-TELEOP_SEED = 42
+TELEOP_SEED = int(os.environ.get("NPA_LEISAAC_SEED", "42"))
+NUM_ENVS = int(os.environ.get("NPA_LEISAAC_NUM_ENVS", "1"))
 SOURCE_COMMIT = "1651c321e9b0c1bb54233211fc7b3cd70d8373d5"
 SOURCE_VERSION = "0.4.0"
 ISAAC_SIM_VERSION = "5.1.0.0"
@@ -38,11 +64,13 @@ SIGNAL_PORT = 49100
 MEDIA_PORT = 47998
 SERVICE_PORT = 8080
 
-ASSET_RELEASE = "v0.1.0"
-ROBOT_URL = "https://github.com/LightwheelAI/leisaac/releases/download/v0.1.0/so101_follower.usd"
-ROBOT_SHA256 = "64a877c3b82cdc4a48ab8a1f321a2dd3ef7c55d4b10bce222b58c530d978ae58"
-KITCHEN_URL = "https://github.com/LightwheelAI/leisaac/releases/download/v0.1.0/kitchen_with_orange.zip"
-KITCHEN_SHA256 = "d314c54b63a17e91402bfaddf26e21ff614adf2430fa092b78897f15b8adea34"
+_ASSET_BY_ID = {item["id"]: item for item in RUNTIME_ASSETS}
+ROBOT_URL = _ASSET_BY_ID["so101_follower"]["url"]
+ROBOT_SHA256 = _ASSET_BY_ID["so101_follower"]["sha256"]
+KITCHEN_URL = _ASSET_BY_ID["kitchen_with_orange"]["url"]
+KITCHEN_SHA256 = _ASSET_BY_ID["kitchen_with_orange"]["sha256"]
+TABLE_URL = _ASSET_BY_ID["table_with_cube"]["url"]
+TABLE_SHA256 = _ASSET_BY_ID["table_with_cube"]["sha256"]
 CLIENT_URL = (
     "https://edge.urm.nvidia.com/artifactory/api/npm/omniverse-client-npm/"
     "@nvidia/omniverse-webrtc-streaming-library/-/"
@@ -54,7 +82,7 @@ CLIENT_SOURCE_JS_SHA256 = (
 )
 CLIENT_JS_SHA256 = "e9ac6563db79d3aea8afe94c4f60e50571abc01e3470d9bafb4e2f8b54cbd2a5"
 UPSTREAM_OBSERVABILITY_PATCH_SHA256 = (
-    "5f48b8d723c31fd096d3fcbec03c713f363793a9f0d783c67189abf0bdcc6b5a"
+    "8bafbb7887946736264547b2580051dde6087f5116dce6fc1e73806ac0a750d7"
 )
 CLIENT_WSS_PATCH_OLD = b"M=Yc(B)?D.AppLevelProtocol.HTTP:D.AppLevelProtocol.HTTPS;"
 CLIENT_WSS_PATCH_NEW = (
@@ -63,7 +91,7 @@ CLIENT_WSS_PATCH_NEW = (
 )
 
 CACHE_ROOT = Path(os.environ.get("NPA_LEISAAC_CACHE_DIR", "/opt/leisaac-cache"))
-ASSETS_ROOT = CACHE_ROOT / "assets" / ASSET_RELEASE
+ASSETS_ROOT = CACHE_ROOT / "assets" / "runtime"
 CLIENT_ROOT = CACHE_ROOT / "client" / "5.6.0"
 PROVENANCE_PATH = CACHE_ROOT / "provenance.json"
 READY_PATH = Path("/tmp/npa-leisaac-ready")
@@ -71,6 +99,9 @@ INPUT_COUNTER_PATH = Path("/tmp/npa-leisaac-input-events")
 APPLIED_COUNTER_PATH = Path("/tmp/npa-leisaac-applied-inputs")
 INPUT_QUEUE_PATH = Path("/tmp/npa-leisaac-input-queue.jsonl")
 FRAME_PATH = Path("/tmp/npa-leisaac-frame.jpg")
+RECORDER_ROOT = Path("/tmp/npa-leisaac-recorder")
+RECORDER_STATUS_PATH = RECORDER_ROOT / "status.json"
+RECORDER_CONTROL_PATH = RECORDER_ROOT / "control.jsonl"
 STATE_LOCK = threading.Lock()
 INPUT_LOCK = threading.Lock()
 STATE: dict[str, Any] = {
@@ -101,6 +132,24 @@ def require_operator_eula() -> None:
             file=sys.stderr,
         )
         raise SystemExit(78)
+
+
+def validate_runtime_configuration() -> None:
+    try:
+        validate_task(TASK)
+        validate_environment_id(ENVIRONMENT_ID)
+        validate_environment_index(ENVIRONMENT_INDEX)
+        validate_seed(TELEOP_SEED)
+        validate_num_envs(NUM_ENVS)
+    except ValueError as exc:
+        raise RuntimeError(str(exc)) from exc
+    if os.environ.get("NPA_LEISAAC_REGISTRY_FINGERPRINT") != REGISTRY_FINGERPRINT:
+        raise RuntimeError("task registry fingerprint mismatch")
+    output = os.environ.get("NPA_LEISAAC_OUTPUT_PATH", "")
+    if not output.startswith("s3://"):
+        raise RuntimeError(
+            "NPA_LEISAAC_OUTPUT_PATH must be an operator-owned S3 prefix"
+        )
 
 
 def hash_file(path: Path, algorithm: str = "sha256") -> str:
@@ -173,9 +222,11 @@ def stage_runtime() -> None:
     downloads = CACHE_ROOT / "downloads"
     robot = downloads / "so101_follower.usd"
     kitchen = downloads / "kitchen_with_orange.zip"
+    table = downloads / "table_with_cube.zip"
     client = downloads / "omniverse-webrtc-streaming-library-5.6.0.tgz"
     download_verified(ROBOT_URL, robot, ROBOT_SHA256)
     download_verified(KITCHEN_URL, kitchen, KITCHEN_SHA256)
+    download_verified(TABLE_URL, table, TABLE_SHA256)
     download_verified(CLIENT_URL, client, CLIENT_SHA512, "sha512")
 
     robot_target = ASSETS_ROOT / "robots" / "so101_follower.usd"
@@ -189,6 +240,13 @@ def stage_runtime() -> None:
         safe_extract_zip(kitchen, scenes)
     if not scene.is_file():
         raise RuntimeError(f"asset archive did not produce {scene}")
+    table_scene = ASSETS_ROOT / "scenes" / "table_with_cube" / "scene.usd"
+    if not table_scene.is_file():
+        scenes = ASSETS_ROOT / "scenes"
+        scenes.mkdir(parents=True, exist_ok=True)
+        safe_extract_zip(table, scenes)
+    if not table_scene.is_file():
+        raise RuntimeError(f"asset archive did not produce {table_scene}")
 
     client_js = CLIENT_ROOT / "index.js"
     if not client_js.is_file() or hash_file(client_js) != CLIENT_JS_SHA256:
@@ -218,6 +276,11 @@ def stage_runtime() -> None:
                 "url": KITCHEN_URL,
                 "sha256": KITCHEN_SHA256,
                 "bytes": kitchen.stat().st_size,
+            },
+            {
+                "url": TABLE_URL,
+                "sha256": TABLE_SHA256,
+                "bytes": table.stat().st_size,
             },
         ],
         "browser_client": {
@@ -260,7 +323,7 @@ def run_simulation() -> None:
     try:
         update_state(detail="fetching operator-licensed Isaac runtime")
         subprocess.run(["/opt/npa/bin/isaac-bootstrap", "ensure"], check=True)
-        update_state(detail="starting LeIsaac PickOrange")
+        update_state(detail=f"starting {TASK}")
         media_host = os.environ.get("NPA_LEISAAC_MEDIA_HOST", "").strip()
         if not media_host:
             raise RuntimeError("NPA_LEISAAC_MEDIA_HOST is required")
@@ -269,7 +332,7 @@ def run_simulation() -> None:
             "/opt/leisaac/scripts/environments/teleoperation/teleop_se3_agent.py",
             f"--task={TASK}",
             f"--teleop_device={TELEOP_DEVICE}",
-            "--num_envs=1",
+            f"--num_envs={NUM_ENVS}",
             f"--seed={TELEOP_SEED}",
             # Isaac Sim 5.1 does not ship sm_120 PhysX kernels. Keep physics on
             # CPU for this single interactive environment; RTX rendering and
@@ -302,11 +365,14 @@ def run_simulation() -> None:
         environment["NPA_LEISAAC_APPLIED_COUNTER"] = str(APPLIED_COUNTER_PATH)
         environment["NPA_LEISAAC_INPUT_QUEUE"] = str(INPUT_QUEUE_PATH)
         environment["NPA_LEISAAC_FRAME_PATH"] = str(FRAME_PATH)
+        environment["NPA_LEISAAC_RECORDER_ROOT"] = str(RECORDER_ROOT)
         READY_PATH.unlink(missing_ok=True)
         INPUT_COUNTER_PATH.write_text("0\n", encoding="utf-8")
         APPLIED_COUNTER_PATH.write_text("0\n", encoding="utf-8")
         INPUT_QUEUE_PATH.write_text("", encoding="utf-8")
         FRAME_PATH.unlink(missing_ok=True)
+        shutil.rmtree(RECORDER_ROOT, ignore_errors=True)
+        RECORDER_ROOT.mkdir(parents=True, exist_ok=True)
         CHILD = subprocess.Popen(
             command,
             cwd="/opt/leisaac",
@@ -364,17 +430,41 @@ def health_document() -> dict[str, Any]:
     except OSError:
         frame_bytes = 0
         frame_updated_at = ""
+    try:
+        recorder = json.loads(RECORDER_STATUS_PATH.read_text(encoding="utf-8"))
+        if not isinstance(recorder, dict):
+            recorder = {}
+    except (OSError, ValueError):
+        recorder = {
+            "state": "starting",
+            "dataset_uri": os.environ.get("NPA_LEISAAC_OUTPUT_PATH", ""),
+            "task": TASK,
+            "environment_id": ENVIRONMENT_ID,
+            "environment_index": ENVIRONMENT_INDEX,
+            "seed": TELEOP_SEED,
+        }
+    nonce = os.environ.get("NPA_LEISAAC_SESSION_NONCE", "")
+    attestation = (
+        hashlib.sha256(f"npa-leisaac-session:{nonce}".encode()).hexdigest()
+        if len(nonce) == 64
+        else ""
+    )
     return {
         "schema": SCHEMA,
         "run_id": os.environ.get("NPA_LEISAAC_RUN_ID", ""),
         "task": TASK,
+        "task_registry_fingerprint": REGISTRY_FINGERPRINT,
+        "task_registry": registry_payload(),
         "teleop_device": TELEOP_DEVICE,
         "seed": TELEOP_SEED,
+        "environment_id": ENVIRONMENT_ID,
+        "environment_index": ENVIRONMENT_INDEX,
+        "num_envs": NUM_ENVS,
         "source_commit": SOURCE_COMMIT,
         "source_version": SOURCE_VERSION,
         "isaac_sim_version": ISAAC_SIM_VERSION,
         "isaac_lab_version": ISAAC_LAB_VERSION,
-        "session_nonce": os.environ.get("NPA_LEISAAC_SESSION_NONCE", ""),
+        "session_attestation": attestation,
         "signal_port": SIGNAL_PORT,
         "media_port": MEDIA_PORT,
         "input_events": input_events,
@@ -385,6 +475,7 @@ def health_document() -> dict[str, Any]:
         "frame_updated_at": frame_updated_at,
         "physics_device": "cpu",
         "render_device": "cuda",
+        "recorder": recorder,
         **state,
     }
 
@@ -464,7 +555,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         path = self.path.split("?", 1)[0]
-        if path != "/input":
+        if path not in {"/input", "/recorder/control"}:
             self.send_bytes(404, "application/json", b'{"detail":"not found"}\n')
             return
         if not self.authorized():
@@ -474,13 +565,49 @@ class Handler(http.server.BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", "0"))
         except ValueError:
             length = 0
-        if length <= 0 or length > 256:
+        if length <= 0 or length > 1024:
             self.send_bytes(400, "application/json", b'{"detail":"invalid body"}\n')
             return
         try:
             payload = json.loads(self.rfile.read(length))
         except (UnicodeDecodeError, ValueError):
             payload = None
+        if path == "/recorder/control":
+            command = str(payload.get("command") if isinstance(payload, dict) else "")
+            if command not in {"start", "mark-success", "mark-failure", "finalize"}:
+                self.send_bytes(
+                    400, "application/json", b'{"detail":"invalid recorder command"}\n'
+                )
+                return
+            try:
+                status = json.loads(RECORDER_STATUS_PATH.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                self.send_bytes(
+                    503, "application/json", b'{"detail":"recorder unavailable"}\n'
+                )
+                return
+            state = str(status.get("state") or "")
+            valid = {
+                "start": state == "idle",
+                "mark-success": state in {"recording", "outcome-pending"},
+                "mark-failure": state in {"recording", "outcome-pending"},
+                "finalize": state in {"outcome-pending", "upload-failed"},
+            }
+            if not valid[command]:
+                self.send_bytes(
+                    409,
+                    "application/json",
+                    b'{"detail":"invalid recorder transition"}\n',
+                )
+                return
+            record = json.dumps({"command": command}, separators=(",", ":")) + "\n"
+            with INPUT_LOCK:
+                with RECORDER_CONTROL_PATH.open("a", encoding="utf-8") as queue:
+                    queue.write(record)
+                    queue.flush()
+                    os.fsync(queue.fileno())
+            self.send_bytes(202, "application/json", b'{"accepted":true}\n')
+            return
         key = str(payload.get("key") if isinstance(payload, dict) else "").upper()
         event = str(payload.get("event") if isinstance(payload, dict) else "")
         if key not in {
@@ -496,8 +623,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
             "K",
             "U",
             "O",
-            "R",
-            "N",
         } or event not in {"press", "release"}:
             self.send_bytes(400, "application/json", b'{"detail":"invalid input"}\n')
             return
@@ -539,6 +664,7 @@ def stop_child(*_args: Any) -> None:
 
 def main() -> int:
     require_operator_eula()
+    validate_runtime_configuration()
     stage_runtime()
     for signum in (signal.SIGINT, signal.SIGTERM):
         signal.signal(signum, stop_child)

@@ -10,7 +10,10 @@ LeIsaac SO101 browser teleoperation on an RT-core Kubernetes GPU.
 Options
 --help  Show this message and exit.
 Commands
-launch  Launch PickOrange with upstream keyboard teleoperation and publish its UI capability.
+list-tasks  List the pinned SO101 tasks that support browser keyboard control.
+export-paidf  Export one finalized episode directly from S3 into a PAIDF run input.
+materialize-paidf  Create an immutable derived dataset after strict PAIDF video alignment.
+launch  Launch a supported SO101 task and publish its secure collector capability.
 status  Report the live Kubernetes objects for a LeIsaac run.
 destroy  Delete this run's transient GPU deployment and LBs, preserving S3 evidence.
 ```
@@ -25,7 +28,10 @@ destroy  Delete this run's transient GPU deployment and LBs, preserving S3 evide
 
 | Command | Description |
 | --- | --- |
-| `launch` | Launch PickOrange with upstream keyboard teleoperation and publish its UI capability. |
+| `list-tasks` | List the pinned SO101 tasks that support browser keyboard control. |
+| `export-paidf` | Export one finalized episode directly from S3 into a PAIDF run input. |
+| `materialize-paidf` | Create an immutable derived dataset after strict PAIDF video alignment. |
+| `launch` | Launch a supported SO101 task and publish its secure collector capability. |
 | `status` | Report the live Kubernetes objects for a LeIsaac run. |
 | `destroy` | Delete this run's transient GPU deployment and LBs, preserving S3 evidence. |
 
@@ -33,7 +39,7 @@ destroy  Delete this run's transient GPU deployment and LBs, preserving S3 evide
 
 ```bash
 npa workbench leisaac --help
-npa workbench leisaac launch --help
+npa workbench leisaac list-tasks --help
 ```
 
 Regenerate this page with `bash scripts/build_docs.sh` after changing `leisaac`.
