@@ -73,6 +73,7 @@ try:
         VIDEO_SUBPROTOCOL,
         pack_frame,
         parse_control_message,
+        parse_video_ack,
     )
 except ImportError:  # Repository unit tests import the script directly.
     from npa.agent_backend.leisaac_transport import (
@@ -88,6 +89,7 @@ except ImportError:  # Repository unit tests import the script directly.
         VIDEO_SUBPROTOCOL,
         pack_frame,
         parse_control_message,
+        parse_video_ack,
     )
 
 SCHEMA = "npa.leisaac.health.v2"
@@ -1102,6 +1104,7 @@ def build_app() -> FastAPI:
         if not _runtime_ws_authorized(websocket, VIDEO_SUBPROTOCOL):
             await websocket.close(code=1008)
             return
+        run_id = os.environ.get("NPA_LEISAAC_RUN_ID", "")
         await websocket.accept(subprotocol=VIDEO_SUBPROTOCOL)
         TRANSPORT_METRICS.increment("video_connections")
         generation = 0
@@ -1140,7 +1143,24 @@ def build_app() -> FastAPI:
                     await websocket.close(code=1013)
                     return
                 TRANSPORT_METRICS.increment("frames_sent")
-        except (WebSocketDisconnect, asyncio.TimeoutError):
+                acknowledgement = parse_video_ack(
+                    await asyncio.wait_for(websocket.receive_text(), timeout=10.0),
+                    expected_run_id=run_id,
+                )
+                if int(acknowledgement["sequence"]) != sequence:
+                    raise TransportProtocolError(
+                        "out_of_order",
+                        "video acknowledgement is not for the displayed frame",
+                        expected_seq=sequence,
+                    )
+        except TransportProtocolError:
+            await websocket.close(code=1008)
+            return
+        except asyncio.TimeoutError:
+            TRANSPORT_METRICS.increment("slow_client_disconnects")
+            await websocket.close(code=1013)
+            return
+        except WebSocketDisconnect:
             return
 
     return application

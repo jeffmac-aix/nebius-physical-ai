@@ -2831,6 +2831,15 @@
               clock_uncertainty_ms: leisaacClockUncertaintyNs / 1000000,
               dropped_before: frame.droppedBefore,
             });
+            const videoSocket = leisaacVideoSocket;
+            if (videoSocket && videoSocket.readyState === WebSocket.OPEN) {
+              videoSocket.send(JSON.stringify({
+                v: 1,
+                type: "frame-ack",
+                run_id: String((leisaacCapability && leisaacCapability.run_id) || ""),
+                sequence: frame.sequence,
+              }));
+            }
             leisaacStreamReady = true;
             setLeIsaacStreamState("Live WebSocket · keyboard teleoperation active", "ready");
             const host = document.getElementById("leisaacStreamHost");

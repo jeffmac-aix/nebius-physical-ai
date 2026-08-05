@@ -650,6 +650,7 @@ describe("NPA agent LeIsaac capability tab", () => {
           this.protocol = protocol;
           this.readyState = FakeWebSocket.CONNECTING;
           this.binaryType = "blob";
+          this.sent = [];
           this.timer = null;
           sockets.push(this);
           win.setTimeout(() => {
@@ -663,6 +664,7 @@ describe("NPA agent LeIsaac capability tab", () => {
           }, 5);
         }
         send(raw) {
+          this.sent.push(String(raw));
           if (!this.url.includes("/control")) return;
           const message = JSON.parse(String(raw));
           let response = null;
@@ -751,8 +753,16 @@ describe("NPA agent LeIsaac capability tab", () => {
     });
     cy.window().should((win) => {
       const controls = win.__NPA_AGENT_TEST__.leisaacTransportEvidence().controls;
-        expect(controls.filter((item) => item.phase === "accepted")).to.have.length(2);
-        expect(controls.filter((item) => item.phase === "applied")).to.have.length(2);
+      expect(controls.filter((item) => item.phase === "accepted")).to.have.length(2);
+      expect(controls.filter((item) => item.phase === "applied")).to.have.length(2);
+      const video = win.__LEISAAC_FAKE_SOCKETS__.find(
+        (socket) => socket.url.includes("/video") && socket.readyState === 1,
+      );
+      expect(
+        video.sent
+          .map((raw) => JSON.parse(raw))
+          .filter((item) => item.type === "frame-ack"),
+      ).to.have.length.greaterThan(0);
     });
     cy.get("#leisaacRecordStart").click();
     cy.wait("@wsRecorder");

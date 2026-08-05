@@ -23,6 +23,7 @@ PROTOCOL_VERSION = 1
 CONTROL_SUBPROTOCOL = "npa.leisaac.control.v1"
 VIDEO_SUBPROTOCOL = "npa.leisaac.video.v1"
 MAX_CONTROL_MESSAGE_BYTES = 4096
+MAX_VIDEO_ACK_BYTES = 512
 MAX_FRAME_BYTES = 4 * 1024 * 1024
 MAX_CLIENT_HISTORY = 1024
 CLIENT_ID_PATTERN = re.compile(r"[A-Za-z0-9._:-]{1,96}")
@@ -143,6 +144,40 @@ def parse_control_message(raw: str | bytes, *, expected_run_id: str) -> dict[str
             raise TransportProtocolError("invalid_message", "invalid ping nonce")
         result["nonce"] = nonce
     return result
+
+
+def parse_video_ack(raw: str | bytes, *, expected_run_id: str) -> dict[str, Any]:
+    """Parse the bounded paint credit that prevents stale socket-frame backlogs."""
+
+    encoded = raw.encode("utf-8") if isinstance(raw, str) else bytes(raw)
+    if not encoded or len(encoded) > MAX_VIDEO_ACK_BYTES:
+        raise TransportProtocolError(
+            "message_too_large", "video acknowledgement size is invalid"
+        )
+    try:
+        payload = json.loads(encoded)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise TransportProtocolError(
+            "invalid_message", "video acknowledgement is not valid JSON"
+        ) from exc
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != {"v", "type", "run_id", "sequence"}
+        or payload.get("v") != PROTOCOL_VERSION
+        or payload.get("type") != "frame-ack"
+    ):
+        raise TransportProtocolError("invalid_message", "invalid video acknowledgement")
+    run_id = _bounded_text(payload.get("run_id"), pattern=RUN_ID_PATTERN, name="run ID")
+    if run_id != expected_run_id:
+        raise TransportProtocolError(
+            "run_mismatch", "video acknowledgement run ID does not match the session"
+        )
+    return {
+        "v": PROTOCOL_VERSION,
+        "type": "frame-ack",
+        "run_id": run_id,
+        "sequence": _sequence(payload.get("sequence"), name="frame sequence"),
+    }
 
 
 @dataclass

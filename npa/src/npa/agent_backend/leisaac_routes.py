@@ -48,6 +48,7 @@ try:  # agent VM: /opt/npa-agent is on sys.path
         TransportProtocolError,
         VIDEO_SUBPROTOCOL,
         parse_control_message,
+        parse_video_ack,
         stamp_agent_frame,
         unpack_frame,
     )
@@ -73,6 +74,7 @@ except ImportError:  # repository tests
         TransportProtocolError,
         VIDEO_SUBPROTOCOL,
         parse_control_message,
+        parse_video_ack,
         stamp_agent_frame,
         unpack_frame,
     )
@@ -900,6 +902,22 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
                         unpack_frame(raw)
                         await latest.publish((raw, time.monotonic_ns()))
 
+                async def acknowledge_runtime() -> None:
+                    while True:
+                        message = await websocket.receive()
+                        if message.get("type") == "websocket.disconnect":
+                            return
+                        raw = message.get("text")
+                        if raw is None:
+                            raise TransportProtocolError(
+                                "invalid_message",
+                                "video acknowledgements must be text",
+                            )
+                        acknowledgement = parse_video_ack(raw, expected_run_id=run_id)
+                        await upstream.send(
+                            json.dumps(acknowledgement, separators=(",", ":"))
+                        )
+
                 async def send_browser() -> None:
                     generation = 0
                     while True:
@@ -926,6 +944,7 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
 
                 tasks = {
                     asyncio.create_task(read_runtime()),
+                    asyncio.create_task(acknowledge_runtime()),
                     asyncio.create_task(send_browser()),
                 }
                 done, pending = await asyncio.wait(

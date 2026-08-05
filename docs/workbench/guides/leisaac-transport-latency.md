@@ -56,8 +56,10 @@ The preferred path uses two authenticated, same-origin FastAPI WebSockets:
 - `video`: a 112-byte binary envelope followed by JPEG bytes. It carries frame
   sequence, capture/encode wall and monotonic timestamps, runtime/agent stage
   timestamps, byte length, drop count, and SHA-256. One-slot publishers at the
-  runtime and agent implement latest-frame-wins; stale video is coalesced while
-  controls use an independent socket and task.
+  runtime and agent implement latest-frame-wins. The browser grants the next
+  frame credit only after paint, so kernel/WebSocket buffers cannot become a
+  hidden stale-frame queue; source frames superseded between paint credits are
+  counted as coalesced while controls use an independent socket and task.
 
 FastAPI routes remain adapters. Ordering, message/frame limits, binary framing,
 backpressure, and counters live in the shared `leisaac_transport` module shipped

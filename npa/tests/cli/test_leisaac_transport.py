@@ -30,6 +30,7 @@ from npa.agent_backend.leisaac_transport import (
     VIDEO_SUBPROTOCOL,
     pack_frame,
     parse_control_message,
+    parse_video_ack,
     stamp_agent_frame,
     unpack_frame,
 )
@@ -161,6 +162,37 @@ def test_binary_frame_envelope_round_trips_and_detects_tampering() -> None:
     tampered[-2] ^= 0x01
     with pytest.raises(TransportProtocolError, match="digest"):
         unpack_frame(bytes(tampered))
+
+
+def test_video_paint_ack_is_bounded_exact_and_run_scoped() -> None:
+    acknowledgement = parse_video_ack(
+        json.dumps({"v": 1, "type": "frame-ack", "run_id": RUN_ID, "sequence": 17}),
+        expected_run_id=RUN_ID,
+    )
+    assert acknowledgement["sequence"] == 17
+
+    with pytest.raises(TransportProtocolError, match="run ID"):
+        parse_video_ack(
+            json.dumps(
+                {"v": 1, "type": "frame-ack", "run_id": "other", "sequence": 17}
+            ),
+            expected_run_id=RUN_ID,
+        )
+    with pytest.raises(TransportProtocolError, match="invalid video"):
+        parse_video_ack(
+            json.dumps(
+                {
+                    "v": 1,
+                    "type": "frame-ack",
+                    "run_id": RUN_ID,
+                    "sequence": 17,
+                    "unexpected": True,
+                }
+            ),
+            expected_run_id=RUN_ID,
+        )
+    with pytest.raises(TransportProtocolError, match="size"):
+        parse_video_ack("x" * 513, expected_run_id=RUN_ID)
 
 
 @pytest.mark.anyio
@@ -416,3 +448,26 @@ def test_runtime_video_envelope_is_binary_and_nonblank(
             assert envelope.sequence == 4
             assert envelope.runtime_send_monotonic_ns > 0
             assert content == jpeg
+            next_jpeg = b"\xff\xd8" + b"new-frame" * 30 + b"\xff\xd9"
+            runtime.FRAME_PATH.write_bytes(next_jpeg)
+            runtime.FRAME_META_PATH.write_text(
+                json.dumps(
+                    {
+                        "schema": "npa.leisaac.frame.v1",
+                        "sequence": 5,
+                        "capture_wall_ns": 200,
+                        "capture_monotonic_ns": 201,
+                        "encoded_wall_ns": 202,
+                        "encoded_monotonic_ns": 203,
+                        "bytes": len(next_jpeg),
+                        "sha256": hashlib.sha256(next_jpeg).hexdigest(),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            websocket.send_json(
+                {"v": 1, "type": "frame-ack", "run_id": RUN_ID, "sequence": 4}
+            )
+            next_envelope, next_content = unpack_frame(websocket.receive_bytes())
+            assert next_envelope.sequence == 5
+            assert next_content == next_jpeg
