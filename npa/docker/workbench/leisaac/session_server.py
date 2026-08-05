@@ -358,6 +358,13 @@ def run_simulation() -> None:
             ),
         ]
         environment = os.environ.copy()
+        module_root = "/opt/npa/leisaac"
+        inherited_pythonpath = environment.get("PYTHONPATH", "").strip()
+        environment["PYTHONPATH"] = (
+            f"{module_root}:{inherited_pythonpath}"
+            if inherited_pythonpath
+            else module_root
+        )
         environment["LEISAAC_ASSETS_ROOT"] = str(ASSETS_ROOT)
         environment["NPA_LEISAAC_BROWSER_TELEOP"] = "1"
         environment["NPA_LEISAAC_READY_PATH"] = str(READY_PATH)

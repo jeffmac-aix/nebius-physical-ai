@@ -340,6 +340,8 @@ def test_container_never_bakes_eula_client_or_assets() -> None:
     assert "safe_extract_zip" in server and "safe_extract_client" in server
     assert '"--device=cpu"' in server
     assert 'f"--seed={TELEOP_SEED}"' in server
+    assert 'module_root = "/opt/npa/leisaac"' in server
+    assert 'environment["PYTHONPATH"]' in server
     assert 'environment["NPA_LEISAAC_BROWSER_TELEOP"] = "1"' in server
     assert "stdin=subprocess.DEVNULL" in server
     assert "start_new_session=True" in server
