@@ -17,14 +17,19 @@ digest-pinned image, then verifies the live service's matching nonce
 attestation. Any absent, stale, malformed, unreachable, mismatched, or
 non-ready session leaves the tab absent. Switching runs repeats this check.
 
-The browser receives no service nonce or agent credential. For an agent-relayed
-session, its authenticated, no-store status request receives one derived,
-session-scoped TURN credential and the private pod media peer that is usable
-only through that session's TURN allocation. Signaling is relayed
-through the agent's authenticated same-origin
-`/api/leisaac/signal` WebSocket. The NVIDIA browser client JavaScript is also
-proxied through an authenticated route and must match the agent's exact pinned
-SHA-256 before it can execute.
+The browser receives no service nonce or agent credential. The live Isaac Sim
+5.1 path returns same-origin, authenticated `/api/leisaac/frame.jpg` and
+`/api/leisaac/input` routes. The agent resolves only the selected run's
+validated capability, authenticates to the private service with the hidden
+session nonce, rejects malformed JPEG bytes and unknown controls, and relays
+the response through HTTPS. The service reports accepted inputs separately
+from inputs consumed by upstream `SO101Keyboard`, so live validation proves
+that controls reached the simulator rather than only the public API.
+
+The older WebRTC path remains available as a compatibility transport. In that
+mode, the no-store status response includes one derived session-scoped TURN
+credential, signaling uses `/api/leisaac/signal`, and the hash-pinned NVIDIA
+browser client is proxied through an authenticated route.
 
 Two transport modes preserve that browser contract. `public-load-balancer`
 source-restricts status/client TCP `8080`, signaling TCP `49100`, and UDP media
@@ -32,7 +37,8 @@ source-restricts status/client TCP `8080`, signaling TCP `49100`, and UDP media
 public IPv4 allocation: Kubernetes uses a private `ClusterIP` service, the saved
 NPA agent runs a hardened systemd relay, and a non-GPU sidecar in the simulation
 pod initiates an authenticated WSS backhaul through nginx `443` to it. A
-digest-pinned coturn sidecar shares the simulator's pod network. The
+digest-pinned coturn sidecar shares the simulator's pod network for the
+compatibility WebRTC path. The
 backhaul uses the agent's existing basic-auth credential, pins the public HTTPS
 certificate SHA-256, and authenticates again with a random session nonce. The
 relay binds status to `127.0.0.1:48080`, signaling to `127.0.0.1:49100`, and
@@ -43,8 +49,8 @@ UDP `47998`
 media peer communicate directly inside the shared pod network namespace.
 Only explicit operator CIDRs can reach public UDP `3478`; UDP
 `47999-48015`, the
-GPU pod, and the GPU node remain private. The UI forces
-`iceTransportPolicy=relay` for that session. TURN long-term authentication,
+GPU pod, and the GPU node remain private. WebRTC sessions force
+`iceTransportPolicy=relay`. TURN long-term authentication,
 one session-scoped user with a bounded 16-allocation quota, and the exact
 security-group rule prevent the public control relay from acting as an open
 proxy. The agent and cluster may
@@ -64,7 +70,8 @@ GPU pod are never publicly reachable.
 - Isaac Lab `2.3.2.post1` and source commit `37ddf626…`;
 - LeIsaac `0.4.0` / commit `1651c321…` (upstream requests Isaac Lab 2.3.0;
   NPA uses the compatible patched 2.3.x release and validates the real task);
-- NVIDIA Omniverse WebRTC streaming client `5.6.0`, the version documented by
+- NVIDIA Omniverse WebRTC streaming client `5.6.0` for the retained
+  compatibility path, the version documented by
   NVIDIA's [web viewer sample](https://github.com/NVIDIA-Omniverse/web-viewer-sample)
   for Kit 107.3.1+ and compatible with Isaac Sim 5.1. Its pristine
   runtime-fetched JavaScript is hash-verified, then receives one exact
@@ -76,17 +83,19 @@ The image bakes only Apache-2.0 LeIsaac source and OSS dependencies. The
 unlicensed optional Feetech SDK used by physical leader hardware is not
 redistributed; an explicit packaging-only patch removes that dependency edge,
 and this browser service uses upstream's software keyboard path with a narrow,
-fail-safe observability patch that publishes readiness only after the real task
-reset and counts accepted upstream keyboard events. Browser teleoperation uses
-the WebRTC viewport rather than policy camera tensors, so the same patch removes
+fail-safe integration patch that publishes readiness only after the real task
+reset and first non-empty RTX frame. It drains a bounded, validated input queue
+inside upstream `SO101Keyboard`, applies each press for eight simulation steps,
+and records the consumed-input count separately. Browser teleoperation uses
+the RTX viewport rather than policy camera tensors, so the same patch removes
 the two unused tiled-camera sensors, their observation terms, and the now-unused
 front-camera randomizer to avoid Isaac's camera/DirectGpu interoperability fault on
 `sm_120`. Physics for this single interactive environment runs on CPU because
 Isaac Sim 5.1 does not ship `sm_120` PhysX kernels; the real environment, RTX
-rendering, and WebRTC encoding remain active on the selected RT-core GPU. The
-browser path disables Isaac Lab Fabric so CPU PhysX synchronizes through the
+rendering, viewport capture, and JPEG production remain active on the selected
+RT-core GPU. The browser path disables Isaac Lab Fabric so CPU PhysX synchronizes through the
 supported USD I/O path. It also disables Isaac Lab's texture-loading wait: the
-headless session uses the WebRTC viewport rather than RTX camera observations,
+headless session uses the active viewport rather than RTX camera observations,
 and the default asset-loading loop does not terminate reliably on this path.
 The pod requests 16 CPU cores and may use up to 32 so
 the USD-backed first reset is not throttled by the previous eight-core limit. The
@@ -96,8 +105,9 @@ The browser service pins upstream seed `42` and reports it in `/status`; this
 avoids nondeterministic PickOrange reset states and makes evidence reproducible.
 On a cold pod, liveness remains healthy while the supervised simulator process
 is alive, including during the licensed runtime fetch and first reset. Readiness
-and `/status` remain unavailable until the real reset and WebRTC signaling are
-both ready; a failed or exited simulator still fails liveness so Kubernetes can
+and `/status` remain unavailable until the real reset and a non-empty captured
+frame are both ready; a failed or exited simulator still fails liveness so
+Kubernetes can
 restart it while preserving the pod-local `emptyDir` caches.
 The exact patch is commit-locked in the image build and named in runtime
 provenance. It
