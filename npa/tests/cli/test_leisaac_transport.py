@@ -372,6 +372,9 @@ def test_runtime_control_ack_ordering_application_and_disconnect_cleanup(
             assert websocket.receive_json()["duplicate"] is True
             assert websocket.receive_json()["phase"] == "applied"
 
+            websocket.send_json(_control(2, key="A"))
+            assert websocket.receive_json()["phase"] == "accepted"
+
     deadline = time.monotonic() + 1
     records = []
     while time.monotonic() < deadline:
@@ -381,13 +384,16 @@ def test_runtime_control_ack_ordering_application_and_disconnect_cleanup(
                 encoding="utf-8"
             ).splitlines()
         ]
-        if len(records) >= 2:
+        if len(records) >= 4:
             break
         time.sleep(0.005)
     assert [(item["seq"], item["event"]) for item in records] == [
         (1, "press"),
-        (2, "release"),
+        (2, "press"),
+        (3, "release"),
+        (4, "release"),
     ]
+    assert [item["key"] for item in records] == ["W", "A", "A", "W"]
 
 
 def test_runtime_rejects_bad_auth_and_preserves_polling_fallback(

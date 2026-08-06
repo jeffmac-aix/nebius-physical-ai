@@ -684,13 +684,23 @@ def _increment_input_counter() -> int:
     return count
 
 
-def _append_input(record: dict[str, Any]) -> int:
-    serialized = json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n"
+def _append_inputs(records: list[dict[str, Any]]) -> list[int]:
+    serialized = [
+        json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n"
+        for record in records
+    ]
+    counts: list[int] = []
     with INPUT_LOCK:
         with INPUT_QUEUE_PATH.open("a", encoding="utf-8") as queue:
-            queue.write(serialized)
+            queue.writelines(serialized)
             queue.flush()
-        return _increment_input_counter()
+        for _record in records:
+            counts.append(_increment_input_counter())
+    return counts
+
+
+def _append_input(record: dict[str, Any]) -> int:
+    return _append_inputs([record])[0]
 
 
 def _read_consistent_frame() -> tuple[dict[str, Any], bytes] | None:
@@ -748,7 +758,7 @@ def _scan_applied_acks() -> None:
                 TRANSPORT_METRICS.increment("controls_applied")
 
 
-def _wait_for_applied(
+async def _wait_for_applied(
     client_id: str,
     seq: int,
     stop: threading.Event,
@@ -756,11 +766,11 @@ def _wait_for_applied(
 ) -> dict[str, Any] | None:
     deadline = time.monotonic() + timeout
     while not stop.is_set() and time.monotonic() < deadline:
-        _scan_applied_acks()
+        await asyncio.to_thread(_scan_applied_acks)
         applied = CONTROL_LEDGER.applied(client_id, seq)
         if applied is not None:
             return applied
-        stop.wait(0.002)
+        await asyncio.sleep(0.002)
     return None
 
 
@@ -966,9 +976,7 @@ def build_app() -> FastAPI:
         async def send_applied() -> None:
             while True:
                 client_id, seq = await applied_queue.get()
-                payload = await asyncio.to_thread(
-                    _wait_for_applied, client_id, seq, stop
-                )
+                payload = await _wait_for_applied(client_id, seq, stop)
                 if payload is None:
                     await send(
                         {
@@ -991,7 +999,7 @@ def build_app() -> FastAPI:
         async def release_all(
             client_id: str, client_mono_ns: int = 0, client_wall_ns: int = 0
         ) -> int:
-            released = 0
+            releases: list[tuple[int, dict[str, Any]]] = []
             for key in CONTROL_LEDGER.keys_down(client_id):
                 next_seq = int(CONTROL_LEDGER.resume(client_id)["next_seq"])
                 message = {
@@ -1007,11 +1015,21 @@ def build_app() -> FastAPI:
                 }
                 _accepted, queued = CONTROL_LEDGER.accept(message)
                 if queued is not None:
-                    await asyncio.to_thread(_append_input, queued)
-                    TRANSPORT_METRICS.increment("controls_accepted")
-                    await applied_queue.put((client_id, next_seq))
-                    released += 1
-            return released
+                    releases.append((next_seq, queued))
+            if not releases:
+                return 0
+
+            # Submit before the first await so an ASGI cancellation cannot prevent
+            # disconnect cleanup from reaching the simulator input queue.  A single
+            # worker call preserves the ledger order when several keys are held.
+            append_future = asyncio.get_running_loop().run_in_executor(
+                None, _append_inputs, [queued for _seq, queued in releases]
+            )
+            await asyncio.shield(append_future)
+            TRANSPORT_METRICS.increment("controls_accepted", len(releases))
+            for seq, _queued in releases:
+                await applied_queue.put((client_id, seq))
+            return len(releases)
 
         try:
             while True:
