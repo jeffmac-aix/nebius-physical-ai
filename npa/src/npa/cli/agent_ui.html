@@ -7804,6 +7804,7 @@
       // supports (q=) search for buckets larger than this, and the "Find run" /
       // Stages search boxes union those server matches on top.
       const ARTIFACT_RUN_LIST_LIMIT = 2000;
+      let artifactRunRefreshGeneration = 0;
       function selectedRunIdFromUi() {
         const select = document.getElementById("runIdSelect");
         const stages = document.getElementById("stagesRunSelect");
@@ -7967,8 +7968,13 @@
         // newest page) so old runs beyond the default limit are still findable,
         // and union the matches into the discovered list.
         const q = String(query || "").trim();
+        const generation = ++artifactRunRefreshGeneration;
         const url = "/api/artifacts/runs?limit=" + ARTIFACT_RUN_LIST_LIMIT + (q ? "&q=" + encodeURIComponent(q) : "");
         const data = await apiJson(url);
+        // A slow default discovery must never erase a newer operator search.
+        // Only the most recently started request is allowed to mutate the
+        // shared run cache and selectors.
+        if (generation !== artifactRunRefreshGeneration) return false;
         const runs = Array.isArray(data.runs) ? data.runs : [];
         if (q) {
           const byId = new Map((discoveredArtifactRuns || []).map((r) => [String((r && r.run_id) || ""), r]));
