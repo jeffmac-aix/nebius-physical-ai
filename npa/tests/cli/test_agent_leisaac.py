@@ -693,6 +693,63 @@ def test_authenticated_backend_routes_gate_status_and_proxy_client(monkeypatch) 
     assert "integrity" in rejected.json()["detail"]
 
 
+def test_successful_immutable_manifest_is_cached_across_request_paths() -> None:
+    raw_manifest = _manifest()
+    calls: list[str] = []
+    state = {"leisaac": {"run_id": raw_manifest["run_id"]}}
+
+    class Healthy:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {
+                "schema": "npa.leisaac.health.v1",
+                "state": "ready",
+                "webrtc_ready": True,
+                "run_id": raw_manifest["run_id"],
+                "task": raw_manifest["task"],
+                "source_commit": raw_manifest["source_commit"],
+                "session_nonce": raw_manifest["session_nonce"],
+                "signal_port": LEISAAC_SIGNAL_PORT,
+            }
+
+    def resolve(run_id: str):
+        calls.append(run_id)
+        return raw_manifest if run_id == raw_manifest["run_id"] else None
+
+    api = FastAPI()
+    register_leisaac_routes(
+        api,
+        LeIsaacDeps(
+            load_state=lambda: state,
+            save_state=lambda value: state.update(value),
+            resolve_manifest=resolve,
+            http_get=lambda *_args, **_kwargs: Healthy(),
+            response=Response,
+            websocket_connect=lambda *_args, **_kwargs: None,
+        ),
+    )
+    client = TestClient(api)
+    headers = {"x-forwarded-proto": "https"}
+    for _ in range(2):
+        assert client.get("/leisaac/status", headers=headers).json()["available"]
+    selection = client.post(
+        "/leisaac/select",
+        headers={**headers, "x-npa-leisaac-control": "1"},
+        json={"run_id": raw_manifest["run_id"]},
+    )
+    assert selection.status_code == 200
+    assert calls == [raw_manifest["run_id"]]
+
+    for _ in range(2):
+        missing = client.get(
+            "/leisaac/status", params={"run_id": "missing-run"}, headers=headers
+        )
+        assert missing.json()["available"] is False
+    assert calls == [raw_manifest["run_id"], "missing-run"]
+
+
 def test_signaling_proxy_preserves_only_upstream_sign_in_path() -> None:
     raw_manifest = _manifest()
     health_checks_off_event_loop: list[bool] = []

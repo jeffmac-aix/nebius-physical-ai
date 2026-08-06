@@ -16,6 +16,7 @@ import secrets
 import threading
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Callable
 from urllib.parse import urlparse
 
@@ -366,16 +367,39 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
     consumed_ws_nonces: dict[str, int] = {}
 
     def cached_resolve(run_id: str) -> tuple[dict | None, str]:
-        """Bound high-rate frame polling to one capability lookup per five seconds."""
+        """Reuse immutable live manifests while retaining short negative caching."""
 
         now = time.monotonic()
+        selected = selected_run_id(deps.load_state(), run_id)
+        if not selected:
+            return None, "Select a run that exposes a LeIsaac teleoperation session."
         with manifest_cache_lock:
-            cached = manifest_cache.get(run_id)
-            if cached is not None and now - cached[0] < 5.0:
-                return cached[1], cached[2]
-        manifest, reason = _resolve(deps, run_id)
+            cached = manifest_cache.get(selected)
+            if cached is not None:
+                cached_at, manifest, reason = cached
+                if manifest is None and now - cached_at < 5.0:
+                    return None, reason
+                if manifest is not None:
+                    raw_expiry = str(manifest.get("expires_at") or "").strip()
+                    try:
+                        expiry = (
+                            datetime.fromisoformat(raw_expiry.replace("Z", "+00:00"))
+                            if raw_expiry
+                            else None
+                        )
+                    except ValueError:
+                        expiry = datetime.min.replace(tzinfo=timezone.utc)
+                    if expiry is not None and expiry > datetime.now(timezone.utc):
+                        return manifest, reason
+                    if expiry is None and now - cached_at < 5.0:
+                        return manifest, reason
+                manifest_cache.pop(selected, None)
+        manifest, reason = _resolve(deps, selected)
         with manifest_cache_lock:
-            manifest_cache[run_id] = (now, manifest, reason)
+            if len(manifest_cache) >= 128 and selected not in manifest_cache:
+                oldest = min(manifest_cache, key=lambda key: manifest_cache[key][0])
+                manifest_cache.pop(oldest, None)
+            manifest_cache[selected] = (now, manifest, reason)
         return manifest, reason
 
     def episode_store(run_id: str) -> EpisodeStore:
@@ -531,7 +555,7 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
                 reason="LeIsaac teleoperation requires the public HTTPS agent endpoint.",
             )
         else:
-            manifest, reason = _resolve(deps, run_id)
+            manifest, reason = cached_resolve(run_id)
             if not manifest:
                 payload = status_payload(None, reason=reason)
             else:
@@ -960,7 +984,7 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
         except ValueError:
             body = None
         run_id = str(body.get("run_id") if isinstance(body, dict) else "")
-        manifest, reason = await asyncio.to_thread(_resolve, deps, run_id)
+        manifest, reason = await asyncio.to_thread(cached_resolve, run_id)
         if not manifest:
             return deps.response(
                 content=json.dumps({"detail": reason}),
@@ -1017,7 +1041,7 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
 
     @app.get(LEISAAC_CLIENT_MODULE_PATH.removeprefix("/api"))
     def leisaac_client_module(run_id: str = "") -> Any:
-        manifest, reason = _resolve(deps, run_id)
+        manifest, reason = cached_resolve(run_id)
         if not manifest:
             return deps.response(
                 content=json.dumps({"detail": reason}),
@@ -1084,7 +1108,7 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
                 media_type="application/json",
                 headers={"Cache-Control": "private, no-store"},
             )
-        manifest, reason = await asyncio.to_thread(_resolve, deps, run_id)
+        manifest, reason = await asyncio.to_thread(cached_resolve, run_id)
         if not manifest:
             return deps.response(
                 content=json.dumps({"detail": reason}),
@@ -1508,7 +1532,7 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
             consumed_nonces=consumed_ws_nonces,
         ):
             return None, "valid short-lived transport session is required"
-        manifest, reason = await asyncio.to_thread(_resolve, deps, run_id)
+        manifest, reason = await asyncio.to_thread(cached_resolve, run_id)
         if not manifest:
             return None, reason
         health, reason = await asyncio.to_thread(_health, deps, manifest)
@@ -1804,7 +1828,7 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
         # In agent-relay mode their response also traverses the backhaul route
         # on this ASGI event loop, so running either call inline can deadlock
         # the WebSocket that is needed to return its own response.
-        manifest, reason = await asyncio.to_thread(_resolve, deps, run_id)
+        manifest, reason = await asyncio.to_thread(cached_resolve, run_id)
         if not manifest:
             LOG.warning("LeIsaac signaling rejected: %s", reason)
             await websocket.close(code=1008)
