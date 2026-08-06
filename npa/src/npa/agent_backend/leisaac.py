@@ -101,12 +101,28 @@ def load_manifest_artifact(
     matches = [
         item for item in artifacts if is_leisaac_manifest_key(str(item.key or ""))
     ]
-    preferred = [
+    base_prefix = str(settings.get("prefix") or "").strip().strip("/")
+    canonical_key = "/".join(
+        part
+        for part in (
+            base_prefix,
+            normalized_run,
+            "reports",
+            LEISAAC_MANIFEST_NAME,
+        )
+        if part
+    )
+    canonical = [
+        item
+        for item in matches
+        if str(item.key or "").replace("\\", "/").strip("/") == canonical_key
+    ]
+    non_leaf_nested = [
         item
         for item in matches
         if f"/{LEISAAC_MANIFEST_NAME}/" not in str(item.key or "").replace("\\", "/")
     ]
-    selected = preferred if preferred else matches
+    selected = canonical or non_leaf_nested or matches
     if not bucket or len(selected) != 1:
         return None
     response = s3.get_object(Bucket=bucket, Key=str(selected[0].key or ""))
