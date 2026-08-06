@@ -60,7 +60,7 @@ LEISAAC_TASK = "LeIsaac-SO101-PickOrange-v0"
 LEISAAC_TELEOP_DEVICE = "keyboard"
 LEISAAC_CLIENT_VERSION = "5.6.0"
 LEISAAC_CLIENT_JS_SHA256 = (
-    "e9ac6563db79d3aea8afe94c4f60e50571abc01e3470d9bafb4e2f8b54cbd2a5"
+    "93cf2b328bcaaf9cf5a864c5b51f62e1bafcc533da9432ccc85633892f79ed86"
 )
 LEISAAC_CLIENT_MODULE_PATH = "/api/leisaac/client/index.js"
 LEISAAC_SIGNAL_PATH = "/api/leisaac/signal"
@@ -351,7 +351,8 @@ def normalize_manifest(
     else:
         environment_id = DEFAULT_ENVIRONMENT_ID
         environment_index = 0
-        seed = _integer(data.get("seed")) or 42
+        parsed_seed = _integer(data.get("seed"))
+        seed = 42 if parsed_seed is None else parsed_seed
         dataset_uri = ""
     raw_expires_at = str(data.get("expires_at") or "").strip()
     expires_at = _parse_utc(raw_expires_at) if raw_expires_at else None

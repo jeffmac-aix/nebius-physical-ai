@@ -6,11 +6,14 @@ import asyncio
 import hashlib
 import io
 import json
+import logging
+import threading
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import get_type_hints
 
 import pytest
+import httpx
 from fastapi import FastAPI, Response
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocket, WebSocketDisconnect
@@ -28,8 +31,25 @@ from npa.agent_backend.leisaac import (
     status_payload,
     validate_health,
 )
-from npa.agent_backend.leisaac_routes import LeIsaacDeps, register_leisaac_routes
+from npa.agent_backend.leisaac_routes import (
+    LeIsaacDeps,
+    _health,
+    _resolve,
+    _same_https_origin,
+    register_leisaac_routes,
+)
 from npa.agent_backend.leisaac_registry import REGISTRY_FINGERPRINT
+from npa.agent_backend.leisaac_transport import (
+    VIDEO_SUBPROTOCOL,
+    FrameEnvelope,
+    pack_frame,
+)
+
+
+@pytest.fixture
+def anyio_backend() -> str:
+    """The agent backend is deployed on asyncio/uvicorn."""
+    return "asyncio"
 
 
 def _manifest(**overrides):
@@ -232,6 +252,15 @@ def test_manifest_without_expiry_remains_lifecycle_gated() -> None:
     assert reason == ""
     assert normalized is not None
     assert normalized["expires_at"] == ""
+
+
+def test_legacy_v1_manifest_preserves_a_legitimate_zero_seed() -> None:
+    normalized, reason = normalize_manifest(
+        _manifest(seed=0), expected_run_id="leisaac-live-1"
+    )
+    assert reason == ""
+    assert normalized is not None
+    assert normalized["seed"] == 0
 
 
 def test_agent_relay_manifest_accepts_only_fixed_loopback_tcp_contract() -> None:
@@ -545,7 +574,7 @@ def test_authenticated_backend_routes_gate_status_and_proxy_client(monkeypatch) 
         "origin": "https://testserver",
         "x-forwarded-proto": "https",
         "x-npa-leisaac-control": "1",
-        "x-real-ip": "203.0.113.7",
+        "x-real-ip": "8.8.8.8",
     }
     ws_session = client.post(
         "/leisaac/ws-session",
@@ -554,13 +583,22 @@ def test_authenticated_backend_routes_gate_status_and_proxy_client(monkeypatch) 
     )
     assert ws_session.status_code == 204
     assert ws_session.content == b""
-    cookie = ws_session.headers["set-cookie"]
-    assert "npa_leisaac_ws=" in cookie
-    assert "HttpOnly" in cookie
-    assert "Max-Age=120" in cookie
-    assert "Path=/api/leisaac/transport" in cookie
-    assert "SameSite=strict" in cookie
-    assert "Secure" in cookie
+    cookies = ws_session.headers.get_list("set-cookie")
+    assert len(cookies) == 2
+    assert any(
+        "npa_leisaac_control_ws=" in cookie
+        and "Path=/api/leisaac/transport/control" in cookie
+        for cookie in cookies
+    )
+    assert any(
+        "npa_leisaac_video_ws=" in cookie
+        and "Path=/api/leisaac/transport/video" in cookie
+        for cookie in cookies
+    )
+    assert all("HttpOnly" in cookie for cookie in cookies)
+    assert all("Max-Age=120" in cookie for cookie in cookies)
+    assert all("SameSite=strict" in cookie for cookie in cookies)
+    assert all("Secure" in cookie for cookie in cookies)
     forbidden_ws_session = client.post(
         "/leisaac/ws-session",
         params={"run_id": raw_manifest["run_id"]},
@@ -725,7 +763,11 @@ def test_signaling_proxy_preserves_only_upstream_sign_in_path() -> None:
         ),
     )
     client = TestClient(api)
-    headers = {"x-forwarded-proto": "https"}
+    headers = {
+        "x-forwarded-proto": "https",
+        "origin": "https://testserver",
+        "host": "testserver",
+    }
     query = f"run_id={raw_manifest['run_id']}&peer_id=browser-1&version=2"
     with client.websocket_connect(
         f"/leisaac/signal/sign_in?{query}", headers=headers
@@ -742,15 +784,222 @@ def test_signaling_proxy_preserves_only_upstream_sign_in_path() -> None:
             pass
     assert exc_info.value.code == 1008
 
+    for origin in (None, "https://foreign.example", "null", "not a url"):
+        rejected_headers = {"x-forwarded-proto": "https", "host": "testserver"}
+        if origin is not None:
+            rejected_headers["origin"] = origin
+        with pytest.raises(WebSocketDisconnect) as rejected:
+            with client.websocket_connect(
+                f"/leisaac/signal?run_id={raw_manifest['run_id']}",
+                headers=rejected_headers,
+            ):
+                pass
+        assert rejected.value.code == 1008
+
+
+@pytest.mark.parametrize(
+    "headers,allowed",
+    [
+        (
+            {
+                "x-forwarded-proto": "https",
+                "host": "agent.example:8443",
+                "origin": "https://agent.example:8443",
+            },
+            True,
+        ),
+        (
+            {
+                "x-forwarded-proto": "https",
+                "host": "agent.example:8443",
+                "origin": "https://agent.example",
+            },
+            False,
+        ),
+        (
+            {"x-forwarded-proto": "https", "host": "agent.example", "origin": "null"},
+            False,
+        ),
+        (
+            {
+                "x-forwarded-proto": "https",
+                "host": "agent.example",
+                "origin": "https://agent.example/path",
+            },
+            False,
+        ),
+        (
+            {
+                "x-forwarded-proto": "http",
+                "host": "agent.example",
+                "origin": "https://agent.example",
+            },
+            False,
+        ),
+    ],
+)
+def test_signaling_origin_validation_honors_forwarded_proto_host_and_port(
+    headers, allowed
+) -> None:
+    assert _same_https_origin(headers) is allowed
+
+
+@pytest.mark.anyio
+async def test_selection_storage_work_does_not_block_the_shared_event_loop(
+    anyio_backend,
+) -> None:
+    assert anyio_backend == "asyncio"
+    raw_manifest = _manifest()
+    entered = threading.Event()
+    release = threading.Event()
+
+    def load_state():
+        entered.set()
+        assert release.wait(timeout=5)
+        return {}
+
+    class Healthy:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {
+                "schema": "npa.leisaac.health.v1",
+                "state": "ready",
+                "webrtc_ready": True,
+                "run_id": raw_manifest["run_id"],
+                "task": raw_manifest["task"],
+                "source_commit": raw_manifest["source_commit"],
+                "session_nonce": raw_manifest["session_nonce"],
+                "signal_port": LEISAAC_SIGNAL_PORT,
+                "pid": 42,
+            }
+
+    api = FastAPI()
+
+    @api.get("/probe")
+    async def probe():
+        return {"responsive": True}
+
+    register_leisaac_routes(
+        api,
+        LeIsaacDeps(
+            load_state=load_state,
+            save_state=lambda _state: None,
+            resolve_manifest=lambda _run_id: raw_manifest,
+            http_get=lambda *_args, **_kwargs: Healthy(),
+            response=Response,
+            websocket_connect=lambda *_args, **_kwargs: None,
+        ),
+    )
+    transport = httpx.ASGITransport(app=api)
+    async with httpx.AsyncClient(
+        transport=transport, base_url="https://agent"
+    ) as client:
+        selection = asyncio.create_task(
+            client.post(
+                "/leisaac/select",
+                headers={"x-forwarded-proto": "https", "x-npa-leisaac-control": "1"},
+                json={"run_id": raw_manifest["run_id"]},
+            )
+        )
+        await asyncio.to_thread(entered.wait, 5)
+        assert (await client.get("/probe")).json() == {"responsive": True}
+        release.set()
+        assert (await selection).status_code == 200
+
+
+def test_exception_logs_keep_tracebacks_but_redact_untrusted_details(caplog) -> None:
+    secret = "offer=private-ice&token=credential&s3=https://private.example"
+    deps = LeIsaacDeps(
+        load_state=lambda: {"leisaac": {"run_id": "leisaac-live-1"}},
+        resolve_manifest=lambda _run_id: (_ for _ in ()).throw(RuntimeError(secret)),
+        http_get=lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError(secret)),
+        response=Response,
+        websocket_connect=lambda *_args, **_kwargs: None,
+    )
+    with caplog.at_level(logging.WARNING, logger="npa.agent_backend.leisaac_routes"):
+        assert _resolve(deps, "leisaac-live-1")[0] is None
+        assert _health(deps, _normalized())[0] is None
+    assert secret not in caplog.text
+    assert "LeIsaac capability resolution failed" in caplog.text
+    assert "LeIsaac health request failed" in caplog.text
+    assert "_RedactedException" in caplog.text
+
+
+def test_backhaul_rejects_browser_shape_before_accept_and_accepts_scoped_pod(
+    monkeypatch,
+) -> None:
+    api = FastAPI()
+    register_leisaac_routes(
+        api,
+        LeIsaacDeps(
+            load_state=lambda: {},
+            resolve_manifest=lambda _run_id: None,
+            http_get=lambda *_args, **_kwargs: None,
+            response=Response,
+            websocket_connect=lambda *_args, **_kwargs: None,
+        ),
+    )
+    client = TestClient(api)
+    for headers, subprotocols, suffix in (
+        (
+            {
+                "x-forwarded-proto": "https",
+                "x-real-ip": "8.8.8.8",
+                "origin": "https://testserver",
+            },
+            ["npa.leisaac.backhaul.v1"],
+            "",
+        ),
+        ({"x-forwarded-proto": "https", "x-real-ip": "8.8.8.8"}, [], ""),
+        (
+            {"x-forwarded-proto": "https", "x-real-ip": "127.0.0.1"},
+            ["npa.leisaac.backhaul.v1"],
+            "",
+        ),
+        (
+            {"x-forwarded-proto": "https", "x-real-ip": "8.8.8.8"},
+            ["npa.leisaac.backhaul.v1"],
+            "?unexpected=1",
+        ),
+    ):
+        with pytest.raises(WebSocketDisconnect) as rejected:
+            with client.websocket_connect(
+                "/leisaac/backhaul" + suffix,
+                headers=headers,
+                subprotocols=subprotocols,
+            ):
+                pass
+        assert rejected.value.code == 1008
+
+    class Reader:
+        async def readexactly(self, _size):
+            await asyncio.Future()
+
+    class Writer:
+        def close(self):
+            return None
+
+        async def wait_closed(self):
+            return None
+
+    async def open_connection(*_args, **_kwargs):
+        return Reader(), Writer()
+
+    monkeypatch.setattr(
+        "npa.agent_backend.leisaac_routes.asyncio.open_connection", open_connection
+    )
+    with client.websocket_connect(
+        "/leisaac/backhaul",
+        headers={"x-forwarded-proto": "https", "x-real-ip": "8.8.8.8"},
+        subprotocols=["npa.leisaac.backhaul.v1"],
+    ) as websocket:
+        assert websocket.accepted_subprotocol == "npa.leisaac.backhaul.v1"
+
 
 def test_video_relay_credits_runtime_before_browser_ack() -> None:
     """The one-slot relay, not a browser round trip, owns runtime flow credit."""
-
-    from npa.agent_backend.leisaac_transport import (
-        VIDEO_SUBPROTOCOL,
-        FrameEnvelope,
-        pack_frame,
-    )
 
     raw_manifest = _manifest()
     jpeg = b"\xff\xd8" + b"relay-frame" * 30 + b"\xff\xd9"
@@ -826,17 +1075,22 @@ def test_video_relay_credits_runtime_before_browser_ack() -> None:
         "origin": "https://testserver",
         "x-forwarded-proto": "https",
         "x-npa-leisaac-control": "1",
-        "x-real-ip": "203.0.113.7",
+        "x-real-ip": "8.8.8.8",
     }
     session = client.post(
         "/leisaac/ws-session",
         params={"run_id": raw_manifest["run_id"]},
         headers=session_headers,
     )
-    token = session.headers["set-cookie"].split("npa_leisaac_ws=", 1)[1].split(";", 1)[0]
+    video_cookie = next(
+        cookie
+        for cookie in session.headers.get_list("set-cookie")
+        if cookie.startswith("npa_leisaac_video_ws=")
+    )
+    token = video_cookie.split("npa_leisaac_video_ws=", 1)[1].split(";", 1)[0]
     websocket_headers = {
         **session_headers,
-        "cookie": f"npa_leisaac_ws={token}",
+        "cookie": f"npa_leisaac_video_ws={token}",
     }
     websocket_headers.pop("x-npa-leisaac-control")
     with client.websocket_connect(

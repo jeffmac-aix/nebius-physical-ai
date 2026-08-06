@@ -28,6 +28,7 @@ VIDEO_KEY = "observation.images.front"
 # same rate preserves frame count/timestamps through input-conditioned PAIDF
 # augmentation when the model returns the source sequence unchanged in length.
 FPS = 16
+DEFAULT_S3_ENDPOINT = "https://storage.eu-north1.nebius.cloud"
 STATE_NAMES = [
     "shoulder_pan",
     "shoulder_lift",
@@ -53,6 +54,26 @@ class DatasetError(RuntimeError):
     """Raised when an episode cannot be safely recorded or published."""
 
 
+def resolve_s3_endpoint(
+    explicit: str | None = None,
+    *,
+    config_endpoint: str | None = None,
+    environ: dict[str, str] | None = None,
+) -> str:
+    """Resolve LeIsaac storage as explicit > environment > config > deployment default."""
+
+    env = os.environ if environ is None else environ
+    return str(
+        explicit
+        or env.get("AWS_ENDPOINT_URL_S3")
+        or env.get("NEBIUS_S3_ENDPOINT")
+        or env.get("AWS_ENDPOINT_URL")
+        or env.get("NPA_STORAGE_ENDPOINT")
+        or config_endpoint
+        or DEFAULT_S3_ENDPOINT
+    ).rstrip("/")
+
+
 def _ffmpeg_executable() -> str:
     """Resolve a real ffmpeg binary without requiring a system package."""
 
@@ -70,6 +91,16 @@ def _ffmpeg_executable() -> str:
     if not executable or not Path(executable).is_file():
         raise DatasetError("the packaged ffmpeg executable is unavailable")
     return executable
+
+
+def _ffprobe_executable() -> str:
+    executable = shutil.which("ffprobe")
+    if executable:
+        return executable
+    sibling = Path(_ffmpeg_executable()).with_name("ffprobe")
+    if sibling.is_file():
+        return str(sibling)
+    raise DatasetError("ffprobe is unavailable; encoded media cannot be validated")
 
 
 def utc_now() -> str:
@@ -733,6 +764,114 @@ def _encode_frames(frame_dir: Path, destination: Path, fps: int = FPS) -> None:
         raise DatasetError(f"ffmpeg could not encode episode: {result.stderr.strip()}")
 
 
+def _fraction(value: str) -> float:
+    numerator, separator, denominator = str(value or "").partition("/")
+    try:
+        result = (
+            float(numerator) / float(denominator) if separator else float(numerator)
+        )
+    except (TypeError, ValueError, ZeroDivisionError) as exc:
+        raise DatasetError("encoded video has invalid frame-rate metadata") from exc
+    if not math.isfinite(result) or result <= 0:
+        raise DatasetError("encoded video has invalid frame-rate metadata")
+    return result
+
+
+def _probe_video(path: Path, *, expected_frames: int, fps: int) -> dict[str, Any]:
+    """Validate the encoded bytes and return LeRobot-compatible media metadata."""
+
+    command = [
+        _ffprobe_executable(),
+        "-v",
+        "error",
+        "-count_frames",
+        "-show_streams",
+        "-show_format",
+        "-show_frames",
+        "-show_entries",
+        "stream=codec_type,codec_name,width,height,pix_fmt,avg_frame_rate,nb_read_frames,duration:format=duration:frame=media_type,best_effort_timestamp_time",
+        "-of",
+        "json",
+        str(path),
+    ]
+    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    if result.returncode:
+        raise DatasetError("ffprobe could not validate encoded episode")
+    try:
+        payload = json.loads(result.stdout)
+        streams = payload["streams"]
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise DatasetError("ffprobe returned malformed media metadata") from exc
+    video_streams = [item for item in streams if item.get("codec_type") == "video"]
+    if len(video_streams) != 1 or any(
+        item.get("codec_type") != "video" for item in streams
+    ):
+        raise DatasetError(
+            "episode media must contain exactly one video stream and no audio"
+        )
+    stream = video_streams[0]
+    try:
+        width = int(stream["width"])
+        height = int(stream["height"])
+        frames = int(stream["nb_read_frames"])
+        duration = float(stream.get("duration") or payload["format"]["duration"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise DatasetError("encoded video metadata is incomplete") from exc
+    measured_fps = _fraction(str(stream.get("avg_frame_rate") or ""))
+    timestamps = [
+        float(item["best_effort_timestamp_time"])
+        for item in payload.get("frames", [])
+        if item.get("media_type") == "video"
+        and item.get("best_effort_timestamp_time") is not None
+    ]
+    expected_duration = expected_frames / fps
+    if (
+        stream.get("codec_name") != "h264"
+        or stream.get("pix_fmt") != "yuv420p"
+        or width <= 0
+        or height <= 0
+        or frames != expected_frames
+        or len(timestamps) != expected_frames
+        or abs(measured_fps - fps) > 0.001
+        or abs(duration - expected_duration) > (1.0 / fps)
+        or any(right <= left for left, right in zip(timestamps, timestamps[1:]))
+        or any(
+            abs(timestamp - index / fps) > (0.5 / fps)
+            for index, timestamp in enumerate(timestamps)
+        )
+    ):
+        raise DatasetError("encoded video does not match episode frames and timestamps")
+    return {
+        "codec": "h264",
+        "pix_fmt": "yuv420p",
+        "width": width,
+        "height": height,
+        "fps": float(fps),
+        "frames": frames,
+        "duration": duration,
+        "timestamps": timestamps,
+        "has_audio": False,
+    }
+
+
+def _validate_camera_media(
+    videos: dict[str, Path], *, expected_frames: int, fps: int
+) -> dict[str, dict[str, Any]]:
+    probes = {
+        camera: _probe_video(path, expected_frames=expected_frames, fps=fps)
+        for camera, path in videos.items()
+    }
+    reference = next(iter(probes.values()))["timestamps"]
+    tolerance = 0.25 / fps
+    for probe in probes.values():
+        if len(probe["timestamps"]) != len(reference) or any(
+            abs(left - right) > tolerance
+            for left, right in zip(reference, probe["timestamps"])
+        ):
+            raise DatasetError("recorded camera videos are not timestamp-aligned")
+    return probes
+
+
 def _stats(values: list[Any]) -> dict[str, Any]:
     import numpy as np
 
@@ -918,12 +1057,16 @@ def build_lerobot_dataset(
     pq.write_table(
         pa.Table.from_pylist(episode_meta), episodes_path, compression="snappy"
     )
-    import pandas as pd
-
-    pd.DataFrame(
-        {"task_index": list(range(len(tasks)))},
-        index=pd.Index(tasks, name="task"),
-    ).to_parquet(meta_root / "tasks.parquet", compression="snappy")
+    pq.write_table(
+        pa.table(
+            {
+                "task": pa.array(tasks, type=pa.string()),
+                "task_index": pa.array(range(len(tasks)), type=pa.int64()),
+            }
+        ),
+        meta_root / "tasks.parquet",
+        compression="snappy",
+    )
     (meta_root / "stats.json").write_text(
         json.dumps(
             {key: _stats(value) for key, value in stats_values.items()}, indent=2
@@ -931,6 +1074,27 @@ def build_lerobot_dataset(
         + "\n",
         encoding="utf-8",
     )
+    primary_media = [
+        _probe_video(
+            Path(episode["video_path"]),
+            expected_frames=len(_load_records(Path(episode["records_path"]))),
+            fps=FPS,
+        )
+        for episode in episodes
+    ]
+    first_media = primary_media[0]
+    if any(
+        (item["width"], item["height"], item["fps"], item["codec"], item["pix_fmt"])
+        != (
+            first_media["width"],
+            first_media["height"],
+            first_media["fps"],
+            first_media["codec"],
+            first_media["pix_fmt"],
+        )
+        for item in primary_media[1:]
+    ):
+        raise DatasetError("episode videos have inconsistent media metadata")
     features: dict[str, Any] = {
         "observation.state": {"dtype": "float32", "shape": [6], "names": STATE_NAMES},
         "action": {"dtype": "float32", "shape": [8], "names": ACTION_NAMES},
@@ -962,14 +1126,14 @@ def build_lerobot_dataset(
         "task_index": {"dtype": "int64", "shape": [1], "names": None},
         VIDEO_KEY: {
             "dtype": "video",
-            "shape": [720, 1280, 3],
+            "shape": [first_media["height"], first_media["width"], 3],
             "names": ["height", "width", "channels"],
             "info": {
-                "video.height": 720,
-                "video.width": 1280,
-                "video.fps": float(FPS),
-                "video.codec": "h264",
-                "video.pix_fmt": "yuv420p",
+                "video.height": first_media["height"],
+                "video.width": first_media["width"],
+                "video.fps": first_media["fps"],
+                "video.codec": first_media["codec"],
+                "video.pix_fmt": first_media["pix_fmt"],
                 "video.is_depth_map": False,
                 "video.channels": 3,
                 "has_audio": False,
@@ -998,15 +1162,23 @@ def build_lerobot_dataset(
 class S3DatasetStore:
     """Append episode commits and publish immutable, resumable dataset versions."""
 
-    def __init__(self, output_uri: str, *, client: Any | None = None) -> None:
+    def __init__(
+        self,
+        output_uri: str,
+        *,
+        client: Any | None = None,
+        endpoint_url: str | None = None,
+        config_endpoint: str | None = None,
+    ) -> None:
         self.bucket, self.prefix = split_s3_uri(output_uri, label="output path")
         if client is None:
             import boto3
 
             client = boto3.client(
                 "s3",
-                endpoint_url=os.environ.get("AWS_ENDPOINT_URL_S3")
-                or os.environ.get("AWS_ENDPOINT_URL"),
+                endpoint_url=resolve_s3_endpoint(
+                    endpoint_url, config_endpoint=config_endpoint
+                ),
                 region_name=os.environ.get("AWS_REGION") or "eu-north1",
             )
         self.client = client
@@ -1111,14 +1283,37 @@ class S3DatasetStore:
 
     def _put_file(self, key: str, path: Path) -> dict[str, Any]:
         checksum = sha256_file(path)
-        with path.open("rb") as handle:
-            self.client.put_object(
-                Bucket=self.bucket,
-                Key=self._key(key),
-                Body=handle,
-                Metadata={"sha256": checksum},
-            )
-        return {"key": self._key(key), "sha256": checksum, "bytes": path.stat().st_size}
+        size = path.stat().st_size
+        object_key = self._key(key)
+        try:
+            with path.open("rb") as handle:
+                self.client.put_object(
+                    Bucket=self.bucket,
+                    Key=object_key,
+                    Body=handle,
+                    Metadata={"sha256": checksum},
+                    IfNoneMatch="*",
+                )
+        except Exception as exc:
+            if not self._is_precondition_failure(exc):
+                raise DatasetError(
+                    "could not publish immutable dataset object"
+                ) from exc
+            try:
+                current = self.client.head_object(Bucket=self.bucket, Key=object_key)
+                current_checksum = str(
+                    (current.get("Metadata") or {}).get("sha256") or ""
+                )
+                current_size = int(current.get("ContentLength", -1))
+            except Exception as head_exc:
+                raise DatasetError(
+                    "could not verify immutable object collision"
+                ) from head_exc
+            if current_checksum != checksum or current_size != size:
+                raise DatasetError(
+                    "immutable dataset object already exists with different bytes"
+                ) from exc
+        return {"key": object_key, "sha256": checksum, "bytes": size}
 
     def resume_status(self) -> dict[str, Any]:
         """Load the recorder's last committed state from the authoritative pointer."""
@@ -1239,6 +1434,9 @@ class S3DatasetStore:
             _encode_frames(frame_dir, video, int(metadata.get("fps") or FPS))
             videos[camera] = video
         records = episode_dir / "records.jsonl"
+        rows = _load_records(records)
+        fps = int(metadata.get("fps") or FPS)
+        media = _validate_camera_media(videos, expected_frames=len(rows), fps=fps)
         commits = self._commits()
         existing = [
             item
@@ -1299,6 +1497,7 @@ class S3DatasetStore:
             "committed_at": utc_now(),
             "metadata": metadata,
             "objects": objects,
+            "media": media,
         }
         commit_bytes = (json.dumps(commit, indent=2, sort_keys=True) + "\n").encode()
         try:

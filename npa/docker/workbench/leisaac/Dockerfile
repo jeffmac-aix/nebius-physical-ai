@@ -73,8 +73,10 @@ RUN /opt/npa/sim/venv/bin/python -m py_compile \
       /opt/npa/leisaac/leisaac_transport.py \
       /opt/npa/leisaac/leisaac_bundles.py \
       /opt/npa/leisaac/leisaac_dataset.py \
-    && test ! -e /opt/leisaac-cache/client/5.6.0/index.js \
-    && test ! -e /opt/leisaac-cache/assets/runtime/robots/so101_follower.usd
+    && test -z "$(find /opt/leisaac-cache/client -mindepth 1 -print -quit 2>/dev/null)" \
+    && test -z "$(find /opt/leisaac-cache/assets/runtime -type f \
+         \( -iname '*.usd' -o -iname '*.usda' -o -iname '*.usdc' \) \
+         -print -quit 2>/dev/null)"
 
 ENV NPA_LEISAAC_CACHE_DIR=/opt/leisaac-cache \
     LEISAAC_ASSETS_ROOT=/opt/leisaac-cache/assets/runtime \

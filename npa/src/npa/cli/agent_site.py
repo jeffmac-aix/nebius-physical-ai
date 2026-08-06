@@ -63,7 +63,9 @@ def foxglove_nginx_locations(*, asset_root: str = FOXGLOVE_ASSET_ROOT) -> str:
 # the comment with a layout object is the upstream-supported self-hosting hook, so
 # the embedded viewer opens with the sim2real point cloud + camera already shown
 # (Lichtblick otherwise hides point-cloud topics and picks no image topic).
-LICHTBLICK_DEFAULT_LAYOUT_PLACEHOLDER = "/*LICHTBLICK_SUITE_DEFAULT_LAYOUT_PLACEHOLDER*/"
+LICHTBLICK_DEFAULT_LAYOUT_PLACEHOLDER = (
+    "/*LICHTBLICK_SUITE_DEFAULT_LAYOUT_PLACEHOLDER*/"
+)
 
 
 def _lichtblick_default_layout_json() -> str:
@@ -183,7 +185,7 @@ def nginx_agent_site_body(
     rewrite ^/api/(.*)$ /$1 break;
     proxy_pass http://127.0.0.1:{backend_port}/;
     proxy_http_version 1.1;
-    proxy_set_header Host $host;
+    proxy_set_header Host $http_host;
     proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection "upgrade";
     proxy_set_header Origin $http_origin;
@@ -201,7 +203,7 @@ def nginx_agent_site_body(
     rewrite ^/api/(.*)$ /$1 break;
     proxy_pass http://127.0.0.1:{backend_port}/;
     proxy_http_version 1.1;
-    proxy_set_header Host $host;
+    proxy_set_header Host $http_host;
     proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection "upgrade";
     proxy_set_header Origin $http_origin;
@@ -221,9 +223,10 @@ def nginx_agent_site_body(
     rewrite ^/api/(.*)$ /$1 break;
     proxy_pass http://127.0.0.1:{backend_port}/;
     proxy_http_version 1.1;
-    proxy_set_header Host $host;
+    proxy_set_header Host $http_host;
     proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection "upgrade";
+    proxy_set_header Origin $http_origin;
     proxy_set_header X-Real-IP $remote_addr;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto $scheme;
@@ -235,7 +238,7 @@ def nginx_agent_site_body(
     rewrite ^/api/(.*)$ /$1 break;
     proxy_pass http://127.0.0.1:{backend_port}/;
     proxy_http_version 1.1;
-    proxy_set_header Host $host;
+    proxy_set_header Host $http_host;
     proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection "upgrade";
     proxy_set_header X-Real-IP $remote_addr;
@@ -248,7 +251,7 @@ def nginx_agent_site_body(
   location /api/ {{
     proxy_pass http://127.0.0.1:{backend_port}/;
     proxy_http_version 1.1;
-    proxy_set_header Host $host;
+    proxy_set_header Host $http_host;
     proxy_set_header X-Real-IP $remote_addr;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto $scheme;

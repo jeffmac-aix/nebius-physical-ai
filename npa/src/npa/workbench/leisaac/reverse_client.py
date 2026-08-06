@@ -21,6 +21,7 @@ HELLO, OPEN, DATA, CLOSE, UDP, UDP_CLOSE = 1, 2, 3, 4, 5, 6
 HEADER = struct.Struct("!BII")
 MAX_FRAME = 4 * 1024 * 1024
 MAX_UDP_FLOWS = 64
+BACKHAUL_SUBPROTOCOL = "npa.leisaac.backhaul.v1"
 
 
 def _pod_ipv4() -> str:
@@ -304,6 +305,7 @@ class Client:
             "Connection: Upgrade\r\n"
             f"Sec-WebSocket-Key: {key}\r\n"
             "Sec-WebSocket-Version: 13\r\n"
+            f"Sec-WebSocket-Protocol: {BACKHAUL_SUBPROTOCOL}\r\n"
             f"Authorization: Basic {credential}\r\n\r\n"
         )
         connection.sendall(request.encode("ascii"))
@@ -320,6 +322,8 @@ class Client:
             not separator
             or not headers.startswith(b"HTTP/1.1 101 ")
             or b"sec-websocket-accept: " + expected_accept.lower()
+            not in headers.lower()
+            or f"sec-websocket-protocol: {BACKHAUL_SUBPROTOCOL}".encode("ascii")
             not in headers.lower()
         ):
             connection.close()

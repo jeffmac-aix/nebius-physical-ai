@@ -39,6 +39,27 @@ from starlette.websockets import WebSocketDisconnect
 LOGGER = logging.getLogger("npa.leisaac.session")
 
 try:
+    from leisaac_dataset import resolve_s3_endpoint
+except ImportError:  # Repository unit tests import the script directly.
+    from npa.workbench.leisaac.dataset import resolve_s3_endpoint
+
+
+class _RedactedException(RuntimeError):
+    pass
+
+
+def _log_exception(level: int, event: str, exc: BaseException) -> None:
+    safe = _RedactedException(type(exc).__name__)
+    LOGGER.log(
+        level,
+        "%s",
+        event,
+        extra={"exception_type": type(exc).__name__},
+        exc_info=(type(safe), safe, exc.__traceback__),
+    )
+
+
+try:
     from leisaac_registry import (
         REGISTRY_FINGERPRINT,
         RUNTIME_ASSETS,
@@ -131,14 +152,9 @@ CLIENT_SHA512 = "37bd827a8194bfec2ccfbc656d10e42e83deebd682ac134095b2a8126901faa
 CLIENT_SOURCE_JS_SHA256 = (
     "93cf2b328bcaaf9cf5a864c5b51f62e1bafcc533da9432ccc85633892f79ed86"
 )
-CLIENT_JS_SHA256 = "e9ac6563db79d3aea8afe94c4f60e50571abc01e3470d9bafb4e2f8b54cbd2a5"
+CLIENT_JS_SHA256 = CLIENT_SOURCE_JS_SHA256
 UPSTREAM_OBSERVABILITY_PATCH_SHA256 = (
     "dc7466a79359213cc94cc37dc1d3fad6cdedf9bcf37f1cfbb77f5805b809d876"
-)
-CLIENT_WSS_PATCH_OLD = b"M=Yc(B)?D.AppLevelProtocol.HTTP:D.AppLevelProtocol.HTTPS;"
-CLIENT_WSS_PATCH_NEW = (
-    b"M=de===443?D.AppLevelProtocol.HTTPS:Yc(B)?"
-    b"D.AppLevelProtocol.HTTP:D.AppLevelProtocol.HTTPS;"
 )
 
 CACHE_ROOT = Path(os.environ.get("NPA_LEISAAC_CACHE_DIR", "/opt/leisaac-cache"))
@@ -388,10 +404,6 @@ def safe_extract_client(archive: Path, destination: Path) -> None:
     client_js = destination / "index.js"
     if hash_file(client_js) != CLIENT_SOURCE_JS_SHA256:
         raise RuntimeError("NVIDIA streaming client source hash mismatch")
-    source = client_js.read_bytes()
-    if source.count(CLIENT_WSS_PATCH_OLD) != 1:
-        raise RuntimeError("NVIDIA streaming client WSS patch anchor mismatch")
-    client_js.write_bytes(source.replace(CLIENT_WSS_PATCH_OLD, CLIENT_WSS_PATCH_NEW))
 
 
 def stage_runtime() -> None:
@@ -466,8 +478,9 @@ def stage_runtime() -> None:
             "sha512": CLIENT_SHA512,
             "source_index_js_sha256": CLIENT_SOURCE_JS_SHA256,
             "index_js_sha256": CLIENT_JS_SHA256,
-            "transport_patch": (
-                "force HTTPS signaling for numeric hosts when signalingPort=443"
+            "transport_adapter": (
+                "NPA-owned browser adapter selects WSS for same-origin port 443; "
+                "vendor bytes remain pristine"
             ),
             "license": "NVIDIA proprietary; operator-fetched at runtime",
         },
@@ -527,7 +540,7 @@ def apply_bundle_selection(selection: Any) -> dict[str, dict[str, Any]]:
 
         client = boto3.client(
             "s3",
-            endpoint_url=os.environ.get("AWS_ENDPOINT_URL_S3") or None,
+            endpoint_url=resolve_s3_endpoint(),
             region_name=os.environ.get("AWS_REGION") or "eu-north1",
         )
         store = BundleStore(client, output_uri, allowed_buckets=[parsed.netloc])
@@ -741,7 +754,12 @@ def run_simulation() -> None:
             if SERVER_STOP.wait(2):
                 return
     except Exception as exc:
-        update_state(state="failed", detail=str(exc), webrtc_ready=False)
+        _log_exception(logging.ERROR, "LeIsaac simulation process failed", exc)
+        update_state(
+            state="failed",
+            detail=f"LeIsaac runtime failed ({type(exc).__name__})",
+            webrtc_ready=False,
+        )
 
 
 def health_document() -> dict[str, Any]:
@@ -877,6 +895,7 @@ def _append_inputs(records: list[dict[str, Any]]) -> list[int]:
         with INPUT_QUEUE_PATH.open("a", encoding="utf-8") as queue:
             queue.writelines(serialized)
             queue.flush()
+            os.fsync(queue.fileno())
         for _record in records:
             counts.append(_increment_input_counter())
     return counts
@@ -884,6 +903,25 @@ def _append_inputs(records: list[dict[str, Any]]) -> list[int]:
 
 def _append_input(record: dict[str, Any]) -> int:
     return _append_inputs([record])[0]
+
+
+async def _await_cleanup_completion(awaitable: Any) -> Any:
+    """Finish safety cleanup even when the owning ASGI task is cancelled."""
+
+    cleanup = asyncio.ensure_future(awaitable)
+    try:
+        return await asyncio.shield(cleanup)
+    except asyncio.CancelledError as cancellation:
+        try:
+            await cleanup
+        except BaseException as cleanup_error:
+            _log_exception(
+                logging.CRITICAL,
+                "LeIsaac safety cleanup failed after cancellation",
+                cleanup_error,
+            )
+            raise cancellation from cleanup_error
+        raise
 
 
 def _read_consistent_frame(
@@ -1315,7 +1353,13 @@ def build_app() -> FastAPI:
                 raw = await websocket.receive_text()
                 try:
                     message = parse_control_message(raw, expected_run_id=run_id)
-                    active_client_id = str(message["client_id"])
+                    message_client_id = str(message["client_id"])
+                    if active_client_id and message_client_id != active_client_id:
+                        raise TransportProtocolError(
+                            "client_mismatch",
+                            "one control WebSocket may own only one client ID",
+                        )
+                    active_client_id = message_client_id
                     if message["type"] == "ping":
                         await send(
                             {
@@ -1384,17 +1428,22 @@ def build_app() -> FastAPI:
         except WebSocketDisconnect:
             pass
         finally:
-            if active_client_id:
-                try:
-                    await release_all(active_client_id)
-                except Exception:
-                    LOGGER.warning(
-                        "Failed to release LeIsaac controls during disconnect",
-                        exc_info=True,
-                    )
-            stop.set()
-            sender.cancel()
-            await asyncio.gather(sender, return_exceptions=True)
+            try:
+                if active_client_id:
+                    try:
+                        await _await_cleanup_completion(release_all(active_client_id))
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        _log_exception(
+                            logging.CRITICAL,
+                            "Failed to release LeIsaac controls during disconnect",
+                            exc,
+                        )
+            finally:
+                stop.set()
+                sender.cancel()
+                await asyncio.gather(sender, return_exceptions=True)
 
     @application.websocket("/transport/video")
     async def transport_video(websocket: WebSocket) -> None:

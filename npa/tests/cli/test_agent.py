@@ -469,6 +469,8 @@ def test_leisaac_signaling_inherits_basic_auth() -> None:
     )[0]
     assert "auth_basic off" not in location
     assert "proxy_set_header Upgrade $http_upgrade;" in location
+    assert "proxy_set_header Host $http_host;" in location
+    assert "proxy_set_header Origin $http_origin;" in location
     assert "allowlists the bare path and /sign_in" in source
 
 

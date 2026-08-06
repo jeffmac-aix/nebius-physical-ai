@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import io
 import json
 from types import SimpleNamespace
 
@@ -11,11 +10,8 @@ from typer.testing import CliRunner
 from npa.cli.workbench.leisaac import (
     _delete_resources,
     _install_agent_relay,
-    _install_agent_turn,
     _put_manifest,
-    _gpu_egress_source,
     _relay_media_server,
-    _relay_peer_public_ip,
     _select_agent_leisaac_run,
     _wait_ready,
     app,
@@ -195,52 +191,6 @@ def test_install_relay_creates_required_agent_directories() -> None:
     assert "openssl req -x509" not in ssh.command
 
 
-def test_install_turn_uses_session_config_and_fixed_public_mapping() -> None:
-    class CaptureSSH:
-        command = ""
-
-        def run_or_raise(self, command, **_kwargs):
-            self.command = command
-            return 0, "", ""
-
-    ssh = CaptureSSH()
-    _install_agent_turn(
-        ssh,
-        run_id="live-relay",
-        session_nonce="a" * 64,
-        public_ip="8.8.4.4",
-    )
-
-    assert "command -v turnserver" in ssh.command
-    assert "external-ip=8.8.4.4/%s" in ssh.command
-    assert "install -o root -g turnserver -m 0640" in ssh.command
-    assert "coturn is missing; bootstrap the NPA agent" in ssh.command
-    assert "a" * 64 not in ssh.command
-
-
-def test_relay_peer_resolution_waits_for_authenticated_global_egress(
-    monkeypatch,
-) -> None:
-    class PeerSSH:
-        responses = iter(
-            [
-                (22, "", "not connected"),
-                (0, '{"connected":true,"peer_public_ip":"9.9.9.9"}\n', ""),
-            ]
-        )
-
-        def run(self, _command):
-            return next(self.responses)
-
-    sleeps = []
-    monkeypatch.setattr(
-        "npa.cli.workbench.leisaac.time.sleep", lambda seconds: sleeps.append(seconds)
-    )
-
-    assert _relay_peer_public_ip(PeerSSH()) == "9.9.9.9"
-    assert sleeps == [2]
-
-
 def test_relay_media_server_is_the_single_ready_pod_host(monkeypatch) -> None:
     pod_list = {
         "items": [
@@ -273,61 +223,6 @@ def test_relay_media_server_is_the_single_ready_pod_host(monkeypatch) -> None:
     )
 
     assert _relay_media_server("cluster", "leisaac", "deployment") == "10.96.34.22"
-
-
-def test_gpu_egress_source_accepts_only_narrow_nebius_announced_route(
-    monkeypatch,
-) -> None:
-    responses = iter(
-        [
-            io.BytesIO(
-                json.dumps(
-                    {"data": {"prefix": "9.9.8.0/22", "asns": ["53428"]}}
-                ).encode()
-            ),
-            io.BytesIO(
-                json.dumps(
-                    {
-                        "data": {
-                            "announced": True,
-                            "holder": "KCS-US-NEBIUS - Nebius Inc.",
-                        }
-                    }
-                ).encode()
-            ),
-        ]
-    )
-    monkeypatch.setattr(
-        "npa.cli.workbench.leisaac.urllib.request.urlopen",
-        lambda *_args, **_kwargs: next(responses),
-    )
-
-    assert _gpu_egress_source("9.9.9.9") == "9.9.8.0/22"
-
-
-def test_gpu_egress_source_fails_closed_for_broad_or_non_nebius_route(
-    monkeypatch,
-) -> None:
-    cases = [
-        [{"data": {"prefix": "9.0.0.0/8", "asns": ["53428"]}}],
-        [
-            {"data": {"prefix": "9.9.8.0/22", "asns": ["53428"]}},
-            {"data": {"announced": True, "holder": "another provider"}},
-        ],
-        [{"data": {"prefix": "8.8.8.0/24", "asns": ["53428"]}}],
-    ]
-    for payloads in cases:
-        responses = iter(io.BytesIO(json.dumps(item).encode()) for item in payloads)
-        monkeypatch.setattr(
-            "npa.cli.workbench.leisaac.urllib.request.urlopen",
-            lambda *_args, **_kwargs: next(responses),
-        )
-        try:
-            _gpu_egress_source("9.9.9.9")
-        except Exception as exc:
-            assert "could not be securely resolved" in str(exc)
-        else:
-            raise AssertionError("unsafe GPU egress route was accepted")
 
 
 def _args() -> list[str]:
@@ -421,17 +316,6 @@ def _patch_launch(monkeypatch):
         lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(
-        "npa.cli.workbench.leisaac._relay_peer_public_ip", lambda _ssh: "9.9.9.9"
-    )
-    monkeypatch.setattr(
-        "npa.cli.workbench.leisaac._gpu_egress_source", lambda _ip: "9.9.8.0/22"
-    )
-    turn_install_calls = []
-    monkeypatch.setattr(
-        "npa.cli.workbench.leisaac._install_agent_turn",
-        lambda *args, **kwargs: turn_install_calls.append((args, kwargs)),
-    )
-    monkeypatch.setattr(
         "npa.cli.workbench.leisaac._relay_status",
         lambda *_args: {
             "state": "ready",
@@ -478,7 +362,6 @@ def _patch_launch(monkeypatch):
         applied,
         ingress_calls,
         install_calls,
-        turn_install_calls,
         manifests,
         ssh,
         registry_refreshes,
@@ -581,7 +464,6 @@ def test_launch_agent_relay_wires_private_cluster_public_agent_and_manifest(
         applied,
         ingress_calls,
         install_calls,
-        turn_install_calls,
         manifests,
         ssh,
         registry_refreshes,
@@ -637,7 +519,6 @@ def test_launch_agent_relay_wires_private_cluster_public_agent_and_manifest(
     assert install_calls[0][1]["session_nonce"] == "a" * 64
     assert install_calls[0][1].get("media_target_host", "") == ""
     assert len(install_calls) == 1
-    assert turn_install_calls == []
     assert manifests[0]["transport"] == "agent-relay"
     assert manifests[0]["signal_host"] == "127.0.0.1"
     assert manifests[0]["media_host"] == "8.8.4.4"
@@ -680,7 +561,6 @@ def test_failed_agent_relay_launch_removes_partial_relay_ingress_and_kubernetes(
         _applied,
         _ingress,
         _install,
-        _turn,
         _manifests,
         _ssh,
         _registry,
@@ -721,12 +601,63 @@ def test_failed_agent_relay_launch_removes_partial_relay_ingress_and_kubernetes(
     assert removed_kubernetes == [("cluster", "leisaac", "leisaac-live-relay")]
 
 
-def test_relaunch_removes_only_the_prior_recorded_gpu_egress_rule(monkeypatch) -> None:
+def test_launch_rollback_attempts_every_cleanup_when_teardown_steps_raise(
+    monkeypatch,
+) -> None:
+    _patch_launch(monkeypatch)
+    monkeypatch.setattr(
+        "npa.cli.workbench.leisaac._put_manifest",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("primary publish failure")
+        ),
+    )
+    attempted: list[str] = []
+
+    def fail(label: str):
+        def operation(*_args, **_kwargs):
+            attempted.append(label)
+            raise RuntimeError(f"{label} teardown failure")
+
+        return operation
+
+    turn_calls = 0
+
+    def fail_turn_cleanup(*_args, **_kwargs):
+        nonlocal turn_calls
+        turn_calls += 1
+        if turn_calls == 1:
+            return None  # legacy migration cleanup during the successful launch path
+        attempted.append("TURN")
+        raise RuntimeError("TURN teardown failure")
+
+    monkeypatch.setattr(
+        "npa.cli.workbench.leisaac._remove_agent_turn", fail_turn_cleanup
+    )
+    monkeypatch.setattr("npa.cli.workbench.leisaac._remove_agent_relay", fail("relay"))
+    monkeypatch.setattr(
+        "npa.cli.workbench.leisaac.remove_exact_npa_ingress_for_instance",
+        fail("ingress"),
+    )
+    monkeypatch.setattr(
+        "npa.cli.workbench.leisaac._delete_resources", fail("Kubernetes")
+    )
+
+    result = runner.invoke(app, _args())
+
+    assert result.exit_code == 1
+    assert attempted == ["TURN", "relay", "ingress", "Kubernetes"]
+    assert "primary publish failure" in result.output
+    for label in attempted:
+        assert f"{label} cleanup" in result.output
+
+
+def test_relaunch_migrates_and_removes_only_the_prior_gpu_egress_rule(
+    monkeypatch,
+) -> None:
     (
         applied,
         _ingress,
         _relay,
-        _turn,
         _manifests,
         _ssh,
         _registry,
@@ -746,8 +677,7 @@ def test_relaunch_removes_only_the_prior_recorded_gpu_egress_rule(monkeypatch) -
 
     assert result.exit_code == 0, result.output
     assert (
-        applied[0]["metadata"]["annotations"]["npa.nebius.com/turn-peer-source"]
-        == "4.4.4.0/24"
+        "npa.nebius.com/turn-peer-source" not in applied[0]["metadata"]["annotations"]
     )
     assert (
         "npa.nebius.com/turn-peer-source" not in applied[-1]["metadata"]["annotations"]

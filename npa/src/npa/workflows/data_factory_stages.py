@@ -318,12 +318,11 @@ def curate(
 ) -> dict[str, Any]:
     """Curate the augmented set and write a real curation report.
 
-    When FiftyOne is importable (i.e. this stage runs inside the ``npa-fiftyone``
-    workbench image) this runs *real* FiftyOne Brain curation over the augmented
-    scenario variants -- ``compute_uniqueness`` + near-duplicate similarity +
-    a 2D visualization -- and records which variants were kept vs dropped. When
-    FiftyOne is absent (unit tests, the dev-VM worktree python) it degrades to the
-    report-only counts path so the pipeline never regresses.
+    This stage runs *real* FiftyOne Brain curation over the augmented scenario
+    variants -- ``compute_uniqueness`` + near-duplicate similarity + a 2D
+    visualization -- and records which variants were kept vs dropped. A missing
+    or failed FiftyOne runtime is a hard error so the pipeline cannot report a
+    successful curation that never happened.
 
     ``curator_report_uri`` points at the preceding Cosmos Curator stage's summary.
     When present it is folded into this report under ``cosmos_curator``, so one
@@ -383,21 +382,22 @@ def _merge_curator_report(
     curator's own report so this document does not grow with the clip count.
     """
     if not curator_report_uri:
-        return report
+        raise RuntimeError("Cosmos Curator report URI is required")
     try:
         curator = _download_json(curator_report_uri)
-    except Exception as exc:  # noqa: BLE001 - the review report stands on its own
-        report["cosmos_curator"] = {"status": "unavailable", "warn": f"{exc}"[:200]}
-        return report
+    except Exception as exc:
+        raise RuntimeError("Cosmos Curator report could not be loaded") from exc
     if not isinstance(curator, dict):
-        report["cosmos_curator"] = {
-            "status": "unavailable",
-            "warn": "curator report is not an object",
-        }
-        return report
+        raise RuntimeError("Cosmos Curator report is not an object")
+    status = str(curator.get("status") or "")
+    engine = str(curator.get("engine") or "")
+    if status != "completed" or not engine or engine == "unavailable":
+        raise RuntimeError(
+            "Cosmos Curator did not complete with the real upstream engine"
+        )
     report["cosmos_curator"] = {
-        "status": str(curator.get("status") or ""),
-        "engine": str(curator.get("engine") or ""),
+        "status": status,
+        "engine": engine,
         "curated_uri": str(curator.get("curated_uri") or ""),
         "clip_count": int(curator.get("clip_count") or 0),
         "filtered_count": int(curator.get("filtered_count") or 0),
@@ -415,12 +415,7 @@ def _enrich_with_fiftyone_curation(
     keys: list[str],
     dedup_threshold: float | str,
 ) -> dict[str, Any]:
-    """Run real FiftyOne Brain curation over the augmented set when available.
-
-    Falls back to the report-only counts path (tagging ``curation_engine``) when
-    FiftyOne is not importable or curation fails, so the stage always produces a
-    valid report.
-    """
+    """Run real FiftyOne Brain curation and fail if it is unavailable."""
     from npa.workflows import data_factory_curate as dfc
 
     try:
@@ -431,24 +426,19 @@ def _enrich_with_fiftyone_curation(
     bucket, aug_prefix = _split(
         augment_uri if augment_uri.endswith("/") else augment_uri + "/"
     )
-    try:
-        with tempfile.TemporaryDirectory(prefix="npa-df-curate-") as tmp:
-            return dfc.run_curation(
-                keys=keys,
-                augment_prefix=aug_prefix,
-                base_report=report,
-                download_key=lambda key, dest: _download_key(bucket, key, dest),
-                read_json=lambda key: _read_json_key(bucket, key),
-                workdir=tmp,
-                dedup_threshold=thresh,
-            )
-    except dfc.FiftyoneUnavailable:
-        report["curation_engine"] = dfc.CURATION_ENGINE_REPORT_ONLY
-        return report
-    except Exception as exc:  # noqa: BLE001 - never fail the stage on curation errors
-        report["curation_engine"] = dfc.CURATION_ENGINE_REPORT_ONLY
-        report["curation_warn"] = f"fiftyone curation failed: {exc}"[:300]
-        return report
+    with tempfile.TemporaryDirectory(prefix="npa-df-curate-") as tmp:
+        result = dfc.run_curation(
+            keys=keys,
+            augment_prefix=aug_prefix,
+            base_report=report,
+            download_key=lambda key, dest: _download_key(bucket, key, dest),
+            read_json=lambda key: _read_json_key(bucket, key),
+            workdir=tmp,
+            dedup_threshold=thresh,
+        )
+    if result.get("curation_engine") != dfc.CURATION_ENGINE_FIFTYONE:
+        raise RuntimeError("FiftyOne Brain curation did not complete")
+    return result
 
 
 def finalize(run_root_uri: str, report_uri: str) -> dict[str, Any]:

@@ -2281,6 +2281,7 @@
       let leisaacInputCount = 0;
       let leisaacStreamReady = false;
       let leisaacPeerConnectionRestore = null;
+      let leisaacWebSocketRestore = null;
       let leisaacFrameTimer = null;
       let leisaacSecondaryFrameTimer = null;
       let leisaacFrameSequence = 0;
@@ -2307,10 +2308,11 @@
       let leisaacClientRunId = "";
       let leisaacReconnectPromise = null;
       let leisaacManualDisconnect = false;
+      let leisaacReleaseResolver = null;
       const leisaacUnackedControls = new Map();
       const leisaacKeysDown = new Set();
       const leisaacPings = new Map();
-      const leisaacTransportEvidence = { controls: [], frames: [], reconnects: 0, active: "disconnected" };
+      const leisaacTransportEvidence = { controls: [], frames: [], reconnects: 0, active: "disconnected", dropped_frames: 0 };
       let leisaacRecorderTimer = null;
       let leisaacRecorderPollInFlight = false;
       let leisaacRecorderPending = null;
@@ -3173,6 +3175,7 @@
           }
         }
         leisaacTransportEvidence.active = leisaacActiveTransport;
+        leisaacTransportEvidence.dropped_frames = leisaacDroppedFrames;
       }
       function leisaacControlPayload(key, event) {
         const payload = {
@@ -3218,7 +3221,8 @@
         if (leisaacFallbackFlush || leisaacActiveTransport !== "jpeg-poll") return leisaacFallbackFlush;
         const status = leisaacCapability;
         leisaacFallbackFlush = (async () => {
-          for (const [seq, item] of Array.from(leisaacUnackedControls.entries()).sort((left, right) => left[0] - right[0])) {
+          while (leisaacUnackedControls.size) {
+            const [seq, item] = Array.from(leisaacUnackedControls.entries()).sort((left, right) => left[0] - right[0])[0];
             const started = performance.now();
             const response = await fetch(String(status.input_url || ""), {
               method: "POST",
@@ -3237,9 +3241,12 @@
             leisaacUnackedControls.delete(seq);
             updateLeIsaacTransportIndicator();
           }
-        })().catch((err) => {
-          setLeIsaacStreamState("Fallback control retrying: " + String((err && err.message) || err), "error");
-        }).finally(() => { leisaacFallbackFlush = null; });
+        })().finally(() => {
+          leisaacFallbackFlush = null;
+          if (leisaacActiveTransport === "jpeg-poll" && leisaacUnackedControls.size) {
+            window.queueMicrotask(() => { flushLeIsaacFallbackControls().catch(() => {}); });
+          }
+        });
         return leisaacFallbackFlush;
       }
       function queueLeIsaacControl(key, event) {
@@ -3253,7 +3260,13 @@
         if (event === "press") leisaacKeysDown.add(key);
         else leisaacKeysDown.delete(key);
         if (leisaacActiveTransport === "websocket-v1") sendQueuedWebSocketControls();
-        else flushLeIsaacFallbackControls();
+        else {
+          const flush = flushLeIsaacFallbackControls();
+          if (flush) flush.catch((err) => {
+            setLeIsaacStreamState("Fallback control retrying: " + String((err && err.message) || err), "error");
+          });
+        }
+        return leisaacFallbackFlush;
       }
       function queueLeIsaacAction(action, device) {
         if (!leisaacClientId || !Array.isArray(action) || action.length !== 8) return;
@@ -3264,7 +3277,12 @@
           sentGeneration: 0,
         });
         if (leisaacActiveTransport === "websocket-v1") sendQueuedWebSocketControls();
-        else flushLeIsaacFallbackControls();
+        else {
+          const flush = flushLeIsaacFallbackControls();
+          if (flush) flush.catch((err) => {
+            setLeIsaacStreamState("Fallback control retrying: " + String((err && err.message) || err), "error");
+          });
+        }
       }
       function stopLeIsaacGamepad() {
         if (leisaacGamepadTimer !== null) window.clearTimeout(leisaacGamepadTimer);
@@ -3318,6 +3336,34 @@
         const restore = leisaacPeerConnectionRestore;
         leisaacPeerConnectionRestore = null;
         if (restore) restore();
+      }
+      function restoreLeIsaacWebSocketAdapter() {
+        const restore = leisaacWebSocketRestore;
+        leisaacWebSocketRestore = null;
+        if (restore) restore();
+      }
+      function installLeIsaacWebSocketAdapter(status) {
+        restoreLeIsaacWebSocketAdapter();
+        const NativeWebSocket = window.WebSocket;
+        const signalingPath = String(status.signaling_path || "/api/leisaac/signal");
+        function LeIsaacWebSocket(url, protocols) {
+          const target = new URL(String(url), window.location.href);
+          if (
+            target.protocol === "ws:" &&
+            target.hostname === window.location.hostname &&
+            target.port === "443" &&
+            target.pathname.startsWith(signalingPath)
+          ) target.protocol = "wss:";
+          return protocols === undefined
+            ? new NativeWebSocket(target.toString())
+            : new NativeWebSocket(target.toString(), protocols);
+        }
+        LeIsaacWebSocket.prototype = NativeWebSocket.prototype;
+        Object.setPrototypeOf(LeIsaacWebSocket, NativeWebSocket);
+        window.WebSocket = LeIsaacWebSocket;
+        leisaacWebSocketRestore = () => {
+          if (window.WebSocket === LeIsaacWebSocket) window.WebSocket = NativeWebSocket;
+        };
       }
       function installLeIsaacPeerConnection(status) {
         restoreLeIsaacPeerConnection();
@@ -3477,6 +3523,12 @@
           leisaacClockUncertaintyNs = (receivedWallNs - ping.wallNs) / 2;
           return;
         }
+        if (payload.type === "released") {
+          const resolve = leisaacReleaseResolver;
+          leisaacReleaseResolver = null;
+          if (resolve) resolve(Number(payload.released_count || 0));
+          return;
+        }
         if (payload.type === "error") {
           if (payload.code === "out_of_order" && Number(payload.expected_seq || 0) > 0) {
             leisaacNextControlSequence = Number(payload.expected_seq);
@@ -3557,26 +3609,34 @@
               { type: "image/jpeg" },
             );
             const bitmap = await createImageBitmap(blob);
-            // A newer credited frame can arrive while createImageBitmap runs.
-            // Do not spend a paint on a frame that is already stale.
-            if (
-              leisaacVideoPending[camera] &&
-              Number(leisaacVideoPending[camera].sequence || 0) > Number(frame.sequence || 0)
-            ) {
+            try {
+              // A newer credited frame can arrive while createImageBitmap runs.
+              if (
+                leisaacVideoPending[camera] &&
+                Number(leisaacVideoPending[camera].sequence || 0) > Number(frame.sequence || 0)
+              ) {
+                leisaacVideoPending[camera].browserDropped =
+                  Number(leisaacVideoPending[camera].browserDropped || 0) +
+                  Number(frame.browserDropped || 0) + 1;
+                continue;
+              }
+              const secondary = frame.camera === "overview";
+              const canvas = document.getElementById(secondary ? "leisaacSecondaryCanvas" : "leisaacCanvas");
+              const image = document.getElementById(secondary ? "leisaacSecondaryFrame" : "leisaacFrame");
+              const video = secondary ? null : document.getElementById("leisaacVideo");
+              if (!canvas) return;
+              canvas.width = bitmap.width;
+              canvas.height = bitmap.height;
+              const context = canvas.getContext("2d", { alpha: false });
+              if (!context) throw new Error("LeIsaac 2D canvas context is unavailable");
+              context.drawImage(bitmap, 0, 0);
+            } finally {
               bitmap.close();
-              leisaacDroppedFrames += 1;
-              continue;
             }
             const secondary = frame.camera === "overview";
             const canvas = document.getElementById(secondary ? "leisaacSecondaryCanvas" : "leisaacCanvas");
             const image = document.getElementById(secondary ? "leisaacSecondaryFrame" : "leisaacFrame");
             const video = secondary ? null : document.getElementById("leisaacVideo");
-            if (!canvas) { bitmap.close(); return; }
-            canvas.width = bitmap.width;
-            canvas.height = bitmap.height;
-            const context = canvas.getContext("2d", { alpha: false });
-            context.drawImage(bitmap, 0, 0);
-            bitmap.close();
             canvas.hidden = false;
             if (image) image.hidden = true;
             if (video) video.hidden = true;
@@ -3586,7 +3646,11 @@
             const sequenceGap = lastSequence
               ? Math.max(0, frame.sequence - lastSequence - 1)
               : 0;
-            leisaacDroppedFrames += Math.max(Number(frame.droppedBefore || 0), sequenceGap);
+            leisaacDroppedFrames += Math.max(
+              Number(frame.droppedBefore || 0),
+              sequenceGap,
+              Number(frame.browserDropped || 0),
+            );
             leisaacLastFrameSequences[frame.camera] = frame.sequence;
             const paintMonoMs = performance.now();
             const captureClientWallNs = frame.captureWallNs - leisaacClockOffsetNs;
@@ -3605,6 +3669,7 @@
               frame_age_ms: frameAgeMs,
               clock_uncertainty_ms: leisaacClockUncertaintyNs / 1000000,
               dropped_before: frame.droppedBefore,
+              browser_dropped: Number(frame.browserDropped || 0),
             });
             leisaacStreamReady = true;
             if (secondary) {
@@ -3640,7 +3705,11 @@
               sequence: parsed.sequence,
             }));
           }
-          if (leisaacVideoPending[parsed.camera]) leisaacDroppedFrames += 1;
+          if (leisaacVideoPending[parsed.camera]) {
+            parsed.browserDropped = Number(leisaacVideoPending[parsed.camera].browserDropped || 0) + 1;
+          } else {
+            parsed.browserDropped = 0;
+          }
           leisaacVideoPending[parsed.camera] = parsed;
           decodeLatestLeIsaacFrame();
         } catch (err) {
@@ -3940,6 +4009,7 @@
           // Install after NVIDIA's module has applied its adapter shims, but
           // before AppStreamer creates the live peer connection.
           installLeIsaacPeerConnection(status);
+          installLeIsaacWebSocketAdapter(status);
           leisaacStreamer = AppStreamer;
           const query = new URLSearchParams({ run_id: String(status.run_id || "") });
           await AppStreamer.connect({
@@ -3949,10 +4019,6 @@
               signalingPort: Number(window.location.port || (window.location.protocol === "https:" ? 443 : 80)),
               signalingPath: String(status.signaling_path || "/api/leisaac/signal"),
               signalingQuery: query,
-              // The supported agent endpoint is HTTPS, including when its host is a
-              // raw Nebius public IPv4 address.  NVIDIA's client otherwise chooses
-              // insecure WS for an IPv4 signalingServer.
-              forceWSS: true,
               mediaServer: String(status.media_server || ""),
               mediaPort: Number(status.media_port || 47998),
               autoLaunch: true,
@@ -3973,11 +4039,13 @@
               onStop: () => {
                 leisaacStreamReady = false;
                 restoreLeIsaacPeerConnection();
+                restoreLeIsaacWebSocketAdapter();
                 setLeIsaacStreamState("Disconnected", "pending");
               },
               onTerminate: () => {
                 leisaacStreamReady = false;
                 restoreLeIsaacPeerConnection();
+                restoreLeIsaacWebSocketAdapter();
                 setLeIsaacStreamState("Disconnected", "pending");
               },
             },
@@ -3985,6 +4053,7 @@
           if (disconnectBtn) disconnectBtn.disabled = false;
         } catch (err) {
           restoreLeIsaacPeerConnection();
+          restoreLeIsaacWebSocketAdapter();
           if (connectBtn) connectBtn.disabled = false;
           setLeIsaacStreamState(String((err && err.message) || err), "error");
           throw err;
@@ -4001,6 +4070,7 @@
         } else if (status === "error" || status === "canceled" || status === "cancelled") {
           leisaacStreamReady = false;
           restoreLeIsaacPeerConnection();
+          restoreLeIsaacWebSocketAdapter();
           setLeIsaacStreamState(detail, "error");
         } else if (!leisaacStreamReady) {
           setLeIsaacStreamState(detail, "pending");
@@ -4011,6 +4081,7 @@
         const controlSocket = leisaacControlSocket;
         if (controlSocket && controlSocket.readyState === WebSocket.OPEN && leisaacClientId) {
           try {
+            const released = new Promise((resolve) => { leisaacReleaseResolver = resolve; });
             controlSocket.send(JSON.stringify({
               v: 1,
               type: "release-all",
@@ -4019,7 +4090,24 @@
               client_mono_ns: leisaacMonoNs(),
               client_wall_ns: leisaacWallNs(),
             }));
+            await Promise.race([
+              released,
+              new Promise((resolve) => window.setTimeout(resolve, 1500)),
+            ]);
           } catch (_err) { /* server disconnect cleanup also releases keys */ }
+          leisaacReleaseResolver = null;
+        } else if (leisaacActiveTransport === "jpeg-poll" && leisaacClientId) {
+          const held = Array.from(leisaacKeysDown).sort();
+          for (const key of held) queueLeIsaacControl(key, "release");
+          if (leisaacFallbackFlush) {
+            try {
+              await leisaacFallbackFlush;
+            } catch (err) {
+              leisaacManualDisconnect = false;
+              setLeIsaacStreamState("Safety release failed; connection retained for retry", "error");
+              throw err;
+            }
+          }
         }
         const streamer = leisaacStreamer;
         leisaacStreamer = null;
@@ -4037,6 +4125,7 @@
           try { await streamer.terminate(false, true); } catch (_err) { /* already disconnected */ }
         }
         restoreLeIsaacPeerConnection();
+        restoreLeIsaacWebSocketAdapter();
         const connectBtn = document.getElementById("leisaacConnect");
         const disconnectBtn = document.getElementById("leisaacDisconnect");
         if (connectBtn) connectBtn.disabled = !(leisaacCapability && leisaacCapability.available);

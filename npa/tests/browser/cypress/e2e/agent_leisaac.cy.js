@@ -367,6 +367,9 @@ describe("NPA agent LeIsaac capability tab", () => {
       body: `window.OVWebStreamingLibrary = { AppStreamer: {
         connect: async function(props) {
           window.__LEISAAC_CONNECT_PROPS__ = props;
+          window.__LEISAAC_SIGNAL_SOCKET__ = new window.WebSocket(
+            "ws://" + window.location.hostname + ":443" + props.streamConfig.signalingPath,
+          );
           new window.RTCPeerConnection({ iceServers: [{ urls: "stun:untrusted.invalid" }] });
           props.streamConfig.onStart({ status: "success" });
           return { status: "inProgress" };
@@ -447,6 +450,15 @@ describe("NPA agent LeIsaac capability tab", () => {
       CapturingPeerConnection.prototype = {};
       win.__LEISAAC_NATIVE_PEER__ = CapturingPeerConnection;
       win.RTCPeerConnection = CapturingPeerConnection;
+      function CapturingWebSocket(url) {
+        this.url = String(url);
+      }
+      CapturingWebSocket.CONNECTING = 0;
+      CapturingWebSocket.OPEN = 1;
+      CapturingWebSocket.CLOSING = 2;
+      CapturingWebSocket.CLOSED = 3;
+      win.__LEISAAC_NATIVE_WEBSOCKET__ = CapturingWebSocket;
+      win.WebSocket = CapturingWebSocket;
     });
     cy.get("#leisaacConnect").click();
     cy.wait("@leisaacClient");
@@ -458,8 +470,11 @@ describe("NPA agent LeIsaac capability tab", () => {
       .its("__LEISAAC_CONNECT_PROPS__.streamConfig.signalingPath")
       .should("eq", "/api/leisaac/signal");
     cy.window()
-      .its("__LEISAAC_CONNECT_PROPS__.streamConfig.forceWSS")
-      .should("eq", true);
+      .its("__LEISAAC_SIGNAL_SOCKET__.url")
+      .should("match", /^wss:\/\/[^/]+\/api\/leisaac\/signal$/);
+    cy.window()
+      .its("__LEISAAC_CONNECT_PROPS__.streamConfig")
+      .should("not.have.property", "forceWSS");
     cy.window()
       .its("__LEISAAC_CONNECT_PROPS__.streamConfig.mediaPort")
       .should("eq", 47998);
@@ -501,7 +516,10 @@ describe("NPA agent LeIsaac capability tab", () => {
     cy.get("#leisaacAvailability").should("contain.text", "session expired");
     cy.get("#leisaacConnect").should("be.disabled");
     cy.window().then((win) =>
-      expect(win.RTCPeerConnection).to.equal(win.__LEISAAC_NATIVE_PEER__),
+      {
+        expect(win.RTCPeerConnection).to.equal(win.__LEISAAC_NATIVE_PEER__);
+        expect(win.WebSocket).to.equal(win.__LEISAAC_NATIVE_WEBSOCKET__);
+      },
     );
   });
 
@@ -524,9 +542,14 @@ describe("NPA agent LeIsaac capability tab", () => {
       headers: { "content-type": "image/svg+xml", "cache-control": "no-store" },
       body: '<svg xmlns="http://www.w3.org/2000/svg" width="800" height="450"><rect width="800" height="450" fill="#2563eb"/></svg>',
     }).as("jpegFrame");
-    cy.intercept("POST", "/api/leisaac/input?run_id=mock-jpeg", {
-      statusCode: 202,
-      body: { accepted: true },
+    let fallbackRequests = 0;
+    cy.intercept("POST", "/api/leisaac/input?run_id=mock-jpeg", (req) => {
+      fallbackRequests += 1;
+      req.reply({
+        statusCode: 202,
+        body: { accepted: true },
+        delay: fallbackRequests === 1 ? 150 : 0,
+      });
     }).as("jpegInput");
     cy.intercept("POST", "/api/leisaac/select", {
       statusCode: 200,
@@ -550,22 +573,25 @@ describe("NPA agent LeIsaac capability tab", () => {
     );
     cy.get("#leisaacStreamHost")
       .click()
-      .trigger("keydown", { key: "W", code: "KeyW" });
-    cy.wait("@jpegInput").then(({ request }) => {
-      expect(request.headers["x-npa-leisaac-control"]).to.equal("1");
-      expect(request.body).to.include({
+      .trigger("keydown", { key: "W", code: "KeyW" })
+      .trigger("keyup", { key: "W", code: "KeyW" });
+    cy.wait(["@jpegInput", "@jpegInput"]).then((interceptions) => {
+      const requests = interceptions.map((item) => item.request);
+      expect(requests[0].headers["x-npa-leisaac-control"]).to.equal("1");
+      expect(requests.map((item) => [item.body.seq, item.body.event])).to.deep.equal([
+        [1, "press"],
+        [2, "release"],
+      ]);
+      expect(requests[0].body).to.include({
         v: 1,
         type: "control",
         run_id: "mock-jpeg",
         key: "W",
-        event: "press",
       });
-      expect(request.body.seq).to.equal(1);
-      expect(request.body.client_id).to.match(/^browser-/);
+      expect(requests[0].body.client_id).to.match(/^browser-/);
     });
     cy.get("#leisaacInputStatus").should(
-      "contain.text",
-      "Keyboard events sent: 1",
+      "contain.text", "Keyboard events sent: 1",
     );
     cy.get("#leisaacDisconnect").click();
   });
@@ -716,6 +742,14 @@ describe("NPA agent LeIsaac capability tab", () => {
                   }),
                 });
             }, 2);
+          } else if (message.type === "release-all") {
+            response = {
+              v: 1,
+              type: "released",
+              run_id: message.run_id,
+              client_id: message.client_id,
+              released_count: 0,
+            };
           }
           if (response)
             win.setTimeout(
@@ -736,6 +770,7 @@ describe("NPA agent LeIsaac capability tab", () => {
       win.WebSocket = FakeWebSocket;
       let releaseFirstBitmap;
       let firstBitmap = true;
+      let bitmapCloses = 0;
       win.createImageBitmap = async () => {
         if (firstBitmap) {
           firstBitmap = false;
@@ -743,12 +778,24 @@ describe("NPA agent LeIsaac capability tab", () => {
             releaseFirstBitmap = resolve;
           });
         }
-        return { width: 1280, height: 720, close() {} };
+        return { width: 1280, height: 720, close() { bitmapCloses += 1; } };
       };
+      win.__LEISAAC_BITMAP_CLOSES__ = () => bitmapCloses;
       win.__LEISAAC_RELEASE_FIRST_BITMAP__ = () => releaseFirstBitmap();
       const nativeGetContext = win.HTMLCanvasElement.prototype.getContext;
+      let canvasFailures = 2;
       win.HTMLCanvasElement.prototype.getContext = function getContext(kind, ...args) {
-        if (["leisaacCanvas", "leisaacSecondaryCanvas"].includes(this.id) && kind === "2d") return { drawImage() {} };
+        if (["leisaacCanvas", "leisaacSecondaryCanvas"].includes(this.id) && kind === "2d") {
+          if (canvasFailures === 2) {
+            canvasFailures -= 1;
+            return null;
+          }
+          if (canvasFailures === 1) {
+            canvasFailures -= 1;
+            return { drawImage() { throw new Error("synthetic draw failure"); } };
+          }
+          return { drawImage() {} };
+        }
         return nativeGetContext.call(this, kind, ...args);
       };
       win.__LEISAAC_FAKE_SOCKETS__ = sockets;
@@ -780,6 +827,9 @@ describe("NPA agent LeIsaac capability tab", () => {
     cy.window().then((win) => win.__LEISAAC_RELEASE_FIRST_BITMAP__());
     cy.get("#leisaacCanvas").should("be.visible");
     cy.get("#leisaacSecondaryCanvas", { timeout: 10000 }).should("be.visible");
+    cy.window().should((win) => {
+      expect(win.__LEISAAC_BITMAP_CLOSES__()).to.be.at.least(3);
+    });
     cy.get("#leisaacSecondaryHost").trigger("wheel", { deltaY: 120 });
     cy.wait("@viewOrbit");
     cy.get("#leisaacSecondaryStatus").should("contain.text", "rotation");
@@ -809,6 +859,19 @@ describe("NPA agent LeIsaac capability tab", () => {
           .map((raw) => JSON.parse(raw))
           .filter((item) => item.type === "frame-ack"),
       ).to.have.length.greaterThan(0);
+      const evidence = win.__NPA_AGENT_TEST__.leisaacTransportEvidence();
+      const lastByCamera = {};
+      const expectedDrops = evidence.frames.reduce((total, frame) => {
+        const prior = Number(lastByCamera[frame.camera] || 0);
+        const gap = prior ? Math.max(0, Number(frame.sequence) - prior - 1) : 0;
+        lastByCamera[frame.camera] = Number(frame.sequence);
+        return total + Math.max(
+          Number(frame.dropped_before || 0),
+          gap,
+          Number(frame.browser_dropped || 0),
+        );
+      }, 0);
+      expect(evidence.dropped_frames).to.equal(expectedDrops);
     });
     cy.get("#leisaacInputDevice").select("custom-so101");
     cy.get("#leisaacSendNeutralAction").click();

@@ -6,7 +6,6 @@ import asyncio
 import hashlib
 import importlib.util
 import json
-import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -15,6 +14,7 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from npa.agent_backend.leisaac_routes import (
+    _client_address,
     _mint_ws_session,
     _same_origin_websocket,
     _valid_ws_session,
@@ -33,6 +33,7 @@ from npa.agent_backend.leisaac_transport import (
     parse_control_message,
     parse_video_ack,
     stamp_agent_frame,
+    stamp_verified_frame,
     unpack_frame,
 )
 
@@ -192,10 +193,55 @@ def test_binary_frame_envelope_round_trips_and_detects_tampering() -> None:
     assert decoded.agent_send_monotonic_ns == 106
     assert decoded.dropped_before == 5
 
+    restamped = stamp_verified_frame(
+        decoded, content, received_mono_ns=107, send_mono_ns=108
+    )
+    restamped_envelope, restamped_content = unpack_frame(restamped)
+    assert restamped_content == content
+    assert restamped_envelope.agent_receive_monotonic_ns == 107
+
     tampered = bytearray(stamped)
     tampered[-2] ^= 0x01
     with pytest.raises(TransportProtocolError, match="digest"):
         unpack_frame(bytes(tampered))
+
+
+def test_verified_relay_stamps_a_frame_without_hashing_the_jpeg_twice(
+    monkeypatch,
+) -> None:
+    import npa.agent_backend.leisaac_transport as transport
+
+    jpeg = b"\xff\xd8" + b"large-frame" * 300_000 + b"\xff\xd9"
+    packed = pack_frame(
+        FrameEnvelope(
+            sequence=1,
+            capture_wall_ns=2,
+            capture_monotonic_ns=3,
+            encoded_wall_ns=4,
+            encoded_monotonic_ns=5,
+            runtime_send_monotonic_ns=6,
+        ),
+        jpeg,
+    )
+    real_sha256 = transport.hashlib.sha256
+    calls = 0
+
+    def counted_sha256(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return real_sha256(*args, **kwargs)
+
+    monkeypatch.setattr(transport.hashlib, "sha256", counted_sha256)
+    envelope, verified_jpeg = unpack_frame(packed, verify_digest=True)
+    stamped = stamp_verified_frame(
+        envelope,
+        verified_jpeg,
+        received_mono_ns=7,
+        send_mono_ns=8,
+    )
+
+    assert calls == 1
+    assert stamped.endswith(jpeg)
 
 
 def test_video_receipt_ack_is_bounded_exact_and_run_scoped() -> None:
@@ -276,9 +322,7 @@ async def test_camera_latest_values_are_bounded_and_serviced_fairly() -> None:
     assert (camera, value, skipped) == ("overview", "overview-3", 1)
     generations[camera] = generation
     with pytest.raises(asyncio.TimeoutError):
-        await latest.wait_after(
-            generations, next_index=next_index, timeout=0.001
-        )
+        await latest.wait_after(generations, next_index=next_index, timeout=0.001)
 
 
 def test_transport_metrics_are_low_cardinality() -> None:
@@ -343,20 +387,68 @@ def test_public_websocket_requires_exact_origin_and_subprotocol(
 
 def test_short_lived_ws_session_is_signed_and_bound_to_run_address_and_time() -> None:
     secret = b"deterministic-test-secret"
-    token = _mint_ws_session(secret, RUN_ID, "203.0.113.7", now=1_000)
+    token = _mint_ws_session(secret, RUN_ID, "8.8.8.8", "control", now=1_000)
 
-    assert _valid_ws_session(secret, token, RUN_ID, "203.0.113.7", now=1_000)
-    assert _valid_ws_session(secret, token, RUN_ID, "203.0.113.7", now=1_120)
-    assert not _valid_ws_session(secret, token, "other-run", "203.0.113.7", now=1_000)
-    assert not _valid_ws_session(secret, token, RUN_ID, "203.0.113.8", now=1_000)
-    assert not _valid_ws_session(secret, token, RUN_ID, "203.0.113.7", now=1_121)
+    assert _valid_ws_session(secret, token, RUN_ID, "8.8.8.8", "control", now=1_000)
+    assert _valid_ws_session(secret, token, RUN_ID, "8.8.8.8", "control", now=1_120)
+    assert not _valid_ws_session(
+        secret, token, "other-run", "8.8.8.8", "control", now=1_000
+    )
+    assert not _valid_ws_session(secret, token, RUN_ID, "8.8.4.4", "control", now=1_000)
+    assert not _valid_ws_session(secret, token, RUN_ID, "8.8.8.8", "video", now=1_000)
+    assert not _valid_ws_session(secret, token, RUN_ID, "8.8.8.8", "control", now=1_121)
     assert not _valid_ws_session(
         secret,
         token[:-1] + ("A" if token[-1] != "A" else "B"),
         RUN_ID,
-        "203.0.113.7",
+        "8.8.8.8",
+        "control",
         now=1_000,
     )
+
+    consumed: dict[str, int] = {}
+    assert _valid_ws_session(
+        secret,
+        token,
+        RUN_ID,
+        "8.8.8.8",
+        "control",
+        now=1_000,
+        consumed_nonces=consumed,
+    )
+    assert not _valid_ws_session(
+        secret,
+        token,
+        RUN_ID,
+        "8.8.8.8",
+        "control",
+        now=1_000,
+        consumed_nonces=consumed,
+    )
+    reconnect = _mint_ws_session(secret, RUN_ID, "8.8.8.8", "control", now=1_001)
+    assert _valid_ws_session(
+        secret,
+        reconnect,
+        RUN_ID,
+        "8.8.8.8",
+        "control",
+        now=1_001,
+        consumed_nonces=consumed,
+    )
+
+
+@pytest.mark.parametrize(
+    "headers,expected",
+    [
+        ({"x-real-ip": "8.8.8.8"}, "8.8.8.8"),
+        ({}, ""),
+        ({"x-real-ip": "invalid"}, ""),
+        ({"x-real-ip": "127.0.0.1"}, ""),
+        ({"x-real-ip": "10.0.0.2"}, ""),
+    ],
+)
+def test_client_address_requires_nginx_attested_public_ip(headers, expected) -> None:
+    assert _client_address(headers, SimpleNamespace(host="127.0.0.1")) == expected
 
 
 def _prepare_runtime(monkeypatch, tmp_path: Path):
@@ -464,9 +556,11 @@ def test_runtime_restart_resets_applied_ack_reader_offset(
     assert runtime.APPLIED_ACK_PATH.read_text(encoding="utf-8") == ""
 
 
+@pytest.mark.parametrize("_stress_iteration", range(25))
 def test_runtime_control_ack_ordering_application_and_disconnect_cleanup(
-    monkeypatch, tmp_path: Path
+    monkeypatch, tmp_path: Path, _stress_iteration: int
 ) -> None:
+    assert 0 <= _stress_iteration < 25
     runtime = _prepare_runtime(monkeypatch, tmp_path)
     with TestClient(runtime.build_app()) as client:
         with client.websocket_connect(
@@ -521,18 +615,10 @@ def test_runtime_control_ack_ordering_application_and_disconnect_cleanup(
             websocket.send_json(_control(2, key="A"))
             assert websocket.receive_json()["phase"] == "accepted"
 
-    deadline = time.monotonic() + 1
-    records = []
-    while time.monotonic() < deadline:
-        records = [
-            json.loads(line)
-            for line in runtime.INPUT_QUEUE_PATH.read_text(
-                encoding="utf-8"
-            ).splitlines()
-        ]
-        if len(records) >= 4:
-            break
-        time.sleep(0.005)
+    records = [
+        json.loads(line)
+        for line in runtime.INPUT_QUEUE_PATH.read_text(encoding="utf-8").splitlines()
+    ]
     assert [(item["seq"], item["event"]) for item in records] == [
         (1, "press"),
         (2, "press"),
@@ -540,6 +626,156 @@ def test_runtime_control_ack_ordering_application_and_disconnect_cleanup(
         (4, "release"),
     ]
     assert [item["key"] for item in records] == ["W", "A", "A", "W"]
+
+
+def test_runtime_disconnect_cleanup_is_idempotent_after_explicit_release_all(
+    monkeypatch, tmp_path: Path
+) -> None:
+    runtime = _prepare_runtime(monkeypatch, tmp_path)
+    with TestClient(runtime.build_app()) as client:
+        with client.websocket_connect(
+            "/transport/control",
+            headers=_runtime_headers(),
+            subprotocols=[CONTROL_SUBPROTOCOL],
+        ) as websocket:
+            websocket.send_json(_control())
+            assert websocket.receive_json()["phase"] == "accepted"
+            websocket.send_json(
+                {
+                    "v": 1,
+                    "type": "release-all",
+                    "run_id": RUN_ID,
+                    "client_id": "browser-test",
+                    "client_mono_ns": 3,
+                    "client_wall_ns": 4,
+                }
+            )
+            released = websocket.receive_json()
+            assert released["type"] == "released"
+            assert released["released_count"] == 1
+    records = [
+        json.loads(line) for line in runtime.INPUT_QUEUE_PATH.read_text().splitlines()
+    ]
+    assert [(item["seq"], item["event"]) for item in records] == [
+        (1, "press"),
+        (2, "release"),
+    ]
+
+
+def test_runtime_abrupt_client_close_durably_releases_every_held_control(
+    monkeypatch, tmp_path: Path
+) -> None:
+    runtime = _prepare_runtime(monkeypatch, tmp_path)
+    with TestClient(runtime.build_app()) as client:
+        with client.websocket_connect(
+            "/transport/control",
+            headers=_runtime_headers(),
+            subprotocols=[CONTROL_SUBPROTOCOL],
+        ) as websocket:
+            for seq, key in ((1, "W"), (2, "A"), (3, "D")):
+                websocket.send_json(_control(seq, key=key))
+                assert websocket.receive_json()["phase"] == "accepted"
+            websocket.close(code=1001)
+
+    records = [
+        json.loads(line)
+        for line in runtime.INPUT_QUEUE_PATH.read_text(encoding="utf-8").splitlines()
+    ]
+    assert [(item["seq"], item["key"], item["event"]) for item in records] == [
+        (1, "W", "press"),
+        (2, "A", "press"),
+        (3, "D", "press"),
+        (4, "A", "release"),
+        (5, "D", "release"),
+        (6, "W", "release"),
+    ]
+
+
+def test_runtime_client_exception_still_waits_for_disconnect_release(
+    monkeypatch, tmp_path: Path
+) -> None:
+    runtime = _prepare_runtime(monkeypatch, tmp_path)
+    with TestClient(runtime.build_app()) as client:
+        with pytest.raises(RuntimeError, match="client failure"):
+            with client.websocket_connect(
+                "/transport/control",
+                headers=_runtime_headers(),
+                subprotocols=[CONTROL_SUBPROTOCOL],
+            ) as websocket:
+                websocket.send_json(_control())
+                assert websocket.receive_json()["phase"] == "accepted"
+                raise RuntimeError("client failure")
+
+    records = [
+        json.loads(line)
+        for line in runtime.INPUT_QUEUE_PATH.read_text(encoding="utf-8").splitlines()
+    ]
+    assert [(item["seq"], item["event"]) for item in records] == [
+        (1, "press"),
+        (2, "release"),
+    ]
+
+
+def test_safety_cleanup_finishes_before_cancellation_propagates(
+    monkeypatch, tmp_path: Path
+) -> None:
+    runtime = _prepare_runtime(monkeypatch, tmp_path)
+
+    async def exercise() -> None:
+        started = asyncio.Event()
+        finish = asyncio.Event()
+        completed = False
+
+        async def cleanup() -> None:
+            nonlocal completed
+            started.set()
+            await finish.wait()
+            completed = True
+
+        task = asyncio.create_task(runtime._await_cleanup_completion(cleanup()))
+        await started.wait()
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        finish.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert completed is True
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize(
+    "accept_omni,accept_isaac,missing",
+    [
+        (None, None, {"OMNI_KIT_ACCEPT_EULA", "ISAACSIM_ACCEPT_EULA"}),
+        ("YES", None, {"ISAACSIM_ACCEPT_EULA"}),
+        (None, "YES", {"OMNI_KIT_ACCEPT_EULA"}),
+    ],
+)
+def test_runtime_eula_gate_refuses_unless_both_acceptances_are_explicit(
+    monkeypatch, capsys, accept_omni, accept_isaac, missing
+) -> None:
+    runtime = _runtime_module()
+    monkeypatch.delenv("OMNI_KIT_ACCEPT_EULA", raising=False)
+    monkeypatch.delenv("ISAACSIM_ACCEPT_EULA", raising=False)
+    if accept_omni is not None:
+        monkeypatch.setenv("OMNI_KIT_ACCEPT_EULA", accept_omni)
+    if accept_isaac is not None:
+        monkeypatch.setenv("ISAACSIM_ACCEPT_EULA", accept_isaac)
+    with pytest.raises(SystemExit) as exc_info:
+        runtime.require_operator_eula()
+    assert exc_info.value.code == 78
+    message = capsys.readouterr().err
+    assert all(f"{name}=YES" in message for name in missing)
+    assert "token" not in message.lower() and "secret" not in message.lower()
+
+
+def test_runtime_eula_gate_accepts_only_both_explicit_yes_values(monkeypatch) -> None:
+    runtime = _runtime_module()
+    monkeypatch.setenv("OMNI_KIT_ACCEPT_EULA", "YES")
+    monkeypatch.setenv("ISAACSIM_ACCEPT_EULA", "YES")
+    runtime.require_operator_eula()
 
 
 def test_runtime_rejects_bad_auth_and_preserves_polling_fallback(

@@ -19,20 +19,21 @@ from npa.workbench.leisaac.dataset import (
     VIDEO_KEY,
     DatasetError,
     _ffmpeg_executable,
+    resolve_s3_endpoint,
     sha256_file,
     split_s3_uri,
     utc_now,
 )
 
 
-def _client() -> Any:
+def _client(
+    endpoint_url: str | None = None, *, config_endpoint: str | None = None
+) -> Any:
     import boto3
 
     return boto3.client(
         "s3",
-        endpoint_url=os.environ.get("AWS_ENDPOINT_URL_S3")
-        or os.environ.get("NEBIUS_S3_ENDPOINT")
-        or os.environ.get("AWS_ENDPOINT_URL"),
+        endpoint_url=resolve_s3_endpoint(endpoint_url, config_endpoint=config_endpoint),
         region_name=os.environ.get("AWS_REGION") or "eu-north1",
     )
 

@@ -332,9 +332,9 @@ def test_container_never_bakes_eula_client_or_assets() -> None:
     assert "CLIENT_SOURCE_JS_SHA256" in server
     assert "5.6.0" in server
     assert LEISAAC_CLIENT_JS_SHA256 in server
-    assert "CLIENT_WSS_PATCH_OLD" in server and "CLIENT_WSS_PATCH_NEW" in server
-    assert "source.count(CLIENT_WSS_PATCH_OLD) != 1" in server
-    assert "signalingPort=443" in server
+    assert "CLIENT_WSS_PATCH_OLD" not in server
+    assert "CLIENT_WSS_PATCH_NEW" not in server
+    assert "vendor bytes remain pristine" in server
     assert 'f"--/app/livestream/publicEndpointPort={MEDIA_PORT}"' in server
     assert 'f"--/app/livestream/fixedHostPort={MEDIA_PORT}"' in server
     assert 'f"--/app/livestream/minHostPort={MEDIA_PORT}"' in server
@@ -378,7 +378,9 @@ def test_observability_patch_is_exact_and_records_real_upstream_input() -> None:
     assert "NPA_LEISAAC_READY_PATH" in source
     assert "NPA_LEISAAC_BROWSER_TELEOP" in source
     assert "capture_viewport_to_buffer" in source
-    assert "UsdGeom.Camera.Define(overview_viewport.stage, overview_camera_path)" in source
+    assert (
+        "UsdGeom.Camera.Define(overview_viewport.stage, overview_camera_path)" in source
+    )
     assert source.count("viewport_api=overview_viewport") == 2
     assert "NPA_LEISAAC_INPUT_QUEUE" in source
     assert "NPA_LEISAAC_APPLIED_COUNTER" in source
@@ -598,11 +600,11 @@ def test_agent_bootstrap_installs_turn_without_baking_session_configuration() ->
     assert "installLeIsaacPeerConnection(status)" in ui
 
 
-def test_client_transport_patch_is_exact_hash_verified_and_fails_closed(
+def test_client_is_served_pristine_after_exact_hash_verification(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     server = _session_server_module()
-    source = b"prefix" + server.CLIENT_WSS_PATCH_OLD + b"suffix"
+    source = b"pristine-vendor-client"
     archive = tmp_path / "client.tgz"
     destination = tmp_path / "client"
     _client_archive(archive, source)
@@ -612,15 +614,10 @@ def test_client_transport_patch_is_exact_hash_verified_and_fails_closed(
 
     server.safe_extract_client(archive, destination)
 
-    expected = source.replace(server.CLIENT_WSS_PATCH_OLD, server.CLIENT_WSS_PATCH_NEW)
-    assert (destination / "index.js").read_bytes() == expected
+    assert (destination / "index.js").read_bytes() == source
 
-    ambiguous = source + server.CLIENT_WSS_PATCH_OLD
-    _client_archive(archive, ambiguous)
-    monkeypatch.setattr(
-        server, "CLIENT_SOURCE_JS_SHA256", hashlib.sha256(ambiguous).hexdigest()
-    )
-    with pytest.raises(RuntimeError, match="WSS patch anchor mismatch"):
+    _client_archive(archive, source + b"modified")
+    with pytest.raises(RuntimeError, match="source hash mismatch"):
         server.safe_extract_client(archive, destination)
 
 

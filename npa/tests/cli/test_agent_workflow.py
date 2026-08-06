@@ -220,6 +220,7 @@ def test_generate_data_factory_yaml_validates_and_plans() -> None:
         "attribute-verify",
         "quality-gate",
         "annotate-augmented",
+        "cosmos-curate",
         "curate",
         "visualize",
         "finalize",
@@ -230,6 +231,9 @@ def test_generate_data_factory_yaml_validates_and_plans() -> None:
     tool_refs = [step.get("tool_ref") for step in plan["steps"]]
     assert "workbench.cosmos2.transfer_execute" in tool_refs
     assert "workbench.token_factory.caption" in tool_refs
+    assert "workbench.cosmos_evaluator.evaluate" in tool_refs
+    assert "workbench.cosmos_curate.curate" in tool_refs
+    assert "workbench.fiftyone.curate_augmented" in tool_refs
     assert generated["config"]["trigger_uri"] == generated["config"]["input_uri"]
     assert "supported video" in generated["states"]["augment"]["description"].lower()
 

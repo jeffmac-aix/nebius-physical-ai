@@ -45,10 +45,10 @@ def main() -> int:
                         raise RuntimeError(f"wrong real task: {status}")
                     if status.get("teleop_device") != "keyboard":
                         raise RuntimeError(f"wrong teleoperation device: {status}")
-                    if "RTX" not in str(status.get("gpu") or "") and "L40S" not in str(
-                        status.get("gpu") or ""
-                    ):
-                        raise RuntimeError(f"not running on an RT-core GPU: {status}")
+                    if "RTX PRO 6000" not in str(status.get("gpu") or ""):
+                        raise RuntimeError(
+                            f"current LeIsaac launcher requires RTX PRO 6000: {status}"
+                        )
                     print(json.dumps(status, indent=2, sort_keys=True))
                     print("NPA_LEISAAC_PICK_ORANGE_KEYBOARD_WEBRTC_OK")
                     return 0

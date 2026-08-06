@@ -5,7 +5,7 @@
 ```text
 Usage: npa workbench leisaac [OPTIONS] COMMAND [ARGS]...
 
-LeIsaac SO101 browser teleoperation on an RT-core Kubernetes GPU.
+LeIsaac SO101 browser teleoperation on the RTX PRO 6000 Kubernetes pool.
 
 Options
 --help  Show this message and exit.

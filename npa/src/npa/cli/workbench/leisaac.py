@@ -32,7 +32,7 @@ from npa.agent_backend.leisaac_registry import (
     validate_seed,
     validate_task,
 )
-from npa.clients.config import SSHConfig, list_projects
+from npa.clients.config import SSHConfig, list_projects, resolve_project_storage
 from npa.clients.network import (
     ensure_ingress,
     remove_exact_npa_ingress_for_instance,
@@ -58,7 +58,6 @@ from npa.workbench.leisaac import (
     session_manifest,
     session_attestation,
     split_s3_uri,
-    turn_credential,
     validate_expiry,
     validate_image,
     validate_private_ip,
@@ -70,11 +69,12 @@ from npa.workbench.leisaac.paidf import (
     export_episode_to_paidf,
     materialize_paidf_dataset,
 )
+from npa.workbench.leisaac.dataset import resolve_s3_endpoint
 from npa.workflows.sim2real.registry_auth import ensure_registry_pull_secret_for_images
 
 app = typer.Typer(
     name="leisaac",
-    help="LeIsaac SO101 browser teleoperation on an RT-core Kubernetes GPU.",
+    help="LeIsaac SO101 browser teleoperation on the RTX PRO 6000 Kubernetes pool.",
     no_args_is_help=True,
 )
 
@@ -97,7 +97,6 @@ _TURN_CONTROL_TOOL = "leisaac-turn-control"
 _TURN_MEDIA_TOOL = "leisaac-turn-media"
 _TURN_CONFIG = "/etc/npa/leisaac-turn.conf"
 _TURN_UNIT = "npa-leisaac-turn.service"
-_RELAY_CONTROL_PORT = 48082
 
 
 def _fail(message: str) -> None:
@@ -523,62 +522,6 @@ def _relay_status(ssh: SSHClient) -> dict[str, Any]:
     return payload
 
 
-def _relay_peer_public_ip(ssh: SSHClient) -> str:
-    while True:
-        code, stdout, _stderr = ssh.run(
-            f"curl --fail --silent --show-error http://127.0.0.1:{_RELAY_CONTROL_PORT}/status"
-        )
-        if code == 0:
-            payload = json.loads(stdout)
-            if not isinstance(payload, dict) or payload.get("connected") is not True:
-                raise RuntimeError("LeIsaac reverse relay returned invalid peer state")
-            return validate_public_ip(
-                payload.get("peer_public_ip", ""), "GPU egress IP"
-            )
-        time.sleep(2)
-
-
-def _gpu_egress_source(peer_ip: str) -> str:
-    """Resolve and attest the narrow routed prefix for Nebius dynamic egress."""
-
-    peer_ip = validate_public_ip(peer_ip, "GPU egress IP")
-    try:
-        with urllib.request.urlopen(  # noqa: S310 - fixed HTTPS endpoint
-            f"https://stat.ripe.net/data/network-info/data.json?resource={peer_ip}",
-            timeout=10,
-        ) as response:
-            route_payload = json.load(response)
-        route_data = route_payload.get("data", {})
-        network = ipaddress.ip_network(str(route_data.get("prefix") or ""))
-        asns = route_data.get("asns") or []
-        if (
-            network.version != 4
-            or ipaddress.ip_address(peer_ip) not in network
-            or not network.is_global
-            or not 22 <= network.prefixlen <= 32
-            or len(asns) != 1
-            or not str(asns[0]).isdigit()
-        ):
-            raise ValueError("route is not a narrow announced IPv4 prefix")
-        asn = str(asns[0])
-        with urllib.request.urlopen(  # noqa: S310 - fixed HTTPS endpoint
-            f"https://stat.ripe.net/data/as-overview/data.json?resource=AS{asn}",
-            timeout=10,
-        ) as response:
-            as_payload = json.load(response)
-        as_data = as_payload.get("data", {})
-        if (
-            as_data.get("announced") is not True
-            or "NEBIUS" not in str(as_data.get("holder") or "").upper()
-        ):
-            raise ValueError("route origin is not an announced Nebius ASN")
-    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
-        raise LeIsaacConfigError(
-            "GPU egress route could not be securely resolved as a narrow Nebius prefix"
-        ) from exc
-    return network.with_prefixlen
-
-
 def _turn_peer_source(value: str) -> str:
     ranges = validate_source_ranges([value])
     network = ipaddress.ip_network(ranges[0])
@@ -596,98 +539,6 @@ def _existing_turn_peer_source(context: str, namespace: str, service: str) -> st
     annotations = json.loads(result.stdout).get("metadata", {}).get("annotations", {})
     value = str((annotations or {}).get("npa.nebius.com/turn-peer-source") or "")
     return _turn_peer_source(value) if value else ""
-
-
-def _install_agent_turn(
-    ssh: SSHClient,
-    *,
-    run_id: str,
-    session_nonce: str,
-    public_ip: str,
-) -> None:
-    """Install one authenticated TURN allocation range on the selected agent."""
-
-    username = validate_run_id(run_id)
-    public_ip = validate_public_ip(public_ip, "agent public IP")
-    password = turn_credential(session_nonce)
-    config = f"""listening-port={TURN_PORT}
-min-port={TURN_RELAY_PORT}
-max-port={TURN_RELAY_PORT}
-realm=npa-leisaac
-user={username}:{password}
-fingerprint
-lt-cred-mech
-stale-nonce=600
-total-quota=1
-user-quota=1
-no-tcp
-no-tls
-no-dtls
-no-cli
-no-multicast-peers
-pidfile=/var/tmp/npa-leisaac-turn.pid
-simple-log
-log-file=stdout
-"""
-    unit = f"""[Unit]
-Description=NPA LeIsaac session-scoped TURN relay
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=turnserver
-Group=turnserver
-UMask=0027
-ExecStart=/usr/bin/turnserver -c {_TURN_CONFIG}
-Restart=on-failure
-RestartSec=2
-NoNewPrivileges=yes
-PrivateDevices=yes
-PrivateTmp=yes
-ProtectHome=yes
-ProtectSystem=strict
-ProtectKernelTunables=yes
-ProtectControlGroups=yes
-ProtectKernelModules=yes
-RestrictAddressFamilies=AF_INET AF_UNIX
-RestrictSUIDSGID=yes
-LockPersonality=yes
-LimitNOFILE=4096
-
-[Install]
-WantedBy=multi-user.target
-"""
-    config_b64 = base64.b64encode(config.encode("utf-8")).decode("ascii")
-    unit_b64 = base64.b64encode(unit.encode("utf-8")).decode("ascii")
-    run_q = shlex.quote(username)
-    command = f"""set -eu
-command -v turnserver >/dev/null || {{ echo 'coturn is missing; bootstrap the NPA agent' >&2; exit 43; }}
-existing=''
-if sudo test -f {_TURN_CONFIG}; then
-  existing=$(sudo sed -n 's/^user=\\([^:]*\\):.*$/\\1/p' {_TURN_CONFIG})
-fi
-if sudo systemctl is-active --quiet {_TURN_UNIT} && [ "$existing" != {run_q} ]; then
-  echo 'another LeIsaac TURN session is active' >&2
-  exit 42
-fi
-private_ip=$(ip -4 route get 1.1.1.1 | awk '{{for (i=1;i<=NF;i++) if ($i=="src") {{print $(i+1); exit}}}}')
-test -n "$private_ip"
-tmp_config=$(mktemp)
-trap 'rm -f "$tmp_config"' EXIT
-echo {shlex.quote(config_b64)} | base64 -d > "$tmp_config"
-printf 'listening-ip=%s\nrelay-ip=%s\nexternal-ip={public_ip}/%s\n' "$private_ip" "$private_ip" "$private_ip" >> "$tmp_config"
-sudo systemctl disable --now coturn.service >/dev/null 2>&1 || true
-sudo install -d -m 0755 /etc/npa
-sudo install -o root -g turnserver -m 0640 "$tmp_config" {_TURN_CONFIG}
-echo {shlex.quote(unit_b64)} | base64 -d | sudo tee /etc/systemd/system/{_TURN_UNIT} >/dev/null
-sudo chmod 0644 /etc/systemd/system/{_TURN_UNIT}
-sudo systemctl daemon-reload
-sudo systemctl enable --now {_TURN_UNIT} >/dev/null
-sudo systemctl restart {_TURN_UNIT}
-sudo systemctl is-active --quiet {_TURN_UNIT}
-"""
-    ssh.run_or_raise(command, label="install LeIsaac TURN relay")
 
 
 def _remove_agent_turn(ssh: SSHClient, *, run_id: str) -> None:
@@ -936,7 +787,6 @@ def launch_cmd(
     certificate_sha256 = ""
     relay_installed = False
     turn_cleanup_required = False
-    turn_peer_source = ""
     prior_turn_peer_source = ""
     created_ingress_specs: list[tuple[int, str, str, str]] = []
     try:
@@ -1009,7 +859,6 @@ def launch_cmd(
                 agent_project=agent_project,
                 agent_name=agent_name,
                 source_ranges=source_ranges,
-                turn_peer_source=prior_turn_peer_source,
             )
             _apply(context, namespace, [service])
             relay_installed = True
@@ -1036,13 +885,13 @@ def launch_cmd(
             _apply(context, namespace, [relay_secret])
             signal_host = "127.0.0.1"
         else:
+            configured_storage = resolve_project_storage(None)
             artifact_storage = {
                 "bucket": split_s3_uri(output_path)[0],
                 "prefix": "",
-                "endpoint": os.environ.get("AWS_ENDPOINT_URL_S3")
-                or os.environ.get("NEBIUS_S3_ENDPOINT")
-                or os.environ.get("AWS_ENDPOINT_URL")
-                or "",
+                "endpoint": resolve_s3_endpoint(
+                    config_endpoint=configured_storage.endpoint_url
+                ),
                 "access_key": os.environ.get("AWS_ACCESS_KEY_ID") or "",
                 "secret_key": os.environ.get("AWS_SECRET_ACCESS_KEY") or "",
                 "region": os.environ.get("AWS_REGION") or "eu-north1",
@@ -1103,7 +952,7 @@ def launch_cmd(
                     created_ingress_specs.append(
                         (TURN_PORT, source, _TURN_CONTROL_TOOL, "UDP")
                     )
-            if prior_turn_peer_source and prior_turn_peer_source != turn_peer_source:
+            if prior_turn_peer_source:
                 remove_exact_npa_ingress_for_instance(
                     instance_id,
                     ports=(TURN_RELAY_PORT,),

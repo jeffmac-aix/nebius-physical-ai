@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import io
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
 import pyarrow.parquet as pq
 import pytest
 from PIL import Image
@@ -21,6 +22,7 @@ from npa.workbench.leisaac.dataset import (
     EpisodeRecorder,
     S3DatasetStore,
     extract_step,
+    resolve_s3_endpoint,
 )
 
 
@@ -387,6 +389,10 @@ class _FakeS3:
             "ETag": '"' + __import__("hashlib").sha256(data).hexdigest() + '"',
         }
 
+    def head_object(self, *, Bucket, Key):
+        data, metadata = self.objects[(Bucket, Key)]
+        return {"ContentLength": len(data), "Metadata": dict(metadata)}
+
     def download_file(self, bucket, key, destination):
         Path(destination).parent.mkdir(parents=True, exist_ok=True)
         Path(destination).write_bytes(self.objects[(bucket, key)][0])
@@ -463,6 +469,13 @@ def test_s3_store_publishes_faststart_synchronized_two_camera_artifacts(
         fake.objects[("bucket", "demos/leisaac/commits/episode-000000.json")][0]
     )
     assert set(commit["objects"]["videos"]) == {"workspace", "overview"}
+    assert set(commit["media"]) == {"workspace", "overview"}
+    assert all(item["codec"] == "h264" for item in commit["media"].values())
+    assert all(item["frames"] == 3 for item in commit["media"].values())
+    assert (
+        commit["media"]["workspace"]["timestamps"]
+        == commit["media"]["overview"]["timestamps"]
+    )
     assert set(commit["objects"]["frames_by_camera"]) == {"workspace", "overview"}
     for camera, ref in commit["objects"]["videos"].items():
         content = fake.objects[("bucket", ref["key"])][0]
@@ -546,13 +559,14 @@ def test_s3_store_resumes_episode_numbers_and_publishes_lerobot_v3(
         "delta_gripper",
     ]
     assert info["features"]["observation.images.front"]["info"]["video.codec"] == "h264"
+    assert info["features"]["observation.images.front"]["shape"] == [720, 1280, 3]
     tasks_bytes = fake.objects[("bucket", f"{version_prefix}/meta/tasks.parquet")][0]
-    tasks = pd.read_parquet(io.BytesIO(tasks_bytes))
-    assert list(tasks.index) == [
+    tasks = pq.read_table(io.BytesIO(tasks_bytes))
+    assert tasks["task"].to_pylist() == [
         "LeIsaac-SO101-LiftCube-v0",
         "LeIsaac-SO101-PickOrange-v0",
     ]
-    assert list(tasks["task_index"]) == [0, 1]
+    assert tasks["task_index"].to_pylist() == [0, 1]
     parquet_bytes = fake.objects[
         ("bucket", f"{version_prefix}/data/chunk-000/file-001.parquet")
     ][0]
@@ -568,3 +582,96 @@ def test_s3_store_resumes_episode_numbers_and_publishes_lerobot_v3(
     assert latest["episode_count"] == 2
     assert stale_result["episode_count"] == 2
     assert stale_result["dataset_uri"] == result1["dataset_version_uri"]
+
+
+def test_s3_endpoint_precedence_is_explicit_then_env_then_config_then_primary() -> None:
+    config = "https://config.example"
+    env = {
+        "AWS_ENDPOINT_URL_S3": "https://s3-env.example/",
+        "NEBIUS_S3_ENDPOINT": "https://nebius-env.example",
+        "AWS_ENDPOINT_URL": "https://aws-env.example",
+    }
+    assert (
+        resolve_s3_endpoint(
+            "https://explicit.example/", config_endpoint=config, environ=env
+        )
+        == "https://explicit.example"
+    )
+    assert (
+        resolve_s3_endpoint(config_endpoint=config, environ=env)
+        == "https://s3-env.example"
+    )
+    del env["AWS_ENDPOINT_URL_S3"]
+    assert (
+        resolve_s3_endpoint(config_endpoint=config, environ=env)
+        == "https://nebius-env.example"
+    )
+    env.clear()
+    assert resolve_s3_endpoint(config_endpoint=config, environ=env) == config
+    assert resolve_s3_endpoint(environ={}) == "https://storage.eu-north1.nebius.cloud"
+
+
+def test_immutable_object_upload_is_idempotent_but_rejects_colliding_bytes(
+    tmp_path: Path,
+) -> None:
+    fake = _FakeS3()
+    store = S3DatasetStore("s3://bucket/demos/leisaac", client=fake)
+    path = tmp_path / "object.bin"
+    path.write_bytes(b"first immutable bytes")
+    first = store._put_file("episodes/fixed/object.bin", path)
+    assert store._put_file("episodes/fixed/object.bin", path) == first
+    path.write_bytes(b"different immutable bytes")
+    with pytest.raises(DatasetError, match="different bytes"):
+        store._put_file("episodes/fixed/object.bin", path)
+
+
+def test_immutable_object_upload_collision_is_atomic_under_a_race(
+    tmp_path: Path,
+) -> None:
+    class AtomicFakeS3(_FakeS3):
+        def __init__(self) -> None:
+            super().__init__()
+            self.start = threading.Barrier(2)
+            self.lock = threading.Lock()
+
+        def put_object(self, **kwargs):
+            if kwargs.get("IfNoneMatch") == "*":
+                self.start.wait(timeout=5)
+            with self.lock:
+                return super().put_object(**kwargs)
+
+    fake = AtomicFakeS3()
+    store = S3DatasetStore("s3://bucket/demos/leisaac", client=fake)
+    left = tmp_path / "left.bin"
+    right = tmp_path / "right.bin"
+    left.write_bytes(b"left contender")
+    right.write_bytes(b"right contender")
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [
+            executor.submit(store._put_file, "raw/fixed.bin", path)
+            for path in (left, right)
+        ]
+    outcomes = []
+    for future in futures:
+        try:
+            outcomes.append(future.result())
+        except DatasetError as exc:
+            outcomes.append(exc)
+
+    assert sum(isinstance(item, dict) for item in outcomes) == 1
+    errors = [item for item in outcomes if isinstance(item, DatasetError)]
+    assert len(errors) == 1
+    assert "different bytes" in str(errors[0])
+    stored = fake.objects[("bucket", "demos/leisaac/raw/fixed.bin")][0]
+    assert stored in {b"left contender", b"right contender"}
+
+
+def test_multi_camera_publication_rejects_frame_count_misalignment(
+    tmp_path: Path,
+) -> None:
+    episode, metadata = _dual_episode_dir(tmp_path)
+    (episode / "frames-overview/frame-000002.jpg").unlink()
+    store = S3DatasetStore("s3://bucket/demos/leisaac", client=_FakeS3())
+    with pytest.raises(DatasetError, match="frames and timestamps"):
+        store.publish_episode(episode, metadata)

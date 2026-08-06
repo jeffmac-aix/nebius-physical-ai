@@ -7,6 +7,7 @@ import base64
 import binascii
 import hashlib
 import hmac
+import ipaddress
 import json
 import logging
 import math
@@ -25,8 +26,12 @@ from starlette.websockets import WebSocket
 LOG = logging.getLogger(__name__)
 _BACKHAUL_HEADER_SIZE = 9
 _BACKHAUL_MAX_FRAME = 4 * 1024 * 1024
-_WS_SESSION_COOKIE = "npa_leisaac_ws"
+_WS_SESSION_COOKIES = {
+    "control": "npa_leisaac_control_ws",
+    "video": "npa_leisaac_video_ws",
+}
 _WS_SESSION_TTL_SECONDS = 120
+_BACKHAUL_SUBPROTOCOL = "npa.leisaac.backhaul.v1"
 
 try:  # agent VM: /opt/npa-agent is on sys.path
     from agent_backend.leisaac import (
@@ -53,7 +58,7 @@ try:  # agent VM: /opt/npa-agent is on sys.path
         VIDEO_SUBPROTOCOL,
         parse_control_message,
         parse_video_ack,
-        stamp_agent_frame,
+        stamp_verified_frame,
         unpack_frame,
     )
     from agent_backend.leisaac_episodes import (
@@ -89,7 +94,7 @@ except ImportError:  # repository tests
         VIDEO_SUBPROTOCOL,
         parse_control_message,
         parse_video_ack,
-        stamp_agent_frame,
+        stamp_verified_frame,
         unpack_frame,
     )
     from npa.agent_backend.leisaac_episodes import (
@@ -117,13 +122,36 @@ class LeIsaacDeps:
     s3_buckets: Callable[[Any, dict], list[str]] | None = None
 
 
+class _RedactedException(RuntimeError):
+    """Safe surrogate that retains a traceback without untrusted message text."""
+
+
+def _log_exception(level: int, event: str, exc: BaseException) -> None:
+    """Log traceback and exception types without auth, query, or payload values."""
+
+    causes: list[str] = []
+    cause = exc.__cause__ or exc.__context__
+    while cause is not None and len(causes) < 4:
+        causes.append(type(cause).__name__)
+        cause = cause.__cause__ or cause.__context__
+    safe = _RedactedException(type(exc).__name__)
+    LOG.log(
+        level,
+        "%s",
+        event,
+        extra={"exception_type": type(exc).__name__, "cause_types": causes},
+        exc_info=(type(safe), safe, exc.__traceback__),
+    )
+
+
 def _resolve(deps: LeIsaacDeps, requested_run_id: str) -> tuple[dict | None, str]:
     run_id = selected_run_id(deps.load_state(), requested_run_id)
     if not run_id:
         return None, "Select a run that exposes a LeIsaac teleoperation session."
     try:
         raw = deps.resolve_manifest(run_id)
-    except Exception:  # storage failures are capability absence, not a 500 in the UI
+    except Exception as exc:  # storage failures are capability absence, not a UI 500
+        _log_exception(logging.WARNING, "LeIsaac capability resolution failed", exc)
         return None, "LeIsaac capability discovery is unavailable."
     return normalize_manifest(raw, expected_run_id=run_id)
 
@@ -138,7 +166,8 @@ def _health(deps: LeIsaacDeps, manifest: dict) -> tuple[dict | None, str]:
         if int(response.status_code) != 200:
             return None, f"LeIsaac service health returned HTTP {response.status_code}"
         payload = response.json()
-    except Exception:
+    except Exception as exc:
+        _log_exception(logging.WARNING, "LeIsaac health request failed", exc)
         return None, "LeIsaac service is unreachable."
     return validate_health(manifest, payload)
 
@@ -152,16 +181,23 @@ def _same_https_origin(headers: Any) -> bool:
     host = str(headers.get("host") or "").lower()
     try:
         parsed = urlparse(origin)
+        forwarded_host = urlparse(f"//{host}")
         origin_host = str(parsed.hostname or "").lower()
         origin_port = parsed.port or (443 if parsed.scheme == "https" else 0)
-        host_name, _, raw_port = host.partition(":")
-        host_port = int(raw_port) if raw_port else 443
+        host_name = str(forwarded_host.hostname or "").lower()
+        host_port = forwarded_host.port or 443
     except (TypeError, ValueError):
         return False
     return (
         parsed.scheme == "https"
         and origin_host == host_name
         and origin_port == host_port
+        and not parsed.username
+        and not parsed.password
+        and parsed.path in ("", "/")
+        and not parsed.params
+        and not parsed.query
+        and not parsed.fragment
     )
 
 
@@ -173,7 +209,8 @@ def _same_origin_session_request(headers: Any) -> bool:
     if str(headers.get("sec-fetch-site") or "").lower() != "same-origin":
         return False
     forwarded = dict(headers)
-    forwarded["origin"] = str(headers.get("referer") or "")
+    referer = urlparse(str(headers.get("referer") or ""))
+    forwarded["origin"] = f"{referer.scheme}://{referer.netloc}"
     return _same_https_origin(forwarded)
 
 
@@ -193,16 +230,20 @@ def _same_origin_websocket(websocket: WebSocket, subprotocol: str) -> bool:
 def _client_address(headers: Any, client: Any) -> str:
     """Return the nginx-attested public client address without trusting browser input."""
 
+    del client  # nginx is the sole attestor; the ASGI peer is normally loopback.
     address = str(headers.get("x-real-ip") or "").strip()
-    if address:
-        return address[:128]
-    return str(getattr(client, "host", "") or "")[:128]
+    try:
+        parsed = ipaddress.ip_address(address)
+    except ValueError:
+        return ""
+    return parsed.compressed if parsed.is_global else ""
 
 
 def _mint_ws_session(
     secret: bytes,
     run_id: str,
     client_address: str,
+    audience: str,
     *,
     now: int | None = None,
 ) -> str:
@@ -211,6 +252,7 @@ def _mint_ws_session(
     issued_at = int(time.time() if now is None else now)
     payload = json.dumps(
         {
+            "audience": audience,
             "client": client_address,
             "expires": issued_at + _WS_SESSION_TTL_SECONDS,
             "nonce": secrets.token_urlsafe(12),
@@ -236,10 +278,12 @@ def _valid_ws_session(
     token: str,
     run_id: str,
     client_address: str,
+    audience: str,
     *,
     now: int | None = None,
+    consumed_nonces: dict[str, int] | None = None,
 ) -> bool:
-    """Validate the signed run/address binding and its deliberately short lifetime."""
+    """Validate and optionally consume a run/address/audience credential."""
 
     try:
         body, signature = token.split(".", 1)
@@ -264,14 +308,25 @@ def _valid_ws_session(
         binascii.Error,
     ):
         return False
-    return (
+    nonce = payload.get("nonce")
+    valid = (
         payload.get("v") == 1
         and payload.get("run_id") == run_id
         and payload.get("client") == client_address
-        and isinstance(payload.get("nonce"), str)
-        and 1 <= len(payload["nonce"]) <= 64
+        and payload.get("audience") == audience
+        and isinstance(nonce, str)
+        and 1 <= len(nonce) <= 64
         and current <= expires <= current + _WS_SESSION_TTL_SECONDS + 5
     )
+    if not valid or consumed_nonces is None:
+        return valid
+    for stale in [key for key, expiry in consumed_nonces.items() if expiry < current]:
+        consumed_nonces.pop(stale, None)
+    replay_key = f"{audience}:{nonce}"
+    if replay_key in consumed_nonces:
+        return False
+    consumed_nonces[replay_key] = expires
+    return True
 
 
 def _runtime_ws_uri(manifest: dict[str, Any], path: str) -> str:
@@ -308,6 +363,7 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
     manifest_cache_lock = threading.Lock()
     transport_metrics = TransportMetrics()
     ws_session_secret = secrets.token_bytes(32)
+    consumed_ws_nonces: dict[str, int] = {}
 
     def cached_resolve(run_id: str) -> tuple[dict | None, str]:
         """Bound high-rate frame polling to one capability lookup per five seconds."""
@@ -332,6 +388,7 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
             s3, settings = deps.s3_client()
             buckets = deps.s3_buckets(s3, settings)
         except Exception as exc:
+            _log_exception(logging.WARNING, "LeIsaac episode storage setup failed", exc)
             raise EpisodeStoreError(
                 "episode storage is unavailable", status_code=503
             ) from exc
@@ -352,6 +409,7 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
             s3, settings = deps.s3_client()
             buckets = deps.s3_buckets(s3, settings)
         except Exception as exc:
+            _log_exception(logging.WARNING, "LeIsaac bundle storage setup failed", exc)
             raise BundleError("bundle storage is unavailable", status_code=503) from exc
         return BundleStore(
             s3,
@@ -400,7 +458,10 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
                 store.client.head_object, Bucket=store.bucket, Key=ref.key
             )
             size = int(head.get("ContentLength", -1))
-        except Exception:
+        except Exception as exc:
+            _log_exception(
+                logging.WARNING, "LeIsaac episode metadata lookup failed", exc
+            )
             return episode_error(
                 EpisodeStoreError("episode artifact is unavailable", status_code=502)
             )
@@ -448,7 +509,10 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
         try:
             upstream = await asyncio.to_thread(store.client.get_object, **get_kwargs)
             body = upstream["Body"]
-        except Exception:
+        except Exception as exc:
+            _log_exception(
+                logging.WARNING, "LeIsaac episode artifact download failed", exc
+            )
             return episode_error(
                 EpisodeStoreError("episode artifact is unavailable", status_code=502)
             )
@@ -641,7 +705,10 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
                     timeout=30.0,
                     follow_redirects=False,
                 )
-            except Exception:
+            except Exception as exc:
+                _log_exception(
+                    logging.WARNING, "LeIsaac bundle application failed", exc
+                )
                 upstream = None
             if upstream is None:
                 raise BundleError("bundle application is unavailable", status_code=503)
@@ -649,7 +716,12 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
             if upstream_status != 202:
                 try:
                     upstream_detail = str(upstream.json().get("detail") or "")
-                except Exception:
+                except Exception as exc:
+                    _log_exception(
+                        logging.DEBUG,
+                        "LeIsaac bundle rejection body was invalid",
+                        exc,
+                    )
                     upstream_detail = ""
                 raise BundleError(
                     upstream_detail or "bundle application was rejected",
@@ -888,7 +960,7 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
         except ValueError:
             body = None
         run_id = str(body.get("run_id") if isinstance(body, dict) else "")
-        manifest, reason = _resolve(deps, run_id)
+        manifest, reason = await asyncio.to_thread(_resolve, deps, run_id)
         if not manifest:
             return deps.response(
                 content=json.dumps({"detail": reason}),
@@ -908,18 +980,28 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
                 status_code=503,
                 media_type="application/json",
             )
-        state = deps.load_state()
-        if not isinstance(state, dict):
-            state = {}
-        # Periodic capability refresh re-selects the current run.  Preserve the
-        # checksum-verified bundle set accumulated by the explicit selection
-        # endpoint instead of silently reverting robot/scene/device state every
-        # ten seconds while a simulator restart is in progress.
-        current = state.get("leisaac")
-        leisaac_state = dict(current) if isinstance(current, dict) else {}
-        leisaac_state["run_id"] = manifest["run_id"]
-        state["leisaac"] = leisaac_state
-        deps.save_state(state)
+
+        def save_selection() -> None:
+            state = deps.load_state()
+            if not isinstance(state, dict):
+                state = {}
+            # Periodic refresh must preserve the checksum-verified bundle set.
+            current = state.get("leisaac")
+            leisaac_state = dict(current) if isinstance(current, dict) else {}
+            leisaac_state["run_id"] = manifest["run_id"]
+            state["leisaac"] = leisaac_state
+            assert deps.save_state is not None
+            deps.save_state(state)
+
+        try:
+            await asyncio.to_thread(save_selection)
+        except Exception as exc:
+            _log_exception(logging.ERROR, "LeIsaac selection state save failed", exc)
+            return deps.response(
+                content=json.dumps({"detail": "LeIsaac selection could not be saved"}),
+                status_code=503,
+                media_type="application/json",
+            )
         return deps.response(
             content=json.dumps(
                 {
@@ -955,7 +1037,8 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
                 timeout=10.0,
                 follow_redirects=False,
             )
-        except Exception:
+        except Exception as exc:
+            _log_exception(logging.WARNING, "LeIsaac client module fetch failed", exc)
             response = None
         if response is None or int(response.status_code) != 200:
             return deps.response(
@@ -1009,25 +1092,36 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
                 media_type="application/json",
                 headers={"Cache-Control": "private, no-store"},
             )
-        token = _mint_ws_session(
-            ws_session_secret,
-            str(manifest["run_id"]),
-            _client_address(request.headers, request.client),
-        )
+        client_address = _client_address(request.headers, request.client)
+        if not client_address:
+            return deps.response(
+                content=json.dumps(
+                    {"detail": "trusted public client address is required"}
+                ),
+                status_code=403,
+                media_type="application/json",
+                headers={"Cache-Control": "private, no-store"},
+            )
         response = deps.response(
             content=b"",
             status_code=204,
             headers={"Cache-Control": "private, no-store"},
         )
-        response.set_cookie(
-            _WS_SESSION_COOKIE,
-            token,
-            max_age=_WS_SESSION_TTL_SECONDS,
-            path="/api/leisaac/transport",
-            secure=True,
-            httponly=True,
-            samesite="strict",
-        )
+        for audience, cookie in _WS_SESSION_COOKIES.items():
+            response.set_cookie(
+                cookie,
+                _mint_ws_session(
+                    ws_session_secret,
+                    str(manifest["run_id"]),
+                    client_address,
+                    audience,
+                ),
+                max_age=_WS_SESSION_TTL_SECONDS,
+                path=f"/api/leisaac/transport/{audience}",
+                secure=True,
+                httponly=True,
+                samesite="strict",
+            )
         return response
 
     @app.get("/leisaac/frame.jpg")
@@ -1061,7 +1155,8 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
                 follow_redirects=False,
                 headers={"X-NPA-LeIsaac-Nonce": manifest["session_nonce"]},
             )
-        except Exception:
+        except Exception as exc:
+            _log_exception(logging.WARNING, "LeIsaac fallback frame fetch failed", exc)
             response = None
         if response is None or int(response.status_code) != 200:
             return deps.response(
@@ -1179,7 +1274,10 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
                     timeout=5.0,
                     follow_redirects=False,
                 )
-            except Exception:
+            except Exception as exc:
+                _log_exception(
+                    logging.WARNING, "LeIsaac view control request failed", exc
+                )
                 upstream = None
         if upstream is None or int(upstream.status_code) != 202:
             return deps.response(
@@ -1284,7 +1382,10 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
                     timeout=5.0,
                     follow_redirects=False,
                 )
-            except Exception:
+            except Exception as exc:
+                _log_exception(
+                    logging.WARNING, "LeIsaac fallback control request failed", exc
+                )
                 upstream = None
         if upstream is None or int(upstream.status_code) != 202:
             return deps.response(
@@ -1294,7 +1395,12 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
             )
         try:
             acknowledgement = upstream.json()
-        except Exception:
+        except Exception as exc:
+            _log_exception(
+                logging.DEBUG,
+                "LeIsaac fallback control acknowledgement was invalid",
+                exc,
+            )
             acknowledgement = {
                 "detail": "LeIsaac control returned an invalid acknowledgement"
             }
@@ -1357,7 +1463,8 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
                     timeout=10.0,
                     follow_redirects=False,
                 )
-            except Exception:
+            except Exception as exc:
+                _log_exception(logging.WARNING, "LeIsaac recorder request failed", exc)
                 upstream = None
         if upstream is None:
             status_code = 503
@@ -1366,7 +1473,10 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
             status_code = int(upstream.status_code)
             try:
                 content = upstream.json()
-            except Exception:
+            except Exception as exc:
+                _log_exception(
+                    logging.DEBUG, "LeIsaac recorder response body was invalid", exc
+                )
                 content = {"detail": "LeIsaac recorder returned an invalid response"}
                 status_code = 502
         if status_code not in {202, 400, 409, 503}:
@@ -1387,11 +1497,15 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
         if set(websocket.query_params.keys()) != {"run_id"}:
             return None, "only run_id is accepted"
         run_id = str(websocket.query_params.get("run_id") or "")
-        if not _valid_ws_session(
+        audience = "control" if subprotocol == CONTROL_SUBPROTOCOL else "video"
+        client_address = _client_address(websocket.headers, websocket.client)
+        if not client_address or not _valid_ws_session(
             ws_session_secret,
-            str(websocket.cookies.get(_WS_SESSION_COOKIE) or ""),
+            str(websocket.cookies.get(_WS_SESSION_COOKIES[audience]) or ""),
             run_id,
-            _client_address(websocket.headers, websocket.client),
+            client_address,
+            audience,
+            consumed_nonces=consumed_ws_nonces,
         ):
             return None, "valid short-lived transport session is required"
         manifest, reason = await asyncio.to_thread(_resolve, deps, run_id)
@@ -1502,25 +1616,28 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
                     json.dumps(exc.payload(), separators=(",", ":"))
                 )
             except Exception as send_exc:
-                LOG.debug(
+                _log_exception(
+                    logging.DEBUG,
                     "LeIsaac control protocol error could not be returned",
-                    exc_info=send_exc,
+                    send_exc,
                 )
             try:
                 await websocket.close(code=1008)
             except Exception as close_exc:
-                LOG.debug(
+                _log_exception(
+                    logging.DEBUG,
                     "LeIsaac control WebSocket was already closed",
-                    exc_info=close_exc,
+                    close_exc,
                 )
         except Exception as exc:
-            LOG.warning("LeIsaac control transport closed: %s", type(exc).__name__)
+            _log_exception(logging.WARNING, "LeIsaac control transport closed", exc)
             try:
                 await websocket.close(code=1013)
             except Exception as close_exc:
-                LOG.debug(
+                _log_exception(
+                    logging.DEBUG,
                     "LeIsaac control WebSocket was already closed",
-                    exc_info=close_exc,
+                    close_exc,
                 )
 
     @app.websocket(LEISAAC_VIDEO_WS_PATH.removeprefix("/api"))
@@ -1564,7 +1681,7 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
                             raise TransportProtocolError(
                                 "invalid_frame", "runtime video message is invalid"
                             )
-                        envelope, _content = unpack_frame(raw)
+                        envelope, content = await asyncio.to_thread(unpack_frame, raw)
                         # Credit the runtime as soon as the authenticated relay has
                         # accepted a frame into its bounded latest-value queue.  A
                         # browser receipt must not stall capture for every viewer:
@@ -1585,7 +1702,9 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
                         )
                         transport_metrics.increment("frames_relay_acked")
                         camera = "overview" if envelope.flags & 1 else "workspace"
-                        await latest.publish(camera, (raw, time.monotonic_ns()))
+                        await latest.publish(
+                            camera, (envelope, content, time.monotonic_ns())
+                        )
 
                 async def acknowledge_runtime() -> None:
                     while True:
@@ -1617,11 +1736,12 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
                             timeout=20.0,
                         )
                         generations[camera] = generation
-                        raw, received_mono_ns = item
+                        envelope, content, received_mono_ns = item
                         if skipped:
                             transport_metrics.increment("frames_coalesced", skipped)
-                        stamped = stamp_agent_frame(
-                            raw,
+                        stamped = stamp_verified_frame(
+                            envelope,
+                            content,
                             received_mono_ns=received_mono_ns,
                             send_mono_ns=time.monotonic_ns(),
                             additional_dropped=skipped,
@@ -1652,20 +1772,23 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
                     ):
                         raise result
         except Exception as exc:
-            LOG.warning("LeIsaac video transport closed: %s", type(exc).__name__)
+            _log_exception(logging.WARNING, "LeIsaac video transport closed", exc)
             try:
                 await websocket.close(code=1013)
             except Exception as close_exc:
-                LOG.debug(
+                _log_exception(
+                    logging.DEBUG,
                     "LeIsaac video WebSocket was already closed",
-                    exc_info=close_exc,
+                    close_exc,
                 )
 
     @app.websocket("/leisaac/signal")
     @app.websocket("/leisaac/signal/{signal_path:path}")
     async def leisaac_signal(websocket: WebSocket, signal_path: str = "") -> None:
-        if str(websocket.headers.get("x-forwarded-proto") or "").lower() != "https":
-            LOG.warning("LeIsaac signaling rejected: public HTTPS was not preserved")
+        if not _same_https_origin(websocket.headers):
+            LOG.warning(
+                "LeIsaac signaling rejected: exact same-origin HTTPS is required"
+            )
             await websocket.close(code=1008)
             return
         # Isaac Sim's 5.1 browser client opens its signaling WebSocket at
@@ -1732,25 +1855,42 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
                     task.cancel()
                 await asyncio.gather(*done, *pending, return_exceptions=True)
         except Exception as exc:
-            LOG.warning(
-                "LeIsaac signaling upstream connection failed: %s",
-                type(exc).__name__,
-                exc_info=exc,
+            _log_exception(
+                logging.WARNING, "LeIsaac signaling upstream connection failed", exc
             )
             try:
                 await websocket.close(code=1011)
             except Exception as close_exc:
-                LOG.debug(
-                    "LeIsaac browser WebSocket was already closed", exc_info=close_exc
+                _log_exception(
+                    logging.DEBUG,
+                    "LeIsaac browser WebSocket was already closed",
+                    close_exc,
                 )
 
     @app.websocket("/leisaac/backhaul")
     async def leisaac_backhaul(websocket: WebSocket) -> None:
         """Bridge the authenticated pod WSS backhaul to the loopback relay."""
 
-        # This route is reachable only through nginx's exact authenticated WSS
-        # location; the backend listener itself is loopback-only.
-        await websocket.accept()
+        # nginx Basic auth is necessary but not sufficient. Reject browser-shaped,
+        # unscoped, or ambiguously attributed upgrades before accepting them.
+        protocols = {
+            item.strip()
+            for item in str(
+                websocket.headers.get("sec-websocket-protocol") or ""
+            ).split(",")
+            if item.strip()
+        }
+        if (
+            str(websocket.headers.get("x-forwarded-proto") or "").lower() != "https"
+            or websocket.headers.get("origin") is not None
+            or protocols != {_BACKHAUL_SUBPROTOCOL}
+            or websocket.url.query
+            or not _client_address(websocket.headers, websocket.client)
+        ):
+            LOG.warning("LeIsaac backhaul rejected by application-layer checks")
+            await websocket.close(code=1008)
+            return
+        await websocket.accept(subprotocol=_BACKHAUL_SUBPROTOCOL)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", 48081)
         except OSError:

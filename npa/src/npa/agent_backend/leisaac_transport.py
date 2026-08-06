@@ -487,6 +487,29 @@ def stamp_agent_frame(
     additional_dropped: int = 0,
 ) -> bytes:
     envelope, jpeg = unpack_frame(payload)
+    return stamp_verified_frame(
+        envelope,
+        jpeg,
+        received_mono_ns=received_mono_ns,
+        send_mono_ns=send_mono_ns,
+        additional_dropped=additional_dropped,
+    )
+
+
+def stamp_verified_frame(
+    envelope: FrameEnvelope,
+    jpeg: bytes,
+    *,
+    received_mono_ns: int,
+    send_mono_ns: int,
+    additional_dropped: int = 0,
+) -> bytes:
+    """Stamp a previously verified envelope/JPEG pair without hashing it again."""
+
+    if envelope.sha256 is None or len(envelope.sha256) != 32:
+        raise TransportProtocolError(
+            "invalid_frame", "verified frame digest is missing"
+        )
     return pack_frame(
         replace(
             envelope,
@@ -560,9 +583,7 @@ class AsyncLatestByKey:
         observed = {key: max(0, int(generations.get(key, 0))) for key in self._keys}
 
         def available() -> bool:
-            return any(
-                self._generations[key] > observed[key] for key in self._keys
-            )
+            return any(self._generations[key] > observed[key] for key in self._keys)
 
         async def wait() -> None:
             async with self._condition:
