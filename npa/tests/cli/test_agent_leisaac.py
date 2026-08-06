@@ -693,10 +693,16 @@ def test_authenticated_backend_routes_gate_status_and_proxy_client(monkeypatch) 
     assert "integrity" in rejected.json()["detail"]
 
 
-def test_successful_immutable_manifest_is_cached_across_request_paths() -> None:
-    raw_manifest = _manifest()
+def test_successful_immutable_manifest_is_cached_across_request_paths(
+    monkeypatch,
+) -> None:
+    raw_manifest = _manifest(expires_at=None)
     calls: list[str] = []
     state = {"leisaac": {"run_id": raw_manifest["run_id"]}}
+    clock = [100.0]
+    monkeypatch.setattr(
+        "npa.agent_backend.leisaac_routes.time.monotonic", lambda: clock[0]
+    )
 
     class Healthy:
         status_code = 200
@@ -732,8 +738,9 @@ def test_successful_immutable_manifest_is_cached_across_request_paths() -> None:
     )
     client = TestClient(api)
     headers = {"x-forwarded-proto": "https"}
-    for _ in range(2):
-        assert client.get("/leisaac/status", headers=headers).json()["available"]
+    assert client.get("/leisaac/status", headers=headers).json()["available"]
+    clock[0] += 6.0
+    assert client.get("/leisaac/status", headers=headers).json()["available"]
     selection = client.post(
         "/leisaac/select",
         headers={**headers, "x-npa-leisaac-control": "1"},

@@ -381,19 +381,21 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
                     return None, reason
                 if manifest is not None:
                     raw_expiry = str(manifest.get("expires_at") or "").strip()
+                    if not raw_expiry:
+                        # Session manifests are write-once. An omitted expiry means
+                        # service-lifecycle validity, so re-discovering the same
+                        # immutable object on every five-second poll only adds S3
+                        # latency and cannot produce a newer value for this run id.
+                        return manifest, reason
                     try:
                         expiry = (
                             datetime.fromisoformat(raw_expiry.replace("Z", "+00:00"))
-                            if raw_expiry
-                            else None
                         )
                     except ValueError:
                         expiry = datetime.min.replace(tzinfo=timezone.utc)
                     if expiry is not None and expiry > datetime.now(timezone.utc):
                         return manifest, reason
-                    if expiry is None and now - cached_at < 5.0:
-                        return manifest, reason
-                manifest_cache.pop(selected, None)
+                    manifest_cache.pop(selected, None)
         manifest, reason = _resolve(deps, selected)
         with manifest_cache_lock:
             if len(manifest_cache) >= 128 and selected not in manifest_cache:

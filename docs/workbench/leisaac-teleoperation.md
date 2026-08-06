@@ -176,8 +176,10 @@ EULA acceptance and proprietary bytes are never baked into an image.
 
 ## Launch
 
-Rendering requires an RT-core GPU. Use L40S or RTX PRO 6000; the Kubernetes
-launcher hard-selects RTX PRO 6000 and never routes this path to H100/H200.
+Rendering requires an RT-core GPU. The current Kubernetes launcher supports and
+hard-selects only the RTX PRO 6000 pool; L40S has suitable RT cores in general,
+but is not an advertised LeIsaac route until this exact image and launcher are
+validated there. The launcher never routes this path to H100/H200.
 The image must be pinned by digest and at least one public `/32` operator source
 range must be provided. The session has no implicit lifetime;
 an operator may add `--expires-at` as an explicit security policy, otherwise
