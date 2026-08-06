@@ -380,7 +380,9 @@ def test_observability_patch_is_exact_and_records_real_upstream_input() -> None:
     assert "capture_viewport_to_buffer" in source
     assert 'capture_state["queue"].pop(0)' in source
     assert 'if capture_state["active"]:' in source
-    assert "Submit one viewport capture at a time" in source
+    assert "Submit only after Kit reports the prior GPU capture fully complete" in source
+    assert "await capture_helper.wait_for_result(completion_frames=3)" in source
+    assert "asyncio.ensure_future" in source
     assert "for camera_id, selected_viewport" not in source
     assert (
         "UsdGeom.Camera.Define(overview_viewport.stage, overview_camera_path)" in source
