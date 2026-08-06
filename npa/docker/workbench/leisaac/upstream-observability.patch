@@ -2,7 +2,7 @@ diff --git a/scripts/environments/teleoperation/teleop_se3_agent.py b/scripts/en
 index a467482..09dc24d 100644
 --- a/scripts/environments/teleoperation/teleop_se3_agent.py
 +++ b/scripts/environments/teleoperation/teleop_se3_agent.py
-@@ -89,12 +89,27 @@ app_launcher_args = vars(args_cli)
+@@ -89,12 +89,26 @@ app_launcher_args = vars(args_cli)
  app_launcher = AppLauncher(app_launcher_args)
  simulation_app = app_launcher.app
 
@@ -21,7 +21,6 @@ index a467482..09dc24d 100644
  from isaaclab.envs import DirectRLEnv, ManagerBasedRLEnv
 +from omni.kit.viewport.utility import (
 +    capture_viewport_to_buffer,
-+    create_viewport_window,
 +    get_active_viewport,
 +    next_viewport_frame_async,
 +)
@@ -30,7 +29,7 @@ index a467482..09dc24d 100644
  from isaaclab.managers import DatasetExportMode, TerminationTermCfg
  from isaaclab_tasks.utils import parse_env_cfg
  from leisaac.enhance.managers import EnhanceDatasetExportMode, StreamingRecorderManager
-@@ -158,6 +173,35 @@ def main():  # noqa: C901
+@@ -158,6 +172,35 @@ def main():  # noqa: C901
 
      env_cfg = parse_env_cfg(args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs)
      env_cfg.use_teleop_device(args_cli.teleop_device)
@@ -66,7 +65,7 @@ index a467482..09dc24d 100644
      env_cfg.seed = args_cli.seed if args_cli.seed is not None else int(time.time())
      task_name = args_cli.task
 
-@@ -312,6 +356,261 @@ def main():  # noqa: C901
+@@ -312,6 +355,261 @@ def main():  # noqa: C901
          env.initialize()
      env.reset()
      teleop_interface.reset()
@@ -117,12 +116,10 @@ index a467482..09dc24d 100644
 +    viewport = get_active_viewport() if frame_path else None
 +    if viewport is not None:
 +        viewport.resolution = (1280, 720)
-+    overview_window = (
-+        create_viewport_window("NPA overview", width=1280, height=720)
-+        if frame_path
-+        else None
-+    )
-+    overview_viewport = overview_window.viewport_api if overview_window is not None else None
++    workspace_camera_path = viewport.camera_path if viewport is not None else ""
++    # A second Kit viewport races the renderer's shared GPU command list on RTX
++    # PRO 6000.  Alternate two camera paths on one fully-awaited viewport instead.
++    overview_viewport = viewport
 +    overview_camera_path = "/OmniverseKit_NPA_Overview"
 +    overview_eye = [1.8, 1.8, 1.5]
 +    overview_target = [0.0, 0.0, 0.45]
@@ -198,15 +195,18 @@ index a467482..09dc24d 100644
 +        return captured
 +
 +    async def capture_one(
-+        camera_id, selected_viewport, destination, metadata_destination, capture_group
++        camera_id, selected_camera_path, destination, metadata_destination, capture_group
 +    ):
 +        """Capture only between completed viewport frames and await GPU retirement."""
 +        try:
++            viewport.camera_path = selected_camera_path
 +            # env.render() submits RTX work but returns before the viewport's GPU
 +            # command list retires.  The public utility provides the safe boundary.
-+            await next_viewport_frame_async(selected_viewport)
++            await next_viewport_frame_async(viewport, n_frames=2)
++            # Resume outside the renderer's frame callback before beginning capture.
++            await asyncio.sleep(0)
 +            capture_helper = capture_viewport_to_buffer(
-+                selected_viewport,
++                viewport,
 +                on_viewport_captured(
 +                    camera_id, destination, metadata_destination, capture_group
 +                ),
@@ -233,14 +233,14 @@ index a467482..09dc24d 100644
 +            if not capture_state["pending"]:
 +                capture_state["next_at"] = time.monotonic() + (1.0 / FPS)
 +            return
-+        camera_id, selected_viewport, destination, metadata_destination, capture_group = (
++        camera_id, selected_camera_path, destination, metadata_destination, capture_group = (
 +            capture_state["queue"].pop(0)
 +        )
 +        capture_state["active"] = True
 +        capture_state["task"] = asyncio.ensure_future(
 +            capture_one(
 +                camera_id,
-+                selected_viewport,
++                selected_camera_path,
 +                destination,
 +                metadata_destination,
 +                capture_group,
@@ -262,10 +262,10 @@ index a467482..09dc24d 100644
 +        capture_state["group"] += 1
 +        capture_group = f"capture-{capture_state['group']}"
 +        cameras = (
-+            ("workspace", viewport, frame_path, frame_meta_path),
++            ("workspace", workspace_camera_path, frame_path, frame_meta_path),
 +            (
 +                "overview",
-+                overview_viewport,
++                overview_camera_path,
 +                secondary_frame_path,
 +                secondary_frame_meta_path,
 +            ),
@@ -317,7 +317,6 @@ index a467482..09dc24d 100644
 +            camera_prim_path=overview_camera_path,
 +            viewport_api=overview_viewport,
 +        )
-+        overview_viewport.camera_path = overview_camera_path
 +        last_view_sequence = sequence
 +
 +    if frame_path:
@@ -328,7 +327,7 @@ index a467482..09dc24d 100644
 
      resume_recorded_demo_count = 0
      if args_cli.record and args_cli.resume:
-@@ -379,7 +678,20 @@ def main():  # noqa: C901
+@@ -379,7 +677,20 @@ def main():  # noqa: C901
                          if args_cli.record:
                              print("Start Recording!!!")
                          start_record_state = True
