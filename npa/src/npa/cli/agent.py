@@ -7502,6 +7502,7 @@ register_leisaac_routes(
         http_post=httpx.post,
         response=Response,
         websocket_connect=_leisaac_websocket_connect,
+        mutate_state=_mutate_state,
         s3_client=_agent_s3_client,
         s3_buckets=_agent_s3_buckets,
     ),

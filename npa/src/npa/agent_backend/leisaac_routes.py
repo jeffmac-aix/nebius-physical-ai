@@ -119,6 +119,7 @@ class LeIsaacDeps:
     websocket_connect: Callable[..., Any]
     http_post: Callable[..., Any] | None = None
     save_state: Callable[[dict], None] | None = None
+    mutate_state: Callable[[Callable[[dict], Any]], Any] | None = None
     s3_client: Callable[[], tuple[Any, dict]] | None = None
     s3_buckets: Callable[[Any, dict], list[str]] | None = None
 
@@ -365,6 +366,21 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
     transport_metrics = TransportMetrics()
     ws_session_secret = secrets.token_bytes(32)
     consumed_ws_nonces: dict[str, int] = {}
+    bundle_selection_lock = asyncio.Lock()
+
+    def mutate_state(mutation: Callable[[dict], Any]) -> Any:
+        """Apply one state mutation atomically when the backend supports it."""
+
+        if deps.mutate_state is not None:
+            return deps.mutate_state(mutation)
+        if deps.save_state is None:
+            raise RuntimeError("LeIsaac state mutation is unavailable")
+        state = deps.load_state()
+        if not isinstance(state, dict):
+            state = {}
+        result = mutation(state)
+        deps.save_state(state)
+        return result
 
     def cached_resolve(run_id: str) -> tuple[dict | None, str]:
         """Reuse immutable live manifests while retaining short negative caching."""
@@ -641,12 +657,11 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
             headers={"Cache-Control": "private, no-store"},
         )
 
-    @app.post((LEISAAC_BUNDLES_PATH + "/select").removeprefix("/api"))
-    async def leisaac_bundle_select(request: Request) -> Any:
+    async def _leisaac_bundle_select_impl(request: Request) -> Any:
         if (
             not episode_request_allowed(request)
             or request.headers.get("x-npa-leisaac-control") != "1"
-            or deps.save_state is None
+            or (deps.save_state is None and deps.mutate_state is None)
         ):
             return bundle_error(
                 BundleError(
@@ -755,7 +770,16 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
                         upstream_status if upstream_status in {400, 409} else 502
                     ),
                 )
-            deps.save_state(state)
+            selection_snapshot = json.loads(json.dumps(selection))
+
+            def persist_selection(current_state: dict) -> None:
+                current = current_state.setdefault("leisaac", {})
+                if not isinstance(current, dict):
+                    current = {}
+                    current_state["leisaac"] = current
+                current["bundle_selection"] = selection_snapshot
+
+            await asyncio.to_thread(mutate_state, persist_selection)
         except (ValueError, BundleError) as exc:
             return bundle_error(
                 exc
@@ -773,6 +797,14 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
             media_type="application/json",
             headers={"Cache-Control": "private, no-store"},
         )
+
+    @app.post((LEISAAC_BUNDLES_PATH + "/select").removeprefix("/api"))
+    async def leisaac_bundle_select(request: Request) -> Any:
+        # Applying a bundle restarts the simulator. Serialize the cumulative
+        # read/apply/persist transaction so two operator clicks cannot make the
+        # runtime and persisted selection disagree.
+        async with bundle_selection_lock:
+            return await _leisaac_bundle_select_impl(request)
 
     @app.get("/leisaac/episodes/versions")
     async def leisaac_episode_versions(request: Request) -> Any:
@@ -1000,7 +1032,7 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
                 status_code=503,
                 media_type="application/json",
             )
-        if deps.save_state is None:
+        if deps.save_state is None and deps.mutate_state is None:
             return deps.response(
                 content=json.dumps({"detail": "LeIsaac selection is unavailable"}),
                 status_code=503,
@@ -1008,16 +1040,15 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
             )
 
         def save_selection() -> None:
-            state = deps.load_state()
-            if not isinstance(state, dict):
-                state = {}
-            # Periodic refresh must preserve the checksum-verified bundle set.
-            current = state.get("leisaac")
-            leisaac_state = dict(current) if isinstance(current, dict) else {}
-            leisaac_state["run_id"] = manifest["run_id"]
-            state["leisaac"] = leisaac_state
-            assert deps.save_state is not None
-            deps.save_state(state)
+            def select_run(state: dict) -> None:
+                # Periodic refresh must preserve the checksum-verified bundle
+                # set written by a concurrent bundle restart.
+                current = state.get("leisaac")
+                leisaac_state = current if isinstance(current, dict) else {}
+                leisaac_state["run_id"] = manifest["run_id"]
+                state["leisaac"] = leisaac_state
+
+            mutate_state(select_run)
 
         try:
             await asyncio.to_thread(save_selection)

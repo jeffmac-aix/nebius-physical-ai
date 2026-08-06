@@ -404,3 +404,118 @@ def test_bundle_selection_prunes_state_from_a_previous_dataset_prefix() -> None:
     assert selected.status_code == 202
     assert posts[-1]["json"] == {"selection": {"robot": digest}}
     assert set(saved[-1]["leisaac"]["bundle_selection"]) == {"robot"}
+
+
+def test_cumulative_bundle_selection_uses_atomic_backend_state_mutation() -> None:
+    nonce = "c" * 64
+    raw_manifest = {
+        "schema": "npa.leisaac.session.v2",
+        "run_id": "bundle-atomic-run",
+        "provider": "nebius-kubernetes",
+        "task": "LeIsaac-SO101-PickOrange-v0",
+        "teleop_device": "keyboard",
+        "signal_host": "8.8.8.8",
+        "signal_port": 49100,
+        "media_host": "1.0.0.1",
+        "media_server": "1.0.0.1",
+        "media_port": 47998,
+        "service_url": "http://8.8.8.8:8080",
+        "session_nonce": nonce,
+        "session_attestation": hashlib.sha256(
+            f"npa-leisaac-session:{nonce}".encode()
+        ).hexdigest(),
+        "task_registry_fingerprint": REGISTRY_FINGERPRINT,
+        "source_version": "0.4.0",
+        "source_commit": "1" * 40,
+        "isaac_sim_version": "5.1.0.0",
+        "isaac_lab_version": "2.3.2.post1",
+        "image": "registry.example/leisaac@sha256:" + "2" * 64,
+        "environment": {"id": "operator-0", "index": 0, "seed": 0, "num_envs": 1},
+        "dataset": {
+            "output_path": "s3://bucket/current/leisaac",
+            "format": "LeRobotDataset",
+            "lerobot_version": "0.5.1",
+            "codebase_version": "v3.0",
+        },
+    }
+    state: dict = {"leisaac": {}}
+    s3 = FakeS3()
+    applied: list[dict] = []
+
+    def mutate_state(mutation):
+        result = mutation(state)
+        return result
+
+    class Healthy:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {
+                "schema": "npa.leisaac.health.v1",
+                "state": "ready",
+                "webrtc_ready": True,
+                "run_id": raw_manifest["run_id"],
+                "task": raw_manifest["task"],
+                "source_commit": raw_manifest["source_commit"],
+                "session_nonce": raw_manifest["session_nonce"],
+                "signal_port": 49100,
+            }
+
+    def http_post(_url, **kwargs):
+        applied.append(kwargs["json"])
+        return SimpleNamespace(status_code=202, json=lambda: {"accepted": True})
+
+    app = FastAPI()
+    register_leisaac_routes(
+        app,
+        LeIsaacDeps(
+            load_state=lambda: json.loads(json.dumps(state)),
+            mutate_state=mutate_state,
+            resolve_manifest=lambda _run_id: raw_manifest,
+            http_get=lambda *_args, **_kwargs: Healthy(),
+            http_post=http_post,
+            response=Response,
+            websocket_connect=lambda *_args, **_kwargs: None,
+            s3_client=lambda: (s3, {}),
+            s3_buckets=lambda _s3, _settings: ["bucket"],
+        ),
+    )
+    client = TestClient(app)
+    headers = {
+        "x-forwarded-proto": "https",
+        "x-npa-leisaac-control": "1",
+        "sec-fetch-site": "same-origin",
+    }
+    for kind in ("scene", "device", "robot"):
+        uploaded = client.post(
+            "/leisaac/bundles?run_id=bundle-atomic-run",
+            headers=headers,
+            json=_payload(kind=kind),
+        )
+        assert uploaded.status_code == 201, uploaded.text
+        selected = client.post(
+            "/leisaac/bundles/select?run_id=bundle-atomic-run",
+            headers=headers,
+            json={
+                "kind": kind,
+                "bundle_sha256": uploaded.json()["bundle_sha256"],
+            },
+        )
+        assert selected.status_code == 202, selected.text
+        # The UI refreshes capability selection during each simulator restart.
+        # That run-id write must not replace the cumulative bundle mapping.
+        refreshed = client.post(
+            "/leisaac/select",
+            headers=headers,
+            json={"run_id": "bundle-atomic-run"},
+        )
+        assert refreshed.status_code == 200, refreshed.text
+
+    selection = state["leisaac"]["bundle_selection"]
+    assert set(selection) == {"robot", "scene", "device"}
+    assert [set(item["selection"]) for item in applied] == [
+        {"scene"},
+        {"scene", "device"},
+        {"scene", "device", "robot"},
+    ]
