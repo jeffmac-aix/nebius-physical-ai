@@ -93,14 +93,16 @@ def _ffmpeg_executable() -> str:
     return executable
 
 
-def _ffprobe_executable() -> str:
+def _ffprobe_executable() -> str | None:
+    """Return ffprobe when present; callers retain a packaged-ffmpeg fallback."""
+
     executable = shutil.which("ffprobe")
     if executable:
         return executable
     sibling = Path(_ffmpeg_executable()).with_name("ffprobe")
     if sibling.is_file():
         return str(sibling)
-    raise DatasetError("ffprobe is unavailable; encoded media cannot be validated")
+    return None
 
 
 def utc_now() -> str:
@@ -777,11 +779,144 @@ def _fraction(value: str) -> float:
     return result
 
 
+def _validated_media_metadata(
+    *,
+    codec: str,
+    pix_fmt: str,
+    width: int,
+    height: int,
+    measured_fps: float,
+    frames: int,
+    duration: float,
+    timestamps: list[float],
+    expected_frames: int,
+    fps: int,
+) -> dict[str, Any]:
+    expected_duration = expected_frames / fps
+    if (
+        codec != "h264"
+        or pix_fmt != "yuv420p"
+        or width <= 0
+        or height <= 0
+        or frames != expected_frames
+        or len(timestamps) != expected_frames
+        or abs(measured_fps - fps) > 0.001
+        or abs(duration - expected_duration) > (1.0 / fps)
+        or any(right <= left for left, right in zip(timestamps, timestamps[1:]))
+        or any(
+            abs(timestamp - index / fps) > (0.5 / fps)
+            for index, timestamp in enumerate(timestamps)
+        )
+    ):
+        raise DatasetError("encoded video does not match episode frames and timestamps")
+    return {
+        "codec": "h264",
+        "pix_fmt": "yuv420p",
+        "width": width,
+        "height": height,
+        "fps": float(fps),
+        "frames": frames,
+        "duration": duration,
+        "timestamps": timestamps,
+        "has_audio": False,
+    }
+
+
+def _probe_video_with_ffmpeg(
+    path: Path, *, expected_frames: int, fps: int
+) -> dict[str, Any]:
+    """Decode and inspect media with imageio's packaged ffmpeg when ffprobe is absent."""
+
+    command = [
+        _ffmpeg_executable(),
+        "-hide_banner",
+        "-nostdin",
+        "-i",
+        str(path),
+        "-map",
+        "0:v:0",
+        "-vf",
+        "showinfo",
+        "-vsync",
+        "0",
+        "-f",
+        "null",
+        "-",
+    ]
+    environment = dict(os.environ)
+    environment.update({"LANG": "C", "LC_ALL": "C"})
+    result = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        check=False,
+        env=environment,
+    )
+    if result.returncode:
+        raise DatasetError("ffmpeg could not decode and validate encoded episode")
+
+    input_report = result.stderr.split("Stream mapping:", 1)[0]
+    stream_lines = re.findall(r"^\s*Stream #0:\d+[^\n]*$", input_report, re.MULTILINE)
+    video_lines = [line for line in stream_lines if ": Video:" in line]
+    if len(video_lines) != 1 or len(stream_lines) != 1:
+        raise DatasetError(
+            "episode media must contain exactly one video stream and no audio"
+        )
+    stream = video_lines[0]
+    stream_match = re.search(
+        r": Video:\s*([^,\s]+)[^,]*,\s*([A-Za-z0-9_]+)(?:\([^)]*\))?,\s*"
+        r"(\d+)x(\d+)(?:\s|\[)",
+        stream,
+    )
+    rate_match = re.search(r",\s*([0-9]+(?:\.[0-9]+)?)\s+fps(?:,|\s)", stream)
+    duration_match = re.search(
+        r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", input_report
+    )
+    frame_matches = re.findall(
+        r"\bn:\s*(\d+)\s+pts:.*?\bpts_time:([0-9.eE+\-]+).*?"
+        r"\bfmt:([A-Za-z0-9_]+).*?\bs:(\d+)x(\d+)",
+        result.stderr,
+    )
+    if not stream_match or not rate_match or not duration_match or not frame_matches:
+        raise DatasetError("ffmpeg returned malformed media metadata")
+
+    codec, pix_fmt, width_text, height_text = stream_match.groups()
+    hours, minutes, seconds = duration_match.groups()
+    duration = int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+    decoded = {
+        int(index): (float(timestamp), frame_pix_fmt, int(width), int(height))
+        for index, timestamp, frame_pix_fmt, width, height in frame_matches
+    }
+    indexes = sorted(decoded)
+    if indexes != list(range(len(indexes))):
+        raise DatasetError("ffmpeg returned non-contiguous decoded frame metadata")
+    if any(
+        item[1:] != (pix_fmt, int(width_text), int(height_text))
+        for item in decoded.values()
+    ):
+        raise DatasetError("decoded frame metadata changes within the episode")
+    return _validated_media_metadata(
+        codec=codec,
+        pix_fmt=pix_fmt,
+        width=int(width_text),
+        height=int(height_text),
+        measured_fps=float(rate_match.group(1)),
+        frames=len(indexes),
+        duration=duration,
+        timestamps=[decoded[index][0] for index in indexes],
+        expected_frames=expected_frames,
+        fps=fps,
+    )
+
+
 def _probe_video(path: Path, *, expected_frames: int, fps: int) -> dict[str, Any]:
     """Validate the encoded bytes and return LeRobot-compatible media metadata."""
 
+    ffprobe = _ffprobe_executable()
+    if ffprobe is None:
+        return _probe_video_with_ffmpeg(path, expected_frames=expected_frames, fps=fps)
     command = [
-        _ffprobe_executable(),
+        ffprobe,
         "-v",
         "error",
         "-count_frames",
@@ -824,34 +959,18 @@ def _probe_video(path: Path, *, expected_frames: int, fps: int) -> dict[str, Any
         if item.get("media_type") == "video"
         and item.get("best_effort_timestamp_time") is not None
     ]
-    expected_duration = expected_frames / fps
-    if (
-        stream.get("codec_name") != "h264"
-        or stream.get("pix_fmt") != "yuv420p"
-        or width <= 0
-        or height <= 0
-        or frames != expected_frames
-        or len(timestamps) != expected_frames
-        or abs(measured_fps - fps) > 0.001
-        or abs(duration - expected_duration) > (1.0 / fps)
-        or any(right <= left for left, right in zip(timestamps, timestamps[1:]))
-        or any(
-            abs(timestamp - index / fps) > (0.5 / fps)
-            for index, timestamp in enumerate(timestamps)
-        )
-    ):
-        raise DatasetError("encoded video does not match episode frames and timestamps")
-    return {
-        "codec": "h264",
-        "pix_fmt": "yuv420p",
-        "width": width,
-        "height": height,
-        "fps": float(fps),
-        "frames": frames,
-        "duration": duration,
-        "timestamps": timestamps,
-        "has_audio": False,
-    }
+    return _validated_media_metadata(
+        codec=str(stream.get("codec_name") or ""),
+        pix_fmt=str(stream.get("pix_fmt") or ""),
+        width=width,
+        height=height,
+        measured_fps=measured_fps,
+        frames=frames,
+        duration=duration,
+        timestamps=timestamps,
+        expected_frames=expected_frames,
+        fps=fps,
+    )
 
 
 def _validate_camera_media(

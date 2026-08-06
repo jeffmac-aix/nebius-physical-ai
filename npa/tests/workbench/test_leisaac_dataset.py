@@ -11,6 +11,7 @@ import pyarrow.parquet as pq
 import pytest
 from PIL import Image
 
+from npa.workbench.leisaac import dataset as leisaac_dataset
 from npa.agent_backend.leisaac_registry import (
     REGISTRY_FINGERPRINT,
     registry_payload,
@@ -484,6 +485,30 @@ def test_s3_store_publishes_faststart_synchronized_two_camera_artifacts(
     assert result["dataset_version_uri"].startswith(
         "s3://bucket/demos/leisaac/versions/"
     )
+
+
+def test_packaged_ffmpeg_fallback_decodes_and_validates_media_without_ffprobe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_which = leisaac_dataset.shutil.which
+    monkeypatch.setattr(
+        leisaac_dataset.shutil,
+        "which",
+        lambda name: None if name in {"ffmpeg", "ffprobe"} else original_which(name),
+    )
+    fake = _FakeS3()
+    store = S3DatasetStore("s3://bucket/demos/leisaac", client=fake)
+    result = store.publish_episode(*_dual_episode_dir(tmp_path))
+    commit = json.loads(
+        fake.objects[("bucket", "demos/leisaac/commits/episode-000000.json")][0]
+    )
+    assert result["episode_index"] == 0
+    assert set(commit["media"]) == {"workspace", "overview"}
+    assert all(item["codec"] == "h264" for item in commit["media"].values())
+    assert all(item["pix_fmt"] == "yuv420p" for item in commit["media"].values())
+    assert all(item["frames"] == 3 for item in commit["media"].values())
+    assert all((item["width"], item["height"]) == (1280, 720) for item in commit["media"].values())
+    assert commit["media"]["workspace"]["timestamps"] == commit["media"]["overview"]["timestamps"]
 
 
 def test_s3_store_resumes_episode_numbers_and_publishes_lerobot_v3(
