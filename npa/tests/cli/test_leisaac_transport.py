@@ -20,6 +20,7 @@ from npa.agent_backend.leisaac_routes import (
     _valid_ws_session,
 )
 from npa.agent_backend.leisaac_transport import (
+    AsyncLatestByKey,
     AsyncLatestValue,
     CONTROL_SUBPROTOCOL,
     ControlLedger,
@@ -132,6 +133,39 @@ def test_control_ledger_is_ordered_idempotent_and_recovers_state() -> None:
     assert stale.value.code == "sequence_too_old"
 
 
+def test_direct_so101_actions_share_ordering_and_reject_unsafe_values() -> None:
+    action = {
+        "v": 1,
+        "type": "action",
+        "run_id": RUN_ID,
+        "client_id": "custom-device",
+        "seq": 1,
+        "device": "custom-so101",
+        "action": [0.1, -0.2, 0.0, 0.3, 0.0, 0.0, -0.4, 1.0],
+        "client_mono_ns": 101,
+        "client_wall_ns": 201,
+    }
+    parsed = parse_control_message(json.dumps(action), expected_run_id=RUN_ID)
+    assert parsed["action"] == pytest.approx(action["action"])
+    ledger = ControlLedger()
+    accepted, queued = ledger.accept(parsed)
+    assert accepted["device"] == "custom-so101"
+    assert queued is not None and queued["type"] == "action"
+    assert ledger.keys_down("custom-device") == ()
+    duplicate, duplicate_queue = ledger.accept(parsed)
+    assert duplicate["duplicate"] is True and duplicate_queue is None
+
+    for invalid in (
+        {**action, "action": [0.0] * 7},
+        {**action, "action": [0.0] * 7 + [1.01]},
+        {**action, "action": [0.0] * 7 + [float("nan")]},
+        {**action, "device": "untrusted-script"},
+        {**action, "unexpected": True},
+    ):
+        with pytest.raises(TransportProtocolError, match="direct action"):
+            parse_control_message(json.dumps(invalid), expected_run_id=RUN_ID)
+
+
 def test_binary_frame_envelope_round_trips_and_detects_tampering() -> None:
     jpeg = b"\xff\xd8" + b"frame-data" * 20 + b"\xff\xd9"
     envelope = FrameEnvelope(
@@ -211,10 +245,50 @@ async def test_latest_frame_wins_for_a_slow_consumer() -> None:
         await latest.wait_after(3, timeout=0.001)
 
 
+@pytest.mark.anyio
+async def test_camera_latest_values_are_bounded_and_serviced_fairly() -> None:
+    latest = AsyncLatestByKey(("workspace", "overview"))
+    await latest.publish("workspace", "workspace-1")
+    await latest.publish("overview", "overview-1")
+    await latest.publish("workspace", "workspace-2")
+
+    generations: dict[str, int] = {}
+    camera, generation, value, skipped, next_index = await latest.wait_after(
+        generations, timeout=0.1
+    )
+    assert (camera, value, skipped) == (
+        "workspace",
+        "workspace-2",
+        1,
+    )
+    generations[camera] = generation
+    camera, generation, value, skipped, next_index = await latest.wait_after(
+        generations, next_index=next_index, timeout=0.1
+    )
+    assert (camera, value, skipped) == ("overview", "overview-1", 0)
+    generations[camera] = generation
+
+    await latest.publish("overview", "overview-2")
+    await latest.publish("overview", "overview-3")
+    camera, generation, value, skipped, next_index = await latest.wait_after(
+        generations, next_index=next_index, timeout=0.1
+    )
+    assert (camera, value, skipped) == ("overview", "overview-3", 1)
+    generations[camera] = generation
+    with pytest.raises(asyncio.TimeoutError):
+        await latest.wait_after(
+            generations, next_index=next_index, timeout=0.001
+        )
+
+
 def test_transport_metrics_are_low_cardinality() -> None:
     metrics = TransportMetrics()
     metrics.increment("frames_sent", 2)
     assert metrics.snapshot()["frames_sent"] == 2
+    metrics.increment("frames_relay_acked")
+    metrics.increment("frames_browser_acked")
+    assert metrics.snapshot()["frames_relay_acked"] == 1
+    assert metrics.snapshot()["frames_browser_acked"] == 1
     with pytest.raises(ValueError):
         metrics.increment("run-id-as-a-label")
 
@@ -293,6 +367,9 @@ def _prepare_runtime(monkeypatch, tmp_path: Path):
         "INPUT_QUEUE_PATH": tmp_path / "input.jsonl",
         "FRAME_PATH": tmp_path / "frame.jpg",
         "FRAME_META_PATH": tmp_path / "frame.json",
+        "SECONDARY_FRAME_PATH": tmp_path / "frame-overview.jpg",
+        "SECONDARY_FRAME_META_PATH": tmp_path / "frame-overview.json",
+        "VIEW_COMMAND_PATH": tmp_path / "view-command.json",
         "APPLIED_ACK_PATH": tmp_path / "applied.jsonl",
         "RECORDER_ROOT": tmp_path / "recorder",
         "RECORDER_STATUS_PATH": tmp_path / "recorder/status.json",
@@ -301,12 +378,23 @@ def _prepare_runtime(monkeypatch, tmp_path: Path):
     }
     for name, path in paths.items():
         monkeypatch.setattr(runtime, name, path)
+    monkeypatch.setattr(
+        runtime,
+        "CAMERA_PATHS",
+        {
+            "workspace": (paths["FRAME_PATH"], paths["FRAME_META_PATH"]),
+            "overview": (
+                paths["SECONDARY_FRAME_PATH"],
+                paths["SECONDARY_FRAME_META_PATH"],
+            ),
+        },
+    )
     monkeypatch.setenv("NPA_LEISAAC_RUN_ID", RUN_ID)
     monkeypatch.setenv("NPA_LEISAAC_SESSION_NONCE", NONCE)
     runtime.STATE.update(state="ready", detail="ready", webrtc_ready=True, pid=123)
     runtime.CONTROL_LEDGER = ControlLedger()
     runtime.TRANSPORT_METRICS = TransportMetrics()
-    runtime.FRAME_LATEST = AsyncLatestValue()
+    runtime.FRAME_LATEST = AsyncLatestByKey(("workspace", "overview"))
     runtime.APPLIED_ACK_OFFSET = 0
     return runtime
 
@@ -316,6 +404,64 @@ def _runtime_headers() -> dict[str, str]:
         "x-npa-leisaac-nonce": NONCE,
         "x-npa-leisaac-run-id": RUN_ID,
     }
+
+
+def test_runtime_retries_an_unexpected_clean_simulator_exit(
+    monkeypatch, tmp_path: Path
+) -> None:
+    runtime = _prepare_runtime(monkeypatch, tmp_path)
+    launches = 0
+
+    class StopEvent:
+        stopped = False
+
+        def is_set(self) -> bool:
+            return self.stopped
+
+        def set(self) -> None:
+            self.stopped = True
+
+        def wait(self, _timeout: float) -> bool:
+            return self.stopped
+
+    stop = StopEvent()
+
+    class Child:
+        pid = 123
+        returncode = 0
+
+        def poll(self) -> int:
+            return 0
+
+    def popen(*_args, **_kwargs):
+        nonlocal launches
+        launches += 1
+        if launches == 2:
+            stop.set()
+        return Child()
+
+    monkeypatch.setattr(runtime, "SERVER_STOP", stop)
+    monkeypatch.setattr(runtime.subprocess, "run", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runtime.subprocess, "Popen", popen)
+    monkeypatch.setattr(runtime, "_simulation_launch", lambda: (["leisaac"], {}))
+    monkeypatch.setattr(runtime, "detect_gpu", lambda: "RTX test GPU")
+
+    runtime.run_simulation()
+
+    assert launches == 2
+
+
+def test_runtime_restart_resets_applied_ack_reader_offset(
+    monkeypatch, tmp_path: Path
+) -> None:
+    runtime = _prepare_runtime(monkeypatch, tmp_path)
+    runtime.APPLIED_ACK_PATH.write_text('{"seq":1}\n', encoding="utf-8")
+    runtime.APPLIED_ACK_OFFSET = 4096
+
+    runtime._reset_runtime_files()
+
+    assert runtime.APPLIED_ACK_OFFSET == 0
+    assert runtime.APPLIED_ACK_PATH.read_text(encoding="utf-8") == ""
 
 
 def test_runtime_control_ack_ordering_application_and_disconnect_cleanup(
@@ -452,24 +598,28 @@ def test_runtime_video_envelope_is_binary_and_nonblank(
         ) as websocket:
             envelope, content = unpack_frame(websocket.receive_bytes())
             assert envelope.sequence == 4
+            assert envelope.flags == 0
             assert envelope.runtime_send_monotonic_ns > 0
             assert content == jpeg
             next_jpeg = b"\xff\xd8" + b"new-frame" * 30 + b"\xff\xd9"
             runtime.FRAME_PATH.write_bytes(next_jpeg)
+            next_metadata = {
+                "schema": "npa.leisaac.frame.v1",
+                "sequence": 5,
+                "capture_wall_ns": 200,
+                "capture_monotonic_ns": 201,
+                "encoded_wall_ns": 202,
+                "encoded_monotonic_ns": 203,
+                "bytes": len(next_jpeg),
+                "sha256": hashlib.sha256(next_jpeg).hexdigest(),
+            }
             runtime.FRAME_META_PATH.write_text(
-                json.dumps(
-                    {
-                        "schema": "npa.leisaac.frame.v1",
-                        "sequence": 5,
-                        "capture_wall_ns": 200,
-                        "capture_monotonic_ns": 201,
-                        "encoded_wall_ns": 202,
-                        "encoded_monotonic_ns": 203,
-                        "bytes": len(next_jpeg),
-                        "sha256": hashlib.sha256(next_jpeg).hexdigest(),
-                    }
-                ),
-                encoding="utf-8",
+                json.dumps(next_metadata), encoding="utf-8"
+            )
+            client.portal.call(
+                runtime.FRAME_LATEST.publish,
+                "workspace",
+                ("workspace", next_metadata, next_jpeg),
             )
             websocket.send_json(
                 {"v": 1, "type": "frame-ack", "run_id": RUN_ID, "sequence": 4}
@@ -477,3 +627,120 @@ def test_runtime_video_envelope_is_binary_and_nonblank(
             next_envelope, next_content = unpack_frame(websocket.receive_bytes())
             assert next_envelope.sequence == 5
             assert next_content == next_jpeg
+
+
+def test_runtime_frame_watcher_remains_live_across_both_cameras(
+    monkeypatch, tmp_path: Path
+) -> None:
+    runtime = _prepare_runtime(monkeypatch, tmp_path)
+    publications: list[tuple[str, dict, bytes]] = []
+    reads = {
+        "workspace": [
+            ({"sequence": 1}, b"workspace-1"),
+            None,
+            ({"sequence": 2}, b"workspace-2"),
+            None,
+        ],
+        "overview": [
+            None,
+            ({"sequence": 1}, b"overview-1"),
+            None,
+            ({"sequence": 2}, b"overview-2"),
+        ],
+    }
+
+    def read(camera: str):
+        items = reads[camera]
+        return items.pop(0) if items else None
+
+    async def publish(_camera, item):
+        publications.append(item)
+
+    monkeypatch.setattr(runtime, "_read_consistent_frame", read)
+    monkeypatch.setattr(runtime.FRAME_LATEST, "publish", publish)
+
+    async def exercise() -> None:
+        watcher = asyncio.create_task(runtime._watch_frames())
+        while len(publications) < 4:
+            await asyncio.sleep(0.001)
+        watcher.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await watcher
+
+    asyncio.run(exercise())
+
+    assert [camera for camera, _metadata, _jpeg in publications] == [
+        "workspace",
+        "overview",
+        "workspace",
+        "overview",
+    ]
+    assert runtime.TRANSPORT_METRICS.snapshot()["frames_published"] == 4
+
+
+def test_runtime_secondary_camera_and_orbit_are_bounded_and_authenticated(
+    monkeypatch, tmp_path: Path
+) -> None:
+    runtime = _prepare_runtime(monkeypatch, tmp_path)
+    jpeg = b"\xff\xd8" + b"distinct-overview" * 30 + b"\xff\xd9"
+    runtime.SECONDARY_FRAME_PATH.write_bytes(jpeg)
+    runtime.SECONDARY_FRAME_META_PATH.write_text(
+        json.dumps(
+            {
+                "schema": "npa.leisaac.frame.v1",
+                "camera": "overview",
+                "sequence": 8,
+                "capture_wall_ns": 200,
+                "capture_monotonic_ns": 201,
+                "encoded_wall_ns": 202,
+                "encoded_monotonic_ns": 203,
+                "bytes": len(jpeg),
+                "sha256": hashlib.sha256(jpeg).hexdigest(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    with TestClient(runtime.build_app()) as client:
+        forbidden = client.post(
+            "/view",
+            json={
+                "camera": "overview",
+                "sequence": 1,
+                "yaw_delta": 0.1,
+                "pitch_delta": 0.1,
+                "distance_delta": 0,
+            },
+        )
+        assert forbidden.status_code == 403
+        invalid = client.post(
+            "/view",
+            headers={"x-npa-leisaac-nonce": NONCE},
+            json={
+                "camera": "overview",
+                "sequence": 1,
+                "yaw_delta": 4,
+                "pitch_delta": 0,
+                "distance_delta": 0,
+            },
+        )
+        assert invalid.status_code == 400
+        accepted = client.post(
+            "/view",
+            headers={"x-npa-leisaac-nonce": NONCE},
+            json={
+                "camera": "overview",
+                "sequence": 2,
+                "yaw_delta": 0.1,
+                "pitch_delta": -0.2,
+                "distance_delta": 0.3,
+            },
+        )
+        assert accepted.status_code == 202
+        assert json.loads(runtime.VIEW_COMMAND_PATH.read_text())["sequence"] == 2
+        frame = client.get(
+            "/frame.jpg?camera=overview",
+            headers={"x-npa-leisaac-nonce": NONCE},
+        )
+        assert frame.status_code == 200
+        assert frame.headers["x-npa-camera"] == "overview"
+        assert frame.content == jpeg

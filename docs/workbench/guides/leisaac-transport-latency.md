@@ -52,15 +52,22 @@ The preferred path uses two authenticated, same-origin FastAPI WebSockets:
   sequence, press/release event, client monotonic/wall timestamps, and separate
   accepted and simulator-applied acknowledgements. The shared ledger enforces
   ordering and idempotency, retains a bounded replay window, and releases held
-  controls on disconnect.
+  controls on disconnect. The same ledger accepts an exact eight-value direct
+  SO-101 action for browser gamepads and the declarative custom-device contract;
+  video and S3 work never share its socket or queue.
 - `video`: a 112-byte binary envelope followed by JPEG bytes. It carries frame
   sequence, capture/encode wall and monotonic timestamps, runtime/agent stage
   timestamps, byte length, drop count, and SHA-256. One-slot publishers at the
   runtime and agent implement latest-frame-wins. The browser grants the next
-  frame credit after receipt and validation, while retaining only one replaceable
-  decode candidate and skipping a decoded frame if a newer candidate arrived
-  before paint. These one-slot boundaries prevent kernel/WebSocket/decoder stale
-  queues; controls still use an independent socket and task.
+  frame credit after receipt and validation, while retaining one replaceable
+  decode candidate per camera and skipping a decoded frame only if a newer
+  candidate for that same camera arrived before paint. These bounded boundaries
+  prevent kernel/WebSocket/decoder stale queues without allowing one viewport to
+  evict the other; controls still use an independent socket and task. A one-bit camera
+  flag routes workspace and overview JPEGs to separate canvases. The runtime
+  alternates their latest values, while their shared capture-group ID is kept in
+  metadata and the recorder, so a fast camera cannot starve or desynchronize the
+  other.
 
 FastAPI routes remain adapters. Ordering, message/frame limits, binary framing,
 backpressure, and counters live in the shared `leisaac_transport` module shipped
@@ -117,6 +124,23 @@ Security properties:
   and [`bufferedAmount`](https://developer.mozilla.org/en-US/docs/Web/API/WebSocket/bufferedAmount):
   request `arraybuffer` binary delivery and never use an unbounded browser send
   backlog as flow control.
+- [MDN `createImageBitmap`](https://developer.mozilla.org/en-US/docs/Web/API/Window/createImageBitmap),
+  [`requestAnimationFrame`](https://developer.mozilla.org/en-US/docs/Web/API/Window/requestAnimationFrame),
+  and [WebCodecs](https://developer.mozilla.org/en-US/docs/Web/API/WebCodecs_API):
+  decode the bounded latest compressed frame off the DOM image-loader path and
+  count presentation only in a paint callback. WebCodecs remains a future codec
+  option because the current runtime produces independently decodable JPEGs and
+  the measured change did not require a new browser codec dependency.
+- [MDN WebRTC](https://developer.mozilla.org/en-US/docs/Web/API/WebRTC_API) and
+  the [W3C WebRTC recommendation](https://www.w3.org/TR/webrtc/): retain the
+  existing hardware-encoded interactive stream as a compatibility fallback,
+  but do not couple ordered application acknowledgements or the recorder's two
+  explicit camera tracks to its congestion-control path.
+- [FFmpeg format options](https://ffmpeg.org/ffmpeg-formats.html) and
+  [libjpeg-turbo documentation](https://libjpeg-turbo.org/Documentation/Documentation):
+  use MP4 `+faststart` for Range-based episode playback and the system's
+  optimized JPEG implementation for low-copy independent live frames; already
+  compressed payloads do not use WebSocket per-message deflate.
 - [WHATWG WebSockets](https://websockets.spec.whatwg.org/) and
   [RFC 6455](https://www.rfc-editor.org/info/rfc6455): WebSocket messages retain
   their order, while application-level sequence IDs still provide idempotency,

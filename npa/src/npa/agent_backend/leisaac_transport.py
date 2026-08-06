@@ -12,6 +12,7 @@ from collections import Counter, OrderedDict
 from dataclasses import dataclass, field, replace
 import hashlib
 import json
+import math
 import re
 import struct
 import threading
@@ -30,6 +31,7 @@ CLIENT_ID_PATTERN = re.compile(r"[A-Za-z0-9._:-]{1,96}")
 RUN_ID_PATTERN = re.compile(r"[A-Za-z0-9._:-]{1,128}")
 ALLOWED_KEYS = frozenset({"W", "S", "A", "D", "Q", "E", "J", "L", "I", "K", "U", "O"})
 ALLOWED_EVENTS = frozenset({"press", "release"})
+ALLOWED_ACTION_DEVICES = frozenset({"browser-gamepad", "custom-so101"})
 FRAME_MAGIC = b"NPAF"
 FRAME_HEADER = struct.Struct("!4sBBHQQQQQQQQII32s")
 
@@ -93,7 +95,7 @@ def parse_control_message(raw: str | bytes, *, expected_run_id: str) -> dict[str
             "invalid_message", "unsupported control protocol version"
         )
     message_type = str(payload.get("type") or "")
-    if message_type not in {"control", "resume", "ping", "release-all"}:
+    if message_type not in {"control", "action", "resume", "ping", "release-all"}:
         raise TransportProtocolError(
             "invalid_message", "unsupported control message type"
         )
@@ -123,6 +125,39 @@ def parse_control_message(raw: str | bytes, *, expected_run_id: str) -> dict[str
         if key not in ALLOWED_KEYS or event not in ALLOWED_EVENTS:
             raise TransportProtocolError("invalid_message", "invalid keyboard control")
         result.update(seq=_sequence(payload.get("seq")), key=key, event=event)
+    elif message_type == "action":
+        action = payload.get("action")
+        device = str(payload.get("device") or "")
+        if (
+            set(payload)
+            != {
+                "v",
+                "type",
+                "run_id",
+                "client_id",
+                "seq",
+                "device",
+                "action",
+                "client_mono_ns",
+                "client_wall_ns",
+            }
+            or device not in ALLOWED_ACTION_DEVICES
+            or not isinstance(action, list)
+            or len(action) != 8
+            or any(
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+                or abs(float(value)) > 1.0
+                for value in action
+            )
+        ):
+            raise TransportProtocolError("invalid_message", "invalid direct action")
+        result.update(
+            seq=_sequence(payload.get("seq")),
+            device=device,
+            action=[float(value) for value in action],
+        )
     elif message_type == "resume":
         keys = payload.get("keys_down", [])
         if not isinstance(keys, list) or len(keys) > len(ALLOWED_KEYS):
@@ -214,10 +249,17 @@ class ControlLedger:
     ) -> tuple[dict[str, Any], dict[str, Any] | None]:
         """Return an accepted ack and a queue record, or ``None`` for a duplicate."""
 
-        if message.get("type") != "control":
+        if message.get("type") not in {"control", "action"}:
             raise TransportProtocolError(
-                "invalid_message", "expected a control message"
+                "invalid_message", "expected a control or action message"
             )
+        is_action = message.get("type") == "action"
+        signature_key = str(message["device"]) if is_action else str(message["key"])
+        signature_event = (
+            json.dumps(message["action"], separators=(",", ":"))
+            if is_action
+            else str(message["event"])
+        )
         client_id = str(message["client_id"])
         seq = int(message["seq"])
         mono_ns = time.monotonic_ns() if received_mono_ns is None else received_mono_ns
@@ -232,59 +274,68 @@ class ControlLedger:
                         "control sequence is outside the idempotency window",
                         expected_seq=state.next_seq,
                     )
-                if existing.key != message["key"] or existing.event != message["event"]:
+                if existing.key != signature_key or existing.event != signature_event:
                     raise TransportProtocolError(
                         "sequence_reused",
                         "control sequence was reused with different content",
                     )
-                accepted = dict(existing.accepted)
-                accepted["duplicate"] = True
+                duplicate_accepted = dict(existing.accepted)
+                duplicate_accepted["duplicate"] = True
                 if existing.applied is not None:
-                    accepted["already_applied"] = True
-                return accepted, None
+                    duplicate_accepted["already_applied"] = True
+                return duplicate_accepted, None
             if seq != state.next_seq:
                 raise TransportProtocolError(
                     "out_of_order",
                     "control sequence is not the next expected value",
                     expected_seq=state.next_seq,
                 )
-            accepted = {
+            accepted: dict[str, Any] = {
                 "v": PROTOCOL_VERSION,
                 "type": "ack",
                 "phase": "accepted",
                 "run_id": message["run_id"],
                 "client_id": client_id,
                 "seq": seq,
-                "key": message["key"],
-                "event": message["event"],
                 "client_mono_ns": str(message["client_mono_ns"]),
                 "client_wall_ns": str(message["client_wall_ns"]),
                 "runtime_received_mono_ns": str(mono_ns),
                 "runtime_received_wall_ns": str(wall_ns),
                 "duplicate": False,
             }
-            queue_record = {
+            queue_record: dict[str, Any] = {
                 "v": PROTOCOL_VERSION,
                 "run_id": message["run_id"],
                 "client_id": client_id,
                 "seq": seq,
-                "key": message["key"],
-                "event": message["event"],
                 "client_mono_ns": str(message["client_mono_ns"]),
                 "client_wall_ns": str(message["client_wall_ns"]),
                 "runtime_received_mono_ns": str(mono_ns),
                 "runtime_received_wall_ns": str(wall_ns),
             }
+            if is_action:
+                accepted.update(
+                    device=message["device"], action=list(message["action"])
+                )
+                queue_record.update(
+                    type="action",
+                    device=message["device"],
+                    action=list(message["action"]),
+                )
+            else:
+                accepted.update(key=message["key"], event=message["event"])
+                queue_record.update(key=message["key"], event=message["event"])
             state.history[seq] = _ControlRecord(
-                key=str(message["key"]),
-                event=str(message["event"]),
+                key=signature_key,
+                event=signature_event,
                 accepted=dict(accepted),
             )
             state.next_seq += 1
-            if message["event"] == "press":
-                state.keys_down.add(str(message["key"]))
-            else:
-                state.keys_down.discard(str(message["key"]))
+            if not is_action:
+                if message["event"] == "press":
+                    state.keys_down.add(str(message["key"]))
+                else:
+                    state.keys_down.discard(str(message["key"]))
             while len(state.history) > self.history_limit:
                 state.history.popitem(last=False)
             return accepted, queue_record
@@ -294,7 +345,7 @@ class ControlLedger:
 
         client_id = str(payload.get("client_id") or "")
         try:
-            seq = int(payload.get("seq"))
+            seq = int(str(payload.get("seq") or ""))
         except (TypeError, ValueError):
             return None
         with self._lock:
@@ -479,6 +530,63 @@ class AsyncLatestValue:
         return observed, self._value, max(0, observed - generation - 1)
 
 
+class AsyncLatestByKey:
+    """Bounded per-key latest values with fair, broadcast-safe observation."""
+
+    def __init__(self, keys: tuple[str, ...]) -> None:
+        if not keys or len(set(keys)) != len(keys):
+            raise ValueError("latest-value keys must be unique and non-empty")
+        self._keys = keys
+        self._condition = asyncio.Condition()
+        self._generations = {key: 0 for key in keys}
+        self._values: dict[str, Any] = {}
+
+    async def publish(self, key: str, value: Any) -> int:
+        if key not in self._keys:
+            raise ValueError("unknown latest-value key")
+        async with self._condition:
+            self._generations[key] += 1
+            self._values[key] = value
+            self._condition.notify_all()
+            return self._generations[key]
+
+    async def wait_after(
+        self,
+        generations: dict[str, int],
+        *,
+        next_index: int = 0,
+        timeout: float | None = None,
+    ) -> tuple[str, int, Any, int, int]:
+        observed = {key: max(0, int(generations.get(key, 0))) for key in self._keys}
+
+        def available() -> bool:
+            return any(
+                self._generations[key] > observed[key] for key in self._keys
+            )
+
+        async def wait() -> None:
+            async with self._condition:
+                await self._condition.wait_for(available)
+
+        if not available():
+            await asyncio.wait_for(wait(), timeout=timeout)
+        start = max(0, int(next_index)) % len(self._keys)
+        for offset in range(len(self._keys)):
+            index = (start + offset) % len(self._keys)
+            key = self._keys[index]
+            generation = self._generations[key]
+            if generation <= observed[key]:
+                continue
+            return (
+                key,
+                generation,
+                self._values[key],
+                max(0, generation - observed[key] - 1),
+                (index + 1) % len(self._keys),
+            )
+        raise RuntimeError("latest-value publication disappeared")
+
+
 class TransportMetrics:
     """Low-cardinality counters safe for status/telemetry surfaces."""
 
@@ -491,6 +599,8 @@ class TransportMetrics:
             "controls_applied",
             "control_errors",
             "frames_published",
+            "frames_relay_acked",
+            "frames_browser_acked",
             "frames_sent",
             "frames_coalesced",
             "slow_client_disconnects",

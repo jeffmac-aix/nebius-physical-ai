@@ -122,6 +122,64 @@ def test_recorder_requires_outcome_and_atomically_finalizes(tmp_path: Path) -> N
     rows = [json.loads(line) for line in published[0][2].splitlines()]
     assert [row["sim_step"] for row in rows] == [1, 2]
     assert all(row["task"] == "LeIsaac-SO101-PickOrange-v0" for row in rows)
+    assert rows[-1]["success"] is True
+    assert rows[-1]["reset_reason"] == "success"
+    assert rows[0]["timestamp"] == 0.0
+
+
+def test_recorder_commits_only_complete_synchronized_camera_groups(
+    tmp_path: Path,
+) -> None:
+    published: list[Path] = []
+
+    def publish(path: Path, _metadata: dict) -> dict:
+        published.append(path)
+        return {
+            "episode_index": 0,
+            "completed_episode_count": 1,
+            "dataset_version_uri": "s3://bucket/demos/versions/v000001-dual",
+        }
+
+    recorder = EpisodeRecorder(
+        root=tmp_path,
+        output_uri="s3://bucket/demos",
+        task="LeIsaac-SO101-PickOrange-v0",
+        environment_id="counter-a",
+        environment_index=0,
+        seed=7,
+        run_id="run-dual",
+        source_commit="1" * 40,
+        camera_ids=("workspace", "overview"),
+        provenance={"robot": "custom-so101", "device": "spacemouse"},
+        publisher=publish,
+    )
+    recorder.start()
+    recorder.observe(_step(1))
+    recorder.frame(_jpeg((200, 10, 10)), camera_id="workspace", capture_group="g1")
+    assert recorder.status()["frame_count"] == 0
+    recorder.frame(_jpeg((10, 10, 200)), camera_id="overview", capture_group="g1")
+    assert recorder.status()["frame_count"] == 1
+    recorder.observe(_step(2))
+    recorder.frame(_jpeg((10, 200, 10)), camera_id="overview", capture_group="g2")
+    recorder.frame(_jpeg((200, 200, 10)), camera_id="workspace", capture_group="g2")
+    recorder.mark("failure")
+    recorder.finalize()
+
+    episode = published[0]
+    assert len(list((episode / "frames").glob("frame-*.jpg"))) == 2
+    assert len(list((episode / "frames-overview").glob("frame-*.jpg"))) == 2
+    metadata = json.loads((episode / "episode.json").read_text())
+    assert metadata["cameras"] == ["workspace", "overview"]
+    assert metadata["provenance"]["robot"] == "custom-so101"
+    rows = [
+        json.loads(line)
+        for line in (episode / "records.jsonl").read_text().splitlines()
+    ]
+    assert all(
+        set(row["camera_frame_sha256"]) == {"workspace", "overview"} for row in rows
+    )
+    assert rows[-1]["success"] is False
+    assert rows[-1]["reset_reason"] == "failure"
 
 
 def test_recorder_can_retry_a_failed_immutable_upload(tmp_path: Path) -> None:
@@ -374,6 +432,45 @@ def _episode_dir(
     }
     (episode / "episode.json").write_text(json.dumps(metadata), encoding="utf-8")
     return episode, metadata
+
+
+def _dual_episode_dir(root: Path) -> tuple[Path, dict]:
+    episode, metadata = _episode_dir(
+        root, "LeIsaac-SO101-PickOrange-v0", "kitchen-dual", 0
+    )
+    overview = episode / "frames-overview"
+    overview.mkdir()
+    for index, color in enumerate(((20, 20, 80), (40, 40, 120), (60, 60, 180))):
+        (overview / f"frame-{index:06d}.jpg").write_bytes(_jpeg(color))
+    metadata["cameras"] = ["workspace", "overview"]
+    metadata["provenance"] = {
+        "robot": "custom-so101",
+        "scene": "custom-table",
+        "device": "spacemouse",
+        "bundle": "sha256-bundle",
+    }
+    (episode / "episode.json").write_text(json.dumps(metadata), encoding="utf-8")
+    return episode, metadata
+
+
+def test_s3_store_publishes_faststart_synchronized_two_camera_artifacts(
+    tmp_path: Path,
+) -> None:
+    fake = _FakeS3()
+    store = S3DatasetStore("s3://bucket/demos/leisaac", client=fake)
+    result = store.publish_episode(*_dual_episode_dir(tmp_path))
+    commit = json.loads(
+        fake.objects[("bucket", "demos/leisaac/commits/episode-000000.json")][0]
+    )
+    assert set(commit["objects"]["videos"]) == {"workspace", "overview"}
+    assert set(commit["objects"]["frames_by_camera"]) == {"workspace", "overview"}
+    for camera, ref in commit["objects"]["videos"].items():
+        content = fake.objects[("bucket", ref["key"])][0]
+        assert content.find(b"moov") < content.find(b"mdat"), camera
+        assert __import__("hashlib").sha256(content).hexdigest() == ref["sha256"]
+    assert result["dataset_version_uri"].startswith(
+        "s3://bucket/demos/leisaac/versions/"
+    )
 
 
 def test_s3_store_resumes_episode_numbers_and_publishes_lerobot_v3(

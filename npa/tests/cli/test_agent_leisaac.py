@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import io
+import json
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import get_type_hints
@@ -339,6 +340,13 @@ def test_v2_manifest_and_health_bind_task_environment_dataset_and_recorder() -> 
             "environment_index": 3,
             "seed": 47,
             "signal_port": LEISAAC_SIGNAL_PORT,
+            "selected_bundles": {
+                "robot": {
+                    "bundle_sha256": "b" * 64,
+                    "name": "custom-so101",
+                    "entrypoint": "robot.usda",
+                }
+            },
             "recorder": recorder,
         },
     )
@@ -347,6 +355,7 @@ def test_v2_manifest_and_health_bind_task_environment_dataset_and_recorder() -> 
     assert payload["environment_id"] == "kitchen-a"
     assert payload["dataset_uri"] == "s3://bucket/datasets/leisaac"
     assert payload["recorder"]["frame_count"] == 12
+    assert payload["selected_bundles"]["robot"]["name"] == "custom-so101"
     assert "session_nonce" not in repr(payload)
 
     stale = dict(_manifest_v2())
@@ -447,7 +456,17 @@ def test_authenticated_backend_routes_gate_status_and_proxy_client(monkeypatch) 
         posted.append((url, kwargs))
         return FakeResponse(status_code=202)
 
-    state = {"sim_viz": {"active_run_id": raw_manifest["run_id"]}}
+    existing_bundle_selection = {
+        "robot": {
+            "bundle_sha256": "a" * 64,
+            "name": "custom-so101",
+            "entrypoint": "robot.usda",
+        }
+    }
+    state = {
+        "sim_viz": {"active_run_id": raw_manifest["run_id"]},
+        "leisaac": {"bundle_selection": existing_bundle_selection},
+    }
     saved_states = []
     api = FastAPI()
     register_leisaac_routes(
@@ -517,7 +536,10 @@ def test_authenticated_backend_routes_gate_status_and_proxy_client(monkeypatch) 
         "run_id": raw_manifest["run_id"],
         "available": True,
     }
-    assert saved_states[-1]["leisaac"] == {"run_id": raw_manifest["run_id"]}
+    assert saved_states[-1]["leisaac"] == {
+        "run_id": raw_manifest["run_id"],
+        "bundle_selection": existing_bundle_selection,
+    }
     ws_session_headers = {
         "host": "testserver",
         "origin": "https://testserver",
@@ -719,3 +741,131 @@ def test_signaling_proxy_preserves_only_upstream_sign_in_path() -> None:
         ):
             pass
     assert exc_info.value.code == 1008
+
+
+def test_video_relay_credits_runtime_before_browser_ack() -> None:
+    """The one-slot relay, not a browser round trip, owns runtime flow credit."""
+
+    from npa.agent_backend.leisaac_transport import (
+        VIDEO_SUBPROTOCOL,
+        FrameEnvelope,
+        pack_frame,
+    )
+
+    raw_manifest = _manifest()
+    jpeg = b"\xff\xd8" + b"relay-frame" * 30 + b"\xff\xd9"
+    frame = pack_frame(
+        FrameEnvelope(
+            sequence=7,
+            capture_wall_ns=1,
+            capture_monotonic_ns=2,
+            encoded_wall_ns=3,
+            encoded_monotonic_ns=4,
+            runtime_send_monotonic_ns=5,
+        ),
+        jpeg,
+    )
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {
+                "schema": "npa.leisaac.health.v1",
+                "state": "ready",
+                "stream_ready": True,
+                "stream_transport": "websocket-v1",
+                "run_id": raw_manifest["run_id"],
+                "task": raw_manifest["task"],
+                "source_commit": raw_manifest["source_commit"],
+                "session_nonce": raw_manifest["session_nonce"],
+                "signal_port": LEISAAC_SIGNAL_PORT,
+            }
+
+    class FakeUpstream:
+        subprotocol = VIDEO_SUBPROTOCOL
+
+        def __init__(self):
+            self.sent: list[str] = []
+            self.first = True
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def send(self, message):
+            self.sent.append(message)
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if self.first:
+                self.first = False
+                return frame
+            await asyncio.Event().wait()
+            raise StopAsyncIteration
+
+    upstream = FakeUpstream()
+    api = FastAPI()
+    register_leisaac_routes(
+        api,
+        LeIsaacDeps(
+            load_state=lambda: {"leisaac": {"run_id": raw_manifest["run_id"]}},
+            resolve_manifest=lambda _run_id: raw_manifest,
+            http_get=lambda *_args, **_kwargs: FakeResponse(),
+            response=Response,
+            websocket_connect=lambda *_args, **_kwargs: upstream,
+        ),
+    )
+    client = TestClient(api)
+    session_headers = {
+        "host": "testserver",
+        "origin": "https://testserver",
+        "x-forwarded-proto": "https",
+        "x-npa-leisaac-control": "1",
+        "x-real-ip": "203.0.113.7",
+    }
+    session = client.post(
+        "/leisaac/ws-session",
+        params={"run_id": raw_manifest["run_id"]},
+        headers=session_headers,
+    )
+    token = session.headers["set-cookie"].split("npa_leisaac_ws=", 1)[1].split(";", 1)[0]
+    websocket_headers = {
+        **session_headers,
+        "cookie": f"npa_leisaac_ws={token}",
+    }
+    websocket_headers.pop("x-npa-leisaac-control")
+    with client.websocket_connect(
+        f"/leisaac/transport/video?run_id={raw_manifest['run_id']}",
+        headers=websocket_headers,
+        subprotocols=[VIDEO_SUBPROTOCOL],
+    ) as websocket:
+        assert websocket.receive_bytes().endswith(jpeg)
+        assert len(upstream.sent) == 1
+        assert json.loads(upstream.sent[0]) == {
+            "v": 1,
+            "type": "frame-ack",
+            "run_id": raw_manifest["run_id"],
+            "sequence": 7,
+        }
+        websocket.send_json(
+            {
+                "v": 1,
+                "type": "frame-ack",
+                "run_id": raw_manifest["run_id"],
+                "sequence": 7,
+            }
+        )
+
+    status = client.get(
+        "/leisaac/status",
+        params={"run_id": raw_manifest["run_id"]},
+        headers={"x-forwarded-proto": "https"},
+    ).json()
+    assert status["agent_transport_metrics"]["frames_relay_acked"] == 1
+    assert status["agent_transport_metrics"]["frames_browser_acked"] == 1
+    assert len(upstream.sent) == 1

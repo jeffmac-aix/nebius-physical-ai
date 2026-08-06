@@ -204,6 +204,8 @@ class EpisodeRecorder:
         isaac_lab_version: str = "",
         image: str = "",
         registry_fingerprint: str = "",
+        camera_ids: tuple[str, ...] = ("primary",),
+        provenance: dict[str, Any] | None = None,
         publisher: Callable[[Path, dict[str, Any]], dict[str, Any]] | None = None,
         status_loader: Callable[[], dict[str, Any]] | None = None,
     ) -> None:
@@ -222,6 +224,21 @@ class EpisodeRecorder:
         self.isaac_lab_version = isaac_lab_version
         self.image = image
         self.registry_fingerprint = registry_fingerprint
+        normalized_cameras = tuple(str(item or "").strip() for item in camera_ids)
+        if (
+            not normalized_cameras
+            or len(normalized_cameras) > 4
+            or len(set(normalized_cameras)) != len(normalized_cameras)
+            or any(
+                not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", item)
+                for item in normalized_cameras
+            )
+        ):
+            raise DatasetError("camera IDs must be one to four unique safe names")
+        self.camera_ids = normalized_cameras
+        self.provenance = dict(provenance) if isinstance(provenance, dict) else {}
+        self.publisher: Callable[[Path, dict[str, Any]], dict[str, Any]]
+        self._status_loader: Callable[[], dict[str, Any]] | None
         if publisher is None:
             store = S3DatasetStore(self.output_uri)
             self.publisher = store.publish_episode
@@ -254,6 +271,7 @@ class EpisodeRecorder:
         self._command_revision = 0
         self._recovery_error = ""
         self._processed_commands: dict[str, str] = {}
+        self._pending_camera_groups: dict[str, dict[str, Any]] = {}
         try:
             prior_status = json.loads(self.status_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -359,12 +377,17 @@ class EpisodeRecorder:
             self._episode_uuid = uuid.uuid4().hex
             self._episode_dir = self.root / "active" / self._episode_uuid
             (self._episode_dir / "frames").mkdir(parents=True, exist_ok=False)
+            for camera_id in self.camera_ids[1:]:
+                (self._episode_dir / f"frames-{camera_id}").mkdir(
+                    parents=True, exist_ok=False
+                )
             self._state = "recording"
             self._active_episode = self._episode_uuid
             self._outcome = ""
             self._frames = 0
             self._latest_step = None
             self._last_recorded_step = -1
+            self._pending_camera_groups.clear()
             self._last_error = ""
             self._last_upload_status = "recording"
             self._write_status()
@@ -385,28 +408,70 @@ class EpisodeRecorder:
             if self._state == "recording":
                 self._latest_step = dict(record)
 
-    def frame(self, jpeg: bytes) -> None:
+    def frame(
+        self,
+        jpeg: bytes,
+        *,
+        camera_id: str = "primary",
+        capture_group: str = "",
+    ) -> None:
         with self._lock:
             if self._state != "recording" or self._latest_step is None:
                 return
-            step = dict(self._latest_step)
-            sim_step = int(step["sim_step"])
-            if sim_step <= self._last_recorded_step:
-                return
             if not jpeg.startswith(b"\xff\xd8") or len(jpeg) < 1024:
                 raise DatasetError("captured RTX frame is not a non-empty JPEG")
+            selected_camera = str(camera_id or "")
+            if selected_camera not in self.camera_ids:
+                raise DatasetError("captured frame camera is not configured")
+            group_id = str(capture_group or self._latest_step["sim_step"])
+            if not re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", group_id):
+                raise DatasetError("captured frame group ID is invalid")
+            group = self._pending_camera_groups.setdefault(
+                group_id,
+                {"step": dict(self._latest_step), "frames": {}},
+            )
+            frames = group["frames"]
+            if selected_camera in frames:
+                return
+            frames[selected_camera] = bytes(jpeg)
+            if any(camera not in frames for camera in self.camera_ids):
+                # At most two render cycles may be pending.  A camera callback
+                # that never arrives must not create an unbounded recording cache.
+                while len(self._pending_camera_groups) > 2:
+                    self._pending_camera_groups.pop(
+                        next(iter(self._pending_camera_groups))
+                    )
+                return
+            step = dict(group["step"])
+            sim_step = int(step["sim_step"])
+            self._pending_camera_groups.pop(group_id, None)
+            if sim_step <= self._last_recorded_step:
+                return
             assert self._episode_dir is not None
             index = self._frames
             frame_name = f"frame-{index:06d}.jpg"
-            frame_path = self._episode_dir / "frames" / frame_name
-            temporary = frame_path.with_suffix(".jpg.tmp")
-            temporary.write_bytes(jpeg)
-            temporary.replace(frame_path)
+            camera_checksums: dict[str, str] = {}
+            for camera_index, configured_camera in enumerate(self.camera_ids):
+                content = frames[configured_camera]
+                directory = (
+                    "frames" if camera_index == 0 else f"frames-{configured_camera}"
+                )
+                frame_path = self._episode_dir / directory / frame_name
+                temporary = frame_path.with_suffix(".jpg.tmp")
+                temporary.write_bytes(content)
+                temporary.replace(frame_path)
+                camera_checksums[configured_camera] = hashlib.sha256(
+                    content
+                ).hexdigest()
             step.update(
                 {
                     "source_frame_index": index,
+                    "timestamp": float(index / FPS),
                     "frame_file": frame_name,
-                    "frame_sha256": hashlib.sha256(jpeg).hexdigest(),
+                    "frame_sha256": camera_checksums[self.camera_ids[0]],
+                    "camera_frame_sha256": camera_checksums,
+                    "success": False,
+                    "reset_reason": "",
                     "task": self.task,
                     "environment_id": self.environment_id,
                     "environment_index": self.environment_index,
@@ -457,6 +522,17 @@ class EpisodeRecorder:
                         "persisted episode metadata does not match the active episode"
                     )
             else:
+                records_path = self._episode_dir / "records.jsonl"
+                records = _load_records(records_path)
+                records[-1]["success"] = self._outcome == "success"
+                records[-1]["reset_reason"] = self._outcome
+                records_path.write_text(
+                    "".join(
+                        json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n"
+                        for row in records
+                    ),
+                    encoding="utf-8",
+                )
                 metadata = {
                     "schema": EPISODE_SCHEMA,
                     "episode_uuid": self._episode_uuid,
@@ -469,6 +545,7 @@ class EpisodeRecorder:
                     "frame_count": self._frames,
                     "fps": FPS,
                     "source_commit": self.source_commit,
+                    "cameras": list(self.camera_ids),
                     "provenance": {
                         "leisaac_version": self.source_version,
                         "leisaac_commit": self.source_commit,
@@ -476,6 +553,7 @@ class EpisodeRecorder:
                         "isaac_lab_version": self.isaac_lab_version,
                         "image": self.image,
                         "task_registry_fingerprint": self.registry_fingerprint,
+                        **self.provenance,
                     },
                     "recorded_at": utc_now(),
                     "visual_source": "real RTX viewport JPEG capture",
@@ -509,6 +587,7 @@ class EpisodeRecorder:
             self._frames = 0
             self._episode_dir = None
             self._latest_step = None
+            self._pending_camera_groups.clear()
             self._write_status()
             return result
 
@@ -603,6 +682,18 @@ def _load_records(path: Path) -> list[dict[str, Any]]:
             raise DatasetError("episode wall-clock timestamp must be positive")
         if not re.fullmatch(r"[a-f0-9]{64}", str(row["frame_sha256"])):
             raise DatasetError("episode record has an invalid frame checksum")
+        camera_checksums = row.get("camera_frame_sha256")
+        if camera_checksums is not None and (
+            not isinstance(camera_checksums, dict)
+            or not camera_checksums
+            or any(
+                not isinstance(camera, str)
+                or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", camera)
+                or not re.fullmatch(r"[a-f0-9]{64}", str(checksum))
+                for camera, checksum in camera_checksums.items()
+            )
+        ):
+            raise DatasetError("episode record has invalid camera frame checksums")
         previous_sim_step = sim_step
         previous_monotonic_ns = monotonic_ns
     return rows
@@ -1118,8 +1209,35 @@ class S3DatasetStore:
     def publish_episode(
         self, episode_dir: Path, metadata: dict[str, Any]
     ) -> dict[str, Any]:
-        video = episode_dir / "episode.mp4"
-        _encode_frames(episode_dir / "frames", video, int(metadata.get("fps") or FPS))
+        raw_cameras = metadata.get("cameras")
+        camera_ids = (
+            [str(camera) for camera in raw_cameras]
+            if isinstance(raw_cameras, list) and raw_cameras
+            else ["primary"]
+        )
+        if (
+            len(camera_ids) > 4
+            or len(set(camera_ids)) != len(camera_ids)
+            or any(
+                not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", camera)
+                for camera in camera_ids
+            )
+        ):
+            raise DatasetError("episode metadata has invalid cameras")
+        videos: dict[str, Path] = {}
+        for camera_index, camera in enumerate(camera_ids):
+            frame_dir = (
+                episode_dir / "frames"
+                if camera_index == 0
+                else episode_dir / f"frames-{camera}"
+            )
+            video = (
+                episode_dir / "episode.mp4"
+                if camera_index == 0
+                else episode_dir / f"episode-{camera}.mp4"
+            )
+            _encode_frames(frame_dir, video, int(metadata.get("fps") or FPS))
+            videos[camera] = video
         records = episode_dir / "records.jsonl"
         commits = self._commits()
         existing = [
@@ -1143,17 +1261,37 @@ class S3DatasetStore:
             }
         episode_index = 0 if not commits else int(commits[-1]["episode_index"]) + 1
         bundle = f"episodes/{episode_index:06d}-{metadata['episode_uuid']}"
-        objects = {
+        primary_camera = camera_ids[0]
+        primary_frames = sorted((episode_dir / "frames").glob("frame-*.jpg"))
+        objects: dict[str, Any] = {
             "records": self._put_file(f"{bundle}/records.jsonl", records),
-            "video": self._put_file(f"{bundle}/episode.mp4", video),
+            "video": self._put_file(f"{bundle}/episode.mp4", videos[primary_camera]),
             "metadata": self._put_file(
                 f"{bundle}/episode.json", episode_dir / "episode.json"
             ),
             "frames": [
                 self._put_file(f"{bundle}/frames/{path.name}", path)
-                for path in sorted((episode_dir / "frames").glob("frame-*.jpg"))
+                for path in primary_frames
             ],
         }
+        if len(camera_ids) > 1:
+            objects["videos"] = {
+                camera: self._put_file(f"{bundle}/videos/{camera}.mp4", videos[camera])
+                for camera in camera_ids
+            }
+            objects["frames_by_camera"] = {
+                camera: [
+                    self._put_file(f"{bundle}/frames/{camera}/{path.name}", path)
+                    for path in sorted(
+                        (
+                            episode_dir / "frames"
+                            if index == 0
+                            else episode_dir / f"frames-{camera}"
+                        ).glob("frame-*.jpg")
+                    )
+                ]
+                for index, camera in enumerate(camera_ids)
+            }
         commit = {
             "schema": "npa.leisaac.episode-commit.v1",
             "episode_index": episode_index,

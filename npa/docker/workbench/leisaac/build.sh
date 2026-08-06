@@ -55,6 +55,7 @@ for path in \
   npa/src/npa/smoke/golden_evals.yaml \
   npa/src/npa/agent_backend/leisaac_registry.py \
   npa/src/npa/agent_backend/leisaac_transport.py \
+  npa/src/npa/agent_backend/leisaac_bundles.py \
   npa/src/npa/workbench/leisaac \
   npa/src/npa/cli/workbench/leisaac.py; do
   if ! git -C "$NPA_ROOT/.." diff --quiet HEAD -- "$path"; then

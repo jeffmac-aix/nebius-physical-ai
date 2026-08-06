@@ -5,8 +5,10 @@ instrumentation, and security model, see
 [LeIsaac low-latency browser transport](guides/leisaac-transport-latency.md).
 
 NPA exposes [LightwheelAI/LeIsaac](https://github.com/LightwheelAI/leisaac)
-as a separate agent-UI tab while the agent has a registered, usable live
-session. The integration runs upstream LeIsaac v0.4.0 at commit
+as a persistent agent-UI tab for a selected session. Live controls report an
+explicit unavailable/reconnect state, while the immutable S3 episode browser
+remains usable without a running simulator. The integration runs upstream
+LeIsaac v0.4.0 at commit
 `1651c321e9b0c1bb54233211fc7b3cd70d8373d5`, the real
 upstream `SO101Keyboard`. The checked-in registry advertises only the two tasks
 at that commit that use this exact single-arm control and asset path:
@@ -33,19 +35,47 @@ run/task/device, fixed transport endpoints, expiry, source commit, and
 digest-pinned image, registry fingerprint, task/environment identity, and S3
 dataset destination, then verifies the live service's matching one-way nonce
 attestation. The raw nonce never appears in `/status` or the browser. Any
-absent, stale, malformed, unreachable, mismatched, or
-non-ready session leaves the tab absent. Selecting another live LeIsaac run
+absent, stale, malformed, unreachable, mismatched, or non-ready live session
+disables live controls without removing an already selected dataset surface.
+Selecting another live LeIsaac run
 updates the registered capability; switching unrelated artifact runs does not
 discard it.
 
 The browser receives no service nonce or agent credential. The live Isaac Sim
-5.1 path returns same-origin, authenticated `/api/leisaac/frame.jpg` and
-`/api/leisaac/input` routes. The agent resolves only the selected run's
+5.1 path returns same-origin, authenticated `/api/leisaac/frame.jpg`,
+`/api/leisaac/input`, and `/api/leisaac/view` routes. The agent resolves only the selected run's
 validated capability, authenticates to the private service with the hidden
 session nonce, rejects malformed JPEG bytes and unknown controls, and relays
 the response through HTTPS. The service reports accepted inputs separately
 from inputs consumed by upstream `SO101Keyboard`, so live validation proves
 that controls reached the simulator rather than only the public API.
+
+The preferred control WebSocket also accepts direct SO-101 actions for a real
+browser gamepad or a custom action source. It is not a raw public device port:
+the same HTTPS authentication, short-lived run/client-bound WebSocket session,
+sequence ledger, bounded message size, reconnect handling, and accepted/applied
+acknowledgements apply. The exact action message is:
+
+```json
+{
+  "v": 1,
+  "type": "action",
+  "run_id": "SELECTED_RUN",
+  "client_id": "custom-device-instance",
+  "seq": 1,
+  "device": "custom-so101",
+  "action": [0, 0, 0, 0, 0, 0, 0, 0],
+  "client_mono_ns": 0,
+  "client_wall_ns": 0
+}
+```
+
+`action` must be exactly eight finite numbers in `[-1, 1]`; device is exactly
+`browser-gamepad` or `custom-so101`. Sequence reuse with different content,
+gaps, stale history, unknown fields, non-finite values, and unsupported devices
+are rejected. The simulator consumes a direct action once, clears it, and emits
+the existing simulator-step application acknowledgement. This keeps a lost
+release or disconnected custom source from leaving persistent motion.
 
 The older WebRTC path remains available as a compatibility transport. In that
 mode, the no-store status response includes one derived session-scoped TURN
@@ -105,7 +135,7 @@ unlicensed optional Feetech SDK used by physical leader hardware is not
 redistributed; an explicit packaging-only patch removes that dependency edge,
 and this browser service uses upstream's software keyboard path with a narrow,
 fail-safe integration patch that publishes readiness only after the real task
-reset and first non-empty RTX frame. It drains a bounded, validated input queue
+reset and non-empty workspace and overview RTX frames. It drains a bounded, validated input queue
 inside upstream `SO101Keyboard`, applies each press for eight simulation steps,
 and records the consumed-input count separately. Browser teleoperation uses
 the RTX viewport rather than policy camera tensors, so the same patch removes
@@ -120,14 +150,20 @@ headless session uses the active viewport rather than RTX camera observations,
 and the default asset-loading loop does not terminate reliably on this path.
 The pod requests 16 CPU cores and may use up to 32 so
 the USD-backed first reset is not throttled by the previous eight-core limit. The
+runtime creates a second labeled Kit viewport backed by a dedicated camera.
+Both callbacks use one capture-group identity, so the recorder commits a frame
+only after both camera JPEGs exist. The public binary envelope identifies the
+camera without base64, the relay alternates bounded latest values so one camera
+cannot starve the other, and drag/touch/wheel orbit commands update only the
+overview camera. Robot keys remain scoped to workspace focus. The
 session supervisor starts Kit in an isolated process session with closed stdin
 so HTTP-service signal handling cannot interfere with upstream teleoperation.
 The browser service uses the explicit launch seed (default `42`) and reports it
 with the stable environment identity in `/status` and every recorded frame.
 On a cold pod, liveness remains healthy while the supervised simulator process
 is alive, including during the licensed runtime fetch and first reset. Readiness
-and `/status` remain unavailable until the real reset and a non-empty captured
-frame are both ready; a failed or exited simulator still fails liveness so
+and `/status` remain unavailable until the real reset and both non-empty captured
+camera frames are ready; a failed or exited simulator still fails liveness so
 Kubernetes can
 restart it while preserving the pod-local `emptyDir` caches.
 The exact patch is commit-locked in the image build and named in runtime
@@ -240,6 +276,33 @@ and do not discard the pod-local episode; **Finalize & upload** becomes a retry
 when the prior conditional publication attempt failed. Marking an outcome
 freezes the episode boundary before upload.
 
+The **Custom assets and devices** area accepts a bounded set of USD, Python,
+and JSON files. Paths are relative POSIX paths with no traversal, duplicates,
+or unsupported suffixes; each file and the canonical bundle carry SHA-256, and
+objects are written below the selected dataset's immutable `bundles/` prefix.
+A robot/scene entrypoint must be USD. A device entrypoint is a JSON mapping for
+`npa.leisaac.so101-device.v1`: driver `custom-so101`, the exact action order
+`x,y,z,roll,pitch,yaw,shoulder_pan,gripper`, and an integer update rate from 1
+through 120 Hz. Uploaded Python is parsed but never executed:
+only docstrings, approved Isaac Lab/LeIsaac/typing/numpy imports, and literal
+declarations are accepted. Calls, functions, classes, attribute writes, unsafe
+imports, and executable statements are rejected.
+
+Selecting a bundle is an authenticated runtime operation, not a cosmetic UI
+preference. The runtime downloads the manifest and each file directly from the
+selected dataset prefix, revalidates canonical and per-file SHA-256 values,
+materializes only below a digest-named private cache, and rejects a kind
+mismatch. It refuses to restart while a recording is active. Otherwise it
+passes the verified robot and scene USD entrypoints to the pinned task config,
+passes the device descriptor as provenance for the validated direct-action
+channel, terminates only the supervised simulator child, and starts it again.
+The tab remains present with an explicit reconnect state until both distinct
+RTX viewports are nonblank. Runtime health and episode provenance expose the
+selected names and digests without exposing storage credentials. Custom robot
+assets must preserve the SO-101 joint/prim contract and custom scenes must
+preserve the selected task's expected object prim names; incompatible USD fails
+the real task startup rather than silently falling back to stock assets.
+
 The authenticated UI polls authoritative recorder status continuously and
 recovers the same state after a refresh or reconnect. Its transition contract
 is:
@@ -258,6 +321,38 @@ queue, so double-clicks and concurrent requests cannot enqueue duplicate
 episode commits. The final idle status exposes the immutable dataset version,
 episode index, and episode-commit URI.
 
+## Immutable episode browser
+
+The persistent **Episodes** area uses only the selected manifest's configured
+S3 dataset prefix. Version and episode listings are bounded and paginated; no
+bucket-wide list or local-file fallback is used. Filters cover task,
+environment, outcome, date, robot, scene, and device. Finalize returns the exact
+immutable version and episode, so **View uploaded episode** opens it immediately
+without relying on `latest.json` or a page reload.
+
+Video is served through an authenticated same-origin streaming route. The
+backend validates the committed size/checksum metadata, forwards bounded full,
+open-ended, and suffix byte ranges to S3, returns `206` with exact
+`Content-Range`, and returns `416` for invalid bounds. It never buffers a whole
+MP4 in FastAPI and never returns a presigned URL. H.264 files are encoded with
+`+faststart`, so browser metadata, seeking, and resume do not require the final
+object bytes first.
+
+The player renders the committed metadata and checksums, immutable dataset
+version, task/environment/outcome, start/end/duration/frame count, success and
+reset markers, and robot/scene/device/bundle provenance. Its scrubber aligns
+video time with action, state, reward, marker, and source timestamps. Playback
+rate, next/previous episode, keyboard controls, retry, and records/metadata
+downloads remain available. Two-camera commits use synchronized workspace and
+overview tracks from the same capture groups. Older one-camera commits show an
+explicit single-camera fallback. Unrecognized committed artifacts remain
+visible as downloads instead of disappearing.
+
+**Describe this frame** captures the pixels from the video element currently
+displayed in the episode player and submits them with the visible episode and
+timeline metadata. If capture fails or the frame is blank, the UI reports that
+failure and does not claim the agent saw pixels.
+
 ## LeRobot demonstration dataset
 
 Every captured JPEG comes from the real RTX viewport and is paired with the
@@ -268,8 +363,9 @@ task/environment identity, source-frame SHA-256, and monotonic
 and wall-clock nanosecond timestamps. The fixed 16 FPS `timestamp` field is the
 LeRobot video clock; the original clocks remain separate audit features.
 
-Finalization encodes synchronized JPEGs as H.264 and uploads both the ordered
-raw JPEGs and a unique raw episode bundle. Their per-frame hashes are tied to
+Finalization encodes each synchronized camera as an H.264 faststart MP4 and
+uploads the ordered raw JPEGs and a unique raw episode bundle. Their per-camera
+per-frame hashes are tied to
 the records and commit, so frame/action alignment remains independently
 auditable after lossy H.264 encoding. A conditional
 `commits/episode-NNNNNN.json` object makes the
@@ -352,8 +448,8 @@ relay and any compatibility TURN unit, and deletes only the matching
 NPA-managed UDP `3478` rule (plus a legacy `47999` rule when an older
 session recorded one). It preserves the S3
 manifest/log/evidence record.
-Once the service is gone, live health fails and the agent UI removes the tab
-even if the historical manifest still exists.
+Once the service is gone, live health fails and the agent UI disables live
+controls while keeping immutable S3 episodes and downloads available.
 
 Durable validation evidence and screenshots live under
 `docs/evidence/leisaac/`.

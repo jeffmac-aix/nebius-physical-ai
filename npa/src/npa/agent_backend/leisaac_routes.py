@@ -9,6 +9,7 @@ import hashlib
 import hmac
 import json
 import logging
+import math
 import re
 import secrets
 import threading
@@ -18,6 +19,7 @@ from typing import Any, Callable
 from urllib.parse import urlparse
 
 from starlette.requests import Request
+from starlette.responses import StreamingResponse
 from starlette.websockets import WebSocket
 
 LOG = logging.getLogger(__name__)
@@ -30,9 +32,11 @@ try:  # agent VM: /opt/npa-agent is on sys.path
     from agent_backend.leisaac import (
         LEISAAC_CLIENT_MODULE_PATH,
         LEISAAC_CLIENT_JS_SHA256,
+        LEISAAC_BUNDLES_PATH,
         LEISAAC_CONTROL_WS_PATH,
         LEISAAC_RECORDER_PATH,
         LEISAAC_SIGNAL_PORT,
+        LEISAAC_VIEW_PATH,
         LEISAAC_VIDEO_WS_PATH,
         normalize_manifest,
         selected_run_id,
@@ -40,7 +44,7 @@ try:  # agent VM: /opt/npa-agent is on sys.path
         validate_health,
     )
     from agent_backend.leisaac_transport import (
-        AsyncLatestValue,
+        AsyncLatestByKey,
         CONTROL_SUBPROTOCOL,
         MAX_CONTROL_MESSAGE_BYTES,
         MAX_FRAME_BYTES,
@@ -52,13 +56,23 @@ try:  # agent VM: /opt/npa-agent is on sys.path
         stamp_agent_frame,
         unpack_frame,
     )
+    from agent_backend.leisaac_episodes import (
+        EpisodeStore,
+        EpisodeStoreError,
+        RangeNotSatisfiable,
+        iter_s3_body,
+        parse_http_range,
+    )
+    from agent_backend.leisaac_bundles import BundleError, BundleStore
 except ImportError:  # repository tests
     from npa.agent_backend.leisaac import (
         LEISAAC_CLIENT_MODULE_PATH,
         LEISAAC_CLIENT_JS_SHA256,
+        LEISAAC_BUNDLES_PATH,
         LEISAAC_CONTROL_WS_PATH,
         LEISAAC_RECORDER_PATH,
         LEISAAC_SIGNAL_PORT,
+        LEISAAC_VIEW_PATH,
         LEISAAC_VIDEO_WS_PATH,
         normalize_manifest,
         selected_run_id,
@@ -66,7 +80,7 @@ except ImportError:  # repository tests
         validate_health,
     )
     from npa.agent_backend.leisaac_transport import (
-        AsyncLatestValue,
+        AsyncLatestByKey,
         CONTROL_SUBPROTOCOL,
         MAX_CONTROL_MESSAGE_BYTES,
         MAX_FRAME_BYTES,
@@ -78,6 +92,14 @@ except ImportError:  # repository tests
         stamp_agent_frame,
         unpack_frame,
     )
+    from npa.agent_backend.leisaac_episodes import (
+        EpisodeStore,
+        EpisodeStoreError,
+        RangeNotSatisfiable,
+        iter_s3_body,
+        parse_http_range,
+    )
+    from npa.agent_backend.leisaac_bundles import BundleError, BundleStore
 
 
 @dataclass
@@ -91,6 +113,8 @@ class LeIsaacDeps:
     websocket_connect: Callable[..., Any]
     http_post: Callable[..., Any] | None = None
     save_state: Callable[[dict], None] | None = None
+    s3_client: Callable[[], tuple[Any, dict]] | None = None
+    s3_buckets: Callable[[Any, dict], list[str]] | None = None
 
 
 def _resolve(deps: LeIsaacDeps, requested_run_id: str) -> tuple[dict | None, str]:
@@ -298,6 +322,143 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
             manifest_cache[run_id] = (now, manifest, reason)
         return manifest, reason
 
+    def episode_store(run_id: str) -> EpisodeStore:
+        manifest, reason = cached_resolve(run_id)
+        if not manifest:
+            raise EpisodeStoreError(reason, status_code=404)
+        if deps.s3_client is None or deps.s3_buckets is None:
+            raise EpisodeStoreError("episode storage is unavailable", status_code=503)
+        try:
+            s3, settings = deps.s3_client()
+            buckets = deps.s3_buckets(s3, settings)
+        except Exception as exc:
+            raise EpisodeStoreError(
+                "episode storage is unavailable", status_code=503
+            ) from exc
+        return EpisodeStore(
+            s3,
+            str(manifest.get("dataset_uri") or ""),
+            allowed_buckets=buckets,
+            run_id=str(manifest["run_id"]),
+        )
+
+    def bundle_store(run_id: str) -> BundleStore:
+        manifest, reason = cached_resolve(run_id)
+        if not manifest:
+            raise BundleError(reason, status_code=404)
+        if deps.s3_client is None or deps.s3_buckets is None:
+            raise BundleError("bundle storage is unavailable", status_code=503)
+        try:
+            s3, settings = deps.s3_client()
+            buckets = deps.s3_buckets(s3, settings)
+        except Exception as exc:
+            raise BundleError("bundle storage is unavailable", status_code=503) from exc
+        return BundleStore(
+            s3,
+            str(manifest.get("dataset_uri") or ""),
+            allowed_buckets=buckets,
+        )
+
+    def bundle_error(exc: BundleError) -> Any:
+        return deps.response(
+            content=json.dumps({"detail": exc.detail}),
+            status_code=exc.status_code,
+            media_type="application/json",
+            headers={"Cache-Control": "private, no-store"},
+        )
+
+    def episode_error(exc: EpisodeStoreError) -> Any:
+        headers = {"Cache-Control": "private, no-store"}
+        if isinstance(exc, RangeNotSatisfiable):
+            headers["Content-Range"] = f"bytes */{exc.size}"
+            headers["Accept-Ranges"] = "bytes"
+        return deps.response(
+            content=json.dumps({"detail": exc.detail}),
+            status_code=exc.status_code,
+            media_type="application/json",
+            headers=headers,
+        )
+
+    def episode_request_allowed(request: Request) -> bool:
+        if str(request.headers.get("x-forwarded-proto") or "").lower() != "https":
+            return False
+        # nginx enforces the agent authentication.  Reject explicit cross-site
+        # browser fetches while allowing video-element Range requests, which do
+        # not consistently carry Origin across supported browsers.
+        return str(request.headers.get("sec-fetch-site") or "").lower() != "cross-site"
+
+    async def stream_object(
+        store: EpisodeStore,
+        ref: Any,
+        *,
+        range_header: str = "",
+        media_type: str,
+        filename: str = "",
+    ) -> Any:
+        try:
+            head = await asyncio.to_thread(
+                store.client.head_object, Bucket=store.bucket, Key=ref.key
+            )
+            size = int(head.get("ContentLength", -1))
+        except Exception:
+            return episode_error(
+                EpisodeStoreError("episode artifact is unavailable", status_code=502)
+            )
+        if size < 0 or size != int(ref.size):
+            return episode_error(
+                EpisodeStoreError(
+                    "episode artifact size does not match its immutable commit",
+                    status_code=502,
+                )
+            )
+        metadata_sha = str((head.get("Metadata") or {}).get("sha256") or "")
+        if metadata_sha and metadata_sha != str(ref.sha256):
+            return episode_error(
+                EpisodeStoreError(
+                    "episode artifact storage checksum does not match its commit",
+                    status_code=502,
+                )
+            )
+        try:
+            byte_range = parse_http_range(range_header, size)
+        except RangeNotSatisfiable as exc:
+            return episode_error(exc)
+        get_kwargs: dict[str, Any] = {"Bucket": store.bucket, "Key": ref.key}
+        status_code = 200
+        length = size
+        headers = {
+            "Accept-Ranges": "bytes",
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+            "X-NPA-SHA256": str(ref.sha256),
+            "X-NPA-Checksum-State": (
+                "storage-metadata-match" if metadata_sha else "commit-declared"
+            ),
+        }
+        if byte_range is not None:
+            get_kwargs["Range"] = f"bytes={byte_range.start}-{byte_range.end}"
+            status_code = 206
+            length = byte_range.length
+            headers["Content-Range"] = (
+                f"bytes {byte_range.start}-{byte_range.end}/{byte_range.size}"
+            )
+        if filename:
+            headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+        headers["Content-Length"] = str(length)
+        try:
+            upstream = await asyncio.to_thread(store.client.get_object, **get_kwargs)
+            body = upstream["Body"]
+        except Exception:
+            return episode_error(
+                EpisodeStoreError("episode artifact is unavailable", status_code=502)
+            )
+        return StreamingResponse(
+            iter_s3_body(body, length),
+            status_code=status_code,
+            media_type=media_type,
+            headers=headers,
+        )
+
     @app.get("/leisaac/status")
     def leisaac_status(request: Request, run_id: str = "") -> Any:
         if str(request.headers.get("x-forwarded-proto") or "").lower() != "https":
@@ -314,6 +475,13 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
                 payload = status_payload(manifest, health, reason=reason)
         if payload.get("available"):
             payload["agent_transport_metrics"] = transport_metrics.snapshot()
+        state = deps.load_state()
+        leisaac_value = state.get("leisaac") if isinstance(state, dict) else None
+        leisaac_state: dict[str, Any] = (
+            leisaac_value if isinstance(leisaac_value, dict) else {}
+        )
+        selection = leisaac_state.get("bundle_selection")
+        payload["bundle_selection"] = selection if isinstance(selection, dict) else {}
         return deps.response(
             content=json.dumps(payload),
             status_code=200,
@@ -322,6 +490,384 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
                 "Cache-Control": "private, no-store",
                 "X-Content-Type-Options": "nosniff",
             },
+        )
+
+    @app.get(LEISAAC_BUNDLES_PATH.removeprefix("/api"))
+    async def leisaac_bundles(request: Request) -> Any:
+        if not episode_request_allowed(request):
+            return bundle_error(
+                BundleError(
+                    "same-origin authenticated HTTPS is required", status_code=403
+                )
+            )
+        try:
+            store = await asyncio.to_thread(
+                bundle_store, str(request.query_params.get("run_id") or "")
+            )
+            result = await asyncio.to_thread(
+                store.list, kind=str(request.query_params.get("kind") or "")
+            )
+        except BundleError as exc:
+            return bundle_error(exc)
+        return deps.response(
+            content=json.dumps(result),
+            status_code=200,
+            media_type="application/json",
+            headers={"Cache-Control": "private, no-store"},
+        )
+
+    @app.post(LEISAAC_BUNDLES_PATH.removeprefix("/api"))
+    async def leisaac_bundle_upload(request: Request) -> Any:
+        if (
+            not episode_request_allowed(request)
+            or request.headers.get("x-npa-leisaac-control") != "1"
+        ):
+            return bundle_error(
+                BundleError(
+                    "same-origin authenticated HTTPS upload is required",
+                    status_code=403,
+                )
+            )
+        try:
+            length = int(request.headers.get("content-length") or "0")
+        except ValueError:
+            length = 0
+        if not 1 <= length <= 18 * 1024 * 1024:
+            return bundle_error(BundleError("bundle request size is invalid"))
+        try:
+            payload = await request.json()
+            store = await asyncio.to_thread(
+                bundle_store, str(request.query_params.get("run_id") or "")
+            )
+            result = await asyncio.to_thread(store.publish, payload)
+        except ValueError:
+            return bundle_error(BundleError("bundle request is not valid JSON"))
+        except BundleError as exc:
+            return bundle_error(exc)
+        return deps.response(
+            content=json.dumps(result),
+            status_code=201,
+            media_type="application/json",
+            headers={"Cache-Control": "private, no-store"},
+        )
+
+    @app.post((LEISAAC_BUNDLES_PATH + "/select").removeprefix("/api"))
+    async def leisaac_bundle_select(request: Request) -> Any:
+        if (
+            not episode_request_allowed(request)
+            or request.headers.get("x-npa-leisaac-control") != "1"
+            or deps.save_state is None
+        ):
+            return bundle_error(
+                BundleError(
+                    "same-origin authenticated selection is required", status_code=403
+                )
+            )
+        try:
+            payload = await request.json()
+            if not isinstance(payload, dict) or set(payload) != {
+                "kind",
+                "bundle_sha256",
+            }:
+                raise BundleError("bundle selection fields are invalid")
+            store = await asyncio.to_thread(
+                bundle_store, str(request.query_params.get("run_id") or "")
+            )
+            manifest = await asyncio.to_thread(
+                store.get, str(payload.get("bundle_sha256") or "")
+            )
+            if manifest.get("kind") != payload.get("kind"):
+                raise BundleError("bundle selection kind does not match")
+            loaded_state = deps.load_state()
+            state = (
+                json.loads(json.dumps(loaded_state))
+                if isinstance(loaded_state, dict)
+                else {}
+            )
+            leisaac_state = state.setdefault("leisaac", {})
+            if not isinstance(leisaac_state, dict):
+                leisaac_state = {}
+                state["leisaac"] = leisaac_state
+            selection = leisaac_state.setdefault("bundle_selection", {})
+            if not isinstance(selection, dict):
+                selection = {}
+                leisaac_state["bundle_selection"] = selection
+            selection[str(payload["kind"])] = {
+                "bundle_sha256": manifest["bundle_sha256"],
+                "name": manifest["name"],
+                "entrypoint": manifest["entrypoint"],
+            }
+            # Agent state can outlive an operator-directed dataset-prefix change.
+            # Do not let an unavailable bundle from the previous store poison the
+            # cumulative selection sent to the current runtime. This loop is
+            # inherently bounded to robot, scene, and device.
+            for selected_kind, selected_item in list(selection.items()):
+                if selected_kind == payload["kind"]:
+                    continue
+                try:
+                    selected_manifest = await asyncio.to_thread(
+                        store.get,
+                        str(
+                            selected_item.get("bundle_sha256")
+                            if isinstance(selected_item, dict)
+                            else ""
+                        ),
+                    )
+                except BundleError:
+                    del selection[selected_kind]
+                    continue
+                if selected_manifest.get("kind") != selected_kind:
+                    del selection[selected_kind]
+            capability, reason = await asyncio.to_thread(
+                cached_resolve, str(request.query_params.get("run_id") or "")
+            )
+            if not capability:
+                raise BundleError(reason, status_code=404)
+            if deps.http_post is None:
+                raise BundleError("bundle application is unavailable", status_code=503)
+            apply_payload = {
+                "selection": {
+                    kind: str(item["bundle_sha256"])
+                    for kind, item in sorted(selection.items())
+                    if isinstance(item, dict) and item.get("bundle_sha256")
+                }
+            }
+            try:
+                upstream = await asyncio.to_thread(
+                    deps.http_post,
+                    f"{capability['service_url']}/bundles/apply",
+                    json=apply_payload,
+                    headers={"X-NPA-LeIsaac-Nonce": capability["session_nonce"]},
+                    timeout=30.0,
+                    follow_redirects=False,
+                )
+            except Exception:
+                upstream = None
+            if upstream is None:
+                raise BundleError("bundle application is unavailable", status_code=503)
+            upstream_status = int(upstream.status_code)
+            if upstream_status != 202:
+                try:
+                    upstream_detail = str(upstream.json().get("detail") or "")
+                except Exception:
+                    upstream_detail = ""
+                raise BundleError(
+                    upstream_detail or "bundle application was rejected",
+                    status_code=(
+                        upstream_status if upstream_status in {400, 409} else 502
+                    ),
+                )
+            deps.save_state(state)
+        except (ValueError, BundleError) as exc:
+            return bundle_error(
+                exc
+                if isinstance(exc, BundleError)
+                else BundleError("bundle selection is invalid")
+            )
+        return deps.response(
+            content=json.dumps(
+                {
+                    "selected": selection[str(payload["kind"])],
+                    "restarting": True,
+                }
+            ),
+            status_code=202,
+            media_type="application/json",
+            headers={"Cache-Control": "private, no-store"},
+        )
+
+    @app.get("/leisaac/episodes/versions")
+    async def leisaac_episode_versions(request: Request) -> Any:
+        if not episode_request_allowed(request):
+            return episode_error(
+                EpisodeStoreError(
+                    "same-origin authenticated HTTPS is required", status_code=403
+                )
+            )
+        query = request.query_params
+        try:
+            store = await asyncio.to_thread(
+                episode_store, str(query.get("run_id") or "")
+            )
+            payload = await asyncio.to_thread(
+                store.list_versions,
+                limit=query.get("limit", "20"),
+                cursor=query.get("cursor", ""),
+            )
+        except EpisodeStoreError as exc:
+            return episode_error(exc)
+        return deps.response(
+            content=json.dumps(payload),
+            status_code=200,
+            media_type="application/json",
+            headers={"Cache-Control": "private, no-store"},
+        )
+
+    @app.get("/leisaac/episodes")
+    async def leisaac_episodes(request: Request) -> Any:
+        if not episode_request_allowed(request):
+            return episode_error(
+                EpisodeStoreError(
+                    "same-origin authenticated HTTPS is required", status_code=403
+                )
+            )
+        query = request.query_params
+        try:
+            store = await asyncio.to_thread(
+                episode_store, str(query.get("run_id") or "")
+            )
+            payload = await asyncio.to_thread(
+                store.list_episodes,
+                limit=query.get("limit", "20"),
+                cursor=query.get("cursor", ""),
+                version_id=str(query.get("version_id") or ""),
+                filters={
+                    name: query.get(name, "")
+                    for name in (
+                        "task",
+                        "environment",
+                        "outcome",
+                        "robot",
+                        "scene",
+                        "device",
+                        "date_from",
+                        "date_to",
+                    )
+                },
+            )
+        except EpisodeStoreError as exc:
+            return episode_error(exc)
+        return deps.response(
+            content=json.dumps(payload),
+            status_code=200,
+            media_type="application/json",
+            headers={"Cache-Control": "private, no-store"},
+        )
+
+    @app.get("/leisaac/episodes/{episode_id}")
+    async def leisaac_episode_detail(request: Request, episode_id: str) -> Any:
+        if not episode_request_allowed(request):
+            return episode_error(
+                EpisodeStoreError(
+                    "same-origin authenticated HTTPS is required", status_code=403
+                )
+            )
+        query = request.query_params
+        try:
+            store = await asyncio.to_thread(
+                episode_store, str(query.get("run_id") or "")
+            )
+            payload = await asyncio.to_thread(
+                store.detail,
+                episode_id,
+                version_id=str(query.get("version_id") or ""),
+            )
+        except EpisodeStoreError as exc:
+            return episode_error(exc)
+        return deps.response(
+            content=json.dumps(payload),
+            status_code=200,
+            media_type="application/json",
+            headers={"Cache-Control": "private, no-store"},
+        )
+
+    @app.get("/leisaac/episodes/{episode_id}/timeline")
+    async def leisaac_episode_timeline(request: Request, episode_id: str) -> Any:
+        if not episode_request_allowed(request):
+            return episode_error(
+                EpisodeStoreError(
+                    "same-origin authenticated HTTPS is required", status_code=403
+                )
+            )
+        query = request.query_params
+        try:
+            store = await asyncio.to_thread(
+                episode_store, str(query.get("run_id") or "")
+            )
+            payload = await asyncio.to_thread(
+                store.timeline,
+                episode_id,
+                version_id=str(query.get("version_id") or ""),
+            )
+        except EpisodeStoreError as exc:
+            return episode_error(exc)
+        return deps.response(
+            content=json.dumps(payload),
+            status_code=200,
+            media_type="application/json",
+            headers={"Cache-Control": "private, no-store"},
+        )
+
+    @app.get("/leisaac/episodes/{episode_id}/media/{camera_id}")
+    async def leisaac_episode_media(
+        request: Request, episode_id: str, camera_id: str
+    ) -> Any:
+        if not episode_request_allowed(request):
+            return episode_error(
+                EpisodeStoreError(
+                    "same-origin authenticated HTTPS is required", status_code=403
+                )
+            )
+        query = request.query_params
+        try:
+            store = await asyncio.to_thread(
+                episode_store, str(query.get("run_id") or "")
+            )
+            ref = await asyncio.to_thread(
+                store.media_ref,
+                episode_id,
+                camera_id,
+                version_id=str(query.get("version_id") or ""),
+            )
+        except EpisodeStoreError as exc:
+            return episode_error(exc)
+        return await stream_object(
+            store,
+            ref,
+            range_header=str(request.headers.get("range") or ""),
+            media_type="video/mp4",
+        )
+
+    @app.get("/leisaac/episodes/{episode_id}/download/{artifact_id}")
+    async def leisaac_episode_download(
+        request: Request, episode_id: str, artifact_id: str
+    ) -> Any:
+        if not episode_request_allowed(request):
+            return episode_error(
+                EpisodeStoreError(
+                    "same-origin authenticated HTTPS is required", status_code=403
+                )
+            )
+        query = request.query_params
+        try:
+            store = await asyncio.to_thread(
+                episode_store, str(query.get("run_id") or "")
+            )
+            ref = await asyncio.to_thread(
+                store.download_ref,
+                episode_id,
+                artifact_id,
+                version_id=str(query.get("version_id") or ""),
+            )
+        except EpisodeStoreError as exc:
+            return episode_error(exc)
+        media_type = {
+            "records": "application/x-ndjson",
+            "metadata": "application/json",
+        }.get(artifact_id, "application/octet-stream")
+        suffix = (
+            "jsonl"
+            if artifact_id == "records"
+            else "json"
+            if artifact_id == "metadata"
+            else "bin"
+        )
+        return await stream_object(
+            store,
+            ref,
+            range_header=str(request.headers.get("range") or ""),
+            media_type=media_type,
+            filename=f"episode-{int(episode_id):06d}-{artifact_id}.{suffix}",
         )
 
     @app.post("/leisaac/select")
@@ -365,7 +911,14 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
         state = deps.load_state()
         if not isinstance(state, dict):
             state = {}
-        state["leisaac"] = {"run_id": manifest["run_id"]}
+        # Periodic capability refresh re-selects the current run.  Preserve the
+        # checksum-verified bundle set accumulated by the explicit selection
+        # endpoint instead of silently reverting robot/scene/device state every
+        # ten seconds while a simulator restart is in progress.
+        current = state.get("leisaac")
+        leisaac_state = dict(current) if isinstance(current, dict) else {}
+        leisaac_state["run_id"] = manifest["run_id"]
+        state["leisaac"] = leisaac_state
         deps.save_state(state)
         return deps.response(
             content=json.dumps(
@@ -478,10 +1031,18 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
         return response
 
     @app.get("/leisaac/frame.jpg")
-    def leisaac_frame(request: Request, run_id: str = "") -> Any:
+    def leisaac_frame(
+        request: Request, run_id: str = "", camera: str = "workspace"
+    ) -> Any:
         if str(request.headers.get("x-forwarded-proto") or "").lower() != "https":
             return deps.response(
                 content=json.dumps({"detail": "public HTTPS is required"}),
+                status_code=400,
+                media_type="application/json",
+            )
+        if camera not in {"workspace", "overview"}:
+            return deps.response(
+                content=json.dumps({"detail": "invalid LeIsaac camera"}),
                 status_code=400,
                 media_type="application/json",
             )
@@ -495,6 +1056,7 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
         try:
             response = deps.http_get(
                 f"{manifest['service_url']}/frame.jpg",
+                params={"camera": camera},
                 timeout=5.0,
                 follow_redirects=False,
                 headers={"X-NPA-LeIsaac-Nonce": manifest["session_nonce"]},
@@ -532,10 +1094,104 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
                         "X-NPA-Frame-Sequence",
                         "X-NPA-Frame-Capture-Wall-Ns",
                         "X-NPA-Frame-SHA256",
+                        "X-NPA-Camera",
                     )
                     if response_headers.get(header)
                 },
             },
+        )
+
+    @app.post(LEISAAC_VIEW_PATH.removeprefix("/api"))
+    async def leisaac_view(request: Request, run_id: str = "") -> Any:
+        if (
+            str(request.headers.get("x-forwarded-proto") or "").lower() != "https"
+            or request.headers.get("x-npa-leisaac-control") != "1"
+        ):
+            return deps.response(
+                content=json.dumps(
+                    {"detail": "authenticated HTTPS view control is required"}
+                ),
+                status_code=403,
+                media_type="application/json",
+            )
+        try:
+            content_length = int(request.headers.get("content-length") or "0")
+        except ValueError:
+            content_length = 0
+        if not 1 <= content_length <= 4096:
+            return deps.response(
+                content=json.dumps({"detail": "invalid view command size"}),
+                status_code=400,
+                media_type="application/json",
+            )
+        payload: Any = None
+        try:
+            payload = await request.json()
+            exact = isinstance(payload, dict) and set(payload) == {
+                "camera",
+                "sequence",
+                "yaw_delta",
+                "pitch_delta",
+                "distance_delta",
+            }
+            sequence = int(payload["sequence"])
+            values = [
+                float(payload["yaw_delta"]),
+                float(payload["pitch_delta"]),
+                float(payload["distance_delta"]),
+            ]
+        except (ValueError, TypeError, KeyError, OverflowError):
+            exact = False
+            sequence = 0
+            values = []
+        if (
+            not exact
+            or not isinstance(payload, dict)
+            or payload.get("camera") != "overview"
+            or not 1 <= sequence <= 2**53 - 1
+            or len(values) != 3
+            or not all(math.isfinite(value) for value in values)
+            or abs(values[0]) > 0.5
+            or abs(values[1]) > 0.5
+            or abs(values[2]) > 1.0
+        ):
+            return deps.response(
+                content=json.dumps({"detail": "invalid view command"}),
+                status_code=400,
+                media_type="application/json",
+            )
+        manifest, reason = await asyncio.to_thread(cached_resolve, run_id)
+        if not manifest:
+            return deps.response(
+                content=json.dumps({"detail": reason}),
+                status_code=404,
+                media_type="application/json",
+            )
+        if deps.http_post is None:
+            upstream = None
+        else:
+            try:
+                upstream = await asyncio.to_thread(
+                    deps.http_post,
+                    f"{manifest['service_url']}/view",
+                    json=payload,
+                    headers={"X-NPA-LeIsaac-Nonce": manifest["session_nonce"]},
+                    timeout=5.0,
+                    follow_redirects=False,
+                )
+            except Exception:
+                upstream = None
+        if upstream is None or int(upstream.status_code) != 202:
+            return deps.response(
+                content=json.dumps({"detail": "LeIsaac view control is unavailable"}),
+                status_code=503,
+                media_type="application/json",
+            )
+        return deps.response(
+            content=json.dumps({"accepted": True, "sequence": sequence}),
+            status_code=202,
+            media_type="application/json",
+            headers={"Cache-Control": "private, no-store"},
         )
 
     @app.post("/leisaac/input")
@@ -565,22 +1221,31 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
             payload = await request.json()
         except ValueError:
             payload = None
+        direct_action = (
+            isinstance(payload, dict)
+            and payload.get("v") == 1
+            and payload.get("type") == "action"
+        )
         key = str(payload.get("key") if isinstance(payload, dict) else "").upper()
         event = str(payload.get("event") if isinstance(payload, dict) else "")
-        if key not in {
-            "W",
-            "S",
-            "A",
-            "D",
-            "Q",
-            "E",
-            "J",
-            "L",
-            "I",
-            "K",
-            "U",
-            "O",
-        } or event not in {"press", "release"}:
+        if not direct_action and (
+            key
+            not in {
+                "W",
+                "S",
+                "A",
+                "D",
+                "Q",
+                "E",
+                "J",
+                "L",
+                "I",
+                "K",
+                "U",
+                "O",
+            }
+            or event not in {"press", "release"}
+        ):
             return deps.response(
                 content=json.dumps({"detail": "invalid LeIsaac input"}),
                 status_code=400,
@@ -866,7 +1531,7 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
             await websocket.close(code=1008)
             return
         run_id = str(manifest["run_id"])
-        latest = AsyncLatestValue()
+        latest = AsyncLatestByKey(("workspace", "overview"))
         try:
             async with deps.websocket_connect(
                 _runtime_ws_uri(manifest, "/transport/video"),
@@ -899,8 +1564,28 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
                             raise TransportProtocolError(
                                 "invalid_frame", "runtime video message is invalid"
                             )
-                        unpack_frame(raw)
-                        await latest.publish((raw, time.monotonic_ns()))
+                        envelope, _content = unpack_frame(raw)
+                        # Credit the runtime as soon as the authenticated relay has
+                        # accepted a frame into its bounded latest-value queue.  A
+                        # browser receipt must not stall capture for every viewer:
+                        # slow clients are independently bounded and coalesced by
+                        # ``latest`` below.  Browser ACKs remain validated and
+                        # counted, but describe browser receipt rather than runtime
+                        # flow control.
+                        await upstream.send(
+                            json.dumps(
+                                {
+                                    "v": 1,
+                                    "type": "frame-ack",
+                                    "run_id": run_id,
+                                    "sequence": envelope.sequence,
+                                },
+                                separators=(",", ":"),
+                            )
+                        )
+                        transport_metrics.increment("frames_relay_acked")
+                        camera = "overview" if envelope.flags & 1 else "workspace"
+                        await latest.publish(camera, (raw, time.monotonic_ns()))
 
                 async def acknowledge_runtime() -> None:
                     while True:
@@ -913,17 +1598,25 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
                                 "invalid_message",
                                 "video acknowledgements must be text",
                             )
-                        acknowledgement = parse_video_ack(raw, expected_run_id=run_id)
-                        await upstream.send(
-                            json.dumps(acknowledgement, separators=(",", ":"))
-                        )
+                        parse_video_ack(raw, expected_run_id=run_id)
+                        transport_metrics.increment("frames_browser_acked")
 
                 async def send_browser() -> None:
-                    generation = 0
+                    generations: dict[str, int] = {}
+                    next_camera_index = 0
                     while True:
-                        generation, item, skipped = await latest.wait_after(
-                            generation, timeout=20.0
+                        (
+                            camera,
+                            generation,
+                            item,
+                            skipped,
+                            next_camera_index,
+                        ) = await latest.wait_after(
+                            generations,
+                            next_index=next_camera_index,
+                            timeout=20.0,
                         )
+                        generations[camera] = generation
                         raw, received_mono_ns = item
                         if skipped:
                             transport_metrics.increment("frames_coalesced", skipped)

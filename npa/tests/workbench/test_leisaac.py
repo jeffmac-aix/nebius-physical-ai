@@ -7,8 +7,10 @@ import importlib.util
 import io
 import json
 import os
+import sys
 import tarfile
 import threading
+from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -376,6 +378,8 @@ def test_observability_patch_is_exact_and_records_real_upstream_input() -> None:
     assert "NPA_LEISAAC_READY_PATH" in source
     assert "NPA_LEISAAC_BROWSER_TELEOP" in source
     assert "capture_viewport_to_buffer" in source
+    assert "UsdGeom.Camera.Define(overview_viewport.stage, overview_camera_path)" in source
+    assert source.count("viewport_api=overview_viewport") == 2
     assert "NPA_LEISAAC_INPUT_QUEUE" in source
     assert "NPA_LEISAAC_APPLIED_COUNTER" in source
     assert "NPA_LEISAAC_FRAME_PATH" in source
@@ -389,6 +393,9 @@ def test_observability_patch_is_exact_and_records_real_upstream_input() -> None:
     assert 'args_cli.task == "LeIsaac-SO101-LiftCube-v0"' in source
     assert "env_cfg.events.domain_randomize_1 = None" in source
     assert "env_cfg.wait_for_textures = False" in source
+    assert "NPA_LEISAAC_CUSTOM_ROBOT_USD" in source
+    assert "NPA_LEISAAC_CUSTOM_SCENE_USD" in source
+    assert "custom USD is outside the verified bundle cache" in source
     assert 'if os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") == "1":' in source
     assert "env.render()" in source
 
@@ -531,8 +538,54 @@ def test_liveness_preserves_live_initial_reset_and_restarts_dead_child() -> None
     assert server.liveness_status() == 200
     child.poll = lambda: 1
     assert server.liveness_status() == 503
+    server.STATE.update(state="restarting", pid=42)
+    assert server.liveness_status() == 200
     server.STATE.update(state="failed", pid=0)
     assert server.liveness_status() == 503
+
+
+def test_custom_bundle_apply_is_mocked_at_s3_call_site_and_restart_safe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    server = _session_server_module()
+    recorder = tmp_path / "status.json"
+    recorder.write_text('{"state":"idle"}\n', encoding="utf-8")
+    monkeypatch.setattr(server, "RECORDER_STATUS_PATH", recorder)
+    monkeypatch.setattr(server, "CUSTOM_BUNDLE_ROOT", tmp_path / "custom")
+    monkeypatch.setenv("NPA_LEISAAC_OUTPUT_PATH", "s3://bucket/datasets/leisaac")
+    calls: list[tuple[str, Path]] = []
+
+    class FakeStore:
+        def __init__(self, _client, _uri, *, allowed_buckets):
+            assert allowed_buckets == ["bucket"]
+
+        def materialize(self, digest, destination):
+            calls.append((digest, destination))
+            return {
+                "bundle_sha256": digest,
+                "kind": "robot",
+                "name": "custom-so101",
+                "entrypoint": "robot.usda",
+                "entrypoint_path": str(destination / "robot.usda"),
+            }
+
+    monkeypatch.setattr(server, "BundleStore", FakeStore)
+    monkeypatch.setitem(
+        sys.modules, "boto3", SimpleNamespace(client=lambda *_args, **_kwargs: object())
+    )
+    server.BUNDLE_SELECTION.clear()
+    server.BUNDLE_RESTART.clear()
+    digest = "a" * 64
+
+    selected = server.apply_bundle_selection({"robot": digest})
+
+    assert selected["robot"]["bundle_sha256"] == digest
+    assert calls == [(digest, tmp_path / "custom" / digest)]
+    assert server.BUNDLE_RESTART.is_set()
+    assert server.STATE["state"] == "restarting"
+    recorder.write_text('{"state":"recording"}\n', encoding="utf-8")
+    with pytest.raises(server.BundleError, match="finish or discard"):
+        server.apply_bundle_selection({"robot": digest})
 
 
 def test_agent_bootstrap_installs_turn_without_baking_session_configuration() -> None:

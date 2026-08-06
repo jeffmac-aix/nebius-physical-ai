@@ -14,6 +14,7 @@ import hashlib
 import hmac
 import json
 import logging
+import math
 import os
 import re
 import secrets
@@ -29,6 +30,7 @@ import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from fastapi import FastAPI, Request, WebSocket
 from fastapi.responses import JSONResponse, Response
@@ -61,7 +63,7 @@ except ImportError:  # Repository unit tests import the script directly.
 
 try:
     from leisaac_transport import (
-        AsyncLatestValue,
+        AsyncLatestByKey,
         CONTROL_SUBPROTOCOL,
         ControlLedger,
         FrameEnvelope,
@@ -75,9 +77,10 @@ try:
         parse_control_message,
         parse_video_ack,
     )
+
 except ImportError:  # Repository unit tests import the script directly.
     from npa.agent_backend.leisaac_transport import (
-        AsyncLatestValue,
+        AsyncLatestByKey,
         CONTROL_SUBPROTOCOL,
         ControlLedger,
         FrameEnvelope,
@@ -91,6 +94,11 @@ except ImportError:  # Repository unit tests import the script directly.
         parse_control_message,
         parse_video_ack,
     )
+
+try:
+    from leisaac_bundles import BundleError, BundleStore
+except ImportError:  # Repository unit tests import the script directly.
+    from npa.agent_backend.leisaac_bundles import BundleError, BundleStore
 
 SCHEMA = "npa.leisaac.health.v2"
 TASK = os.environ.get("NPA_LEISAAC_TASK", "LeIsaac-SO101-PickOrange-v0")
@@ -125,7 +133,7 @@ CLIENT_SOURCE_JS_SHA256 = (
 )
 CLIENT_JS_SHA256 = "e9ac6563db79d3aea8afe94c4f60e50571abc01e3470d9bafb4e2f8b54cbd2a5"
 UPSTREAM_OBSERVABILITY_PATCH_SHA256 = (
-    "4f98d96ff97003344282c45d2840dd5c7078be32f880e920250d2046d0bc47bc"
+    "dc7466a79359213cc94cc37dc1d3fad6cdedf9bcf37f1cfbb77f5805b809d876"
 )
 CLIENT_WSS_PATCH_OLD = b"M=Yc(B)?D.AppLevelProtocol.HTTP:D.AppLevelProtocol.HTTPS;"
 CLIENT_WSS_PATCH_NEW = (
@@ -143,6 +151,14 @@ APPLIED_COUNTER_PATH = Path("/tmp/npa-leisaac-applied-inputs")
 INPUT_QUEUE_PATH = Path("/tmp/npa-leisaac-input-queue.jsonl")
 FRAME_PATH = Path("/tmp/npa-leisaac-frame.jpg")
 FRAME_META_PATH = Path("/tmp/npa-leisaac-frame.json")
+SECONDARY_FRAME_PATH = Path("/tmp/npa-leisaac-frame-overview.jpg")
+SECONDARY_FRAME_META_PATH = Path("/tmp/npa-leisaac-frame-overview.json")
+VIEW_COMMAND_PATH = Path("/tmp/npa-leisaac-view-command.json")
+CUSTOM_BUNDLE_ROOT = CACHE_ROOT / "custom"
+CAMERA_PATHS = {
+    "workspace": (FRAME_PATH, FRAME_META_PATH),
+    "overview": (SECONDARY_FRAME_PATH, SECONDARY_FRAME_META_PATH),
+}
 APPLIED_ACK_PATH = Path("/tmp/npa-leisaac-input-applied.jsonl")
 RECORDER_ROOT = Path("/tmp/npa-leisaac-recorder")
 RECORDER_STATUS_PATH = RECORDER_ROOT / "status.json"
@@ -152,6 +168,10 @@ STATE_LOCK = threading.Lock()
 INPUT_LOCK = threading.Lock()
 RECORDER_COMMAND_LOCK = threading.Lock()
 APPLIED_ACK_LOCK = threading.Lock()
+BUNDLE_APPLY_LOCK = threading.Lock()
+BUNDLE_RESTART = threading.Event()
+SERVER_STOP = threading.Event()
+BUNDLE_SELECTION: dict[str, dict[str, Any]] = {}
 STATE: dict[str, Any] = {
     "state": "starting",
     "detail": "staging runtime",
@@ -163,7 +183,7 @@ STATE: dict[str, Any] = {
 CHILD: subprocess.Popen[str] | None = None
 CONTROL_LEDGER = ControlLedger()
 TRANSPORT_METRICS = TransportMetrics()
-FRAME_LATEST = AsyncLatestValue()
+FRAME_LATEST = AsyncLatestByKey(("workspace", "overview"))
 APPLIED_ACK_OFFSET = 0
 
 
@@ -475,100 +495,251 @@ def update_state(**values: Any) -> None:
         STATE.update(values)
 
 
+def apply_bundle_selection(selection: Any) -> dict[str, dict[str, Any]]:
+    """Materialize immutable S3 bundles and request a safe simulator restart."""
+
+    if (
+        not isinstance(selection, dict)
+        or not selection
+        or len(selection) > 3
+        or any(kind not in {"robot", "scene", "device"} for kind in selection)
+        or any(
+            not isinstance(digest, str) or not re.fullmatch(r"[a-f0-9]{64}", digest)
+            for digest in selection.values()
+        )
+    ):
+        raise BundleError("bundle selection is invalid")
+    try:
+        recorder_status = json.loads(RECORDER_STATUS_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        recorder_status = {}
+    if recorder_status.get("state") != "idle":
+        raise BundleError(
+            "finish or discard the active recording before applying bundles",
+            status_code=409,
+        )
+    output_uri = os.environ.get("NPA_LEISAAC_OUTPUT_PATH", "")
+    parsed = urlparse(output_uri)
+    if parsed.scheme != "s3" or not parsed.netloc:
+        raise BundleError("bundle storage is unavailable", status_code=503)
+    try:
+        import boto3
+
+        client = boto3.client(
+            "s3",
+            endpoint_url=os.environ.get("AWS_ENDPOINT_URL_S3") or None,
+            region_name=os.environ.get("AWS_REGION") or "eu-north1",
+        )
+        store = BundleStore(client, output_uri, allowed_buckets=[parsed.netloc])
+        materialized: dict[str, dict[str, Any]] = {}
+        for kind, digest in sorted(selection.items()):
+            bundle = store.materialize(digest, CUSTOM_BUNDLE_ROOT / digest)
+            if bundle.get("kind") != kind:
+                raise BundleError("bundle selection kind does not match")
+            materialized[kind] = bundle
+    except BundleError:
+        raise
+    except Exception as exc:
+        raise BundleError("bundle storage is unavailable", status_code=503) from exc
+    public_selection = {
+        kind: {
+            "bundle_sha256": item["bundle_sha256"],
+            "name": item["name"],
+            "entrypoint": item["entrypoint"],
+        }
+        for kind, item in materialized.items()
+    }
+    with BUNDLE_APPLY_LOCK:
+        BUNDLE_SELECTION.clear()
+        BUNDLE_SELECTION.update(materialized)
+    update_state(
+        state="restarting",
+        detail="applying checksum-verified custom bundles",
+        selected_bundles=public_selection,
+        webrtc_ready=False,
+        stream_ready=False,
+    )
+    BUNDLE_RESTART.set()
+    return public_selection
+
+
+def _selected_bundle_environment() -> dict[str, str]:
+    with BUNDLE_APPLY_LOCK:
+        selection = {kind: dict(value) for kind, value in BUNDLE_SELECTION.items()}
+    environment: dict[str, str] = {}
+    for kind in ("robot", "scene"):
+        item = selection.get(kind)
+        if item:
+            environment[f"NPA_LEISAAC_CUSTOM_{kind.upper()}_USD"] = str(
+                item["entrypoint_path"]
+            )
+            environment[f"NPA_LEISAAC_{kind.upper()}"] = str(item["name"])
+    device = selection.get("device")
+    if device:
+        environment["NPA_LEISAAC_DEVICE"] = str(device["name"])
+        environment["NPA_LEISAAC_DEVICE_DESCRIPTOR"] = str(device["entrypoint_path"])
+    environment["NPA_LEISAAC_BUNDLE"] = json.dumps(
+        {kind: item["bundle_sha256"] for kind, item in sorted(selection.items())},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return environment
+
+
+def _simulation_launch() -> tuple[list[str], dict[str, str]]:
+    media_host = os.environ.get("NPA_LEISAAC_MEDIA_HOST", "").strip()
+    if not media_host:
+        raise RuntimeError("NPA_LEISAAC_MEDIA_HOST is required")
+    command = [
+        "/isaac-sim/python.sh",
+        "/opt/leisaac/scripts/environments/teleoperation/teleop_se3_agent.py",
+        f"--task={TASK}",
+        f"--teleop_device={TELEOP_DEVICE}",
+        f"--num_envs={NUM_ENVS}",
+        f"--seed={TELEOP_SEED}",
+        "--device=cpu",
+        "--enable_cameras",
+        "--kit_args="
+        + " ".join(
+            [
+                "--no-window",
+                "--enable omni.kit.livestream.webrtc",
+                f"--/app/livestream/publicEndpointAddress={media_host}",
+                f"--/app/livestream/publicEndpointPort={MEDIA_PORT}",
+                f"--/app/livestream/fixedHostPort={MEDIA_PORT}",
+                f"--/app/livestream/minHostPort={MEDIA_PORT}",
+                f"--/app/livestream/maxHostPort={MEDIA_PORT}",
+                f"--/app/livestream/port={SIGNAL_PORT}",
+                "--/renderer/multiGpu/enabled=False",
+            ]
+        ),
+    ]
+    environment = os.environ.copy()
+    module_root = "/opt/npa/leisaac"
+    inherited_pythonpath = environment.get("PYTHONPATH", "").strip()
+    environment["PYTHONPATH"] = (
+        f"{module_root}:{inherited_pythonpath}" if inherited_pythonpath else module_root
+    )
+    environment.update(_selected_bundle_environment())
+    environment.update(
+        {
+            "LEISAAC_ASSETS_ROOT": str(ASSETS_ROOT),
+            "NPA_LEISAAC_READY_PATH": str(READY_PATH),
+            "NPA_LEISAAC_INPUT_COUNTER": str(INPUT_COUNTER_PATH),
+            "NPA_LEISAAC_APPLIED_COUNTER": str(APPLIED_COUNTER_PATH),
+            "NPA_LEISAAC_INPUT_QUEUE": str(INPUT_QUEUE_PATH),
+            "NPA_LEISAAC_APPLIED_ACK_PATH": str(APPLIED_ACK_PATH),
+            "NPA_LEISAAC_FRAME_PATH": str(FRAME_PATH),
+            "NPA_LEISAAC_FRAME_META_PATH": str(FRAME_META_PATH),
+            "NPA_LEISAAC_SECONDARY_FRAME_PATH": str(SECONDARY_FRAME_PATH),
+            "NPA_LEISAAC_SECONDARY_FRAME_META_PATH": str(SECONDARY_FRAME_META_PATH),
+            "NPA_LEISAAC_VIEW_COMMAND_PATH": str(VIEW_COMMAND_PATH),
+            "NPA_LEISAAC_RECORDER_ROOT": str(RECORDER_ROOT),
+            "NPA_LEISAAC_CUSTOM_ROOT": str(CUSTOM_BUNDLE_ROOT),
+        }
+    )
+    environment["NPA_LEISAAC_BROWSER_TELEOP"] = "1"
+    return command, environment
+
+
+def _reset_runtime_files() -> None:
+    global APPLIED_ACK_OFFSET
+    READY_PATH.unlink(missing_ok=True)
+    INPUT_COUNTER_PATH.write_text("0\n", encoding="utf-8")
+    APPLIED_COUNTER_PATH.write_text("0\n", encoding="utf-8")
+    INPUT_QUEUE_PATH.write_text("", encoding="utf-8")
+    # The simulator rewrites its acknowledgement stream on every restart. Keep
+    # the reader offset in the same critical section as truncation; otherwise a
+    # reconnect can apply controls successfully while their sequence-specific
+    # acknowledgements remain invisible behind the previous file's byte offset.
+    with APPLIED_ACK_LOCK:
+        APPLIED_ACK_PATH.write_text("", encoding="utf-8")
+        APPLIED_ACK_OFFSET = 0
+    for path in (
+        FRAME_PATH,
+        FRAME_META_PATH,
+        SECONDARY_FRAME_PATH,
+        SECONDARY_FRAME_META_PATH,
+        VIEW_COMMAND_PATH,
+    ):
+        path.unlink(missing_ok=True)
+    shutil.rmtree(RECORDER_ROOT, ignore_errors=True)
+    RECORDER_ROOT.mkdir(parents=True, exist_ok=True)
+
+
 def run_simulation() -> None:
     global CHILD
     try:
         update_state(detail="fetching operator-licensed Isaac runtime")
         subprocess.run(["/opt/npa/bin/isaac-bootstrap", "ensure"], check=True)
-        update_state(detail=f"starting {TASK}")
-        media_host = os.environ.get("NPA_LEISAAC_MEDIA_HOST", "").strip()
-        if not media_host:
-            raise RuntimeError("NPA_LEISAAC_MEDIA_HOST is required")
-        command = [
-            "/isaac-sim/python.sh",
-            "/opt/leisaac/scripts/environments/teleoperation/teleop_se3_agent.py",
-            f"--task={TASK}",
-            f"--teleop_device={TELEOP_DEVICE}",
-            f"--num_envs={NUM_ENVS}",
-            f"--seed={TELEOP_SEED}",
-            # Isaac Sim 5.1 does not ship sm_120 PhysX kernels. Keep physics on
-            # CPU for this single interactive environment; RTX rendering and
-            # WebRTC encoding still run on the selected RT-core GPU.
-            "--device=cpu",
-            "--enable_cameras",
-            "--kit_args="
-            + " ".join(
-                [
-                    "--no-window",
-                    "--enable omni.kit.livestream.webrtc",
-                    f"--/app/livestream/publicEndpointAddress={media_host}",
-                    f"--/app/livestream/publicEndpointPort={MEDIA_PORT}",
-                    f"--/app/livestream/fixedHostPort={MEDIA_PORT}",
-                    f"--/app/livestream/minHostPort={MEDIA_PORT}",
-                    f"--/app/livestream/maxHostPort={MEDIA_PORT}",
-                    f"--/app/livestream/port={SIGNAL_PORT}",
-                    # The pod requests one RTX GPU.  Keeping Kit's renderer in
-                    # single-GPU mode avoids a CUDA-interoperability path that
-                    # can connect WebRTC while emitting no encoded frames.
-                    "--/renderer/multiGpu/enabled=False",
-                ]
-            ),
-        ]
-        environment = os.environ.copy()
-        module_root = "/opt/npa/leisaac"
-        inherited_pythonpath = environment.get("PYTHONPATH", "").strip()
-        environment["PYTHONPATH"] = (
-            f"{module_root}:{inherited_pythonpath}"
-            if inherited_pythonpath
-            else module_root
-        )
-        environment["LEISAAC_ASSETS_ROOT"] = str(ASSETS_ROOT)
-        environment["NPA_LEISAAC_BROWSER_TELEOP"] = "1"
-        environment["NPA_LEISAAC_READY_PATH"] = str(READY_PATH)
-        environment["NPA_LEISAAC_INPUT_COUNTER"] = str(INPUT_COUNTER_PATH)
-        environment["NPA_LEISAAC_APPLIED_COUNTER"] = str(APPLIED_COUNTER_PATH)
-        environment["NPA_LEISAAC_INPUT_QUEUE"] = str(INPUT_QUEUE_PATH)
-        environment["NPA_LEISAAC_APPLIED_ACK_PATH"] = str(APPLIED_ACK_PATH)
-        environment["NPA_LEISAAC_FRAME_PATH"] = str(FRAME_PATH)
-        environment["NPA_LEISAAC_FRAME_META_PATH"] = str(FRAME_META_PATH)
-        environment["NPA_LEISAAC_RECORDER_ROOT"] = str(RECORDER_ROOT)
-        READY_PATH.unlink(missing_ok=True)
-        INPUT_COUNTER_PATH.write_text("0\n", encoding="utf-8")
-        APPLIED_COUNTER_PATH.write_text("0\n", encoding="utf-8")
-        INPUT_QUEUE_PATH.write_text("", encoding="utf-8")
-        APPLIED_ACK_PATH.write_text("", encoding="utf-8")
-        FRAME_PATH.unlink(missing_ok=True)
-        FRAME_META_PATH.unlink(missing_ok=True)
-        shutil.rmtree(RECORDER_ROOT, ignore_errors=True)
-        RECORDER_ROOT.mkdir(parents=True, exist_ok=True)
-        CHILD = subprocess.Popen(
-            command,
-            cwd="/opt/leisaac",
-            env=environment,
-            stdin=subprocess.DEVNULL,
-            start_new_session=True,
-            text=True,
-        )
-        update_state(pid=CHILD.pid, gpu=detect_gpu(), started_at=utc_now())
-        while CHILD.poll() is None:
-            if (
-                READY_PATH.is_file()
-                and FRAME_PATH.is_file()
-                and FRAME_PATH.stat().st_size > 0
-            ):
+        while not SERVER_STOP.is_set():
+            BUNDLE_RESTART.clear()
+            update_state(
+                state="starting",
+                detail=f"starting {TASK}",
+                webrtc_ready=False,
+                stream_ready=False,
+            )
+            command, environment = _simulation_launch()
+            _reset_runtime_files()
+            CHILD = subprocess.Popen(
+                command,
+                cwd="/opt/leisaac",
+                env=environment,
+                stdin=subprocess.DEVNULL,
+                start_new_session=True,
+                text=True,
+            )
+            update_state(pid=CHILD.pid, gpu=detect_gpu(), started_at=utc_now())
+            while CHILD.poll() is None and not BUNDLE_RESTART.is_set():
+                if (
+                    READY_PATH.is_file()
+                    and FRAME_PATH.is_file()
+                    and FRAME_PATH.stat().st_size > 0
+                    and SECONDARY_FRAME_PATH.is_file()
+                    and SECONDARY_FRAME_PATH.stat().st_size > 0
+                ):
+                    update_state(
+                        state="ready",
+                        detail="live",
+                        webrtc_ready=True,
+                        stream_ready=True,
+                        stream_transport="websocket-v1",
+                    )
+                else:
+                    with STATE_LOCK:
+                        ready = STATE.get("state") == "ready"
+                    if not ready:
+                        update_state(detail="warming RTX renderer")
+                BUNDLE_RESTART.wait(1)
+            if BUNDLE_RESTART.is_set() and CHILD.poll() is None:
                 update_state(
-                    state="ready",
-                    detail="live",
-                    webrtc_ready=True,
-                    stream_ready=True,
-                    stream_transport="websocket-v1",
+                    state="restarting",
+                    detail="applying checksum-verified custom bundles",
+                    webrtc_ready=False,
+                    stream_ready=False,
                 )
-                break
-            update_state(detail="warming RTX renderer")
-            time.sleep(1)
-        while CHILD.poll() is None:
-            time.sleep(2)
-        raise RuntimeError(f"LeIsaac exited with status {CHILD.returncode}")
+                CHILD.terminate()
+                try:
+                    CHILD.wait(timeout=30)
+                except subprocess.TimeoutExpired:
+                    CHILD.kill()
+                    CHILD.wait(timeout=10)
+                continue
+            if SERVER_STOP.is_set():
+                return
+            exit_code = CHILD.returncode
+            update_state(
+                state="restarting",
+                detail=(
+                    f"LeIsaac exited with status {exit_code}; retrying the exact "
+                    "task and immutable bundle selection"
+                ),
+                webrtc_ready=False,
+                stream_ready=False,
+            )
+            if SERVER_STOP.wait(2):
+                return
     except Exception as exc:
         update_state(state="failed", detail=str(exc), webrtc_ready=False)
 
@@ -603,6 +774,8 @@ def health_document() -> dict[str, Any]:
         frame_sequence = int(frame_metadata.get("sequence") or 0)
     except (OSError, TypeError, ValueError, json.JSONDecodeError):
         frame_sequence = 0
+    secondary = _read_consistent_frame("overview")
+    secondary_metadata = secondary[0] if secondary is not None else {}
     try:
         recorder = json.loads(RECORDER_STATUS_PATH.read_text(encoding="utf-8"))
         if not isinstance(recorder, dict):
@@ -647,6 +820,12 @@ def health_document() -> dict[str, Any]:
         "frame_bytes": frame_bytes,
         "frame_updated_at": frame_updated_at,
         "frame_sequence": frame_sequence,
+        "cameras": ["workspace", "overview"]
+        if secondary is not None
+        else ["workspace"],
+        "secondary_frame_bytes": len(secondary[1]) if secondary is not None else 0,
+        "secondary_frame_sequence": int(secondary_metadata.get("sequence") or 0),
+        "view_orbit": True,
         "transport_metrics": TRANSPORT_METRICS.snapshot(),
         "physics_device": "cpu",
         "render_device": "cuda",
@@ -662,7 +841,11 @@ def liveness_status() -> int:
         state = str(STATE.get("state") or "")
         pid = int(STATE.get("pid") or 0)
     child = CHILD
-    if state == "failed" or (pid > 0 and (child is None or child.poll() is not None)):
+    if state == "failed" or (
+        state != "restarting"
+        and pid > 0
+        and (child is None or child.poll() is not None)
+    ):
         return 503
     return 200
 
@@ -703,12 +886,18 @@ def _append_input(record: dict[str, Any]) -> int:
     return _append_inputs([record])[0]
 
 
-def _read_consistent_frame() -> tuple[dict[str, Any], bytes] | None:
+def _read_consistent_frame(
+    camera: str = "workspace",
+) -> tuple[dict[str, Any], bytes] | None:
+    paths = CAMERA_PATHS.get(camera)
+    if paths is None:
+        return None
+    frame_path, metadata_path = paths
     for _attempt in range(3):
         try:
-            first = json.loads(FRAME_META_PATH.read_text(encoding="utf-8"))
-            jpeg = FRAME_PATH.read_bytes()
-            second = json.loads(FRAME_META_PATH.read_text(encoding="utf-8"))
+            first = json.loads(metadata_path.read_text(encoding="utf-8"))
+            jpeg = frame_path.read_bytes()
+            second = json.loads(metadata_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return None
         if first != second or not isinstance(first, dict):
@@ -726,16 +915,27 @@ def _read_consistent_frame() -> tuple[dict[str, Any], bytes] | None:
 
 
 async def _watch_frames() -> None:
-    sequence = 0
+    sequences = {camera: 0 for camera in CAMERA_PATHS}
+    pending: dict[str, tuple[dict[str, Any], bytes]] = {}
+    next_camera = "workspace"
     while True:
-        item = await asyncio.to_thread(_read_consistent_frame)
-        if item is not None:
-            metadata, jpeg = item
-            observed = int(metadata.get("sequence") or 0)
-            if observed > sequence:
-                sequence = observed
-                await FRAME_LATEST.publish((metadata, jpeg))
-                TRANSPORT_METRICS.increment("frames_published")
+        for camera in CAMERA_PATHS:
+            item = await asyncio.to_thread(_read_consistent_frame, camera)
+            if item is not None:
+                metadata, jpeg = item
+                observed = int(metadata.get("sequence") or 0)
+                if observed > sequences[camera]:
+                    sequences[camera] = observed
+                    pending[camera] = (metadata, jpeg)
+        selected = next_camera if next_camera in pending else next(iter(pending), "")
+        if selected:
+            metadata, jpeg = pending.pop(selected)
+            await FRAME_LATEST.publish(selected, (selected, metadata, jpeg))
+            # Keep metrics low-cardinality.  Dynamic per-camera names aren't part
+            # of TransportMetrics.ALLOWED and used to terminate this long-lived
+            # watcher immediately after its first publication.
+            TRANSPORT_METRICS.increment("frames_published")
+            next_camera = "overview" if selected == "workspace" else "workspace"
         await asyncio.sleep(0.005)
 
 
@@ -818,10 +1018,12 @@ def build_app() -> FastAPI:
         )
 
     @application.get("/frame.jpg")
-    def frame(request: Request) -> Response:
+    def frame(request: Request, camera: str = "workspace") -> Response:
         if not _authorized(request.headers):
             return JSONResponse(status_code=403, content={"detail": "forbidden"})
-        item = _read_consistent_frame()
+        if camera not in CAMERA_PATHS:
+            return JSONResponse(status_code=400, content={"detail": "invalid camera"})
+        item = _read_consistent_frame(camera)
         if item is None:
             return JSONResponse(
                 status_code=503, content={"detail": "frame unavailable"}
@@ -836,7 +1038,84 @@ def build_app() -> FastAPI:
                 "X-NPA-Frame-Sequence": str(metadata["sequence"]),
                 "X-NPA-Frame-Capture-Wall-Ns": str(metadata["capture_wall_ns"]),
                 "X-NPA-Frame-SHA256": str(metadata["sha256"]),
+                "X-NPA-Camera": camera,
             },
+        )
+
+    @application.post("/view")
+    async def update_view(request: Request) -> Response:
+        if not _authorized(request.headers):
+            return JSONResponse(status_code=403, content={"detail": "forbidden"})
+        payload = await read_bounded_json(request)
+        if payload is None or set(payload) != {
+            "camera",
+            "sequence",
+            "yaw_delta",
+            "pitch_delta",
+            "distance_delta",
+        }:
+            return JSONResponse(
+                status_code=400, content={"detail": "invalid view command"}
+            )
+        try:
+            camera = str(payload["camera"])
+            sequence = int(payload["sequence"])
+            yaw_delta = float(payload["yaw_delta"])
+            pitch_delta = float(payload["pitch_delta"])
+            distance_delta = float(payload["distance_delta"])
+        except (TypeError, ValueError, OverflowError):
+            return JSONResponse(
+                status_code=400, content={"detail": "invalid view command"}
+            )
+        if (
+            camera != "overview"
+            or not 1 <= sequence <= 2**53 - 1
+            or not math.isfinite(yaw_delta)
+            or not math.isfinite(pitch_delta)
+            or not math.isfinite(distance_delta)
+            or abs(yaw_delta) > 0.5
+            or abs(pitch_delta) > 0.5
+            or abs(distance_delta) > 1.0
+        ):
+            return JSONResponse(
+                status_code=400, content={"detail": "invalid view command"}
+            )
+        _write_json_atomic(
+            VIEW_COMMAND_PATH,
+            {
+                "camera": camera,
+                "sequence": sequence,
+                "yaw_delta": yaw_delta,
+                "pitch_delta": pitch_delta,
+                "distance_delta": distance_delta,
+                "received_monotonic_ns": time.monotonic_ns(),
+            },
+        )
+        return JSONResponse(
+            status_code=202, content={"accepted": True, "sequence": sequence}
+        )
+
+    @application.post("/bundles/apply")
+    async def bundles_apply(request: Request) -> Response:
+        if not _authorized(request.headers):
+            return JSONResponse(status_code=403, content={"detail": "forbidden"})
+        payload = await read_bounded_json(request)
+        if payload is None or set(payload) != {"selection"}:
+            return JSONResponse(
+                status_code=400, content={"detail": "invalid bundle selection"}
+            )
+        try:
+            selected = await asyncio.to_thread(
+                apply_bundle_selection, payload["selection"]
+            )
+        except BundleError as exc:
+            return JSONResponse(
+                status_code=exc.status_code, content={"detail": exc.detail}
+            )
+        return JSONResponse(
+            status_code=202,
+            content={"accepted": True, "selected": selected, "restarting": True},
+            headers={"Cache-Control": "no-store"},
         )
 
     @application.get("/client/index.js")
@@ -1125,21 +1404,32 @@ def build_app() -> FastAPI:
         run_id = os.environ.get("NPA_LEISAAC_RUN_ID", "")
         await websocket.accept(subprotocol=VIDEO_SUBPROTOCOL)
         TRANSPORT_METRICS.increment("video_connections")
-        generation = 0
-        previous_sequence = 0
+        generations: dict[str, int] = {}
+        next_camera_index = 0
+        previous_sequences = {camera: 0 for camera in CAMERA_PATHS}
         try:
             while True:
-                generation, item, coalesced = await FRAME_LATEST.wait_after(
-                    generation, timeout=20.0
+                (
+                    camera,
+                    generation,
+                    item,
+                    coalesced,
+                    next_camera_index,
+                ) = await FRAME_LATEST.wait_after(
+                    generations,
+                    next_index=next_camera_index,
+                    timeout=20.0,
                 )
-                metadata, jpeg = item
+                generations[camera] = generation
+                camera, metadata, jpeg = item
                 sequence = int(metadata["sequence"])
+                previous_sequence = previous_sequences.get(camera, 0)
                 dropped = (
                     max(coalesced, max(0, sequence - previous_sequence - 1))
                     if previous_sequence
                     else 0
                 )
-                previous_sequence = sequence
+                previous_sequences[camera] = sequence
                 envelope = FrameEnvelope(
                     sequence=sequence,
                     capture_wall_ns=int(metadata["capture_wall_ns"]),
@@ -1148,6 +1438,7 @@ def build_app() -> FastAPI:
                     encoded_monotonic_ns=int(metadata["encoded_monotonic_ns"]),
                     runtime_send_monotonic_ns=time.monotonic_ns(),
                     dropped_before=dropped,
+                    flags=1 if camera == "overview" else 0,
                     sha256=bytes.fromhex(str(metadata["sha256"])),
                 )
                 if dropped:
@@ -1188,6 +1479,7 @@ app = build_app()
 
 
 def stop_child(*_args: Any) -> None:
+    SERVER_STOP.set()
     if CHILD is not None and CHILD.poll() is None:
         CHILD.terminate()
 

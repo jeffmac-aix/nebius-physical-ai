@@ -232,6 +232,108 @@
       }
       .leisaac-live-dot.is-ready { background: #22c55e; box-shadow: 0 0 8px #22c55e; }
       .leisaac-live-dot.is-error { background: #ef4444; }
+      .leisaac-live-grid,
+      .leisaac-playback-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px;
+      }
+      .leisaac-viewport-shell { min-width: 0; }
+      .leisaac-viewport-label {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        color: #cbd5e1;
+        font-size: 12px;
+        margin: 0 0 6px;
+      }
+      .leisaac-secondary-empty {
+        min-height: 280px;
+        display: grid;
+        place-items: center;
+        padding: 20px;
+        text-align: center;
+        color: #94a3b8;
+        background: #080d18;
+        border: 1px solid #293244;
+        border-radius: 12px;
+      }
+      .leisaac-secondary-empty[hidden] { display: none; }
+      .leisaac-secondary-stage { cursor: grab; touch-action: none; }
+      .leisaac-secondary-stage.is-orbiting { cursor: grabbing; }
+      .leisaac-episodes {
+        border-top: 1px solid #293244;
+        padding-top: 16px;
+        display: grid;
+        gap: 12px;
+      }
+      .leisaac-filters {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(120px, 1fr));
+        gap: 8px;
+      }
+      .leisaac-filters label { color: #94a3b8; font-size: 12px; }
+      .leisaac-filters input,
+      .leisaac-filters select,
+      .leisaac-player-toolbar select {
+        width: 100%;
+        margin-top: 4px;
+        color: #e2e8f0;
+        background: #0b1220;
+        border: 1px solid #334155;
+        border-radius: 8px;
+        padding: 7px 8px;
+      }
+      .leisaac-episode-list {
+        display: grid;
+        gap: 7px;
+        max-height: 280px;
+        overflow: auto;
+      }
+      .leisaac-episode-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 10px;
+        align-items: center;
+        border: 1px solid #293244;
+        border-radius: 9px;
+        padding: 9px 10px;
+        background: #0b1220;
+      }
+      .leisaac-episode-row.is-active { border-color: var(--brand); }
+      .leisaac-player { display: grid; gap: 10px; }
+      .leisaac-player[hidden] { display: none; }
+      .leisaac-playback-grid video {
+        width: 100%;
+        aspect-ratio: 16 / 9;
+        background: #000;
+        border: 1px solid #293244;
+        border-radius: 10px;
+      }
+      .leisaac-player-toolbar {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: end;
+        gap: 8px;
+      }
+      .leisaac-timeline { width: 100%; }
+      .leisaac-timeline-values {
+        max-height: 180px;
+        overflow: auto;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        color: #cbd5e1;
+        background: #080d18;
+        border: 1px solid #293244;
+        border-radius: 9px;
+        padding: 10px;
+      }
+      @media (max-width: 900px) {
+        .leisaac-live-grid,
+        .leisaac-playback-grid { grid-template-columns: 1fr; }
+        .leisaac-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      }
       .layout { display: grid; gap: 14px; }
       .layout-rerun {
         grid-template-columns: minmax(300px, 360px) minmax(0, 1fr);
@@ -2117,8 +2219,11 @@
         }
       }
       function openChatDrawer() {
-        // Chat drawer overlays the Viewer tab (Rerun/Video/Image/Data) without leaving it.
-        if (activeMainTab !== "rerun") {
+        // Chat overlays either viewer without changing the pixels that Describe
+        // this is about.  In particular, leaving LeIsaac here would make the
+        // subsequent capture silently describe Rerun instead of the displayed
+        // live/episode frame.
+        if (activeMainTab !== "rerun" && activeMainTab !== "leisaac") {
           activateMainTab("rerun", { skipEnsure: true }).then(() => {
             setChatDrawerOpen(true);
             const input = document.getElementById("chatInput");
@@ -2177,6 +2282,7 @@
       let leisaacStreamReady = false;
       let leisaacPeerConnectionRestore = null;
       let leisaacFrameTimer = null;
+      let leisaacSecondaryFrameTimer = null;
       let leisaacFrameSequence = 0;
       let leisaacControlSocket = null;
       let leisaacVideoSocket = null;
@@ -2185,9 +2291,10 @@
       let leisaacReconnectTimer = null;
       let leisaacHeartbeatTimer = null;
       let leisaacActiveTransport = "disconnected";
-      let leisaacVideoPending = null;
+      const leisaacVideoPending = { workspace: null, overview: null };
       let leisaacVideoDecoding = false;
-      let leisaacLastFrameSequence = 0;
+      const leisaacLastFrameSequences = { workspace: 0, overview: 0 };
+      let leisaacDecodeNextCamera = "workspace";
       let leisaacDeliveredFrames = 0;
       let leisaacDroppedFrames = 0;
       let leisaacLastFpsAt = 0;
@@ -2208,8 +2315,26 @@
       let leisaacRecorderPollInFlight = false;
       let leisaacRecorderPending = null;
       let leisaacRecorderUiError = "";
+      let leisaacEpisodeAbort = null;
+      let leisaacEpisodeGeneration = 0;
+      let leisaacEpisodeCursor = "";
+      let leisaacEpisodeNextCursor = "";
+      const leisaacEpisodeCursorHistory = [];
+      let leisaacEpisodes = [];
+      let leisaacEpisodeDetail = null;
+      let leisaacEpisodeTimeline = [];
+      let leisaacEpisodeSyncing = false;
+      let leisaacLastUploadedEpisode = "";
+      let leisaacViewSequence = 0;
+      let leisaacViewInFlight = false;
+      let leisaacPendingViewDelta = null;
+      let leisaacGamepadTimer = null;
+      let leisaacLastGamepadAction = "";
+      let leisaacBundles = [];
       const LEISAAC_KEYS = new Set(["W", "S", "A", "D", "Q", "E", "J", "L", "I", "K", "U", "O"]);
       function leisaacPanelMarkup(status) {
+        const liveAvailable = Boolean(status && status.available);
+        const episodesAvailable = Boolean(status && status.episodes_available);
         const runId = escapeHtml(String(status.run_id || ""));
         const task = escapeHtml(String(status.task || ""));
         const environmentId = escapeHtml(String(status.environment_id || ""));
@@ -2217,36 +2342,73 @@
         const seed = escapeHtml(String(status.seed ?? ""));
         const dataset = escapeHtml(String(status.dataset_uri || ""));
         const gpu = escapeHtml(String(status.gpu || "RT-core GPU"));
+        const reason = escapeHtml(String(status.reason || ""));
+        const liveDisabled = liveAvailable ? "" : " disabled";
+        const secondaryAvailable = Array.isArray(status.cameras) && status.cameras.includes("overview");
         return `
           <section class="panel leisaac-panel">
             <div class="leisaac-head">
               <div>
                 <h3>LeIsaac teleoperation</h3>
-                <p class="hint">Run <strong>${runId}</strong> · ${task} · environment ${environmentId} [${environmentIndex}] · seed ${seed} · ${gpu}</p>
-                <p class="hint">Dataset <code>${dataset}</code></p>
+                <p class="hint">Run <strong>${runId || "not selected"}</strong> · ${task || "session unavailable"} · environment ${environmentId || "unknown"} [${environmentIndex || "0"}] · seed ${seed || "unknown"} · ${gpu}</p>
+                <p class="hint">Dataset <code>${dataset || "No configured S3 dataset"}</code></p>
+                <p id="leisaacAvailability" class="hint" role="status">${liveAvailable ? "Live simulation is ready." : (reason || "Live simulation is unavailable; Episodes remains usable when an S3 dataset is selected.")}</p>
               </div>
               <div class="leisaac-actions">
-                <button id="leisaacConnect" class="btn btn-primary" type="button">Connect teleoperation</button>
+                <button id="leisaacRetry" class="btn" type="button">Retry status</button>
+                <button id="leisaacConnect" class="btn btn-primary" type="button"${liveDisabled}>Connect teleoperation</button>
                 <button id="leisaacDisconnect" class="btn" type="button" disabled>Disconnect</button>
               </div>
             </div>
-            <div id="leisaacStreamHost" class="leisaac-stage" tabindex="0" aria-label="Interactive LeIsaac simulation stream">
-              <video id="leisaacVideo" autoplay playsinline></video>
-              <img id="leisaacFrame" alt="Live RTX-rendered LeIsaac simulation" hidden>
-              <canvas id="leisaacCanvas" width="1280" height="720" aria-label="Low-latency LeIsaac simulation" hidden></canvas>
-              <audio id="leisaacAudio" autoplay></audio>
-              <div class="leisaac-overlay">
-                <div class="leisaac-overlay-card leisaac-controls">
-                  Position <kbd>W</kbd><kbd>S</kbd><kbd>A</kbd><kbd>D</kbd><kbd>Q</kbd><kbd>E</kbd>
-                  · rotate <kbd>J</kbd><kbd>L</kbd><kbd>K</kbd><kbd>I</kbd>
-                  · gripper <kbd>U</kbd><kbd>O</kbd>
+            <section class="leisaac-episodes" aria-label="Custom LeIsaac assets and devices">
+              <div class="leisaac-head">
+                <div>
+                  <strong>Custom assets and devices</strong>
+                  <p id="leisaacBundleStatus" class="hint">USD assets and declarative device mappings are checksummed into immutable S3 bundles. Selecting a bundle applies it with a safe simulator restart; uploaded Python is non-executable provenance only.</p>
                 </div>
-                <div class="leisaac-overlay-card">
-                  <span id="leisaacLiveDot" class="leisaac-live-dot"></span>
-                  <span id="leisaacStreamStatus">Ready to connect</span><br>
-                  <span id="leisaacTransportStatus">Transport: disconnected</span><br>
-                  <span id="leisaacLatencyStatus">Latency: waiting for samples</span><br>
-                  <span id="leisaacInputStatus">Keyboard events sent: 0</span>
+                <div class="leisaac-actions">
+                  <input id="leisaacBundleName" type="text" maxlength="64" placeholder="Bundle name" aria-label="Bundle name">
+                  <select id="leisaacBundleKind" aria-label="Bundle kind"><option value="robot">Robot</option><option value="scene">Scene</option><option value="device">Device</option></select>
+                  <input id="leisaacBundleFiles" type="file" multiple accept=".usd,.usda,.usdc,.py,.json" aria-label="USD, Python, or device mapping files">
+                  <button id="leisaacBundleUpload" class="btn" type="button">Validate & upload</button>
+                </div>
+              </div>
+              <div class="leisaac-actions">
+                <select id="leisaacBundleSelection" aria-label="Immutable custom bundle"><option value="">No custom bundle selected</option></select>
+                <button id="leisaacBundleSelect" class="btn" type="button">Select bundle</button>
+                <button id="leisaacBundleRefresh" class="btn" type="button">Refresh bundles</button>
+              </div>
+            </section>
+            <div class="leisaac-live-grid" aria-label="LeIsaac live viewports">
+              <div class="leisaac-viewport-shell">
+                <p class="leisaac-viewport-label"><strong>Workspace camera</strong><span>Robot controls require focus</span></p>
+                <div id="leisaacStreamHost" class="leisaac-stage" tabindex="0" aria-label="Interactive LeIsaac workspace simulation stream">
+                  <video id="leisaacVideo" autoplay playsinline></video>
+                  <img id="leisaacFrame" alt="Live RTX-rendered LeIsaac workspace simulation" hidden>
+                  <canvas id="leisaacCanvas" width="1280" height="720" aria-label="Low-latency LeIsaac workspace simulation" hidden></canvas>
+                  <audio id="leisaacAudio" autoplay></audio>
+                  <div class="leisaac-overlay">
+                    <div class="leisaac-overlay-card leisaac-controls">
+                      Position <kbd>W</kbd><kbd>S</kbd><kbd>A</kbd><kbd>D</kbd><kbd>Q</kbd><kbd>E</kbd>
+                      · robot rotate <kbd>J</kbd><kbd>L</kbd><kbd>K</kbd><kbd>I</kbd>
+                      · gripper <kbd>U</kbd><kbd>O</kbd>
+                    </div>
+                    <div class="leisaac-overlay-card">
+                      <span id="leisaacLiveDot" class="leisaac-live-dot"></span>
+                      <span id="leisaacStreamStatus">${liveAvailable ? "Ready to connect" : "Live stream unavailable"}</span><br>
+                      <span id="leisaacTransportStatus">Transport: disconnected</span><br>
+                      <span id="leisaacLatencyStatus">Latency: waiting for samples</span><br>
+                      <span id="leisaacInputStatus">Keyboard events sent: 0</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="leisaac-viewport-shell">
+                <p class="leisaac-viewport-label"><strong>Secondary camera</strong><span>Drag/touch orbit does not send robot keys</span></p>
+                <div id="leisaacSecondaryHost" class="${secondaryAvailable ? "leisaac-stage leisaac-secondary-stage" : "leisaac-secondary-empty"}" tabindex="0" aria-label="LeIsaac secondary camera">
+                  <img id="leisaacSecondaryFrame" alt="Live RTX-rendered LeIsaac overview camera" hidden>
+                  <canvas id="leisaacSecondaryCanvas" width="1280" height="720" aria-label="Orbitable LeIsaac overview camera" hidden></canvas>
+                  <div class="leisaac-overlay"><div id="leisaacSecondaryStatus" class="leisaac-overlay-card">${secondaryAvailable ? "Overview camera · drag or touch to orbit" : "This session exposes one honest live viewport. A second view is shown only when the runtime publishes a distinct camera track."}</div></div>
                 </div>
               </div>
             </div>
@@ -2257,6 +2419,7 @@
                 <p id="leisaacRecorderGuidance" class="hint">Start an episode before choosing its outcome.</p>
                 <p id="leisaacRecorderArtifact" class="hint"></p>
                 <p id="leisaacRecorderError" class="hint" role="alert"></p>
+                <button id="leisaacViewUploadedEpisode" class="btn" type="button" hidden>View uploaded episode</button>
               </div>
               <div class="leisaac-actions">
                 <button id="leisaacRecordStart" class="btn btn-primary" type="button" title="Start recording a new episode">Start episode</button>
@@ -2265,6 +2428,69 @@
                 <button id="leisaacRecordFinalize" class="btn" type="button" title="Mark success or failure before finalizing" disabled>Finalize &amp; upload</button>
               </div>
             </div>
+            <div class="leisaac-head">
+              <div>
+                <strong>Teleoperator device</strong>
+                <p id="leisaacDeviceStatus" class="hint">Keyboard uses the focused workspace. Gamepad sends validated eight-axis SO-101 actions over the same authenticated ordered channel.</p>
+              </div>
+              <div class="leisaac-actions">
+                <label class="hint">Input device
+                  <select id="leisaacInputDevice">
+                    <option value="keyboard">Keyboard</option>
+                    <option value="browser-gamepad">Browser gamepad</option>
+                    <option value="custom-so101">Custom SO-101 action source</option>
+                  </select>
+                </label>
+                <button id="leisaacSendNeutralAction" class="btn" type="button">Send neutral action</button>
+              </div>
+            </div>
+            <section class="leisaac-episodes" aria-labelledby="leisaacEpisodesTitle">
+              <div class="leisaac-head">
+                <div>
+                  <strong id="leisaacEpisodesTitle">Episodes</strong>
+                  <p id="leisaacEpisodeStatus" class="hint" role="status">${episodesAvailable ? "Loading immutable S3 episodes…" : "Select a LeIsaac run with a configured S3 dataset."}</p>
+                  <p id="leisaacEpisodeError" class="hint" role="alert"></p>
+                </div>
+                <div class="leisaac-actions">
+                  <button id="leisaacEpisodesRetry" class="btn" type="button">Retry</button>
+                  <button id="leisaacEpisodesPreviousPage" class="btn" type="button" disabled>Previous page</button>
+                  <button id="leisaacEpisodesNextPage" class="btn" type="button" disabled>Next page</button>
+                </div>
+              </div>
+              <div class="leisaac-filters">
+                <label>Dataset version<select id="leisaacEpisodeVersion"><option value="">All immutable commits</option></select></label>
+                <label>Task<input id="leisaacEpisodeTask" autocomplete="off" maxlength="128"></label>
+                <label>Environment<input id="leisaacEpisodeEnvironment" autocomplete="off" maxlength="128"></label>
+                <label>Outcome<select id="leisaacEpisodeOutcome"><option value="">Any</option><option value="success">Success</option><option value="failure">Failure</option></select></label>
+                <label>Date from<input id="leisaacEpisodeDateFrom" type="date"></label>
+                <label>Date to<input id="leisaacEpisodeDateTo" type="date"></label>
+                <label>Robot<input id="leisaacEpisodeRobot" autocomplete="off" maxlength="128"></label>
+                <label>Scene<input id="leisaacEpisodeScene" autocomplete="off" maxlength="128"></label>
+                <label>Device<input id="leisaacEpisodeDevice" autocomplete="off" maxlength="128"></label>
+                <button id="leisaacEpisodesApply" class="btn btn-primary" type="button">Apply filters</button>
+              </div>
+              <div id="leisaacEpisodeList" class="leisaac-episode-list" aria-live="polite"></div>
+              <div id="leisaacEpisodePlayer" class="leisaac-player" hidden tabindex="0" aria-label="LeIsaac episode player">
+                <div class="leisaac-head">
+                  <div><strong id="leisaacEpisodePlayerTitle">Episode</strong><p id="leisaacEpisodeMetadata" class="hint"></p></div>
+                  <div class="leisaac-actions"><button id="leisaacEpisodePrevious" class="btn" type="button">Previous episode</button><button id="leisaacEpisodeNext" class="btn" type="button">Next episode</button><button id="leisaacEpisodeDescribe" class="btn" type="button">Describe this frame</button></div>
+                </div>
+                <div class="leisaac-playback-grid">
+                  <div><p class="leisaac-viewport-label"><strong id="leisaacEpisodePrimaryLabel">Primary camera</strong></p><video id="leisaacEpisodePrimaryVideo" controls playsinline preload="metadata"></video></div>
+                  <div id="leisaacEpisodeSecondaryPane"><p class="leisaac-viewport-label"><strong id="leisaacEpisodeSecondaryLabel">Secondary camera</strong></p><video id="leisaacEpisodeSecondaryVideo" controls playsinline preload="metadata"></video></div>
+                  <div id="leisaacEpisodeSingleCamera" class="leisaac-secondary-empty" hidden>Legacy single-camera episode: no second camera track exists.</div>
+                </div>
+                <div class="leisaac-player-toolbar">
+                  <label>Playback rate<select id="leisaacEpisodeRate"><option value="0.25">0.25×</option><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="1.5">1.5×</option><option value="2">2×</option></select></label>
+                  <a id="leisaacEpisodeRecordsExport" class="btn" href="#" download>Download saved data</a>
+                  <a id="leisaacEpisodeMetadataExport" class="btn" href="#" download>Download metadata</a>
+                  <span id="leisaacEpisodeChecksum" class="hint"></span>
+                </div>
+                <div id="leisaacEpisodeArtifacts" class="leisaac-episode-list" aria-label="Episode artifacts"></div>
+                <input id="leisaacEpisodeTimeline" class="leisaac-timeline" type="range" min="0" max="0" value="0" step="1" aria-label="Episode timeline">
+                <pre id="leisaacEpisodeTimelineValues" class="leisaac-timeline-values">Timeline is loading…</pre>
+              </div>
+            </section>
           </section>`;
       }
       function setLeIsaacRecorderButton(button, enabled, reason) {
@@ -2321,6 +2547,23 @@
                 : " · episode " + String(recorder.last_episode_index))
               + (commit ? " · commit " + commit : "")
             : "No finalized dataset version for this recorder session yet.";
+        }
+        const viewUploaded = document.getElementById("leisaacViewUploadedEpisode");
+        const uploadedIndex = recorder.last_episode_index;
+        const uploadedVersion = leisaacVersionIdFromUri(String(recorder.dataset_version_uri || ""));
+        const uploadedReady = recorder.last_upload_status === "uploaded"
+          && uploadedIndex !== null && uploadedIndex !== undefined;
+        if (viewUploaded) {
+          viewUploaded.hidden = !uploadedReady;
+          viewUploaded.setAttribute("data-episode-index", uploadedReady ? String(uploadedIndex) : "");
+          viewUploaded.setAttribute("data-version-id", uploadedVersion);
+        }
+        if (uploadedReady) {
+          const uploadedKey = String(uploadedIndex) + ":" + uploadedVersion;
+          if (leisaacLastUploadedEpisode !== uploadedKey) {
+            leisaacLastUploadedEpisode = uploadedKey;
+            loadLeIsaacEpisodes(true).catch(() => null);
+          }
         }
         const error = document.getElementById("leisaacRecorderError");
         if (error) error.textContent = String(leisaacRecorderUiError || recorder.last_error || "");
@@ -2434,6 +2677,433 @@
           startLeIsaacRecorderPolling();
         }
       }
+      function leisaacVersionIdFromUri(uri) {
+        const match = String(uri || "").match(/\/(v[0-9]{6}-[a-f0-9]{32})(?:\/|$)/);
+        return match ? match[1] : "";
+      }
+      async function leisaacEpisodeJson(url, signal) {
+        const response = await fetch(String(url), {
+          credentials: "include",
+          cache: "no-store",
+          signal: signal,
+          headers: { Accept: "application/json" },
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(String(payload.detail || ("Episode API returned HTTP " + response.status)));
+        return payload;
+      }
+      function leisaacEpisodeFilterParams() {
+        const mapping = {
+          task: "leisaacEpisodeTask",
+          environment: "leisaacEpisodeEnvironment",
+          outcome: "leisaacEpisodeOutcome",
+          date_from: "leisaacEpisodeDateFrom",
+          date_to: "leisaacEpisodeDateTo",
+          robot: "leisaacEpisodeRobot",
+          scene: "leisaacEpisodeScene",
+          device: "leisaacEpisodeDevice",
+        };
+        const params = new URLSearchParams();
+        for (const [name, id] of Object.entries(mapping)) {
+          const element = document.getElementById(id);
+          const value = String((element && element.value) || "").trim();
+          if (value) params.set(name, value);
+        }
+        return params;
+      }
+      async function loadLeIsaacVersions(signal) {
+        const status = leisaacCapability || {};
+        if (!status.episodes_available || !status.run_id) return [];
+        const params = new URLSearchParams({ run_id: String(status.run_id), limit: "50" });
+        const payload = await leisaacEpisodeJson("/api/leisaac/episodes/versions?" + params.toString(), signal);
+        const select = document.getElementById("leisaacEpisodeVersion");
+        if (select) {
+          const selected = String(select.value || "");
+          while (select.options.length > 1) select.remove(1);
+          for (const version of payload.versions || []) {
+            const option = document.createElement("option");
+            option.value = String(version.version_id || "");
+            option.textContent = String(version.version_id || "version")
+              + " · " + String(version.episode_count || 0) + " episodes"
+              + " · " + String(version.created_at || "unknown date");
+            select.appendChild(option);
+          }
+          if (Array.from(select.options).some((option) => option.value === selected)) select.value = selected;
+        }
+        return payload.versions || [];
+      }
+      function renderLeIsaacEpisodeList() {
+        const host = document.getElementById("leisaacEpisodeList");
+        if (!host) return;
+        host.replaceChildren();
+        if (!leisaacEpisodes.length) {
+          const empty = document.createElement("p");
+          empty.className = "hint";
+          empty.textContent = "No immutable episodes matched this bounded page and filter set.";
+          host.appendChild(empty);
+          return;
+        }
+        for (const episode of leisaacEpisodes) {
+          const row = document.createElement("div");
+          row.className = "leisaac-episode-row";
+          if (leisaacEpisodeDetail && Number(leisaacEpisodeDetail.episode_index) === Number(episode.episode_index)) row.classList.add("is-active");
+          const text = document.createElement("div");
+          const title = document.createElement("strong");
+          title.textContent = "Episode " + String(episode.episode_index) + " · " + String(episode.outcome || "unknown");
+          const meta = document.createElement("p");
+          meta.className = "hint";
+          meta.textContent = String(episode.task || "unknown task")
+            + " · " + String(episode.environment_id || "unknown environment")
+            + " · " + String(episode.frame_count || 0) + " frames"
+            + " · " + String(episode.robot || "unknown robot")
+            + " / " + String(episode.scene || "unknown scene")
+            + " / " + String(episode.device || "unknown device")
+            + " · " + String(episode.recorded_at || episode.committed_at || "unknown date");
+          text.append(title, meta);
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "btn";
+          button.textContent = "Open";
+          button.addEventListener("click", () => {
+            const version = String((document.getElementById("leisaacEpisodeVersion") || {}).value || "");
+            openLeIsaacEpisode(String(episode.episode_index), version).catch((err) => showToast(String(err), "error"));
+          });
+          row.append(text, button);
+          host.appendChild(row);
+        }
+      }
+      async function loadLeIsaacEpisodes(reset) {
+        const status = leisaacCapability || {};
+        const label = document.getElementById("leisaacEpisodeStatus");
+        const error = document.getElementById("leisaacEpisodeError");
+        if (!status.episodes_available || !status.run_id) {
+          if (label) label.textContent = "Episodes are unavailable until a LeIsaac run with an S3 dataset is selected.";
+          return null;
+        }
+        if (reset) {
+          leisaacEpisodeCursor = "";
+          leisaacEpisodeNextCursor = "";
+          leisaacEpisodeCursorHistory.splice(0);
+        }
+        if (leisaacEpisodeAbort) leisaacEpisodeAbort.abort();
+        const controller = new AbortController();
+        leisaacEpisodeAbort = controller;
+        const generation = ++leisaacEpisodeGeneration;
+        if (label) label.textContent = "Loading a bounded S3 episode page…";
+        if (error) error.textContent = "";
+        const params = leisaacEpisodeFilterParams();
+        params.set("run_id", String(status.run_id));
+        params.set("limit", "20");
+        const version = document.getElementById("leisaacEpisodeVersion");
+        if (version && String(version.value || "")) params.set("version_id", String(version.value));
+        if (leisaacEpisodeCursor) params.set("cursor", leisaacEpisodeCursor);
+        try {
+          const work = [leisaacEpisodeJson("/api/leisaac/episodes?" + params.toString(), controller.signal)];
+          if (reset) work.push(loadLeIsaacVersions(controller.signal));
+          const results = await Promise.all(work);
+          if (generation !== leisaacEpisodeGeneration) return null;
+          const payload = results[0];
+          leisaacEpisodes = Array.isArray(payload.episodes) ? payload.episodes : [];
+          leisaacEpisodeNextCursor = String(payload.next_cursor || "");
+          renderLeIsaacEpisodeList();
+          if (label) label.textContent = "Showing " + String(leisaacEpisodes.length) + " immutable episode commits from this bounded page.";
+          const previous = document.getElementById("leisaacEpisodesPreviousPage");
+          const next = document.getElementById("leisaacEpisodesNextPage");
+          if (previous) previous.disabled = leisaacEpisodeCursorHistory.length === 0;
+          if (next) next.disabled = !leisaacEpisodeNextCursor;
+          return payload;
+        } catch (err) {
+          if (err && err.name === "AbortError") return null;
+          if (generation === leisaacEpisodeGeneration) {
+            if (error) error.textContent = "Episode discovery failed without a local fallback: " + String((err && err.message) || err);
+            if (label) label.textContent = "S3 episode discovery is unavailable. Retry is safe.";
+          }
+          throw err;
+        }
+      }
+      function retryLeIsaacEpisodeSurface() {
+        const player = document.getElementById("leisaacEpisodePlayer");
+        if (leisaacEpisodeDetail && player && !player.hidden) {
+          const selectedVersion = String((document.getElementById("leisaacEpisodeVersion") || {}).value || "");
+          const exactVersion = String(leisaacEpisodeDetail.dataset_version || selectedVersion);
+          return openLeIsaacEpisode(String(leisaacEpisodeDetail.episode_index), exactVersion);
+        }
+        return loadLeIsaacEpisodes(true);
+      }
+      function leisaacTimelineRowForTime(time) {
+        if (!leisaacEpisodeTimeline.length) return 0;
+        let best = 0;
+        let distance = Infinity;
+        for (let index = 0; index < leisaacEpisodeTimeline.length; index += 1) {
+          const delta = Math.abs(Number(leisaacEpisodeTimeline[index].timestamp || 0) - Number(time || 0));
+          if (delta < distance) { best = index; distance = delta; }
+        }
+        return best;
+      }
+      function showLeIsaacTimelineRow(index) {
+        if (!leisaacEpisodeTimeline.length) return;
+        const bounded = Math.max(0, Math.min(leisaacEpisodeTimeline.length - 1, Number(index) || 0));
+        const row = leisaacEpisodeTimeline[bounded];
+        const slider = document.getElementById("leisaacEpisodeTimeline");
+        const values = document.getElementById("leisaacEpisodeTimelineValues");
+        if (slider) slider.value = String(bounded);
+        if (values) values.textContent = JSON.stringify({
+          frame_index: row.frame_index,
+          timestamp: row.timestamp,
+          sim_step: row.sim_step,
+          action: row.action,
+          "observation.state": row.observation_state,
+          reward: row.reward,
+          success: row.success,
+          done: row.done,
+          reset_reason: row.reset_reason,
+          wall_clock_ns: row.wall_clock_ns,
+          frame_sha256: row.frame_sha256,
+        }, null, 2);
+      }
+      function syncLeIsaacEpisodeVideos(source) {
+        if (leisaacEpisodeSyncing) return;
+        const primary = document.getElementById("leisaacEpisodePrimaryVideo");
+        const secondary = document.getElementById("leisaacEpisodeSecondaryVideo");
+        if (!primary || !secondary || secondary.hidden || !secondary.src) return;
+        const target = source === secondary ? primary : secondary;
+        if (!Number.isFinite(source.currentTime)) return;
+        leisaacEpisodeSyncing = true;
+        try {
+          if (Math.abs(Number(target.currentTime || 0) - source.currentTime) > 0.06) target.currentTime = source.currentTime;
+          target.playbackRate = source.playbackRate;
+          if (source.paused && !target.paused) target.pause();
+          if (!source.paused && target.paused) target.play().catch(() => null);
+        } finally {
+          window.setTimeout(() => { leisaacEpisodeSyncing = false; }, 0);
+        }
+      }
+      function navigateLeIsaacEpisode(delta) {
+        if (!leisaacEpisodeDetail || !leisaacEpisodes.length) return Promise.resolve(null);
+        const current = leisaacEpisodes.findIndex((item) => Number(item.episode_index) === Number(leisaacEpisodeDetail.episode_index));
+        const next = current + Number(delta || 0);
+        if (next < 0 || next >= leisaacEpisodes.length) return Promise.resolve(null);
+        const version = String((document.getElementById("leisaacEpisodeVersion") || {}).value || "");
+        return openLeIsaacEpisode(String(leisaacEpisodes[next].episode_index), version);
+      }
+      async function openLeIsaacEpisode(episodeIndex, versionId) {
+        const status = leisaacCapability || {};
+        if (!status.run_id) throw new Error("No LeIsaac run is selected");
+        if (leisaacEpisodeAbort) leisaacEpisodeAbort.abort();
+        const controller = new AbortController();
+        leisaacEpisodeAbort = controller;
+        const generation = ++leisaacEpisodeGeneration;
+        const error = document.getElementById("leisaacEpisodeError");
+        const label = document.getElementById("leisaacEpisodeStatus");
+        if (error) error.textContent = "";
+        if (label) label.textContent = "Loading exact immutable episode " + String(episodeIndex) + "…";
+        const params = new URLSearchParams({ run_id: String(status.run_id) });
+        if (versionId) params.set("version_id", String(versionId));
+        const base = "/api/leisaac/episodes/" + encodeURIComponent(String(episodeIndex));
+        try {
+          const detail = await leisaacEpisodeJson(base + "?" + params.toString(), controller.signal);
+          const timeline = await leisaacEpisodeJson(base + "/timeline?" + params.toString(), controller.signal);
+          if (generation !== leisaacEpisodeGeneration) return null;
+          leisaacEpisodeDetail = detail;
+          leisaacEpisodeTimeline = Array.isArray(timeline.rows) ? timeline.rows : [];
+          const player = document.getElementById("leisaacEpisodePlayer");
+          const title = document.getElementById("leisaacEpisodePlayerTitle");
+          const metadata = document.getElementById("leisaacEpisodeMetadata");
+          const checksum = document.getElementById("leisaacEpisodeChecksum");
+          const primary = document.getElementById("leisaacEpisodePrimaryVideo");
+          const secondary = document.getElementById("leisaacEpisodeSecondaryVideo");
+          const secondaryPane = document.getElementById("leisaacEpisodeSecondaryPane");
+          const single = document.getElementById("leisaacEpisodeSingleCamera");
+          const cameras = Array.isArray(detail.cameras) ? detail.cameras : [];
+          if (title) title.textContent = "Episode " + String(detail.episode_index) + " · " + String(detail.outcome || "unknown outcome");
+          if (metadata) metadata.textContent = String(detail.task || "unknown task")
+            + " · " + String(detail.environment_id || "unknown environment")
+            + " · " + String(detail.start_timestamp || "unknown start") + " → " + String(detail.end_timestamp || "unknown end")
+            + " · " + Number(detail.duration_seconds || 0).toFixed(3) + " s"
+            + " · " + String(detail.frame_count || 0) + " frames"
+            + " · version " + String(detail.dataset_version || "commit-only")
+            + " · " + String(detail.robot || "unknown robot") + "/" + String(detail.scene || "unknown scene") + "/" + String(detail.device || "unknown device")
+            + " · bundle " + String(detail.bundle || "unknown")
+            + " · markers success=" + String((((detail.markers || {}).success_frames) || []).length)
+            + ", reset=" + String((((detail.markers || {}).reset_frames) || []).length)
+            + " · commit " + String(((detail.source_uris || {}).commit) || "unavailable");
+          if (checksum) checksum.textContent = "Timeline checksum " + String(timeline.checksum_state || "unknown") + " · " + String(timeline.sha256 || "missing")
+            + " · camera checksums " + cameras.map((camera) => String(camera.id || "camera") + "=" + String(camera.sha256 || "missing")).join(", ")
+            + " · commit checksum " + String(detail.commit_checksum || "not stored as object metadata");
+          if (primary && cameras[0]) { primary.src = String(cameras[0].media_url || ""); primary.load(); }
+          const primaryLabel = document.getElementById("leisaacEpisodePrimaryLabel");
+          if (primaryLabel && cameras[0]) primaryLabel.textContent = String(cameras[0].label || cameras[0].id || "Primary camera");
+          const hasSecond = cameras.length >= 2;
+          if (secondaryPane) secondaryPane.hidden = !hasSecond;
+          if (single) single.hidden = hasSecond;
+          if (secondary) {
+            secondary.hidden = !hasSecond;
+            secondary.src = hasSecond ? String(cameras[1].media_url || "") : "";
+            if (hasSecond) secondary.load();
+          }
+          const secondaryLabel = document.getElementById("leisaacEpisodeSecondaryLabel");
+          if (secondaryLabel && hasSecond) secondaryLabel.textContent = String(cameras[1].label || cameras[1].id || "Secondary camera");
+          const slider = document.getElementById("leisaacEpisodeTimeline");
+          if (slider) { slider.max = String(Math.max(0, leisaacEpisodeTimeline.length - 1)); slider.value = "0"; }
+          showLeIsaacTimelineRow(0);
+          const records = document.getElementById("leisaacEpisodeRecordsExport");
+          const metadataExport = document.getElementById("leisaacEpisodeMetadataExport");
+          if (records) { records.href = String(((detail.export || {}).records_url) || "#"); records.hidden = records.href.endsWith("#"); }
+          if (metadataExport) { metadataExport.href = String(((detail.export || {}).metadata_url) || "#"); metadataExport.hidden = metadataExport.href.endsWith("#"); }
+          const artifacts = document.getElementById("leisaacEpisodeArtifacts");
+          if (artifacts) {
+            artifacts.replaceChildren();
+            for (const artifact of Array.isArray(detail.artifacts) ? detail.artifacts : []) {
+              const row = document.createElement("div");
+              row.className = "leisaac-episode-row";
+              const description = document.createElement("span");
+              description.textContent = String(artifact.name || "unknown artifact")
+                + " · " + String(artifact.kind || "unknown")
+                + " · " + String(artifact.bytes === undefined ? "unknown size" : artifact.bytes + " bytes")
+                + " · checksum " + String(artifact.sha256 || "unavailable");
+              row.appendChild(description);
+              if (artifact.download_url) {
+                const link = document.createElement("a");
+                link.className = "btn";
+                link.href = String(artifact.download_url);
+                link.download = "";
+                link.textContent = "Download";
+                row.appendChild(link);
+              } else {
+                const fallback = document.createElement("span");
+                fallback.className = "hint";
+                fallback.textContent = "Unknown artifact is preserved in discovery; no safe manifest-bound download reference exists.";
+                row.appendChild(fallback);
+              }
+              artifacts.appendChild(row);
+            }
+          }
+          if (player) { player.hidden = false; player.focus(); }
+          if (label) label.textContent = hasSecond ? "Loaded synchronized two-camera episode playback." : "Loaded legacy single-camera episode without manufacturing a second view.";
+          renderLeIsaacEpisodeList();
+          return detail;
+        } catch (err) {
+          if (err && err.name === "AbortError") return null;
+          if (generation === leisaacEpisodeGeneration && error) error.textContent = "Episode load failed: " + String((err && err.message) || err);
+          throw err;
+        }
+      }
+      async function leisaacFilePayload(file) {
+        if (!file || Number(file.size || 0) <= 0 || Number(file.size || 0) > 6 * 1024 * 1024) {
+          throw new Error("Each bundle file must be between 1 byte and 6 MiB.");
+        }
+        const buffer = await file.arrayBuffer();
+        const digest = await crypto.subtle.digest("SHA-256", buffer);
+        const sha256 = Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join("");
+        const contentBase64 = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result || "").split(",", 2)[1] || "");
+          reader.onerror = () => reject(new Error("Could not read bundle file " + String(file.name || "")));
+          reader.readAsDataURL(file);
+        });
+        return { path: String(file.name || ""), content_base64: contentBase64, sha256: sha256 };
+      }
+      function renderLeIsaacBundles() {
+        const select = document.getElementById("leisaacBundleSelection");
+        if (!select) return;
+        const prior = select.value;
+        select.replaceChildren();
+        const none = document.createElement("option");
+        none.value = "";
+        none.textContent = "No custom bundle selected";
+        select.appendChild(none);
+        for (const bundle of leisaacBundles) {
+          const option = document.createElement("option");
+          option.value = String(bundle.bundle_sha256 || "");
+          option.setAttribute("data-kind", String(bundle.kind || ""));
+          option.textContent = String(bundle.kind || "bundle") + " · " + String(bundle.name || "unnamed") + " · " + String(bundle.bundle_sha256 || "").slice(0, 12);
+          select.appendChild(option);
+        }
+        if (Array.from(select.options).some((option) => option.value === prior)) select.value = prior;
+      }
+      async function loadLeIsaacBundles() {
+        const status = leisaacCapability;
+        if (!status || !status.bundles_url) return [];
+        const response = await fetch(String(status.bundles_url), { credentials: "include", cache: "no-store" });
+        if (!response.ok) throw new Error("Bundle listing returned HTTP " + response.status);
+        const payload = await response.json();
+        leisaacBundles = Array.isArray(payload.bundles) ? payload.bundles : [];
+        renderLeIsaacBundles();
+        const label = document.getElementById("leisaacBundleStatus");
+        if (label) label.textContent = "Loaded " + leisaacBundles.length + " bounded immutable bundle" + (leisaacBundles.length === 1 ? "." : "s.");
+        return leisaacBundles;
+      }
+      async function uploadLeIsaacBundle() {
+        const status = leisaacCapability;
+        const name = document.getElementById("leisaacBundleName");
+        const kind = document.getElementById("leisaacBundleKind");
+        const input = document.getElementById("leisaacBundleFiles");
+        const files = Array.from((input && input.files) || []);
+        if (!status || !status.bundles_url || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(String((name && name.value) || ""))) {
+          throw new Error("Enter a safe bundle name and select files.");
+        }
+        if (!files.length || files.length > 24) throw new Error("Select between 1 and 24 bundle files.");
+        const selectedKind = String((kind && kind.value) || "");
+        const entrypoint = files.find((file) => selectedKind === "device"
+          ? file.name.toLowerCase().endsWith(".json")
+          : /\.(usd|usda|usdc)$/i.test(file.name));
+        if (!entrypoint) throw new Error(selectedKind === "device" ? "A device bundle needs a JSON mapping entrypoint." : "A robot or scene bundle needs a USD entrypoint.");
+        const filePayloads = [];
+        let total = 0;
+        for (const file of files) {
+          total += Number(file.size || 0);
+          if (total > 12 * 1024 * 1024) throw new Error("Bundle decoded size exceeds 12 MiB.");
+          filePayloads.push(await leisaacFilePayload(file));
+        }
+        const response = await fetch(String(status.bundles_url), {
+          method: "POST",
+          credentials: "include",
+          cache: "no-store",
+          headers: { "Content-Type": "application/json", "X-NPA-LeIsaac-Control": "1" },
+          body: JSON.stringify({
+            schema: "npa.leisaac.bundle.v1",
+            name: String(name.value),
+            kind: selectedKind,
+            entrypoint: String(entrypoint.name),
+            files: filePayloads,
+          }),
+        });
+        const result = await response.json().catch(() => ({}));
+        if (response.status !== 201) throw new Error(String(result.detail || "Bundle upload returned HTTP " + response.status));
+        await loadLeIsaacBundles();
+        const select = document.getElementById("leisaacBundleSelection");
+        if (select) select.value = String(result.bundle_sha256 || "");
+        const label = document.getElementById("leisaacBundleStatus");
+        if (label) label.textContent = "Validated immutable " + selectedKind + " bundle " + String(result.bundle_sha256 || "").slice(0, 16) + " with checksummed provenance.";
+        return result;
+      }
+      async function selectLeIsaacBundle() {
+        const status = leisaacCapability;
+        const select = document.getElementById("leisaacBundleSelection");
+        const option = select && select.selectedOptions && select.selectedOptions[0];
+        if (!status || !status.bundle_select_url || !option || !option.value) throw new Error("Choose an immutable bundle.");
+        const kind = String(option.getAttribute("data-kind") || "");
+        const label = document.getElementById("leisaacBundleStatus");
+        if (label) label.textContent = "Verifying and applying selected " + kind + " bundle; the RTX runtime will reconnect after restart.";
+        let result;
+        try {
+          result = await apiJson(String(status.bundle_select_url), {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "X-NPA-LeIsaac-Control": "1" },
+            body: JSON.stringify({ kind: kind, bundle_sha256: option.value }),
+          });
+        } catch (err) {
+          if (label) label.textContent = "Bundle selection failed: " + String((err && err.message) || err || "unknown error") + ". Retry is safe.";
+          throw err;
+        }
+        if (label) label.textContent = "Selected " + kind + " bundle " + String(option.value).slice(0, 16) + "; checksum verified and simulator restart accepted.";
+        setLeIsaacStreamState("Applying selected custom bundles; live controls reconnect when RTX rendering is ready", "loading");
+        leisaacManualDisconnect = false;
+        leisaacReconnectAttempts = 0;
+        closeLeIsaacSockets();
+        scheduleLeIsaacReconnect();
+        return result;
+      }
       function setLeIsaacStreamState(text, tone) {
         const label = document.getElementById("leisaacStreamStatus");
         const dot = document.getElementById("leisaacLiveDot");
@@ -2519,6 +3189,21 @@
         leisaacNextControlSequence += 1;
         return payload;
       }
+      function leisaacActionPayload(action, device) {
+        const payload = {
+          v: 1,
+          type: "action",
+          run_id: String((leisaacCapability && leisaacCapability.run_id) || ""),
+          client_id: leisaacClientId,
+          seq: leisaacNextControlSequence,
+          device: device,
+          action: action.map((value) => Math.max(-1, Math.min(1, Number(value || 0)))),
+          client_mono_ns: leisaacMonoNs(),
+          client_wall_ns: leisaacWallNs(),
+        };
+        leisaacNextControlSequence += 1;
+        return payload;
+      }
       function sendQueuedWebSocketControls() {
         const socket = leisaacControlSocket;
         if (!socket || socket.readyState !== WebSocket.OPEN) return;
@@ -2569,6 +3254,49 @@
         else leisaacKeysDown.delete(key);
         if (leisaacActiveTransport === "websocket-v1") sendQueuedWebSocketControls();
         else flushLeIsaacFallbackControls();
+      }
+      function queueLeIsaacAction(action, device) {
+        if (!leisaacClientId || !Array.isArray(action) || action.length !== 8) return;
+        const payload = leisaacActionPayload(action, device);
+        leisaacUnackedControls.set(payload.seq, {
+          payload: payload,
+          eventMonoMs: performance.now(),
+          sentGeneration: 0,
+        });
+        if (leisaacActiveTransport === "websocket-v1") sendQueuedWebSocketControls();
+        else flushLeIsaacFallbackControls();
+      }
+      function stopLeIsaacGamepad() {
+        if (leisaacGamepadTimer !== null) window.clearTimeout(leisaacGamepadTimer);
+        leisaacGamepadTimer = null;
+        leisaacLastGamepadAction = "";
+      }
+      function startLeIsaacGamepad() {
+        stopLeIsaacGamepad();
+        const poll = () => {
+          const select = document.getElementById("leisaacInputDevice");
+          if (!select || select.value !== "browser-gamepad") return;
+          const gamepads = typeof navigator.getGamepads === "function" ? navigator.getGamepads() : [];
+          const gamepad = Array.from(gamepads || []).find(Boolean);
+          const label = document.getElementById("leisaacDeviceStatus");
+          if (gamepad && leisaacStreamReady) {
+            const axes = Array.from(gamepad.axes || []).slice(0, 6);
+            while (axes.length < 6) axes.push(0);
+            const pressed = (index) => Number((((gamepad.buttons || [])[index] || {}).value) || 0);
+            const action = axes.map((value) => Math.abs(Number(value)) < 0.08 ? 0 : Number(value));
+            action.push(pressed(7) - pressed(6), pressed(1) - pressed(0));
+            const fingerprint = JSON.stringify(action.map((value) => Math.round(value * 100) / 100));
+            if (fingerprint !== leisaacLastGamepadAction) {
+              leisaacLastGamepadAction = fingerprint;
+              queueLeIsaacAction(action, "browser-gamepad");
+            }
+            if (label) label.textContent = "Gamepad " + String(gamepad.id || "connected") + " · ordered action stream active";
+          } else if (label) {
+            label.textContent = gamepad ? "Connect teleoperation to send gamepad actions." : "Waiting for a browser gamepad input event.";
+          }
+          leisaacGamepadTimer = window.setTimeout(poll, 50);
+        };
+        poll();
       }
       function sendLeIsaacInput(event, kind) {
         const key = String((event && event.key) || "").toUpperCase();
@@ -2646,7 +3374,9 @@
       }
       function stopLeIsaacFrames() {
         if (leisaacFrameTimer !== null) window.clearTimeout(leisaacFrameTimer);
+        if (leisaacSecondaryFrameTimer !== null) window.clearTimeout(leisaacSecondaryFrameTimer);
         leisaacFrameTimer = null;
+        leisaacSecondaryFrameTimer = null;
         const frame = document.getElementById("leisaacFrame");
         if (frame) {
           frame.onload = null;
@@ -2656,6 +3386,15 @@
         }
         const canvas = document.getElementById("leisaacCanvas");
         if (canvas) canvas.hidden = true;
+        const secondaryFrame = document.getElementById("leisaacSecondaryFrame");
+        if (secondaryFrame) {
+          secondaryFrame.onload = null;
+          secondaryFrame.onerror = null;
+          secondaryFrame.removeAttribute("src");
+          secondaryFrame.hidden = true;
+        }
+        const secondaryCanvas = document.getElementById("leisaacSecondaryCanvas");
+        if (secondaryCanvas) secondaryCanvas.hidden = true;
       }
       function connectLeIsaacFrames(status) {
         const frame = document.getElementById("leisaacFrame");
@@ -2683,6 +3422,24 @@
           leisaacFrameTimer = window.setTimeout(refresh, 1000);
         };
         refresh();
+        const secondary = document.getElementById("leisaacSecondaryFrame");
+        if (secondary && Array.isArray(status.cameras) && status.cameras.includes("overview")) {
+          secondary.hidden = false;
+          const refreshSecondary = () => {
+            leisaacFrameSequence += 1;
+            const separator = String(status.frame_url || "").includes("?") ? "&" : "?";
+            secondary.src = String(status.frame_url || "") + separator + "camera=overview&frame=" + String(leisaacFrameSequence);
+          };
+          secondary.onload = () => {
+            const label = document.getElementById("leisaacSecondaryStatus");
+            if (label) label.textContent = "Overview camera · polling fallback · drag or touch to orbit";
+            leisaacSecondaryFrameTimer = window.setTimeout(refreshSecondary, 150);
+          };
+          secondary.onerror = () => {
+            leisaacSecondaryFrameTimer = window.setTimeout(refreshSecondary, 1000);
+          };
+          refreshSecondary();
+        }
       }
       function handleLeIsaacControlMessage(message) {
         let payload;
@@ -2772,6 +3529,7 @@
           headerSize: headerSize,
           jpegSize: jpegSize,
           sequence: Number(view.getBigUint64(8, false)),
+          camera: (view.getUint8(5) & 1) === 1 ? "overview" : "workspace",
           captureWallNs: Number(view.getBigUint64(16, false)),
           captureMonoNs: String(view.getBigUint64(24, false)),
           encodedMonoNs: String(view.getBigUint64(40, false)),
@@ -2787,9 +3545,13 @@
         if (leisaacVideoDecoding) return;
         leisaacVideoDecoding = true;
         try {
-          while (leisaacVideoPending) {
-            const frame = leisaacVideoPending;
-            leisaacVideoPending = null;
+          while (leisaacVideoPending.workspace || leisaacVideoPending.overview) {
+            const camera = leisaacVideoPending[leisaacDecodeNextCamera]
+              ? leisaacDecodeNextCamera
+              : (leisaacDecodeNextCamera === "workspace" ? "overview" : "workspace");
+            const frame = leisaacVideoPending[camera];
+            leisaacVideoPending[camera] = null;
+            leisaacDecodeNextCamera = camera === "workspace" ? "overview" : "workspace";
             const blob = new Blob(
               [frame.buffer.slice(frame.headerSize, frame.headerSize + frame.jpegSize)],
               { type: "image/jpeg" },
@@ -2798,16 +3560,17 @@
             // A newer credited frame can arrive while createImageBitmap runs.
             // Do not spend a paint on a frame that is already stale.
             if (
-              leisaacVideoPending &&
-              Number(leisaacVideoPending.sequence || 0) > Number(frame.sequence || 0)
+              leisaacVideoPending[camera] &&
+              Number(leisaacVideoPending[camera].sequence || 0) > Number(frame.sequence || 0)
             ) {
               bitmap.close();
               leisaacDroppedFrames += 1;
               continue;
             }
-            const canvas = document.getElementById("leisaacCanvas");
-            const image = document.getElementById("leisaacFrame");
-            const video = document.getElementById("leisaacVideo");
+            const secondary = frame.camera === "overview";
+            const canvas = document.getElementById(secondary ? "leisaacSecondaryCanvas" : "leisaacCanvas");
+            const image = document.getElementById(secondary ? "leisaacSecondaryFrame" : "leisaacFrame");
+            const video = secondary ? null : document.getElementById("leisaacVideo");
             if (!canvas) { bitmap.close(); return; }
             canvas.width = bitmap.width;
             canvas.height = bitmap.height;
@@ -2819,16 +3582,18 @@
             if (video) video.hidden = true;
             await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
             leisaacDeliveredFrames += 1;
-            const sequenceGap = leisaacLastFrameSequence
-              ? Math.max(0, frame.sequence - leisaacLastFrameSequence - 1)
+            const lastSequence = Number(leisaacLastFrameSequences[frame.camera] || 0);
+            const sequenceGap = lastSequence
+              ? Math.max(0, frame.sequence - lastSequence - 1)
               : 0;
             leisaacDroppedFrames += Math.max(Number(frame.droppedBefore || 0), sequenceGap);
-            leisaacLastFrameSequence = frame.sequence;
+            leisaacLastFrameSequences[frame.camera] = frame.sequence;
             const paintMonoMs = performance.now();
             const captureClientWallNs = frame.captureWallNs - leisaacClockOffsetNs;
             const frameAgeMs = (Date.now() * 1000000 - captureClientWallNs) / 1000000;
             leisaacTransportEvidence.frames.push({
               sequence: frame.sequence,
+              camera: frame.camera,
               bytes: frame.jpegSize,
               capture_mono_ns: frame.captureMonoNs,
               encoded_mono_ns: frame.encodedMonoNs,
@@ -2842,16 +3607,21 @@
               dropped_before: frame.droppedBefore,
             });
             leisaacStreamReady = true;
-            setLeIsaacStreamState("Live WebSocket · keyboard teleoperation active", "ready");
-            const host = document.getElementById("leisaacStreamHost");
-            if (host) host.focus();
+            if (secondary) {
+              const secondaryStatus = document.getElementById("leisaacSecondaryStatus");
+              if (secondaryStatus) secondaryStatus.textContent = "Overview camera · synchronized WebSocket · drag or touch to orbit";
+            } else {
+              setLeIsaacStreamState("Live WebSocket · keyboard teleoperation active", "ready");
+              const host = document.getElementById("leisaacStreamHost");
+              if (host) host.focus();
+            }
             updateLeIsaacTransportIndicator();
           }
         } catch (err) {
           setLeIsaacStreamState("Video decode failed: " + String((err && err.message) || err), "error");
         } finally {
           leisaacVideoDecoding = false;
-          if (leisaacVideoPending) decodeLatestLeIsaacFrame();
+          if (leisaacVideoPending.workspace || leisaacVideoPending.overview) decodeLatestLeIsaacFrame();
         }
       }
       function handleLeIsaacVideoMessage(message) {
@@ -2870,12 +3640,106 @@
               sequence: parsed.sequence,
             }));
           }
-          if (leisaacVideoPending) leisaacDroppedFrames += 1;
-          leisaacVideoPending = parsed;
+          if (leisaacVideoPending[parsed.camera]) leisaacDroppedFrames += 1;
+          leisaacVideoPending[parsed.camera] = parsed;
           decodeLatestLeIsaacFrame();
         } catch (err) {
           setLeIsaacStreamState(String((err && err.message) || err), "error");
         }
+      }
+      async function flushLeIsaacViewDelta() {
+        if (leisaacViewInFlight || !leisaacPendingViewDelta) return;
+        const status = leisaacCapability;
+        if (!status || !status.available || !status.view_orbit || !status.view_url) return;
+        leisaacViewInFlight = true;
+        const delta = leisaacPendingViewDelta;
+        leisaacPendingViewDelta = null;
+        const sequence = ++leisaacViewSequence;
+        try {
+          const response = await fetch(String(status.view_url), {
+            method: "POST",
+            credentials: "include",
+            cache: "no-store",
+            headers: {
+              "Content-Type": "application/json",
+              "X-NPA-LeIsaac-Control": "1",
+            },
+            body: JSON.stringify({
+              camera: "overview",
+              sequence: sequence,
+              yaw_delta: Math.max(-0.5, Math.min(0.5, Number(delta.yaw || 0))),
+              pitch_delta: Math.max(-0.5, Math.min(0.5, Number(delta.pitch || 0))),
+              distance_delta: Math.max(-1, Math.min(1, Number(delta.distance || 0))),
+            }),
+          });
+          if (response.status !== 202) throw new Error("view control HTTP " + response.status);
+          const label = document.getElementById("leisaacSecondaryStatus");
+          if (label) label.textContent = "Overview camera · rotation " + sequence + " applied";
+        } catch (err) {
+          const label = document.getElementById("leisaacSecondaryStatus");
+          if (label) label.textContent = "Overview rotation failed: " + String((err && err.message) || err);
+        } finally {
+          leisaacViewInFlight = false;
+          if (leisaacPendingViewDelta) flushLeIsaacViewDelta();
+        }
+      }
+      function queueLeIsaacViewDelta(yaw, pitch, distance) {
+        const current = leisaacPendingViewDelta || { yaw: 0, pitch: 0, distance: 0 };
+        leisaacPendingViewDelta = {
+          yaw: current.yaw + Number(yaw || 0),
+          pitch: current.pitch + Number(pitch || 0),
+          distance: current.distance + Number(distance || 0),
+        };
+        flushLeIsaacViewDelta();
+      }
+      function bindLeIsaacOrbit(host) {
+        if (!host || host.getAttribute("data-orbit-bound") === "1") return;
+        host.setAttribute("data-orbit-bound", "1");
+        let pointer = null;
+        host.addEventListener("pointerdown", (event) => {
+          if (!(leisaacCapability && leisaacCapability.view_orbit)) return;
+          pointer = { id: event.pointerId, x: event.clientX, y: event.clientY };
+          host.classList.add("is-orbiting");
+          // Pointer capture isn't available for synthetic accessibility/test
+          // events and can be rejected by some embedded browsers.  Orbit still
+          // works while events remain over the host, so capture is an optional
+          // enhancement rather than a reason to discard the first drag delta.
+          try {
+            if (typeof host.setPointerCapture === "function") {
+              host.setPointerCapture(event.pointerId);
+            }
+          } catch (_err) {}
+          event.preventDefault();
+        });
+        host.addEventListener("pointermove", (event) => {
+          if (!pointer || pointer.id !== event.pointerId) return;
+          const dx = event.clientX - pointer.x;
+          const dy = event.clientY - pointer.y;
+          pointer.x = event.clientX;
+          pointer.y = event.clientY;
+          queueLeIsaacViewDelta(dx * 0.005, dy * 0.005, 0);
+          event.preventDefault();
+        });
+        const finish = (event) => {
+          if (pointer && pointer.id === event.pointerId) {
+            try {
+              if (
+                typeof host.hasPointerCapture === "function" &&
+                host.hasPointerCapture(event.pointerId) &&
+                typeof host.releasePointerCapture === "function"
+              ) host.releasePointerCapture(event.pointerId);
+            } catch (_err) {}
+            pointer = null;
+          }
+          host.classList.remove("is-orbiting");
+        };
+        host.addEventListener("pointerup", finish);
+        host.addEventListener("pointercancel", finish);
+        host.addEventListener("wheel", (event) => {
+          if (!(leisaacCapability && leisaacCapability.view_orbit)) return;
+          queueLeIsaacViewDelta(0, 0, event.deltaY * 0.002);
+          event.preventDefault();
+        }, { passive: false });
       }
       function stopLeIsaacHeartbeat() {
         if (leisaacHeartbeatTimer !== null) window.clearInterval(leisaacHeartbeatTimer);
@@ -3021,6 +3885,33 @@
         leisaacReconnectPromise = connectLeIsaacPreferred(status).finally(() => { leisaacReconnectPromise = null; });
         return leisaacReconnectPromise;
       }
+      function scheduleLeIsaacReconnect(delayMs) {
+        if (leisaacManualDisconnect) return;
+        if (leisaacReconnectTimer !== null) window.clearTimeout(leisaacReconnectTimer);
+        const delay = Number.isFinite(Number(delayMs))
+          ? Math.max(250, Math.min(5000, Number(delayMs)))
+          : Math.min(5000, 500 * (2 ** Math.min(3, leisaacReconnectAttempts)));
+        leisaacReconnectTimer = window.setTimeout(async () => {
+          leisaacReconnectTimer = null;
+          if (leisaacManualDisconnect) return;
+          const runId = String((leisaacCapability && leisaacCapability.run_id) || "");
+          const status = await refreshLeIsaacCapability(runId);
+          if (leisaacManualDisconnect) return;
+          if (!(status && status.available)) {
+            leisaacReconnectAttempts += 1;
+            scheduleLeIsaacReconnect();
+            return;
+          }
+          try {
+            await connectLeIsaac();
+            leisaacReconnectAttempts = 0;
+          } catch (err) {
+            leisaacReconnectAttempts += 1;
+            setLeIsaacStreamState("Simulator is restarting; retrying authenticated live controls…", "pending");
+            scheduleLeIsaacReconnect();
+          }
+        }, delay);
+      }
       async function connectLeIsaac() {
         const status = leisaacCapability;
         if (!status || !status.available) throw new Error("No usable LeIsaac session is selected");
@@ -3134,6 +4025,7 @@
         leisaacStreamer = null;
         leisaacStreamReady = false;
         stopLeIsaacFrames();
+        stopLeIsaacGamepad();
         closeLeIsaacSockets();
         leisaacActiveTransport = "disconnected";
         leisaacKeysDown.clear();
@@ -3147,7 +4039,7 @@
         restoreLeIsaacPeerConnection();
         const connectBtn = document.getElementById("leisaacConnect");
         const disconnectBtn = document.getElementById("leisaacDisconnect");
-        if (connectBtn) connectBtn.disabled = false;
+        if (connectBtn) connectBtn.disabled = !(leisaacCapability && leisaacCapability.available);
         if (disconnectBtn) disconnectBtn.disabled = true;
         setLeIsaacStreamState("Disconnected", "pending");
       }
@@ -3192,11 +4084,33 @@
           const connectBtn = panel.querySelector("#leisaacConnect");
           const disconnectBtn = panel.querySelector("#leisaacDisconnect");
           const host = panel.querySelector("#leisaacStreamHost");
+          const secondaryHost = panel.querySelector("#leisaacSecondaryHost");
           if (connectBtn) connectBtn.addEventListener("click", () => connectLeIsaac().catch((err) => showToast(String(err), "error")));
           if (disconnectBtn) disconnectBtn.addEventListener("click", () => disconnectLeIsaac());
           if (host) {
             host.addEventListener("click", () => host.focus());
           }
+          bindLeIsaacOrbit(secondaryHost);
+          const inputDevice = panel.querySelector("#leisaacInputDevice");
+          if (inputDevice) inputDevice.addEventListener("change", () => {
+            stopLeIsaacGamepad();
+            const label = document.getElementById("leisaacDeviceStatus");
+            if (inputDevice.value === "browser-gamepad") startLeIsaacGamepad();
+            else if (label) label.textContent = inputDevice.value === "keyboard"
+              ? "Keyboard selected; robot keys are accepted only while the workspace has focus."
+              : "Custom SO-101 source selected; use the documented authenticated action schema and sequence contract.";
+          });
+          const neutral = panel.querySelector("#leisaacSendNeutralAction");
+          if (neutral) neutral.addEventListener("click", () => {
+            const selected = String((inputDevice && inputDevice.value) || "custom-so101");
+            queueLeIsaacAction(new Array(8).fill(0), selected === "browser-gamepad" ? selected : "custom-so101");
+          });
+          const bundleUpload = panel.querySelector("#leisaacBundleUpload");
+          const bundleSelect = panel.querySelector("#leisaacBundleSelect");
+          const bundleRefresh = panel.querySelector("#leisaacBundleRefresh");
+          if (bundleUpload) bundleUpload.addEventListener("click", () => uploadLeIsaacBundle().catch((err) => showToast(String(err), "error")));
+          if (bundleSelect) bundleSelect.addEventListener("click", () => selectLeIsaacBundle().catch((err) => showToast(String(err), "error")));
+          if (bundleRefresh) bundleRefresh.addEventListener("click", () => loadLeIsaacBundles().catch((err) => showToast(String(err), "error")));
           const recorderButtons = {
             leisaacRecordStart: "start",
             leisaacRecordSuccess: "mark-success",
@@ -3207,9 +4121,100 @@
             const button = panel.querySelector("#" + id);
             if (button) button.addEventListener("click", () => sendLeIsaacRecorder(command).catch((err) => showToast(String(err), "error")));
           }
+          const retry = panel.querySelector("#leisaacRetry");
+          if (retry) retry.addEventListener("click", () => refreshLeIsaacCapability(String((leisaacCapability || {}).run_id || "")).catch(() => null));
+          const episodeRetry = panel.querySelector("#leisaacEpisodesRetry");
+          const episodeApply = panel.querySelector("#leisaacEpisodesApply");
+          if (episodeRetry) episodeRetry.addEventListener("click", () => retryLeIsaacEpisodeSurface().catch((err) => showToast(String(err), "error")));
+          if (episodeApply) episodeApply.addEventListener("click", () => loadLeIsaacEpisodes(true).catch((err) => showToast(String(err), "error")));
+          const previousPage = panel.querySelector("#leisaacEpisodesPreviousPage");
+          const nextPage = panel.querySelector("#leisaacEpisodesNextPage");
+          if (previousPage) previousPage.addEventListener("click", () => {
+            if (!leisaacEpisodeCursorHistory.length) return;
+            leisaacEpisodeCursor = String(leisaacEpisodeCursorHistory.pop() || "");
+            loadLeIsaacEpisodes(false).catch((err) => showToast(String(err), "error"));
+          });
+          if (nextPage) nextPage.addEventListener("click", () => {
+            if (!leisaacEpisodeNextCursor) return;
+            leisaacEpisodeCursorHistory.push(leisaacEpisodeCursor);
+            leisaacEpisodeCursor = leisaacEpisodeNextCursor;
+            loadLeIsaacEpisodes(false).catch((err) => showToast(String(err), "error"));
+          });
+          const viewUploaded = panel.querySelector("#leisaacViewUploadedEpisode");
+          if (viewUploaded) viewUploaded.addEventListener("click", () => {
+            openLeIsaacEpisode(
+              String(viewUploaded.getAttribute("data-episode-index") || ""),
+              String(viewUploaded.getAttribute("data-version-id") || ""),
+            ).catch((err) => showToast(String(err), "error"));
+          });
+          const previousEpisode = panel.querySelector("#leisaacEpisodePrevious");
+          const nextEpisode = panel.querySelector("#leisaacEpisodeNext");
+          if (previousEpisode) previousEpisode.addEventListener("click", () => navigateLeIsaacEpisode(-1).catch((err) => showToast(String(err), "error")));
+          if (nextEpisode) nextEpisode.addEventListener("click", () => navigateLeIsaacEpisode(1).catch((err) => showToast(String(err), "error")));
+          const describe = panel.querySelector("#leisaacEpisodeDescribe");
+          if (describe) describe.addEventListener("click", () => describeVisual().catch((err) => showToast(String(err), "error")));
+          const primaryVideo = panel.querySelector("#leisaacEpisodePrimaryVideo");
+          const secondaryVideo = panel.querySelector("#leisaacEpisodeSecondaryVideo");
+          for (const video of [primaryVideo, secondaryVideo]) {
+            if (!video) continue;
+            for (const name of ["play", "pause", "seeking", "ratechange"]) {
+              video.addEventListener(name, () => syncLeIsaacEpisodeVideos(video));
+            }
+            video.addEventListener("error", () => {
+              const episodeError = document.getElementById("leisaacEpisodeError");
+              const episodeStatus = document.getElementById("leisaacEpisodeStatus");
+              if (episodeError) episodeError.textContent = "Episode media could not be loaded or resumed. Retry reloads this exact immutable episode.";
+              if (episodeStatus) episodeStatus.textContent = "Episode player error; the S3 commit and checksum state remain selected.";
+            });
+            video.addEventListener("canplay", () => {
+              const episodeError = document.getElementById("leisaacEpisodeError");
+              if (episodeError && episodeError.textContent.startsWith("Episode media could not")) episodeError.textContent = "";
+            });
+          }
+          if (primaryVideo) primaryVideo.addEventListener("timeupdate", () => {
+            syncLeIsaacEpisodeVideos(primaryVideo);
+            showLeIsaacTimelineRow(leisaacTimelineRowForTime(primaryVideo.currentTime));
+          });
+          if (secondaryVideo) secondaryVideo.addEventListener("timeupdate", () => syncLeIsaacEpisodeVideos(secondaryVideo));
+          const rate = panel.querySelector("#leisaacEpisodeRate");
+          if (rate) rate.addEventListener("change", () => {
+            const value = Number(rate.value || 1);
+            if (primaryVideo) primaryVideo.playbackRate = value;
+            if (secondaryVideo) secondaryVideo.playbackRate = value;
+          });
+          const timeline = panel.querySelector("#leisaacEpisodeTimeline");
+          if (timeline) timeline.addEventListener("input", () => {
+            const index = Math.max(0, Math.min(leisaacEpisodeTimeline.length - 1, Number(timeline.value) || 0));
+            const row = leisaacEpisodeTimeline[index];
+            if (!row) return;
+            const target = Number(row.timestamp || 0);
+            if (primaryVideo) primaryVideo.currentTime = target;
+            if (secondaryVideo && !secondaryVideo.hidden) secondaryVideo.currentTime = target;
+            showLeIsaacTimelineRow(index);
+          });
+          const player = panel.querySelector("#leisaacEpisodePlayer");
+          if (player) player.addEventListener("keydown", (event) => {
+            if (!primaryVideo || ["INPUT", "SELECT", "BUTTON", "A"].includes(String((event.target || {}).tagName || ""))) return;
+            if (event.key === " ") { event.preventDefault(); primaryVideo.paused ? primaryVideo.play().catch(() => null) : primaryVideo.pause(); }
+            else if (event.key === "ArrowLeft") { event.preventDefault(); primaryVideo.currentTime = Math.max(0, primaryVideo.currentTime - 5); }
+            else if (event.key === "ArrowRight") { event.preventDefault(); primaryVideo.currentTime = Math.min(Number(primaryVideo.duration || Infinity), primaryVideo.currentTime + 5); }
+            else if (event.key === "Home") { event.preventDefault(); primaryVideo.currentTime = 0; }
+            else if (event.key === "End" && Number.isFinite(primaryVideo.duration)) { event.preventDefault(); primaryVideo.currentTime = primaryVideo.duration; }
+          });
         }
+        const availability = panel.querySelector("#leisaacAvailability");
+        const connectBtn = panel.querySelector("#leisaacConnect");
+        if (availability) availability.textContent = status.available
+          ? "Live simulation is ready."
+          : String(status.reason || "Live simulation is unavailable; Episodes remains usable when an S3 dataset is selected.");
+        if (connectBtn && !leisaacStreamReady) connectBtn.disabled = !status.available;
         updateLeIsaacRecorder(status);
-        startLeIsaacRecorderPolling();
+        if (status.available) startLeIsaacRecorderPolling();
+        else stopLeIsaacRecorderPolling();
+        if (status.episodes_available && !leisaacEpisodes.length) {
+          loadLeIsaacEpisodes(true).catch(() => null);
+        }
+        if (status.bundles_url && !leisaacBundles.length) loadLeIsaacBundles().catch(() => null);
       }
       function removeLeIsaacTab() {
         const tab = document.getElementById("tabLeIsaac");
@@ -3227,25 +4232,43 @@
         const target = String(runId || "").trim();
         const generation = ++leisaacCapabilityGeneration;
         try {
-          let status = await loadJson(
-            target
-              ? "/api/leisaac/status?run_id=" + encodeURIComponent(target)
-              : "/api/leisaac/status"
-          );
-          // The LeIsaac capability is independent of whichever artifact run is
-          // open in Rerun/Voxel51.  If that run is unrelated, fall back to the
-          // live LeIsaac run registered by `workbench leisaac launch`.
-          if (target && !(status && status.available && String(status.run_id || "") === target)) {
+          // Resolve the registered live capability first. An unrelated artifact
+          // run can require a slower bounded S3 miss; rendering that miss first
+          // lets the periodic poll repeatedly cancel the fallback and replace a
+          // healthy persistent tab. Keep the registered run mounted while an
+          // explicitly requested alternative is checked in the background.
+          let status = null;
+          let registeredError = null;
+          try {
             status = await loadJson("/api/leisaac/status");
+          } catch (err) {
+            registeredError = err;
           }
           if (generation !== leisaacCapabilityGeneration) return null;
-          if (!(status && status.available && String(status.run_id || ""))) {
-            removeLeIsaacTab();
-            return null;
+          if (status && typeof status === "object") {
+            leisaacCapability = status;
+            ensureLeIsaacTab(status);
           }
+          if (target && String((status && status.run_id) || "") !== target) {
+            const requested = await loadJson(
+              "/api/leisaac/status?run_id=" + encodeURIComponent(target)
+            );
+            if (generation !== leisaacCapabilityGeneration) return status || null;
+            if (
+              requested &&
+              typeof requested === "object" &&
+              (!status || (requested.available && String(requested.run_id || "") === target))
+            ) {
+              status = requested;
+            }
+          }
+          if (!(status && typeof status === "object")) {
+            throw registeredError || new Error("LeIsaac status is unavailable");
+          }
+          if (generation !== leisaacCapabilityGeneration) return null;
           leisaacCapability = status;
           ensureLeIsaacTab(status);
-          if (target && String(status.run_id || "") === target) {
+          if (target && status.available && String(status.run_id || "") === target) {
             apiJson("/api/leisaac/select", {
               method: "POST",
               headers: {
@@ -3256,8 +4279,17 @@
             }).catch(() => null);
           }
           return status;
-        } catch (_err) {
-          if (generation === leisaacCapabilityGeneration) removeLeIsaacTab();
+        } catch (err) {
+          if (generation === leisaacCapabilityGeneration) {
+            const status = {
+              available: false,
+              episodes_available: false,
+              run_id: target,
+              reason: "LeIsaac status is unavailable; retry without reloading the page. " + String((err && err.message) || ""),
+            };
+            leisaacCapability = status;
+            ensureLeIsaacTab(status);
+          }
           return null;
         }
       }
@@ -4484,7 +5516,11 @@
             return rerunCaptureBridge;
           }
           stopRerunCaptureBridge();
-          const stream = canvas.captureStream(30);
+          // A zero-rate CanvasCaptureMediaStreamTrack is demand-driven: each
+          // requestFrame below asks Chromium for the latest composited image.
+          // This avoids both a permanently hot 30 FPS mirror and the stale
+          // automatic track Chromium can retain across WebGL repaints.
+          const stream = canvas.captureStream(0);
           const video = document.createElement("video");
           video.setAttribute("playsinline", "");
           video.setAttribute("muted", "");
@@ -4508,10 +5544,12 @@
         const run = async () => {
           const iframe = document.getElementById("rerunFrame");
           // Fresh stream avoids returning stale composited frames after canvas repaints (gray/splash).
-          const bridge = ensureRerunCaptureBridge(iframe, { forceRestart: Boolean(opts && opts.forceRestart) });
+          let restarted = Boolean(opts && opts.forceRestart);
+          let bridge = ensureRerunCaptureBridge(iframe, { forceRestart: restarted });
           if (!bridge || !bridge.video) return "";
           await playVideoSoon(bridge.video, Math.min(300, budget));
           const deadline = Date.now() + budget;
+          const restartAt = Date.now() + Math.max(120, Math.floor(budget * 0.55));
           while (Date.now() < deadline) {
             try {
               const track = bridge.stream && bridge.stream.getVideoTracks && bridge.stream.getVideoTracks()[0];
@@ -4527,6 +5565,16 @@
                 }
               }
             } catch (_grabErr) { /* retry */ }
+            // Chromium can retain a captureStream track that is live but stops
+            // publishing after the WebGL canvas repaints.  Give the existing
+            // bridge a fair chance, then replace it within the same bounded
+            // budget instead of returning a false metadata-only result.
+            if (!restarted && Date.now() >= restartAt) {
+              restarted = true;
+              bridge = ensureRerunCaptureBridge(iframe, { forceRestart: true });
+              if (!bridge || !bridge.video) return "";
+              await playVideoSoon(bridge.video, Math.min(300, Math.max(100, deadline - Date.now())));
+            }
             await new Promise((r) => window.setTimeout(r, 80));
           }
           return "";
@@ -4762,6 +5810,31 @@
         }
         return "";
       }
+      function captureLeIsaacDisplayedFrame() {
+        const player = document.getElementById("leisaacEpisodePlayer");
+        const episodeVideo = document.getElementById("leisaacEpisodePrimaryVideo");
+        const liveVideo = document.getElementById("leisaacVideo");
+        const liveCanvas = document.getElementById("leisaacCanvas");
+        const video = player && !player.hidden && episodeVideo && episodeVideo.videoWidth && episodeVideo.videoHeight
+          ? episodeVideo
+          : liveVideo && !liveVideo.hidden && liveVideo.videoWidth && liveVideo.videoHeight
+            ? liveVideo
+            : null;
+        const source = video || (liveCanvas && !liveCanvas.hidden && liveCanvas.width && liveCanvas.height ? liveCanvas : null);
+        if (!source) return "";
+        const canvas = document.createElement("canvas");
+        canvas.width = Number(video ? video.videoWidth : source.width);
+        canvas.height = Number(video ? video.videoHeight : source.height);
+        const ctx = canvas.getContext("2d", { willReadFrequently: true });
+        if (!ctx) return "";
+        try {
+          ctx.drawImage(source, 0, 0, canvas.width, canvas.height);
+          if (frameLooksBlank(canvas)) return "";
+          return downscaleCanvasToDataUrl(canvas, 768, 0.72);
+        } catch (_err) {
+          return "";
+        }
+      }
       async function captureDataPaneExcerpt() {
         const host = document.getElementById("artifactPreviewHost");
         if (!host) return "";
@@ -4771,13 +5844,29 @@
       }
       async function captureVisualContext() {
         // Capture the active viewer pane for vision feedback (Rerun / video / image / data).
-        const kind = String(activeRenderMode || activeArtifactRender || "rerun");
-        const visualKind =
-          (kind === "video" || kind === "image" || kind === "data" || kind === "foxglove") ? kind : "rerun";
+        const leisaacActive = activeMainTab === "leisaac";
+        const kind = leisaacActive ? "video" : String(activeRenderMode || activeArtifactRender || "rerun");
+        const visualKind = (kind === "video" || kind === "image" || kind === "data" || kind === "foxglove") ? kind : "rerun";
         let imageDataUrl = "";
         let frameQuality = "";
         let textExcerpt = "";
-        if (visualKind === "foxglove") {
+        if (leisaacActive) {
+          imageDataUrl = captureLeIsaacDisplayedFrame();
+          frameQuality = imageDataUrl ? "rendered" : "unavailable";
+          const episode = leisaacEpisodeDetail || {};
+          const status = leisaacCapability || {};
+          textExcerpt = JSON.stringify({
+            viewer: "LeIsaac",
+            mode: document.getElementById("leisaacEpisodePlayer") && !document.getElementById("leisaacEpisodePlayer").hidden ? "episode" : "live",
+            run_id: String(episode.run_id || status.run_id || ""),
+            episode_index: episode.episode_index,
+            task: String(episode.task || status.task || ""),
+            environment_id: String(episode.environment_id || status.environment_id || ""),
+            outcome: String(episode.outcome || ""),
+            camera_mode: String(episode.camera_mode || "live-primary"),
+            provenance: episode.provenance || status.provenance || {},
+          }, null, 2);
+        } else if (visualKind === "foxglove") {
           // Cross-origin embed: describe from live viewer state, never a fake frame.
           textExcerpt = await captureFoxgloveContext();
           frameQuality = "cross-origin-embed";
@@ -4827,10 +5916,10 @@
         const meta = {
           kind: visualKind,
           visual_kind: visualKind,
-          run_id: String(activeRunId || (runEl && runEl.textContent) || "").trim(),
-          stage: String((stageEl && stageEl.textContent) || "").trim(),
-          camera: String((cameraEl && cameraEl.textContent) || "").trim(),
-          artifact_render: String(activeArtifactRender || visualKind || "").trim(),
+          run_id: String(leisaacActive ? ((leisaacEpisodeDetail || {}).run_id || (leisaacCapability || {}).run_id || "") : (activeRunId || (runEl && runEl.textContent) || "")).trim(),
+          stage: String(leisaacActive ? "leisaac-episode-player" : ((stageEl && stageEl.textContent) || "")).trim(),
+          camera: String(leisaacActive ? "displayed-primary" : ((cameraEl && cameraEl.textContent) || "")).trim(),
+          artifact_render: String(leisaacActive ? "leisaac-video" : (activeArtifactRender || visualKind || "")).trim(),
           artifact_key: String((artifactKeyMatch && artifactKeyMatch[0]) || summaryText).slice(0, 240),
           note: String((noteEl && noteEl.textContent) || "").trim().slice(0, 320),
           visualization_note: String((noteEl && noteEl.textContent) || "").trim().slice(0, 320),
@@ -4884,6 +5973,13 @@
           promptLines.push(textExcerpt);
           promptLines.push("```");
         }
+        if (leisaacActive && !imageDataUrl) {
+          promptLines.push(
+            "",
+            "Note: capture of the displayed LeIsaac frame failed or was blank.",
+            "Use only the metadata below and explicitly say that pixels were not available; do not claim to see the robot or scene."
+          );
+        }
         if (visualKind === "foxglove") {
           promptLines.push(
             "",
@@ -4931,7 +6027,7 @@
         let pendingRow = null;
         try {
           // Stay on the viewer; open the collapsed chat drawer for the reply.
-          if (activeMainTab !== "rerun") {
+          if (activeMainTab !== "rerun" && activeMainTab !== "leisaac") {
             await activateMainTab("rerun", { skipEnsure: true });
           }
           openChatDrawer();
@@ -6413,7 +7509,7 @@
           pathText === "/api/chat" ||
           pathText === "/api/workflows/submit" ||
           pathText === "/api/infra/provision"
-        ) ? 900000 : 12000;
+        ) ? 900000 : pathText.startsWith("/api/leisaac/bundles/select?") ? 60000 : 12000;
         const isChat = pathText === "/api/chat";
         let resp;
         let lastFetchErr = null;

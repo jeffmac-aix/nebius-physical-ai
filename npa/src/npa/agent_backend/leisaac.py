@@ -67,6 +67,8 @@ LEISAAC_SIGNAL_PATH = "/api/leisaac/signal"
 LEISAAC_FRAME_PATH = "/api/leisaac/frame.jpg"
 LEISAAC_INPUT_PATH = "/api/leisaac/input"
 LEISAAC_RECORDER_PATH = "/api/leisaac/recorder"
+LEISAAC_VIEW_PATH = "/api/leisaac/view"
+LEISAAC_BUNDLES_PATH = "/api/leisaac/bundles"
 LEISAAC_CONTROL_WS_PATH = "/api/leisaac/transport/control"
 LEISAAC_VIDEO_WS_PATH = "/api/leisaac/transport/video"
 
@@ -163,8 +165,10 @@ def selected_run_id(state: dict | None, requested: str = "") -> str:
     if explicit:
         return explicit if _RUN_ID_RE.fullmatch(explicit) else ""
     data = state if isinstance(state, dict) else {}
-    leisaac = data.get("leisaac") if isinstance(data.get("leisaac"), dict) else {}
-    sim_viz = data.get("sim_viz") if isinstance(data.get("sim_viz"), dict) else {}
+    leisaac_value = data.get("leisaac")
+    sim_viz_value = data.get("sim_viz")
+    leisaac: dict[str, Any] = leisaac_value if isinstance(leisaac_value, dict) else {}
+    sim_viz: dict[str, Any] = sim_viz_value if isinstance(sim_viz_value, dict) else {}
     candidate = str(
         leisaac.get("run_id")
         or sim_viz.get("active_run_id")
@@ -435,7 +439,58 @@ def validate_health(manifest: dict, payload: dict | None) -> tuple[dict | None, 
         return None, f"LeIsaac service is not ready: {detail}"
     if _integer(data.get("signal_port")) != LEISAAC_SIGNAL_PORT:
         return None, "LeIsaac service signaling port mismatch"
-    recorder = data.get("recorder") if isinstance(data.get("recorder"), dict) else {}
+    recorder_value = data.get("recorder")
+    recorder: dict[str, Any] = (
+        recorder_value if isinstance(recorder_value, dict) else {}
+    )
+    raw_cameras = data.get("cameras")
+    cameras = (
+        [str(camera) for camera in raw_cameras]
+        if isinstance(raw_cameras, list)
+        else ["workspace"]
+    )
+    if (
+        not cameras
+        or len(cameras) > 2
+        or len(set(cameras)) != len(cameras)
+        or any(camera not in {"workspace", "overview"} for camera in cameras)
+        or cameras[0] != "workspace"
+    ):
+        return None, "LeIsaac service returned invalid camera routing"
+    selected_bundles: dict[str, dict[str, str]] = {}
+    raw_selected_bundles = data.get("selected_bundles")
+    if isinstance(raw_selected_bundles, dict):
+        if len(raw_selected_bundles) > 3:
+            return None, "LeIsaac service returned invalid bundle provenance"
+        for kind, item in raw_selected_bundles.items():
+            if (
+                kind not in {"robot", "scene", "device"}
+                or not isinstance(item, dict)
+                or set(item)
+                != {
+                    "bundle_sha256",
+                    "name",
+                    "entrypoint",
+                }
+                or not re.fullmatch(
+                    r"[a-f0-9]{64}", str(item.get("bundle_sha256") or "")
+                )
+                or not re.fullmatch(
+                    r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}",
+                    str(item.get("name") or ""),
+                )
+                or not re.fullmatch(
+                    r"[A-Za-z0-9][A-Za-z0-9._/-]{0,159}",
+                    str(item.get("entrypoint") or ""),
+                )
+                or ".." in str(item.get("entrypoint") or "").split("/")
+            ):
+                return None, "LeIsaac service returned invalid bundle provenance"
+            selected_bundles[str(kind)] = {
+                "bundle_sha256": str(item["bundle_sha256"]),
+                "name": str(item["name"]),
+                "entrypoint": str(item["entrypoint"]),
+            }
     safe_recorder = {
         key: recorder.get(key)
         for key in (
@@ -483,6 +538,11 @@ def validate_health(manifest: dict, payload: dict | None) -> tuple[dict | None, 
         "frame_bytes": _integer(data.get("frame_bytes")) or 0,
         "frame_updated_at": str(data.get("frame_updated_at") or ""),
         "frame_sequence": _integer(data.get("frame_sequence")) or 0,
+        "cameras": cameras,
+        "secondary_frame_bytes": _integer(data.get("secondary_frame_bytes")) or 0,
+        "secondary_frame_sequence": _integer(data.get("secondary_frame_sequence")) or 0,
+        "view_orbit": bool(data.get("view_orbit")) and "overview" in cameras,
+        "selected_bundles": selected_bundles,
         "transport_metrics": (
             {
                 str(key): int(value)
@@ -507,17 +567,15 @@ def status_payload(
 ) -> dict:
     """Build the authenticated, no-store payload consumed by the agent UI."""
 
-    if not manifest or not health:
+    if not manifest:
         return {
             "available": False,
+            "episodes_available": False,
             "reason": reason or "No usable LeIsaac session is selected.",
         }
     run_id = str(manifest["run_id"])
-    payload = {
-        "available": True,
-        "reason": "",
+    episode_surface = {
         "run_id": run_id,
-        "transport": manifest["transport"],
         "task": manifest["task"],
         "task_registry": registry_payload(),
         "environment_id": manifest.get("environment_id", DEFAULT_ENVIRONMENT_ID),
@@ -526,6 +584,29 @@ def status_payload(
         "num_envs": 1,
         "dataset_uri": manifest.get("dataset_uri", ""),
         "teleop_device": manifest["teleop_device"],
+        "source_version": manifest.get("source_version", ""),
+        "source_commit": manifest.get("source_commit", ""),
+        "isaac_sim_version": manifest.get("isaac_sim_version", ""),
+        "isaac_lab_version": manifest.get("isaac_lab_version", ""),
+        "image": manifest.get("image", ""),
+        "gpu": manifest.get("gpu", ""),
+        "episodes_available": bool(manifest.get("dataset_uri")),
+        "episodes_url": f"/api/leisaac/episodes?run_id={run_id}",
+        "episode_versions_url": f"/api/leisaac/episodes/versions?run_id={run_id}",
+        "bundles_url": f"{LEISAAC_BUNDLES_PATH}?run_id={run_id}",
+        "bundle_select_url": f"{LEISAAC_BUNDLES_PATH}/select?run_id={run_id}",
+    }
+    if not health:
+        return {
+            "available": False,
+            "reason": reason or "LeIsaac live simulation is unavailable.",
+            **episode_surface,
+        }
+    payload = {
+        "available": True,
+        "reason": "",
+        **episode_surface,
+        "transport": manifest["transport"],
         "media_server": manifest["media_server"],
         "media_port": manifest["media_port"],
         "signaling_server": "same-origin",
@@ -539,12 +620,8 @@ def status_payload(
         "frame_url": f"{LEISAAC_FRAME_PATH}?run_id={run_id}",
         "input_url": f"{LEISAAC_INPUT_PATH}?run_id={run_id}",
         "recorder_url": f"{LEISAAC_RECORDER_PATH}?run_id={run_id}",
+        "view_url": f"{LEISAAC_VIEW_PATH}?run_id={run_id}",
         "recorder": health.get("recorder", {}),
-        "source_version": manifest.get("source_version", ""),
-        "source_commit": manifest.get("source_commit", ""),
-        "isaac_sim_version": manifest.get("isaac_sim_version", ""),
-        "isaac_lab_version": manifest.get("isaac_lab_version", ""),
-        "image": manifest.get("image", ""),
         "gpu": health.get("gpu") or manifest.get("gpu", ""),
         "started_at": health.get("started_at", ""),
         "input_events": health.get("input_events", 0),
@@ -552,6 +629,11 @@ def status_payload(
         "frame_bytes": health.get("frame_bytes", 0),
         "frame_updated_at": health.get("frame_updated_at", ""),
         "frame_sequence": health.get("frame_sequence", 0),
+        "cameras": health.get("cameras", ["workspace"]),
+        "secondary_frame_bytes": health.get("secondary_frame_bytes", 0),
+        "secondary_frame_sequence": health.get("secondary_frame_sequence", 0),
+        "view_orbit": health.get("view_orbit", False),
+        "selected_bundles": health.get("selected_bundles", {}),
         "transport_metrics": health.get("transport_metrics", {}),
         "controls": {
             "translate": "W/S forward/back · A/D left/right · Q/E up/down",

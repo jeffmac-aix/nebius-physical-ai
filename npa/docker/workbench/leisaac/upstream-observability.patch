@@ -2,7 +2,7 @@ diff --git a/scripts/environments/teleoperation/teleop_se3_agent.py b/scripts/en
 index a467482..09dc24d 100644
 --- a/scripts/environments/teleoperation/teleop_se3_agent.py
 +++ b/scripts/environments/teleoperation/teleop_se3_agent.py
-@@ -89,12 +89,19 @@ app_launcher_args = vars(args_cli)
+@@ -89,12 +89,25 @@ app_launcher_args = vars(args_cli)
  app_launcher = AppLauncher(app_launcher_args)
  simulation_app = app_launcher.app
 
@@ -18,11 +18,17 @@ index a467482..09dc24d 100644
  import gymnasium as gym
  import torch
  from isaaclab.envs import DirectRLEnv, ManagerBasedRLEnv
-+from omni.kit.viewport.utility import capture_viewport_to_buffer, get_active_viewport
++from omni.kit.viewport.utility import (
++    capture_viewport_to_buffer,
++    create_viewport_window,
++    get_active_viewport,
++)
++from isaacsim.core.utils.viewports import set_camera_view
++from pxr import UsdGeom
  from isaaclab.managers import DatasetExportMode, TerminationTermCfg
  from isaaclab_tasks.utils import parse_env_cfg
  from leisaac.enhance.managers import EnhanceDatasetExportMode, StreamingRecorderManager
-@@ -158,6 +165,21 @@ def main():  # noqa: C901
+@@ -158,6 +171,35 @@ def main():  # noqa: C901
 
      env_cfg = parse_env_cfg(args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs)
      env_cfg.use_teleop_device(args_cli.teleop_device)
@@ -41,10 +47,24 @@ index a467482..09dc24d 100644
 +        # This uses the viewport, not RTX camera observations. Isaac Lab's
 +        # default texture wait can remain true forever on this path.
 +        env_cfg.wait_for_textures = False
++    custom_root = Path(os.environ["NPA_LEISAAC_CUSTOM_ROOT"]).resolve()
++    custom_robot_usd = os.environ.get("NPA_LEISAAC_CUSTOM_ROBOT_USD", "")
++    custom_scene_usd = os.environ.get("NPA_LEISAAC_CUSTOM_SCENE_USD", "")
++    for selected_asset in (custom_robot_usd, custom_scene_usd):
++        if not selected_asset:
++            continue
++        selected_path = Path(selected_asset).resolve()
++        if custom_root not in selected_path.parents or not selected_path.is_file():
++            raise RuntimeError("custom USD is outside the verified bundle cache")
++    if custom_robot_usd:
++        env_cfg.scene.robot.spawn.usd_path = custom_robot_usd
++    if custom_scene_usd:
++        # Custom scenes retain the task's expected object prim names and layout.
++        env_cfg.scene.scene.spawn.usd_path = custom_scene_usd
      env_cfg.seed = args_cli.seed if args_cli.seed is not None else int(time.time())
      task_name = args_cli.task
 
-@@ -312,6 +334,105 @@ def main():  # noqa: C901
+@@ -312,6 +354,219 @@ def main():  # noqa: C901
          env.initialize()
      env.reset()
      teleop_interface.reset()
@@ -62,6 +82,13 @@ index a467482..09dc24d 100644
 +        isaac_lab_version=os.environ["NPA_LEISAAC_ISAAC_LAB_VERSION"],
 +        image=os.environ["NPA_LEISAAC_IMAGE"],
 +        registry_fingerprint=os.environ["NPA_LEISAAC_REGISTRY_FINGERPRINT"],
++        camera_ids=("workspace", "overview"),
++        provenance={
++            "robot": os.environ.get("NPA_LEISAAC_ROBOT", "stock-so101"),
++            "scene": os.environ.get("NPA_LEISAAC_SCENE", args_cli.task),
++            "device": os.environ.get("NPA_LEISAAC_DEVICE", args_cli.teleop_device),
++            "bundle": os.environ.get("NPA_LEISAAC_BUNDLE", "stock"),
++        },
 +    )
 +    sim_step = 0
 +    ready_path = os.environ.get("NPA_LEISAAC_READY_PATH", "")
@@ -71,76 +98,183 @@ index a467482..09dc24d 100644
 +
 +    frame_path = os.environ.get("NPA_LEISAAC_FRAME_PATH", "")
 +    frame_meta_path = os.environ.get("NPA_LEISAAC_FRAME_META_PATH", "")
-+    capture_state = {"pending": False, "next_at": 0.0, "sequence": 0}
++    secondary_frame_path = os.environ.get("NPA_LEISAAC_SECONDARY_FRAME_PATH", "")
++    secondary_frame_meta_path = os.environ.get(
++        "NPA_LEISAAC_SECONDARY_FRAME_META_PATH", ""
++    )
++    view_command_path = os.environ.get("NPA_LEISAAC_VIEW_COMMAND_PATH", "")
++    capture_state = {
++        "pending": set(),
++        "next_at": 0.0,
++        "sequences": {"workspace": 0, "overview": 0},
++        "group": 0,
++    }
 +    viewport = get_active_viewport() if frame_path else None
 +    if viewport is not None:
 +        viewport.resolution = (1280, 720)
++    overview_window = (
++        create_viewport_window("NPA overview", width=1280, height=720)
++        if frame_path
++        else None
++    )
++    overview_viewport = overview_window.viewport_api if overview_window is not None else None
++    overview_camera_path = "/OmniverseKit_NPA_Overview"
++    overview_eye = [1.8, 1.8, 1.5]
++    overview_target = [0.0, 0.0, 0.45]
++    if overview_viewport is not None:
++        UsdGeom.Camera.Define(overview_viewport.stage, overview_camera_path)
++        overview_viewport.camera_path = overview_camera_path
++        set_camera_view(
++            overview_eye,
++            overview_target,
++            camera_prim_path=overview_camera_path,
++            viewport_api=overview_viewport,
++        )
++        overview_viewport.resolution = (1280, 720)
++    last_view_sequence = 0
 +
-+    def on_viewport_captured(buffer, buffer_size, width, height, _byte_format):
-+        """Atomically publish one real RTX viewport frame for the agent relay."""
-+        try:
-+            capture_monotonic_ns = time.monotonic_ns()
-+            capture_wall_ns = time.time_ns()
-+            pointer_type = ctypes.POINTER(ctypes.c_byte * buffer_size)
-+            ctypes.pythonapi.PyCapsule_GetPointer.restype = pointer_type
-+            ctypes.pythonapi.PyCapsule_GetPointer.argtypes = [ctypes.py_object, ctypes.c_char_p]
-+            content = ctypes.pythonapi.PyCapsule_GetPointer(buffer, None)
-+            image = Image.frombytes(
-+                "RGBA", (width, height), content.contents
-+            ).convert("RGB")
-+            if image.width > 1280 or image.height > 720:
-+                image.thumbnail((1280, 720), Image.Resampling.LANCZOS)
-+            temporary = frame_path + ".tmp"
-+            image.save(temporary, format="JPEG", quality=82, optimize=False)
-+            frame_bytes = Path(temporary).read_bytes()
-+            encoded_monotonic_ns = time.monotonic_ns()
-+            encoded_wall_ns = time.time_ns()
-+            os.replace(temporary, frame_path)
-+            capture_state["sequence"] += 1
-+            if frame_meta_path:
-+                metadata = {
-+                    "schema": "npa.leisaac.frame.v1",
-+                    "sequence": capture_state["sequence"],
-+                    "capture_monotonic_ns": capture_monotonic_ns,
-+                    "capture_wall_ns": capture_wall_ns,
-+                    "encoded_monotonic_ns": encoded_monotonic_ns,
-+                    "encoded_wall_ns": encoded_wall_ns,
-+                    "bytes": len(frame_bytes),
-+                    "sha256": hashlib.sha256(frame_bytes).hexdigest(),
-+                }
-+                metadata_temporary = frame_meta_path + ".tmp"
-+                Path(metadata_temporary).write_text(
-+                    json.dumps(metadata, sort_keys=True, separators=(",", ":")) + "\n",
-+                    encoding="utf-8",
++    def on_viewport_captured(
++        camera_id, destination, metadata_destination, capture_group
++    ):
++        def captured(buffer, buffer_size, width, height, _byte_format):
++            """Publish one real RTX frame without blocking another camera."""
++            try:
++                capture_monotonic_ns = time.monotonic_ns()
++                capture_wall_ns = time.time_ns()
++                pointer_type = ctypes.POINTER(ctypes.c_byte * buffer_size)
++                ctypes.pythonapi.PyCapsule_GetPointer.restype = pointer_type
++                ctypes.pythonapi.PyCapsule_GetPointer.argtypes = [
++                    ctypes.py_object,
++                    ctypes.c_char_p,
++                ]
++                content = ctypes.pythonapi.PyCapsule_GetPointer(buffer, None)
++                image = Image.frombytes(
++                    "RGBA", (width, height), content.contents
++                ).convert("RGB")
++                if image.width > 1280 or image.height > 720:
++                    image.thumbnail((1280, 720), Image.Resampling.LANCZOS)
++                temporary = destination + ".tmp"
++                image.save(temporary, format="JPEG", quality=82, optimize=False)
++                frame_bytes = Path(temporary).read_bytes()
++                encoded_monotonic_ns = time.monotonic_ns()
++                encoded_wall_ns = time.time_ns()
++                os.replace(temporary, destination)
++                capture_state["sequences"][camera_id] += 1
++                if metadata_destination:
++                    metadata = {
++                        "schema": "npa.leisaac.frame.v1",
++                        "camera": camera_id,
++                        "capture_group": capture_group,
++                        "sequence": capture_state["sequences"][camera_id],
++                        "capture_monotonic_ns": capture_monotonic_ns,
++                        "capture_wall_ns": capture_wall_ns,
++                        "encoded_monotonic_ns": encoded_monotonic_ns,
++                        "encoded_wall_ns": encoded_wall_ns,
++                        "bytes": len(frame_bytes),
++                        "sha256": hashlib.sha256(frame_bytes).hexdigest(),
++                    }
++                    metadata_temporary = metadata_destination + ".tmp"
++                    Path(metadata_temporary).write_text(
++                        json.dumps(
++                            metadata, sort_keys=True, separators=(",", ":")
++                        )
++                        + "\n",
++                        encoding="utf-8",
++                    )
++                    os.replace(metadata_temporary, metadata_destination)
++                recorder.frame(
++                    frame_bytes, camera_id=camera_id, capture_group=capture_group
 +                )
-+                os.replace(metadata_temporary, frame_meta_path)
-+            recorder.frame(frame_bytes)
-+        except Exception as exc:
-+            print(
-+                f"[WARN] Could not capture browser frame: "
-+                f"{type(exc).__name__}: {exc}"
-+            )
-+        finally:
-+            capture_state["pending"] = False
-+            capture_state["next_at"] = time.monotonic() + (1.0 / FPS)
++            except Exception as exc:
++                print(
++                    f"[WARN] Could not capture {camera_id} browser frame: "
++                    f"{type(exc).__name__}: {exc}"
++                )
++            finally:
++                capture_state["pending"].discard(camera_id)
++                if not capture_state["pending"]:
++                    capture_state["next_at"] = time.monotonic() + (1.0 / FPS)
++        return captured
 +
 +    def schedule_browser_capture():
 +        if (
 +            viewport is None
++            or overview_viewport is None
 +            or capture_state["pending"]
 +            or time.monotonic() < capture_state["next_at"]
 +        ):
 +            return
-+        capture_state["pending"] = True
++        capture_state["group"] += 1
++        capture_group = f"capture-{capture_state['group']}"
++        cameras = (
++            ("workspace", viewport, frame_path, frame_meta_path),
++            (
++                "overview",
++                overview_viewport,
++                secondary_frame_path,
++                secondary_frame_meta_path,
++            ),
++        )
++        capture_state["pending"].update(camera[0] for camera in cameras)
++        for camera_id, selected_viewport, destination, metadata_destination in cameras:
++            try:
++                capture_viewport_to_buffer(
++                    selected_viewport,
++                    on_viewport_captured(
++                        camera_id, destination, metadata_destination, capture_group
++                    ),
++                )
++            except Exception as exc:
++                capture_state["pending"].discard(camera_id)
++                capture_state["next_at"] = time.monotonic() + 1.0
++                print(
++                    f"[WARN] Could not schedule {camera_id} browser frame: "
++                    f"{type(exc).__name__}: {exc}"
++                )
++
++    def apply_view_command():
++        nonlocal last_view_sequence
++        if not view_command_path or overview_viewport is None:
++            return
 +        try:
-+            capture_viewport_to_buffer(viewport, on_viewport_captured)
-+        except Exception as exc:
-+            capture_state["pending"] = False
-+            capture_state["next_at"] = time.monotonic() + 1.0
-+            print(
-+                f"[WARN] Could not schedule browser frame: "
-+                f"{type(exc).__name__}: {exc}"
-+            )
++            command = json.loads(Path(view_command_path).read_text(encoding="utf-8"))
++            sequence = int(command["sequence"])
++            if sequence <= last_view_sequence:
++                return
++            yaw = float(command["yaw_delta"])
++            pitch = float(command["pitch_delta"])
++            distance = float(command["distance_delta"])
++        except (OSError, ValueError, KeyError, TypeError):
++            return
++        offset = [overview_eye[index] - overview_target[index] for index in range(3)]
++        radius = max(
++            0.5,
++            min(5.0, (sum(value * value for value in offset) ** 0.5) + distance),
++        )
++        azimuth = __import__("math").atan2(offset[1], offset[0]) + yaw
++        elevation = max(
++            -1.2,
++            min(1.2, __import__("math").asin(offset[2] / max(radius, 0.001)) + pitch),
++        )
++        overview_eye[:] = [
++            overview_target[0]
++            + radius
++            * __import__("math").cos(elevation)
++            * __import__("math").cos(azimuth),
++            overview_target[1]
++            + radius
++            * __import__("math").cos(elevation)
++            * __import__("math").sin(azimuth),
++            overview_target[2] + radius * __import__("math").sin(elevation),
++        ]
++        set_camera_view(
++            overview_eye,
++            overview_target,
++            camera_prim_path=overview_camera_path,
++            viewport_api=overview_viewport,
++        )
++        overview_viewport.camera_path = overview_camera_path
++        last_view_sequence = sequence
 +
 +    if frame_path:
 +        if viewport is None:
@@ -150,7 +284,7 @@ index a467482..09dc24d 100644
 
      resume_recorded_demo_count = 0
      if args_cli.record and args_cli.resume:
-@@ -379,7 +500,19 @@ def main():  # noqa: C901
+@@ -379,7 +634,20 @@ def main():  # noqa: C901
                          if args_cli.record:
                              print("Start Recording!!!")
                          start_record_state = True
@@ -167,6 +301,7 @@ index a467482..09dc24d 100644
 +                    if os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") == "1":
 +                        env.render()
 +                schedule_browser_capture()
++                apply_view_command()
 +                recorder.process_commands(reset=env.reset)
                  if rate_limiter:
                      rate_limiter.sleep(env)
@@ -184,7 +319,7 @@ index 1ecc934..1ff910a 100644
  import carb
  import numpy as np
 
-@@ -34,6 +39,17 @@ class SO101Keyboard(Device):
+@@ -34,6 +39,18 @@ class SO101Keyboard(Device):
 
          # command buffers (dx, dy, dz, droll, dpitch, dyaw, d_shoulder_pan, d_gripper)
          self._delta_action = np.zeros(8)
@@ -194,6 +329,7 @@ index 1ecc934..1ff910a 100644
 +        self._remote_queue = Path(queue_name) if queue_name else None
 +        self._remote_offset = 0
 +        self._remote_pulses = {}
++        self._remote_direct_action = np.zeros(8)
 +        self._applied_counter = Path(counter_name) if counter_name else None
 +        self._applied_ack = Path(ack_name) if ack_name else None
 +        self._remote_sim_step = 0
@@ -202,7 +338,7 @@ index 1ecc934..1ff910a 100644
 
          # initialize the target frame
          self.asset_name = "robot"
-@@ -57,11 +73,78 @@ class SO101Keyboard(Device):
+@@ -57,11 +74,98 @@ class SO101Keyboard(Device):
          self._display_controls_table.add_row(["U", "gripper_open"])
          self._display_controls_table.add_row(["O", "gripper_close"])
 
@@ -212,6 +348,7 @@ index 1ecc934..1ff910a 100644
      def reset(self):
          self._delta_action[:] = 0.0
 +        self._remote_pulses.clear()
++        self._remote_direct_action[:] = 0.0
 +
 +    def _record_applied_input(self, payload):
 +        if self._applied_counter is not None:
@@ -252,6 +389,23 @@ index 1ecc934..1ff910a 100644
 +                payload = json.loads(record)
 +            except ValueError:
 +                continue
++            if payload.get("type") == "action":
++                try:
++                    direct = np.asarray(payload.get("action"), dtype=np.float64)
++                except (TypeError, ValueError):
++                    continue
++                if (
++                    payload.get("device")
++                    not in {"browser-gamepad", "custom-so101"}
++                    or direct.shape != (8,)
++                    or not np.isfinite(direct).all()
++                    or float(np.abs(direct).max()) > 1.0
++                ):
++                    continue
++                self._remote_direct_action[:] = direct
++                self._started = True
++                self._record_applied_input(payload)
++                continue
 +            key = str(payload.get("key") or "").upper()
 +            event = str(payload.get("event") or "")
 +            if key in self._INPUT_KEY_MAPPING:
@@ -280,11 +434,13 @@ index 1ecc934..1ff910a 100644
 +                continue
 +            remote_action += self._ACTION_DELTA_MAPPING[self._INPUT_KEY_MAPPING[key]]
 +            self._remote_pulses[key] = remaining - 1
++        remote_action += self._remote_direct_action
++        self._remote_direct_action[:] = 0.0
 +        return self._convert_delta_from_frame(self._delta_action + remote_action)
 
      def _on_keyboard_event(self, event, *args, **kwargs):
          super()._on_keyboard_event(event, *args, **kwargs)
-@@ -69,6 +152,17 @@ class SO101Keyboard(Device):
+@@ -69,6 +173,17 @@ class SO101Keyboard(Device):
          if event.type == carb.input.KeyboardEventType.KEY_PRESS:
              if event.input.name in self._INPUT_KEY_MAPPING.keys():
                  self._delta_action += self._ACTION_DELTA_MAPPING[self._INPUT_KEY_MAPPING[event.input.name]]
