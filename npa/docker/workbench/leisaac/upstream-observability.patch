@@ -2,7 +2,7 @@ diff --git a/scripts/environments/teleoperation/teleop_se3_agent.py b/scripts/en
 index a467482..09dc24d 100644
 --- a/scripts/environments/teleoperation/teleop_se3_agent.py
 +++ b/scripts/environments/teleoperation/teleop_se3_agent.py
-@@ -89,12 +89,26 @@ app_launcher_args = vars(args_cli)
+@@ -89,12 +89,27 @@ app_launcher_args = vars(args_cli)
  app_launcher = AppLauncher(app_launcher_args)
  simulation_app = app_launcher.app
 
@@ -23,13 +23,14 @@ index a467482..09dc24d 100644
 +    capture_viewport_to_buffer,
 +    create_viewport_window,
 +    get_active_viewport,
++    next_viewport_frame_async,
 +)
 +from isaacsim.core.utils.viewports import set_camera_view
 +from pxr import UsdGeom
  from isaaclab.managers import DatasetExportMode, TerminationTermCfg
  from isaaclab_tasks.utils import parse_env_cfg
  from leisaac.enhance.managers import EnhanceDatasetExportMode, StreamingRecorderManager
-@@ -158,6 +172,35 @@ def main():  # noqa: C901
+@@ -158,6 +173,35 @@ def main():  # noqa: C901
 
      env_cfg = parse_env_cfg(args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs)
      env_cfg.use_teleop_device(args_cli.teleop_device)
@@ -65,7 +66,7 @@ index a467482..09dc24d 100644
      env_cfg.seed = args_cli.seed if args_cli.seed is not None else int(time.time())
      task_name = args_cli.task
 
-@@ -312,6 +355,259 @@ def main():  # noqa: C901
+@@ -312,6 +356,261 @@ def main():  # noqa: C901
          env.initialize()
      env.reset()
      teleop_interface.reset()
@@ -196,9 +197,20 @@ index a467482..09dc24d 100644
 +                )
 +        return captured
 +
-+    async def finish_capture(capture_helper, camera_id):
-+        """Wait for Kit to release the shared GPU capture command list."""
++    async def capture_one(
++        camera_id, selected_viewport, destination, metadata_destination, capture_group
++    ):
++        """Capture only between completed viewport frames and await GPU retirement."""
 +        try:
++            # env.render() submits RTX work but returns before the viewport's GPU
++            # command list retires.  The public utility provides the safe boundary.
++            await next_viewport_frame_async(selected_viewport)
++            capture_helper = capture_viewport_to_buffer(
++                selected_viewport,
++                on_viewport_captured(
++                    camera_id, destination, metadata_destination, capture_group
++                ),
++            )
 +            # The callback only means that CPU buffer access is available.  NVIDIA's
 +            # public API requires awaiting the returned helper before another capture;
 +            # completion frames let RTX retire the command list after the callback.
@@ -225,24 +237,15 @@ index a467482..09dc24d 100644
 +            capture_state["queue"].pop(0)
 +        )
 +        capture_state["active"] = True
-+        try:
-+            capture_helper = capture_viewport_to_buffer(
++        capture_state["task"] = asyncio.ensure_future(
++            capture_one(
++                camera_id,
 +                selected_viewport,
-+                on_viewport_captured(
-+                    camera_id, destination, metadata_destination, capture_group
-+                ),
++                destination,
++                metadata_destination,
++                capture_group,
 +            )
-+            capture_state["task"] = asyncio.ensure_future(
-+                finish_capture(capture_helper, camera_id)
-+            )
-+        except Exception as exc:
-+            capture_state["active"] = False
-+            capture_state["pending"].discard(camera_id)
-+            print(
-+                f"[WARN] Could not schedule {camera_id} browser frame: "
-+                f"{type(exc).__name__}: {exc}"
-+            )
-+
++        )
 +    def schedule_browser_capture():
 +        if capture_state["active"]:
 +            return
@@ -325,7 +328,7 @@ index a467482..09dc24d 100644
 
      resume_recorded_demo_count = 0
      if args_cli.record and args_cli.resume:
-@@ -379,7 +675,20 @@ def main():  # noqa: C901
+@@ -379,7 +678,20 @@ def main():  # noqa: C901
                          if args_cli.record:
                              print("Start Recording!!!")
                          start_record_state = True
