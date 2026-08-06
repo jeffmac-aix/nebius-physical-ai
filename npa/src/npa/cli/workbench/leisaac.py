@@ -388,6 +388,11 @@ def _select_agent_leisaac_run(
         )
         if not secrets.compare_digest(actual_certificate, expected_certificate):
             raise RuntimeError("public agent TLS certificate fingerprint changed")
+        # The TCP/TLS connection must fail fast, but selection performs capability
+        # resolution plus a conditional state write against object storage.  Preserve
+        # the pinned socket while giving those off-loop operations their own response
+        # budget instead of inheriting the 10-second connect timeout.
+        tls.settimeout(60)
         connection = http.client.HTTPConnection(host, 443, timeout=10)
         connection.sock = tls
         payload = json.dumps({"run_id": selected_run}, separators=(",", ":"))

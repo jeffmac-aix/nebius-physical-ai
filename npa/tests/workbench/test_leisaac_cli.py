@@ -28,11 +28,15 @@ def test_select_agent_leisaac_run_pins_tls_before_sending_credentials(
 ) -> None:
     certificate = b"agent-certificate"
     requests = []
+    response_timeouts = []
 
     class FakeTLS:
         def getpeercert(self, *, binary_form=False):
             assert binary_form is True
             return certificate
+
+        def settimeout(self, seconds):
+            response_timeouts.append(seconds)
 
         def close(self):
             pass
@@ -87,6 +91,7 @@ def test_select_agent_leisaac_run_pins_tls_before_sending_credentials(
     )
 
     assert len(requests) == 1
+    assert response_timeouts == [60]
     method, path, body, headers = requests[0]
     assert (method, path) == ("POST", "/api/leisaac/select")
     assert json.loads(body) == {"run_id": "live-relay"}
