@@ -1041,25 +1041,40 @@ def test_backhaul_rejects_browser_shape_before_accept_and_accepts_scoped_pod(
         async def readexactly(self, _size):
             await asyncio.Future()
 
+    writers = []
+
     class Writer:
+        def __init__(self):
+            self.closed = False
+            self.waited = False
+            self.settled = threading.Event()
+
         def close(self):
-            return None
+            self.closed = True
 
         async def wait_closed(self):
-            return None
+            self.waited = True
+            self.settled.set()
 
     async def open_connection(*_args, **_kwargs):
-        return Reader(), Writer()
+        writer = Writer()
+        writers.append(writer)
+        return Reader(), writer
 
     monkeypatch.setattr(
         "npa.agent_backend.leisaac_routes.asyncio.open_connection", open_connection
     )
-    with client.websocket_connect(
-        "/leisaac/backhaul",
-        headers={"x-forwarded-proto": "https", "x-real-ip": "8.8.8.8"},
-        subprotocols=["npa.leisaac.backhaul.v1"],
-    ) as websocket:
-        assert websocket.accepted_subprotocol == "npa.leisaac.backhaul.v1"
+    for _ in range(10):
+        with client.websocket_connect(
+            "/leisaac/backhaul",
+            headers={"x-forwarded-proto": "https", "x-real-ip": "8.8.8.8"},
+            subprotocols=["npa.leisaac.backhaul.v1"],
+        ) as websocket:
+            assert websocket.accepted_subprotocol == "npa.leisaac.backhaul.v1"
+            websocket.close()
+            assert writers[-1].settled.wait(5), "backhaul cleanup did not complete"
+    assert len(writers) == 10
+    assert all(writer.closed and writer.waited for writer in writers)
 
 
 def test_video_relay_credits_runtime_before_browser_ack() -> None:

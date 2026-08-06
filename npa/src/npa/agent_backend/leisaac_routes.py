@@ -1986,7 +1986,27 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
             )
             for task in pending:
                 task.cancel()
-            await asyncio.gather(*done, *pending, return_exceptions=True)
+        except asyncio.CancelledError:
+            # A client can disappear while both relay directions are still blocked.
+            # Treat that cancellation as the disconnect signal, but do not let the
+            # ASGI task finish until both children and the loopback writer are settled.
+            LOG.debug("LeIsaac backhaul session cancelled; cleaning up")
         finally:
-            writer.close()
-            await writer.wait_closed()
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for result in results:
+                if isinstance(result, BaseException) and not isinstance(
+                    result, asyncio.CancelledError
+                ):
+                    _log_exception(
+                        logging.WARNING, "LeIsaac backhaul relay task failed", result
+                    )
+            try:
+                writer.close()
+                await writer.wait_closed()
+            except Exception as exc:
+                _log_exception(
+                    logging.WARNING, "LeIsaac backhaul writer cleanup failed", exc
+                )
