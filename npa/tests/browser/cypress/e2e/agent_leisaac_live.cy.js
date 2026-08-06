@@ -10,9 +10,13 @@ const requiredLiveEnv = [
 // full-page screenshot viewport. It is not an application exception and does
 // not invalidate the explicit viewport, media, or synchronization assertions.
 Cypress.on("uncaught:exception", (error) => {
+  const message = String(
+    (error && (error.stack || error.message)) || error || "",
+  );
   if (
-    String(error && error.message) ===
-    "ResizeObserver loop completed with undelivered notifications."
+    message.includes(
+      "ResizeObserver loop completed with undelivered notifications.",
+    )
   ) {
     return false;
   }
