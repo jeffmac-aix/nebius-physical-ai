@@ -905,25 +905,6 @@ def _append_input(record: dict[str, Any]) -> int:
     return _append_inputs([record])[0]
 
 
-async def _await_cleanup_completion(awaitable: Any) -> Any:
-    """Finish safety cleanup even when the owning ASGI task is cancelled."""
-
-    cleanup = asyncio.ensure_future(awaitable)
-    try:
-        return await asyncio.shield(cleanup)
-    except asyncio.CancelledError as cancellation:
-        try:
-            await cleanup
-        except BaseException as cleanup_error:
-            _log_exception(
-                logging.CRITICAL,
-                "LeIsaac safety cleanup failed after cancellation",
-                cleanup_error,
-            )
-            raise cancellation from cleanup_error
-        raise
-
-
 def _read_consistent_frame(
     camera: str = "workspace",
 ) -> tuple[dict[str, Any], bytes] | None:
@@ -1313,7 +1294,7 @@ def build_app() -> FastAPI:
         sender = asyncio.create_task(send_applied())
         active_client_id = ""
 
-        async def release_all(
+        def release_all(
             client_id: str, client_mono_ns: int = 0, client_wall_ns: int = 0
         ) -> int:
             releases: list[tuple[int, dict[str, Any]]] = []
@@ -1336,16 +1317,15 @@ def build_app() -> FastAPI:
             if not releases:
                 return 0
 
-            # Submit before the first await so an ASGI cancellation cannot prevent
-            # disconnect cleanup from reaching the simulator input queue.  A single
-            # worker call preserves the ledger order when several keys are held.
-            append_future = asyncio.get_running_loop().run_in_executor(
-                None, _append_inputs, [queued for _seq, queued in releases]
-            )
-            await asyncio.shield(append_future)
+            # This bounded local transaction intentionally has no cancellation point:
+            # Starlette cancels every task in the WebSocket task group during teardown,
+            # including tasks protected by asyncio.shield().  A synchronous append,
+            # flush and fsync is therefore the only truthful guarantee that every held
+            # robot control is durably released before the handler can finish.
+            _append_inputs([queued for _seq, queued in releases])
             TRANSPORT_METRICS.increment("controls_accepted", len(releases))
             for seq, _queued in releases:
-                await applied_queue.put((client_id, seq))
+                applied_queue.put_nowait((client_id, seq))
             return len(releases)
 
         try:
@@ -1384,7 +1364,7 @@ def build_app() -> FastAPI:
                         await send(response)
                         continue
                     if message["type"] == "release-all":
-                        released = await release_all(
+                        released = release_all(
                             active_client_id,
                             int(message["client_mono_ns"]),
                             int(message["client_wall_ns"]),
@@ -1431,9 +1411,7 @@ def build_app() -> FastAPI:
             try:
                 if active_client_id:
                     try:
-                        await _await_cleanup_completion(release_all(active_client_id))
-                    except asyncio.CancelledError:
-                        raise
+                        release_all(active_client_id)
                     except Exception as exc:
                         _log_exception(
                             logging.CRITICAL,
@@ -1443,7 +1421,13 @@ def build_app() -> FastAPI:
             finally:
                 stop.set()
                 sender.cancel()
-                await asyncio.gather(sender, return_exceptions=True)
+                try:
+                    await asyncio.gather(sender, return_exceptions=True)
+                except asyncio.CancelledError:
+                    # The durable safety transaction above is complete.  Cancellation
+                    # while draining the already-cancelled acknowledgement sender is an
+                    # expected ASGI teardown condition, not a client-visible failure.
+                    pass
 
     @application.websocket("/transport/video")
     async def transport_video(websocket: WebSocket) -> None:

@@ -716,35 +716,6 @@ def test_runtime_client_exception_still_waits_for_disconnect_release(
     ]
 
 
-def test_safety_cleanup_finishes_before_cancellation_propagates(
-    monkeypatch, tmp_path: Path
-) -> None:
-    runtime = _prepare_runtime(monkeypatch, tmp_path)
-
-    async def exercise() -> None:
-        started = asyncio.Event()
-        finish = asyncio.Event()
-        completed = False
-
-        async def cleanup() -> None:
-            nonlocal completed
-            started.set()
-            await finish.wait()
-            completed = True
-
-        task = asyncio.create_task(runtime._await_cleanup_completion(cleanup()))
-        await started.wait()
-        task.cancel()
-        await asyncio.sleep(0)
-        assert not task.done()
-        finish.set()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-        assert completed is True
-
-    asyncio.run(exercise())
-
-
 @pytest.mark.parametrize(
     "accept_omni,accept_isaac,missing",
     [
