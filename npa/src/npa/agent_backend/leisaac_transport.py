@@ -147,7 +147,7 @@ def parse_control_message(raw: str | bytes, *, expected_run_id: str) -> dict[str
 
 
 def parse_video_ack(raw: str | bytes, *, expected_run_id: str) -> dict[str, Any]:
-    """Parse the bounded paint credit that prevents stale socket-frame backlogs."""
+    """Parse the bounded receipt credit that prevents stale socket-frame backlogs."""
 
     encoded = raw.encode("utf-8") if isinstance(raw, str) else bytes(raw)
     if not encoded or len(encoded) > MAX_VIDEO_ACK_BYTES:

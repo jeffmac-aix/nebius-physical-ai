@@ -164,7 +164,7 @@ def test_binary_frame_envelope_round_trips_and_detects_tampering() -> None:
         unpack_frame(bytes(tampered))
 
 
-def test_video_paint_ack_is_bounded_exact_and_run_scoped() -> None:
+def test_video_receipt_ack_is_bounded_exact_and_run_scoped() -> None:
     acknowledgement = parse_video_ack(
         json.dumps({"v": 1, "type": "frame-ack", "run_id": RUN_ID, "sequence": 17}),
         expected_run_id=RUN_ID,

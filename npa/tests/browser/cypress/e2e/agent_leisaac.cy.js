@@ -718,7 +718,18 @@ describe("NPA agent LeIsaac capability tab", () => {
         }
       }
       win.WebSocket = FakeWebSocket;
-      win.createImageBitmap = async () => ({ width: 1280, height: 720, close() {} });
+      let releaseFirstBitmap;
+      let firstBitmap = true;
+      win.createImageBitmap = async () => {
+        if (firstBitmap) {
+          firstBitmap = false;
+          await new Promise((resolve) => {
+            releaseFirstBitmap = resolve;
+          });
+        }
+        return { width: 1280, height: 720, close() {} };
+      };
+      win.__LEISAAC_RELEASE_FIRST_BITMAP__ = () => releaseFirstBitmap();
       const nativeGetContext = win.HTMLCanvasElement.prototype.getContext;
       win.HTMLCanvasElement.prototype.getContext = function getContext(kind, ...args) {
         if (this.id === "leisaacCanvas" && kind === "2d") return { drawImage() {} };
@@ -736,6 +747,21 @@ describe("NPA agent LeIsaac capability tab", () => {
     cy.get("#leisaacTransportStatus", { timeout: 10000 })
       .should("contain.text", "WebSocket")
       .and("contain.text", "latest-frame-wins");
+    cy.window().should((win) => {
+      const video = win.__LEISAAC_FAKE_SOCKETS__.find(
+        (socket) => socket.url.includes("/video") && socket.readyState === 1,
+      );
+      const credits = video.sent
+        .map((raw) => JSON.parse(raw))
+        .filter((item) => item.type === "frame-ack");
+      expect(credits, "receipt credits before a blocked decode").to.have.length
+        .greaterThan(0);
+      expect(
+        win.__NPA_AGENT_TEST__.leisaacTransportEvidence().frames,
+        "no painted frame while the first decode is blocked",
+      ).to.have.length(0);
+    });
+    cy.window().then((win) => win.__LEISAAC_RELEASE_FIRST_BITMAP__());
     cy.get("#leisaacCanvas").should("be.visible");
     cy.get("#leisaacStreamStatus").should(
       "contain.text",

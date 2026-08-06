@@ -2795,6 +2795,16 @@
               { type: "image/jpeg" },
             );
             const bitmap = await createImageBitmap(blob);
+            // A newer credited frame can arrive while createImageBitmap runs.
+            // Do not spend a paint on a frame that is already stale.
+            if (
+              leisaacVideoPending &&
+              Number(leisaacVideoPending.sequence || 0) > Number(frame.sequence || 0)
+            ) {
+              bitmap.close();
+              leisaacDroppedFrames += 1;
+              continue;
+            }
             const canvas = document.getElementById("leisaacCanvas");
             const image = document.getElementById("leisaacFrame");
             const video = document.getElementById("leisaacVideo");
@@ -2831,15 +2841,6 @@
               clock_uncertainty_ms: leisaacClockUncertaintyNs / 1000000,
               dropped_before: frame.droppedBefore,
             });
-            const videoSocket = leisaacVideoSocket;
-            if (videoSocket && videoSocket.readyState === WebSocket.OPEN) {
-              videoSocket.send(JSON.stringify({
-                v: 1,
-                type: "frame-ack",
-                run_id: String((leisaacCapability && leisaacCapability.run_id) || ""),
-                sequence: frame.sequence,
-              }));
-            }
             leisaacStreamReady = true;
             setLeIsaacStreamState("Live WebSocket · keyboard teleoperation active", "ready");
             const host = document.getElementById("leisaacStreamHost");
@@ -2857,6 +2858,18 @@
         if (!(message.data instanceof ArrayBuffer)) return;
         try {
           const parsed = parseLeIsaacFrame(message.data);
+          // Receipt credit bounds the socket to one in-flight frame. The local
+          // decoder has one replaceable pending slot, so a slow paint cannot
+          // build a stale network or decode backlog.
+          const videoSocket = leisaacVideoSocket;
+          if (videoSocket && videoSocket.readyState === WebSocket.OPEN) {
+            videoSocket.send(JSON.stringify({
+              v: 1,
+              type: "frame-ack",
+              run_id: String((leisaacCapability && leisaacCapability.run_id) || ""),
+              sequence: parsed.sequence,
+            }));
+          }
           if (leisaacVideoPending) leisaacDroppedFrames += 1;
           leisaacVideoPending = parsed;
           decodeLatestLeIsaacFrame();
@@ -2965,7 +2978,7 @@
           "/api/leisaac/ws-session?run_id=" + encodeURIComponent(runId),
           {
             method: "POST",
-            credentials: "same-origin",
+            credentials: "include",
             cache: "no-store",
             headers: { "X-NPA-LeIsaac-Control": "1" },
           },

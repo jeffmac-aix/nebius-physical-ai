@@ -227,7 +227,13 @@ function recordEpisode(outcome, episodeNumber, completedBefore) {
             completedEpisodes,
           );
         }
-        expect(status.stream_transport).to.equal("jpeg-poll");
+        expect(status.stream_transport).to.equal("websocket-v1");
+        expect(status.control_ws_url).to.match(
+          /^\/api\/leisaac\/transport\/control\?run_id=/,
+        );
+        expect(status.video_ws_url).to.match(
+          /^\/api\/leisaac\/transport\/video\?run_id=/,
+        );
         expect(status.frame_url).to.match(
           /^\/api\/leisaac\/frame\.jpg\?run_id=/,
         );
@@ -242,18 +248,19 @@ function recordEpisode(outcome, episodeNumber, completedBefore) {
         "contain.text",
         "keyboard teleoperation active",
       );
-      cy.get("#leisaacFrame", { timeout: 120000 })
+      cy.get("#leisaacTransportStatus", { timeout: 120000 })
+        .should("contain.text", "WebSocket")
+        .and("contain.text", "preferred")
+        .and("contain.text", "latest-frame-wins");
+      cy.get("#leisaacLatencyStatus")
+        .should("contain.text", "Latency: control")
+        .and("contain.text", "FPS")
+        .and("contain.text", "dropped/coalesced");
+      cy.get("#leisaacCanvas", { timeout: 120000 })
         .should("be.visible")
-        .and(($frame) => {
-          expect($frame[0].complete, "decoded RTX frame").to.equal(true);
-          expect(
-            $frame[0].naturalWidth,
-            "decoded frame width",
-          ).to.be.greaterThan(640);
-          expect(
-            $frame[0].naturalHeight,
-            "decoded frame height",
-          ).to.be.greaterThan(360);
+        .and(($canvas) => {
+          expect($canvas[0].width, "decoded frame width").to.be.greaterThan(640);
+          expect($canvas[0].height, "decoded frame height").to.be.greaterThan(360);
         });
 
       cy.window().then(async (win) => {
@@ -371,9 +378,9 @@ function recordEpisode(outcome, episodeNumber, completedBefore) {
           win.__LEISAAC_APPLIED_INPUTS__,
         );
       });
-      cy.get("#leisaacFrame").should(($frame) => {
-        expect($frame[0].complete, "post-input decoded frame").to.equal(true);
-        expect($frame[0].naturalWidth).to.be.greaterThan(640);
+      cy.get("#leisaacCanvas").should(($canvas) => {
+        expect($canvas[0].width, "post-input decoded frame").to.be.greaterThan(640);
+        expect($canvas[0].height).to.be.greaterThan(360);
       });
       cy.screenshot("03-public-leisaac-after-keyboard-input", {
         capture: "viewport",

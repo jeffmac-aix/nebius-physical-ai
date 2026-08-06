@@ -117,6 +117,26 @@ def load_manifest_artifact(
         for item in matches
         if str(item.key or "").replace("\\", "/").strip("/") == canonical_key
     ]
+    if not canonical:
+        canonical_suffix = f"/{normalized_run}/reports/{LEISAAC_MANIFEST_NAME}"
+        suffix_matches = [
+            item
+            for item in matches
+            if ("/" + str(item.key or "").replace("\\", "/").strip("/")).endswith(
+                canonical_suffix
+            )
+        ]
+        if suffix_matches:
+            minimum_depth = min(
+                len(str(item.key or "").replace("\\", "/").strip("/").split("/"))
+                for item in suffix_matches
+            )
+            canonical = [
+                item
+                for item in suffix_matches
+                if len(str(item.key or "").replace("\\", "/").strip("/").split("/"))
+                == minimum_depth
+            ]
     non_leaf_nested = [
         item
         for item in matches

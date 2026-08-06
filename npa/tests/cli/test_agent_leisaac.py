@@ -165,6 +165,17 @@ def test_manifest_artifact_loader_requires_one_bounded_canonical_object() -> Non
         ),
     )
     assert exact_canonical_loaded == {"schema": "npa.leisaac.session.v1"}
+    shortest_canonical_loaded = load_manifest_artifact(
+        "live",
+        validate_run_id=lambda value: value,
+        s3_client=lambda: (S3(), {}),
+        s3_buckets=lambda _s3, _settings: ["bucket"],
+        find_artifacts=lambda *_args, **_kwargs: (
+            "bucket",
+            [nested_historical, artifact],
+        ),
+    )
+    assert shortest_canonical_loaded == {"schema": "npa.leisaac.session.v1"}
 
     duplicated = load_manifest_artifact(
         "live",

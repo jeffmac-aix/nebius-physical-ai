@@ -426,6 +426,9 @@ async function fetchStatus(win, runId) {
             reconnect_ms: win.performance.now() - reconnectStarted,
             sequence_state_recovered: true,
           });
+          // Measure the HTTP fallback as a fallback, not while its preferred
+          // WebSocket replacement is concurrently consuming frame bandwidth.
+          await win.__NPA_AGENT_TEST__.disconnectLeIsaac();
         }
 
         // Fetch/decode/paint the fallback route directly as well. The SHA-256
