@@ -8431,7 +8431,7 @@ EnvironmentFile=-/opt/npa-agent/nebius.env
 EnvironmentFile=-/opt/npa-agent/s3.env
 EnvironmentFile=-/opt/npa-agent/public.env
 EnvironmentFile=-/opt/npa-agent/foxglove.env
-ExecStart=/opt/npa-agent/venv/bin/uvicorn backend:app --host 127.0.0.1 --port {backend_port} --ws websockets --ws-max-size 4194304 --ws-max-queue 4 --ws-ping-interval 10 --ws-ping-timeout 10 --ws-per-message-deflate false
+ExecStart=/opt/npa-agent/venv/bin/uvicorn backend:app --host 127.0.0.1 --port {backend_port} --no-access-log --ws websockets --ws-max-size 4194304 --ws-max-queue 4 --ws-ping-interval 10 --ws-ping-timeout 10 --ws-per-message-deflate false
 WorkingDirectory=/opt/npa-agent
 Restart=always
 [Install]
@@ -8476,6 +8476,11 @@ WantedBy=multi-user.target
 UNIT
 sudo htpasswd -bc /etc/nginx/.npa-agent-htpasswd {shlex.quote(auth_user)} {shlex.quote(auth_password)}
 {https_ssl_setup}
+cat <<'NGINXLOG' | sudo tee /etc/nginx/conf.d/npa-agent-safe-log.conf >/dev/null
+# Deliberately use $uri, never $request or $request_uri: those include the
+# browser-controlled query string used by WebRTC signaling and artifact APIs.
+log_format npa_agent_safe '$remote_addr [$time_local] "$request_method $uri $server_protocol" $status $body_bytes_sent';
+NGINXLOG
 cat <<'NGINX' | sudo tee /etc/nginx/sites-available/npa-agent >/dev/null
 server {{
   listen {agent_port};

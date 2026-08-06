@@ -93,6 +93,26 @@ def test_build_agent_urls_http_legacy() -> None:
     assert urls["cameras_api_url"] == "http://203.0.113.50:8088/assets/api/sim-assets/cameras"
 
 
+def test_agent_access_logs_are_query_free() -> None:
+    from npa.cli.agent_site import nginx_agent_site_body
+
+    source = _agent_source()
+    site = nginx_agent_site_body(
+        backend_port=8787,
+        rerun_port=9090,
+        ui_version="test",
+    )
+    log_block = source.split("log_format npa_agent_safe", 1)[1].split(
+        "NGINXLOG", 1
+    )[0]
+
+    assert "--no-access-log" in source
+    assert "npa-agent-access.log npa_agent_safe" in site
+    assert "$request_method $uri $server_protocol" in log_block
+    assert "$request_uri" not in log_block
+    assert '"$request "' not in log_block
+
+
 def test_customer_url_is_canonical_for_persisted_public_https_ip() -> None:
     from npa.cli.agent import _record_customer_url
 

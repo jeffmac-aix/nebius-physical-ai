@@ -153,7 +153,10 @@ def nginx_agent_site_body(
     foxglove_locations = foxglove_nginx_locations()
     lichtblick_default_layout = _lichtblick_default_layout_json()
     lichtblick_layout_placeholder = LICHTBLICK_DEFAULT_LAYOUT_PLACEHOLDER
-    return f"""  auth_basic "NPA Agent";
+    return f"""  # Use the query-free format installed by the bootstrap script. Browser
+  # signaling parameters and artifact URLs must never enter access logs.
+  access_log /var/log/nginx/npa-agent-access.log npa_agent_safe;
+  auth_basic "NPA Agent";
   auth_basic_user_file /etc/nginx/.npa-agent-htpasswd;
   # Describe-this / multimodal chat posts JPEG data-URLs; default 1m rejects them (413 → browser Failed to fetch).
   client_max_body_size 32m;
