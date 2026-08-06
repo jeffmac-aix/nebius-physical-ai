@@ -64,7 +64,7 @@ index a467482..09dc24d 100644
      env_cfg.seed = args_cli.seed if args_cli.seed is not None else int(time.time())
      task_name = args_cli.task
 
-@@ -312,6 +354,219 @@ def main():  # noqa: C901
+@@ -312,6 +354,241 @@ def main():  # noqa: C901
          env.initialize()
      env.reset()
      teleop_interface.reset()
@@ -105,6 +105,8 @@ index a467482..09dc24d 100644
 +    view_command_path = os.environ.get("NPA_LEISAAC_VIEW_COMMAND_PATH", "")
 +    capture_state = {
 +        "pending": set(),
++        "queue": [],
++        "active": False,
 +        "next_at": 0.0,
 +        "sequences": {"workspace": 0, "overview": 0},
 +        "group": 0,
@@ -191,12 +193,43 @@ index a467482..09dc24d 100644
 +                    f"{type(exc).__name__}: {exc}"
 +                )
 +            finally:
++                capture_state["active"] = False
 +                capture_state["pending"].discard(camera_id)
-+                if not capture_state["pending"]:
-+                    capture_state["next_at"] = time.monotonic() + (1.0 / FPS)
 +        return captured
 +
++    def capture_next():
++        """Submit one viewport capture at a time; Kit rejects concurrent cmdlists."""
++        if capture_state["active"]:
++            return
++        if not capture_state["queue"]:
++            if not capture_state["pending"]:
++                capture_state["next_at"] = time.monotonic() + (1.0 / FPS)
++            return
++        camera_id, selected_viewport, destination, metadata_destination, capture_group = (
++            capture_state["queue"].pop(0)
++        )
++        capture_state["active"] = True
++        try:
++            capture_viewport_to_buffer(
++                selected_viewport,
++                on_viewport_captured(
++                    camera_id, destination, metadata_destination, capture_group
++                ),
++            )
++        except Exception as exc:
++            capture_state["active"] = False
++            capture_state["pending"].discard(camera_id)
++            print(
++                f"[WARN] Could not schedule {camera_id} browser frame: "
++                f"{type(exc).__name__}: {exc}"
++            )
++
 +    def schedule_browser_capture():
++        if capture_state["active"]:
++            return
++        if capture_state["queue"]:
++            capture_next()
++            return
 +        if (
 +            viewport is None
 +            or overview_viewport is None
@@ -216,21 +249,10 @@ index a467482..09dc24d 100644
 +            ),
 +        )
 +        capture_state["pending"].update(camera[0] for camera in cameras)
-+        for camera_id, selected_viewport, destination, metadata_destination in cameras:
-+            try:
-+                capture_viewport_to_buffer(
-+                    selected_viewport,
-+                    on_viewport_captured(
-+                        camera_id, destination, metadata_destination, capture_group
-+                    ),
-+                )
-+            except Exception as exc:
-+                capture_state["pending"].discard(camera_id)
-+                capture_state["next_at"] = time.monotonic() + 1.0
-+                print(
-+                    f"[WARN] Could not schedule {camera_id} browser frame: "
-+                    f"{type(exc).__name__}: {exc}"
-+                )
++        capture_state["queue"].extend(
++            (*camera, capture_group) for camera in cameras
++        )
++        capture_next()
 +
 +    def apply_view_command():
 +        nonlocal last_view_sequence
@@ -284,7 +306,7 @@ index a467482..09dc24d 100644
 
      resume_recorded_demo_count = 0
      if args_cli.record and args_cli.resume:
-@@ -379,7 +634,20 @@ def main():  # noqa: C901
+@@ -379,7 +656,20 @@ def main():  # noqa: C901
                          if args_cli.record:
                              print("Start Recording!!!")
                          start_record_state = True

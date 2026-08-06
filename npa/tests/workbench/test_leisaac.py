@@ -378,6 +378,10 @@ def test_observability_patch_is_exact_and_records_real_upstream_input() -> None:
     assert "NPA_LEISAAC_READY_PATH" in source
     assert "NPA_LEISAAC_BROWSER_TELEOP" in source
     assert "capture_viewport_to_buffer" in source
+    assert 'capture_state["queue"].pop(0)' in source
+    assert 'if capture_state["active"]:' in source
+    assert "Submit one viewport capture at a time" in source
+    assert "for camera_id, selected_viewport" not in source
     assert (
         "UsdGeom.Camera.Define(overview_viewport.stage, overview_camera_path)" in source
     )
