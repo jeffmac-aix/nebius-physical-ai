@@ -107,6 +107,7 @@ def test_agent_access_logs_are_query_free() -> None:
     )[0]
 
     assert "--no-access-log" in source
+    assert "--log-level warning" in source
     assert "npa-agent-access.log npa_agent_safe" in site
     assert "$request_method $uri $server_protocol" in log_block
     assert "$request_uri" not in log_block
