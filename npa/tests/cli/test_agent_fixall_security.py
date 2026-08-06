@@ -14,7 +14,7 @@ from npa.cli.agent_s3_guard import (
     configured_agent_s3_buckets,
     s3_uri_in_configured_buckets,
 )
-from npa.cli.agent_state import StateStore
+from npa.cli.agent_state import StateStore, preserve_latest_namespaces
 from npa.cli.agent_workflow import (
     author_workflow_from_goal,
     extract_workflow_name,
@@ -112,6 +112,41 @@ def test_agent_embeds_state_lock() -> None:
     assert "_mutate_state" in source
     assert "_append_chat_turn" in source
     assert '_AGENT_STATE_EMBED' in source
+
+
+def test_legacy_state_save_preserves_latest_atomic_leisaac_namespace() -> None:
+    stale = {
+        "chat_history": [{"role": "user", "content": "done"}],
+        "leisaac": {
+            "run_id": "live-run",
+            "bundle_selection": {"robot": {"name": "old-robot"}},
+        },
+    }
+    latest = {
+        "chat_history": [],
+        "leisaac": {
+            "run_id": "live-run",
+            "bundle_selection": {
+                "robot": {"name": "new-robot"},
+                "scene": {"name": "table"},
+                "device": {"name": "keyboard"},
+            },
+        },
+    }
+
+    merged = preserve_latest_namespaces(stale, latest, ("leisaac",))
+
+    assert merged["chat_history"] == stale["chat_history"]
+    assert merged["leisaac"] == latest["leisaac"]
+    assert merged["leisaac"] is not latest["leisaac"]
+
+
+def test_rendered_agent_legacy_save_preserves_atomic_leisaac_namespace() -> None:
+    source = AGENT_PY.read_text(encoding="utf-8")
+    block = source.split("def _save_state(state: dict) -> None:", 1)[1].split(
+        "def _mutate_state", 1
+    )[0]
+    assert "preserve_latest_namespaces(state, latest, (\"leisaac\",))" in block
 
 
 def test_resolve_workflow_yaml_no_draft_fallback() -> None:

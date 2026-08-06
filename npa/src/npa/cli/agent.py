@@ -2173,6 +2173,14 @@ def _load_state() -> dict:
 
 def _save_state(state: dict) -> None:
     with _STATE_LOCK:
+        # LeIsaac bundle/run selection is written through _mutate_state.  Older
+        # handlers elsewhere in this backend still perform load -> work -> save;
+        # preserve the latest atomic namespace when one of those handlers
+        # finishes with a stale snapshot after a simulator restart.
+        latest = _load_state_unlocked()
+        preserved = preserve_latest_namespaces(state, latest, ("leisaac",))
+        state.clear()
+        state.update(preserved)
         _save_state_unlocked(state)
 
 
