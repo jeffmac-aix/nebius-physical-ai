@@ -26,7 +26,8 @@ index a467482..d3bcad5 100644
 -            env.sim.render()
 +            if env is not None:
 +                env.sim.render()
-@@ -160,0 +176,30 @@ def main():  # noqa: C901
+@@ -159 +175,31 @@ def main():  # noqa: C901
+     env_cfg = parse_env_cfg(args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs)
 +    if os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") == "1":
 +        # Browser teleoperation renders the viewport and does not consume policy images.
 +        # CUDA PhysX + Fabric is the supported fast path; the renderer consumes
@@ -61,7 +62,8 @@ index a467482..d3bcad5 100644
      env: ManagerBasedRLEnv | DirectRLEnv = gym.make(task_name, cfg=env_cfg).unwrapped
 +    if os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") == "1":
 +        env.cfg.sim.render_interval = 1_000_000_000
-@@ -314,0 +362,456 @@ def main():  # noqa: C901
+@@ -313 +362,457 @@ def main():  # noqa: C901
+     env.reset()
 +    recorder = EpisodeRecorder(
 +        root=Path(os.environ["NPA_LEISAAC_RECORDER_ROOT"]),
 +        output_uri=os.environ["NPA_LEISAAC_OUTPUT_PATH"],

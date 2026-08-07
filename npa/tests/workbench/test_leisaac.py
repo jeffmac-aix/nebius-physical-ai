@@ -503,6 +503,11 @@ def test_observability_patch_is_exact_and_records_real_upstream_input() -> None:
     assert "NPA_LEISAAC_READY_PATH" in source
     assert "NPA_LEISAAC_BROWSER_TELEOP" in source
     assert (
+        " env_cfg = parse_env_cfg(args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs)\n"
+        '+    if os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") == "1":'
+        in source
+    )
+    assert (
         " env: ManagerBasedRLEnv | DirectRLEnv = gym.make(task_name, cfg=env_cfg).unwrapped\n"
         '+    if os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") == "1":\n'
         "+        env.cfg.sim.render_interval = 1_000_000_000"
@@ -517,6 +522,7 @@ def test_observability_patch_is_exact_and_records_real_upstream_input() -> None:
     assert 'capture_encoder.submit(\n+                encode_and_publish_capture' in source
     assert "def poll_encoded_capture():" in source
     assert "encode_and_publish_capture" in source
+    assert " env.reset()\n+    recorder = EpisodeRecorder(" in source
     assert 'str(applied.get("event") or "") == "release"' in source
     assert 'source_queue.pop(0)' in source
     assert 'if capture_state["active"]:' in source
