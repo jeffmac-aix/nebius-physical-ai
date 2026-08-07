@@ -1277,6 +1277,7 @@ describe("NPA agent LeIsaac capability tab", () => {
       body: { selected: true },
     });
     cy.intercept("GET", "/api/leisaac/episodes/versions?*", {
+      delay: 800,
       statusCode: 200,
       body: {
         versions: [
@@ -1294,12 +1295,18 @@ describe("NPA agent LeIsaac capability tab", () => {
     cy.intercept(
       { method: "GET", pathname: "/api/leisaac/episodes" },
       (req) => {
+        req.alias = req.query.cursor
+          ? "episodeListNext"
+          : req.query.task
+            ? "episodeListFiltered"
+            : "episodeList";
         expect(req.query.limit).to.equal("20");
         if (req.query.task) {
           expect(req.query.task).to.equal("LeIsaac-SO101-LiftCube-v0");
           expect(req.query.version_id).to.equal(versionId);
         }
         req.reply({
+          delay: 800,
           statusCode: 200,
           body: {
             episodes: req.query.cursor
@@ -1310,12 +1317,16 @@ describe("NPA agent LeIsaac capability tab", () => {
           },
         });
       },
-    ).as("episodeList");
+    );
     cy.intercept(
       { method: "GET", pathname: "/api/leisaac/episodes/0" },
       (req) => {
         expect(req.query.version_id).to.equal(versionId);
         req.reply({
+          // Keep the explicit detail open in flight while a status refresh
+          // starts another automatic list discovery. The two requests must
+          // not cancel each other.
+          delay: 400,
           statusCode: 200,
           body: {
             ...episodeSummary(0, "success"),
@@ -1412,12 +1423,17 @@ describe("NPA agent LeIsaac capability tab", () => {
     cy.get("#tabLeIsaac").click();
     cy.get("#leisaacAvailability").should("contain.text", "reconnecting");
     cy.get("#leisaacEpisodesTitle").should("be.visible");
-    cy.wait("@episodeList");
-    cy.wait("@episodeVersions");
     cy.get("#leisaacViewUploadedEpisode").should("be.visible").click();
+    cy.window().then((win) =>
+      win.__NPA_AGENT_TEST__.refreshLeIsaacCapability("mock-episodes"),
+    );
     cy.wait("@episodeDetail");
     cy.wait("@episodeTimeline");
     cy.get("#leisaacEpisodePlayer").should("be.visible");
+    cy.get("#leisaacEpisodeStatus").should(
+      "contain.text",
+      "Showing 1 immutable episode",
+    );
     cy.get("#leisaacEpisodeSecondaryPane").should("be.visible");
     cy.get("#leisaacEpisodeSingleCamera").should("not.be.visible");
     cy.get("#leisaacEpisodeMetadata")
@@ -1455,9 +1471,9 @@ describe("NPA agent LeIsaac capability tab", () => {
     cy.get("#leisaacEpisodeVersion").select(versionId);
     cy.get("#leisaacEpisodeTask").type("LeIsaac-SO101-LiftCube-v0");
     cy.get("#leisaacEpisodesApply").click();
-    cy.wait("@episodeList");
+    cy.wait("@episodeListFiltered");
     cy.get("#leisaacEpisodesNextPage").should("not.be.disabled").click();
-    cy.wait("@episodeList");
+    cy.wait("@episodeListNext");
     cy.get("#leisaacEpisodeList").should("contain.text", "Episode 1 · failure");
   });
 

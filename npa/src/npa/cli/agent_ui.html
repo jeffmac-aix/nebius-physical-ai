@@ -2333,8 +2333,12 @@
       let leisaacRecorderPollInFlight = false;
       let leisaacRecorderPending = null;
       let leisaacRecorderUiError = "";
-      let leisaacEpisodeAbort = null;
-      let leisaacEpisodeGeneration = 0;
+      // Episode discovery and exact playback are independent user surfaces.
+      // Never let a background list refresh abort an explicit player open.
+      let leisaacEpisodeListAbort = null;
+      let leisaacEpisodeListGeneration = 0;
+      let leisaacEpisodeDetailAbort = null;
+      let leisaacEpisodeDetailGeneration = 0;
       let leisaacEpisodeCursor = "";
       let leisaacEpisodeNextCursor = "";
       const leisaacEpisodeCursorHistory = [];
@@ -2822,10 +2826,10 @@
           leisaacEpisodeNextCursor = "";
           leisaacEpisodeCursorHistory.splice(0);
         }
-        if (leisaacEpisodeAbort) leisaacEpisodeAbort.abort();
+        if (leisaacEpisodeListAbort) leisaacEpisodeListAbort.abort();
         const controller = new AbortController();
-        leisaacEpisodeAbort = controller;
-        const generation = ++leisaacEpisodeGeneration;
+        leisaacEpisodeListAbort = controller;
+        const generation = ++leisaacEpisodeListGeneration;
         if (label) label.textContent = "Loading a bounded S3 episode page…";
         if (error) error.textContent = "";
         const params = leisaacEpisodeFilterParams();
@@ -2838,7 +2842,7 @@
           const work = [leisaacEpisodeJson("/api/leisaac/episodes?" + params.toString(), controller.signal)];
           if (reset) work.push(loadLeIsaacVersions(controller.signal));
           const results = await Promise.all(work);
-          if (generation !== leisaacEpisodeGeneration) return null;
+          if (generation !== leisaacEpisodeListGeneration) return null;
           const payload = results[0];
           leisaacEpisodes = Array.isArray(payload.episodes) ? payload.episodes : [];
           leisaacEpisodeNextCursor = String(payload.next_cursor || "");
@@ -2851,7 +2855,7 @@
           return payload;
         } catch (err) {
           if (err && err.name === "AbortError") return null;
-          if (generation === leisaacEpisodeGeneration) {
+          if (generation === leisaacEpisodeListGeneration) {
             if (error) error.textContent = "Episode discovery failed without a local fallback: " + String((err && err.message) || err);
             if (label) label.textContent = "S3 episode discovery is unavailable. Retry is safe.";
           }
@@ -2926,10 +2930,10 @@
       async function openLeIsaacEpisode(episodeIndex, versionId) {
         const status = leisaacCapability || {};
         if (!status.run_id) throw new Error("No LeIsaac run is selected");
-        if (leisaacEpisodeAbort) leisaacEpisodeAbort.abort();
+        if (leisaacEpisodeDetailAbort) leisaacEpisodeDetailAbort.abort();
         const controller = new AbortController();
-        leisaacEpisodeAbort = controller;
-        const generation = ++leisaacEpisodeGeneration;
+        leisaacEpisodeDetailAbort = controller;
+        const generation = ++leisaacEpisodeDetailGeneration;
         const error = document.getElementById("leisaacEpisodeError");
         const label = document.getElementById("leisaacEpisodeStatus");
         if (error) error.textContent = "";
@@ -2940,7 +2944,7 @@
         try {
           const detail = await leisaacEpisodeJson(base + "?" + params.toString(), controller.signal);
           const timeline = await leisaacEpisodeJson(base + "/timeline?" + params.toString(), controller.signal);
-          if (generation !== leisaacEpisodeGeneration) return null;
+          if (generation !== leisaacEpisodeDetailGeneration) return null;
           leisaacEpisodeDetail = detail;
           leisaacEpisodeTimeline = Array.isArray(timeline.rows) ? timeline.rows : [];
           const player = document.getElementById("leisaacEpisodePlayer");
@@ -3021,7 +3025,7 @@
           return detail;
         } catch (err) {
           if (err && err.name === "AbortError") return null;
-          if (generation === leisaacEpisodeGeneration && error) error.textContent = "Episode load failed: " + String((err && err.message) || err);
+          if (generation === leisaacEpisodeDetailGeneration && error) error.textContent = "Episode load failed: " + String((err && err.message) || err);
           throw err;
         }
       }
