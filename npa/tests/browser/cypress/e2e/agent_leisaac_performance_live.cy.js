@@ -435,7 +435,7 @@ function frameStageSummary(frames) {
             ? "TURN-only reliable ordered control RTCDataChannel; binary WebSocket latest-frame-wins video"
             : finalEvidence.video === "webrtc-datachannel-v1"
               ? "TURN-only unordered maxRetransmits=0 video; reliable ordered control WebSocket"
-              : "binary WebSocket latest-frame-wins fallback",
+              : "binary same-origin WebSocket; interruptible 60 Hz simulator wake; latest-frame-wins video",
         };
         benchmark.quality = {
           workspace: { width: 1280, height: 720, jpeg_quality: 82, variance: workspace.variance },
@@ -497,9 +497,9 @@ function frameStageSummary(frames) {
               `optimized benchmark requires the measured bounded WebSocket path, got ${benchmark.transport.video || "none"}`,
             );
           }
-          if (benchmark.transport.control !== "webrtc-datachannel-v1") {
+          if (benchmark.transport.control !== "websocket-v1") {
             throw new Error(
-              `optimized benchmark requires direct reliable WebRTC control, got ${benchmark.transport.control || "none"}`,
+              `optimized benchmark requires the measured same-origin WebSocket control path, got ${benchmark.transport.control || "none"}`,
             );
           }
           if (!(baselineP50 > 0 && baselineP95 > 0)) {

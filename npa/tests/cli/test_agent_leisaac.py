@@ -327,7 +327,7 @@ def test_live_health_attestation_gates_secret_free_status() -> None:
     assert payload["signaling_path"] == "/api/leisaac/signal"
     assert payload["video_datachannel_url"] == "/api/leisaac/transport/video-webrtc"
     assert payload["control_datachannel_url"] == "/api/leisaac/transport/control-webrtc"
-    assert payload["preferred_control_transport"] == "webrtc-datachannel-v1"
+    assert payload["preferred_control_transport"] == "websocket-v1"
     assert payload["media_server"] == "1.1.1.1"
     serialized = repr(payload)
     assert manifest["session_nonce"] not in serialized

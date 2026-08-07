@@ -1,5 +1,5 @@
 diff --git a/scripts/environments/teleoperation/teleop_se3_agent.py b/scripts/environments/teleoperation/teleop_se3_agent.py
-index a467482..d3bcad5 100644
+index a467482..dd0bea2 100644
 --- a/scripts/environments/teleoperation/teleop_se3_agent.py
 +++ b/scripts/environments/teleoperation/teleop_se3_agent.py
 @@ -91,0 +92,4 @@ simulation_app = app_launcher.app
@@ -7,12 +7,13 @@ index a467482..d3bcad5 100644
 +import ctypes
 +import hashlib
 +import json
-@@ -92,0 +97,2 @@ import os
+@@ -92,0 +97,3 @@ import os
++import select
 +from leisaac_dataset import EpisodeRecorder, extract_step
 +from pathlib import Path
-@@ -94,0 +101 @@ import time
+@@ -94,0 +102 @@ import time
 +from PIL import Image
-@@ -97,0 +105,7 @@ from isaaclab.envs import DirectRLEnv, ManagerBasedRLEnv
+@@ -97,0 +106,7 @@ from isaaclab.envs import DirectRLEnv, ManagerBasedRLEnv
 +from omni.kit.viewport.utility import (
 +    capture_viewport_to_buffer,
 +    get_active_viewport,
@@ -20,7 +21,7 @@ index a467482..d3bcad5 100644
 +)
 +from isaacsim.core.utils.viewports import set_camera_view
 +from pxr import UsdGeom
-@@ -160,0 +175,29 @@ def main():  # noqa: C901
+@@ -160,0 +176,29 @@ def main():  # noqa: C901
 +    if os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") == "1":
 +        # Browser teleoperation renders the viewport and does not consume policy images.
 +        # Fabric cannot synchronize CPU PhysX reliably on the sm_120 renderer.
@@ -50,7 +51,7 @@ index a467482..d3bcad5 100644
 +    if custom_scene_usd:
 +        # Custom scenes retain the task's expected object prim names and layout.
 +        env_cfg.scene.scene.spawn.usd_path = custom_scene_usd
-@@ -314,0 +358,385 @@ def main():  # noqa: C901
+@@ -314,0 +359,429 @@ def main():  # noqa: C901
 +    recorder = EpisodeRecorder(
 +        root=Path(os.environ["NPA_LEISAAC_RECORDER_ROOT"]),
 +        output_uri=os.environ["NPA_LEISAAC_OUTPUT_PATH"],
@@ -78,6 +79,50 @@ index a467482..d3bcad5 100644
 +    if ready_path:
 +        with open(ready_path, "w", encoding="utf-8") as ready_file:
 +            ready_file.write("ready\n")
++
++    input_wakeup_path = os.environ.get("NPA_LEISAAC_INPUT_WAKEUP", "")
++    input_wakeup_fd = None
++    if input_wakeup_path:
++        try:
++            # RDWR keeps the local FIFO readable across session-server writer
++            # reconnects. It is only a wake hint; controls remain in the
++            # validated, ordered JSONL queue consumed on the simulator thread.
++            input_wakeup_fd = os.open(
++                input_wakeup_path, os.O_RDWR | os.O_NONBLOCK
++            )
++        except OSError:
++            input_wakeup_fd = None
++    remote_step_interval = 1.0 / max(1, int(args_cli.step_hz))
++    next_remote_step_at = time.monotonic() + remote_step_interval
++
++    def wait_for_remote_step():
++        """Maintain 60 Hz, but let a validated control skip remaining idle sleep."""
++        nonlocal next_remote_step_at
++        now = time.monotonic()
++        timeout = max(0.0, next_remote_step_at - now)
++        woke_for_control = False
++        if input_wakeup_fd is None:
++            if timeout:
++                time.sleep(timeout)
++        else:
++            readable, _, _ = select.select([input_wakeup_fd], [], [], timeout)
++            if readable:
++                woke_for_control = True
++                try:
++                    while os.read(input_wakeup_fd, 4096):
++                        pass
++                except BlockingIOError:
++                    pass
++        now = time.monotonic()
++        if woke_for_control:
++            # Apply one fixed simulation step promptly, then resume the normal
++            # wall cadence. No physics dt or recorder step is omitted.
++            next_remote_step_at = now + remote_step_interval
++        else:
++            next_remote_step_at = max(
++                next_remote_step_at + remote_step_interval,
++                now + remote_step_interval,
++            )
 +
 +    frame_path = os.environ.get("NPA_LEISAAC_FRAME_PATH", "")
 +    frame_meta_path = os.environ.get("NPA_LEISAAC_FRAME_META_PATH", "")
@@ -436,11 +481,11 @@ index a467482..d3bcad5 100644
 +        env.render()
 +        schedule_browser_capture()
 +        env.render()
-@@ -375 +793,2 @@ def main():  # noqa: C901
+@@ -375 +848,2 @@ def main():  # noqa: C901
 -                    env.render()
 +                    if os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") != "1":
 +                        env.render()
-@@ -382 +801,17 @@ def main():  # noqa: C901
+@@ -382,2 +856,20 @@ def main():  # noqa: C901
 -                    env.step(actions)
 +                    step_result = env.step(actions)
 +                    sim_step += 1
@@ -459,6 +504,13 @@ index a467482..d3bcad5 100644
 +                if os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") == "1":
 +                    env.render()
 +                recorder.process_commands(reset=env.reset)
+-                if rate_limiter:
++                if os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") == "1":
++                    wait_for_remote_step()
++                elif rate_limiter:
+@@ -398,0 +891,2 @@ def main():  # noqa: C901
++        if input_wakeup_fd is not None:
++            os.close(input_wakeup_fd)
 diff --git a/source/leisaac/leisaac/devices/keyboard/so101_keyboard.py b/source/leisaac/leisaac/devices/keyboard/so101_keyboard.py
 index 1ecc934..cb304f1 100644
 --- a/source/leisaac/leisaac/devices/keyboard/so101_keyboard.py

@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 import struct
 from types import SimpleNamespace
@@ -515,6 +516,7 @@ def _prepare_runtime(monkeypatch, tmp_path: Path):
         "INPUT_COUNTER_PATH": tmp_path / "input-count",
         "APPLIED_COUNTER_PATH": tmp_path / "applied-count",
         "INPUT_QUEUE_PATH": tmp_path / "input.jsonl",
+        "INPUT_WAKEUP_PATH": tmp_path / "input-wakeup.fifo",
         "FRAME_PATH": tmp_path / "frame.jpg",
         "FRAME_META_PATH": tmp_path / "frame.json",
         "SECONDARY_FRAME_PATH": tmp_path / "frame-overview.jpg",
@@ -914,6 +916,22 @@ def test_runtime_fsyncs_safety_releases_but_not_transient_presses(
         ]
     )
     assert len(syncs) == 2
+
+
+def test_runtime_signals_local_wakeup_after_ordered_queue_write(
+    monkeypatch, tmp_path: Path
+) -> None:
+    runtime = _prepare_runtime(monkeypatch, tmp_path)
+    runtime.INPUT_QUEUE_PATH.write_text("", encoding="utf-8")
+    os.mkfifo(runtime.INPUT_WAKEUP_PATH, mode=0o600)
+    reader = os.open(runtime.INPUT_WAKEUP_PATH, os.O_RDWR | os.O_NONBLOCK)
+    try:
+        runtime._append_inputs([_control(1, event="press")])
+        assert os.read(reader, 1) == b"\x01"
+        queued = json.loads(runtime.INPUT_QUEUE_PATH.read_text(encoding="utf-8"))
+        assert queued["seq"] == 1
+    finally:
+        os.close(reader)
 
 
 def test_runtime_video_envelope_is_binary_and_nonblank(

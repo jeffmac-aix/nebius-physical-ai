@@ -478,6 +478,8 @@ def test_container_never_bakes_eula_client_or_assets() -> None:
     assert "NPA_LEISAAC_INPUT_COUNTER" in server
     assert "NPA_LEISAAC_APPLIED_COUNTER" in server
     assert "NPA_LEISAAC_INPUT_QUEUE" in server
+    assert "NPA_LEISAAC_INPUT_WAKEUP" in server
+    assert "os.mkfifo(INPUT_WAKEUP_PATH, mode=0o600)" in server
     assert "NPA_LEISAAC_FRAME_PATH" in server
     assert "pandas==2.3.3" in dockerfile
     assert "aiortc==1.15.0" in dockerfile
@@ -529,6 +531,9 @@ def test_observability_patch_is_exact_and_records_real_upstream_input() -> None:
     )
     assert source.count("viewport_api=overview_viewport") == 2
     assert "NPA_LEISAAC_INPUT_QUEUE" in source
+    assert "NPA_LEISAAC_INPUT_WAKEUP" in source
+    assert "select.select([input_wakeup_fd], [], [], timeout)" in source
+    assert "wait_for_remote_step()" in source
     assert "NPA_LEISAAC_APPLIED_COUNTER" in source
     assert "NPA_LEISAAC_FRAME_PATH" in source
     assert "self._remote_pulses[key] = 8" in source
