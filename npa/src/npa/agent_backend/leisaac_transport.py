@@ -29,6 +29,7 @@ MAX_VIDEO_ACK_BYTES = 512
 MAX_FRAME_BYTES = 4 * 1024 * 1024
 MAX_CLIENT_HISTORY = 1024
 MAX_VIDEO_IN_FLIGHT = 4
+MAX_SECONDARY_STARVATION_SECONDS = 0.75
 CLIENT_ID_PATTERN = re.compile(r"[A-Za-z0-9._:-]{1,96}")
 RUN_ID_PATTERN = re.compile(r"[A-Za-z0-9._:-]{1,128}")
 ALLOWED_KEYS = frozenset({"W", "S", "A", "D", "Q", "E", "J", "L", "I", "K", "U", "O"})
@@ -651,10 +652,9 @@ class AsyncLatestByKey:
         if not available():
             await asyncio.wait_for(wait(), timeout=timeout)
         # Put the user-critical viewport on the wire first for a new consumer,
-        # and whenever round-robin already points at it.  Once it is selected,
-        # do not let a newer primary publication repeatedly preempt an already
-        # pending secondary frame: that scheduling race can otherwise leave a
-        # real overview viewport black indefinitely under continuous capture.
+        # and whenever round-robin already points at it. Callers may supply a
+        # bounded policy (for example, prefer primary only while the secondary
+        # delivery deadline has not expired).
         start = max(0, int(next_index)) % len(self._keys)
         preferred_ready = (
             preferred_key is not None
