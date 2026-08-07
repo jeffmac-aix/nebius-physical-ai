@@ -4603,7 +4603,10 @@
         bindClick("workflowValidate", validateWorkflowYaml, "Validate workflow YAML");
         bindClick("workflowPlan", planWorkflowYaml, "Plan workflow YAML");
         bindClick("workflowSubmitYaml", submitWorkflowYaml, "Submit workflow YAML");
-        bindClick("artifactRefreshRuns", refreshArtifactRuns, "Discover artifact runs");
+        // bindClick passes the DOM click event to callbacks.  A default discovery
+        // has no query; forwarding the event stringifies it to
+        // "[object MouseEvent]" and accidentally turns refresh into a search.
+        bindClick("artifactRefreshRuns", () => refreshArtifactRuns(), "Discover artifact runs");
         bindClick("artifactLoadRunArtifacts", loadArtifactsForSelectedRun, "List run artifacts");
         bindClick("loadRerunViewer", () => loadRerunViewer(), "Reload Rerun data");
         bindClick("describeVisual", describeVisual, "Describe this");
@@ -7366,12 +7369,19 @@
             setRerunBlobStatus("retrying", "mount " + String(i + 1) + "/" + String(attempts));
             setRerunMountStatus("retrying", "mount " + String(i + 1) + "/" + String(attempts));
             await mountRerunIframe(camera, runId);
-            if (lastRerunMountStatus === RERUN_MOUNT_SUCCESS || lastRerunMountStatus === "degraded") {
+            const iframeOk = document.getElementById("rerunFrame");
+            const iframeSrc = String((iframeOk && iframeOk.getAttribute("src")) || "");
+            const iframeMounted = Boolean(
+              iframeOk && !iframeOk.hidden && iframeSrc.includes("/rerun/")
+            );
+            if (
+              iframeMounted &&
+              (lastRerunMountStatus === RERUN_MOUNT_SUCCESS || lastRerunMountStatus === "degraded")
+            ) {
               if (lastRerunBlobStatus !== RERUN_BLOB_SUCCESS) {
                 // Blob probe may lag; display-ready mount is enough to stop remount loops.
                 setRerunBlobStatus(RERUN_BLOB_SUCCESS, "mount-ready");
               }
-              const iframeOk = document.getElementById("rerunFrame");
               safeHideRerunBundleCover(iframeOk);
               if (lastRerunMountStatus === "degraded") {
                 setRerunMountStatus(RERUN_MOUNT_SUCCESS, "degraded-accepted");
