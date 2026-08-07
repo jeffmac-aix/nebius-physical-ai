@@ -630,5 +630,176 @@ async function fetchStatus(win, runId) {
         .its("__NPA_LEISAAC_BENCHMARK__")
         .then((benchmark) => cy.writeFile(output, benchmark, { log: false }));
     });
+
+    it("durably releases held controls when a browser control channel disappears", () => {
+      Cypress.config("defaultCommandTimeout", 240000);
+      const runId = String(Cypress.env("NPA_AGENT_RUN_ID"));
+      const output = `${String(Cypress.env("NPA_LEISAAC_BENCHMARK_OUTPUT"))}.abrupt-disconnect.json`;
+
+      cy.viewport(1440, 1050);
+      cy.visitLiveAgent();
+      cy.window().then(async (win) => {
+        const authorize = async () => {
+          const response = await win.fetch(
+            `/api/leisaac/ws-session?run_id=${encodeURIComponent(runId)}`,
+            {
+              method: "POST",
+              credentials: "include",
+              cache: "no-store",
+              headers: { "X-NPA-LeIsaac-Control": "1" },
+            },
+          );
+          if (response.status !== 204) {
+            throw new Error(
+              `LeIsaac control transport authorization returned HTTP ${response.status}`,
+            );
+          }
+        };
+        const connect = async (status, received) => {
+          const target = new URL(String(status.control_ws_url), win.location.href);
+          target.protocol = win.location.protocol === "https:" ? "wss:" : "ws:";
+          const socket = new win.WebSocket(
+            target.toString(),
+            "npa.leisaac.control.v1",
+          );
+          socket.addEventListener("message", (message) => {
+            try {
+              received.push(JSON.parse(String(message.data || "")));
+            } catch (_error) {
+              received.push({ type: "invalid-json" });
+            }
+          });
+          await waitUntil(
+            win,
+            () => socket.readyState === win.WebSocket.OPEN,
+            15000,
+            "raw control WebSocket open",
+          );
+          return socket;
+        };
+        const envelope = (type, clientId) => ({
+          v: 1,
+          type,
+          run_id: runId,
+          client_id: clientId,
+          client_mono_ns: String(Math.floor(win.performance.now() * 1000000)),
+          client_wall_ns: String(BigInt(win.Date.now()) * 1000000n),
+        });
+        const waitForMessage = (messages, predicate, label) =>
+          waitUntil(win, () => messages.find(predicate), 15000, label);
+
+        const initial = await fetchStatus(win, runId);
+        expect(String(initial.payload.stream_transport || "")).to.equal(
+          "websocket-v1",
+        );
+        const clientId = `cypress-abrupt-${win.Date.now()}`;
+        await authorize();
+        const firstMessages = [];
+        const first = await connect(initial.payload, firstMessages);
+        first.send(
+          JSON.stringify({
+            ...envelope("resume", clientId),
+            last_acked_seq: 0,
+            keys_down: [],
+          }),
+        );
+        const initialResume = await waitForMessage(
+          firstMessages,
+          (message) => message.type === "resumed",
+          "initial control resume",
+        );
+        expect(Number(initialResume.next_seq)).to.equal(1);
+        first.send(
+          JSON.stringify({
+            ...envelope("control", clientId),
+            seq: 1,
+            key: "W",
+            event: "press",
+          }),
+        );
+        await waitForMessage(
+          firstMessages,
+          (message) =>
+            message.type === "ack" &&
+            message.phase === "applied" &&
+            Number(message.seq) === 1,
+          "held control simulator-applied acknowledgement",
+        );
+        const beforeDisconnect = await fetchStatus(win, runId);
+
+        // Deliberately omit release-all: the runtime must synthesize and durably
+        // apply a release when this browser-owned channel disappears.
+        first.close();
+        await waitUntil(
+          win,
+          () => first.readyState === win.WebSocket.CLOSED,
+          15000,
+          "abrupt control WebSocket close",
+        );
+        let afterDisconnect = null;
+        const deadline = win.performance.now() + 30000;
+        while (win.performance.now() < deadline) {
+          const observed = await fetchStatus(win, runId);
+          if (
+            Number(observed.payload.input_events || 0) >=
+              Number(beforeDisconnect.payload.input_events || 0) + 1 &&
+            Number(observed.payload.applied_inputs || 0) >=
+              Number(beforeDisconnect.payload.applied_inputs || 0) + 1 &&
+            Number(observed.payload.input_events || 0) ===
+              Number(observed.payload.applied_inputs || 0)
+          ) {
+            afterDisconnect = observed;
+            break;
+          }
+          await new Promise((resolve) => win.setTimeout(resolve, 10));
+        }
+        if (!afterDisconnect) {
+          throw new Error("disconnect release was not durably applied within 30 seconds");
+        }
+
+        await authorize();
+        const resumedMessages = [];
+        const resumedSocket = await connect(initial.payload, resumedMessages);
+        resumedSocket.send(
+          JSON.stringify({
+            ...envelope("resume", clientId),
+            last_acked_seq: 1,
+            keys_down: ["W"],
+          }),
+        );
+        const resumed = await waitForMessage(
+          resumedMessages,
+          (message) => message.type === "resumed",
+          "post-disconnect control resume",
+        );
+        expect(Number(resumed.next_seq)).to.equal(3);
+        expect(Number(resumed.last_applied_seq)).to.be.at.least(2);
+        expect(resumed.keys_down).to.deep.equal([]);
+        resumedSocket.close();
+
+        win.__NPA_LEISAAC_ABRUPT_DISCONNECT__ = {
+          schema: "npa.leisaac.abrupt-disconnect-proof.v1",
+          completed_at: new Date().toISOString(),
+          held_sequence: 1,
+          synthetic_release_sequence: 2,
+          resumed_next_sequence: Number(resumed.next_seq),
+          resumed_last_applied_sequence: Number(resumed.last_applied_seq),
+          resumed_keys_down: resumed.keys_down,
+          input_events_before_disconnect: Number(
+            beforeDisconnect.payload.input_events || 0,
+          ),
+          input_events_after_disconnect: Number(
+            afterDisconnect.payload.input_events || 0,
+          ),
+          applied_inputs_after_disconnect: Number(
+            afterDisconnect.payload.applied_inputs || 0,
+          ),
+        };
+      });
+
+      cy.window()
+        .its("__NPA_LEISAAC_ABRUPT_DISCONNECT__")
+        .then((proof) => cy.writeFile(output, proof, { log: false }));
+    });
   },
 );
