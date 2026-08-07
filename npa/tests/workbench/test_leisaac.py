@@ -502,6 +502,12 @@ def test_observability_patch_is_exact_and_records_real_upstream_input() -> None:
     assert "NPA_LEISAAC_INPUT_COUNTER" in source
     assert "NPA_LEISAAC_READY_PATH" in source
     assert "NPA_LEISAAC_BROWSER_TELEOP" in source
+    assert (
+        " env: ManagerBasedRLEnv | DirectRLEnv = gym.make(task_name, cfg=env_cfg).unwrapped\n"
+        '+    if os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") == "1":\n'
+        "+        env.cfg.sim.render_interval = 1_000_000_000"
+        in source
+    )
     assert "capture_viewport_to_buffer" in source
     assert 'image.save(encoded, format="JPEG", quality=82, optimize=True)' in source
     assert "optimize=False" not in source

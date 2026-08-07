@@ -56,7 +56,8 @@ index a467482..d3bcad5 100644
 +    if custom_scene_usd:
 +        # Custom scenes retain the task's expected object prim names and layout.
 +        env_cfg.scene.scene.spawn.usd_path = custom_scene_usd
-@@ -226,0 +272,2 @@ def main():  # noqa: C901
+@@ -226 +273,3 @@ def main():  # noqa: C901
+     env: ManagerBasedRLEnv | DirectRLEnv = gym.make(task_name, cfg=env_cfg).unwrapped
 +    if os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") == "1":
 +        env.cfg.sim.render_interval = 1_000_000_000
 @@ -314,0 +362,434 @@ def main():  # noqa: C901
