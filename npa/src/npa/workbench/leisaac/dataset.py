@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import os
 import re
@@ -18,6 +19,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlparse
+
+LOGGER = logging.getLogger(__name__)
 
 DATASET_SCHEMA = "npa.leisaac.dataset.v1"
 EPISODE_SCHEMA = "npa.leisaac.episode.v1"
@@ -639,10 +642,13 @@ class EpisodeRecorder:
         if finalize_future is not None and finalize_future.done():
             try:
                 finalize_future.result()
-            except Exception:
+            except Exception as exc:
                 # finalize() already persisted a bounded, redacted failure in
                 # recorder status. The operator can retry with a new command ID.
-                pass
+                LOGGER.debug(
+                    "LeIsaac finalize failure was recorded in recorder status: %s",
+                    _safe_error(exc),
+                )
             else:
                 finalize_reset = self._finalize_reset
                 if finalize_reset is not None:
