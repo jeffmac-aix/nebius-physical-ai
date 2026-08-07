@@ -525,6 +525,14 @@ def test_observability_patch_is_exact_and_records_real_upstream_input() -> None:
     assert source.count("schedule_browser_capture()\n+        env.render()") == 1
     assert source.count("schedule_browser_capture()\n+                apply_view_command()") == 1
     assert "def browser_capture_needs_render():" in source
+    assert 'capture_state["needs_render"]' not in source
+    assert (
+        "def browser_capture_needs_render():\n"
+        '+        """Keep physics/control cadence independent from background RTX work."""\n'
+        "+        return bool(\n"
+        '+            capture_state["active"]'
+        in source
+    )
     assert "and browser_capture_needs_render()" in source
     assert 'capture_state["queue"].clear()' in source
     assert 'capture_state["priority_queue"]' in source

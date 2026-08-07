@@ -60,7 +60,7 @@ index a467482..d3bcad5 100644
      env: ManagerBasedRLEnv | DirectRLEnv = gym.make(task_name, cfg=env_cfg).unwrapped
 +    if os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") == "1":
 +        env.cfg.sim.render_interval = 1_000_000_000
-@@ -314,0 +362,434 @@ def main():  # noqa: C901
+@@ -314,0 +362,429 @@ def main():  # noqa: C901
 +    recorder = EpisodeRecorder(
 +        root=Path(os.environ["NPA_LEISAAC_RECORDER_ROOT"]),
 +        output_uri=os.environ["NPA_LEISAAC_OUTPUT_PATH"],
@@ -103,7 +103,6 @@ index a467482..d3bcad5 100644
 +        "active": False,
 +        "active_group": "",
 +        "active_priority": False,
-+        "needs_render": False,
 +        "deferred_causal": None,
 +        "task": None,
 +        "next_at": 0.0,
@@ -260,7 +259,6 @@ index a467482..d3bcad5 100644
 +            if camera_id == "overview":
 +                viewport.camera_path = workspace_camera_path
 +                await next_viewport_frame_async(viewport, n_frames=1)
-+            capture_state["needs_render"] = False
 +            frame_bytes = await asyncio.to_thread(
 +                encode_and_publish_capture,
 +                capture_result,
@@ -282,7 +280,6 @@ index a467482..d3bcad5 100644
 +            capture_state["active"] = False
 +            capture_state["active_group"] = ""
 +            capture_state["active_priority"] = False
-+            capture_state["needs_render"] = False
 +            capture_state["pending"].discard(camera_id)
 +            capture_state["task"] = None
 +            group_pending = any(
@@ -319,7 +316,6 @@ index a467482..d3bcad5 100644
 +            source_queue.pop(0)
 +        )
 +        capture_state["active"] = True
-+        capture_state["needs_render"] = True
 +        capture_state["active_group"] = capture_group
 +        capture_state["active_priority"] = selected_priority
 +        same_camera = str(viewport.camera_path) == str(selected_camera_path)
@@ -437,10 +433,9 @@ index a467482..d3bcad5 100644
 +
 +    def browser_capture_needs_render():
 +        """Keep physics/control cadence independent from background RTX work."""
-+        if capture_state["active"]:
-+            return capture_state["needs_render"]
 +        return bool(
-+            capture_state["priority_queue"]
++            capture_state["active"]
++            or capture_state["priority_queue"]
 +            or capture_state["queue"]
 +            or time.monotonic() >= capture_state["next_at"]
 +        )
