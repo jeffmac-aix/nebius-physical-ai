@@ -631,7 +631,9 @@ def _simulation_launch() -> tuple[list[str], dict[str, str]]:
         f"--num_envs={NUM_ENVS}",
         f"--seed={TELEOP_SEED}",
         "--device=cuda:0",
-        "--enable_cameras",
+        # Browser mode removes the task's RTX policy sensors and advances the
+        # real viewport explicitly only for bounded background/causal capture.
+        # AppLauncher's camera flag would make every physics step render again.
         "--kit_args="
         + " ".join(
             [
