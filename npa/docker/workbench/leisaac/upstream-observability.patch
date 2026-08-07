@@ -50,7 +50,7 @@ index a467482..d3bcad5 100644
 +    if custom_scene_usd:
 +        # Custom scenes retain the task's expected object prim names and layout.
 +        env_cfg.scene.scene.spawn.usd_path = custom_scene_usd
-@@ -314,0 +358,383 @@ def main():  # noqa: C901
+@@ -314,0 +358,385 @@ def main():  # noqa: C901
 +    recorder = EpisodeRecorder(
 +        root=Path(os.environ["NPA_LEISAAC_RECORDER_ROOT"]),
 +        output_uri=os.environ["NPA_LEISAAC_OUTPUT_PATH"],
@@ -153,7 +153,9 @@ index a467482..d3bcad5 100644
 +                if image.width > 1280 or image.height > 720:
 +                    image.thumbnail((1280, 720), Image.Resampling.LANCZOS)
 +                temporary = destination + ".tmp"
-+                image.save(temporary, format="JPEG", quality=82, optimize=False)
++                # Optimized Huffman tables preserve quality-82 quantization while
++                # materially reducing bytes on the shared control/video link.
++                image.save(temporary, format="JPEG", quality=82, optimize=True)
 +                frame_bytes = Path(temporary).read_bytes()
 +                encoded_monotonic_ns = time.monotonic_ns()
 +                encoded_wall_ns = time.time_ns()
