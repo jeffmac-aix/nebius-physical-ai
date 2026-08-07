@@ -939,6 +939,7 @@ def _append_input(record: dict[str, Any]) -> int:
 
 def _read_consistent_frame(
     camera: str = "workspace",
+    after_sequence: int = 0,
 ) -> tuple[dict[str, Any], bytes] | None:
     paths = CAMERA_PATHS.get(camera)
     if paths is None:
@@ -947,9 +948,11 @@ def _read_consistent_frame(
     for _attempt in range(3):
         try:
             first = json.loads(metadata_path.read_text(encoding="utf-8"))
+            if int(first.get("sequence") or 0) <= after_sequence:
+                return None
             jpeg = frame_path.read_bytes()
             second = json.loads(metadata_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        except (OSError, TypeError, ValueError):
             return None
         if first != second or not isinstance(first, dict):
             continue
@@ -965,19 +968,35 @@ def _read_consistent_frame(
     return None
 
 
+def _read_new_frames(
+    sequences: dict[str, int],
+) -> list[tuple[str, dict[str, Any], bytes]]:
+    """Read and authenticate only frames newer than the watcher snapshot."""
+
+    frames: list[tuple[str, dict[str, Any], bytes]] = []
+    for camera in CAMERA_PATHS:
+        item = _read_consistent_frame(camera, sequences.get(camera, 0))
+        if item is not None:
+            metadata, jpeg = item
+            frames.append((camera, metadata, jpeg))
+    return frames
+
+
 async def _watch_frames() -> None:
     sequences = {camera: 0 for camera in CAMERA_PATHS}
     pending: dict[str, tuple[dict[str, Any], bytes]] = {}
     next_camera = "workspace"
     while True:
-        for camera in CAMERA_PATHS:
-            item = await asyncio.to_thread(_read_consistent_frame, camera)
-            if item is not None:
-                metadata, jpeg = item
-                observed = int(metadata.get("sequence") or 0)
-                if observed > sequences[camera]:
-                    sequences[camera] = observed
-                    pending[camera] = (metadata, jpeg)
+        # One worker hop checks both tiny metadata files. Unchanged frames stop
+        # before JPEG I/O and SHA-256, avoiding duplicate work at the tighter
+        # poll cadence while retaining the full consistency/integrity check for
+        # every newly published frame.
+        discovered = await asyncio.to_thread(_read_new_frames, dict(sequences))
+        for camera, metadata, jpeg in discovered:
+            observed = int(metadata.get("sequence") or 0)
+            if observed > sequences[camera]:
+                sequences[camera] = observed
+                pending[camera] = (metadata, jpeg)
         selected = next_camera if next_camera in pending else next(iter(pending), "")
         if selected:
             metadata, jpeg = pending.pop(selected)
@@ -987,7 +1006,7 @@ async def _watch_frames() -> None:
             # watcher immediately after its first publication.
             TRANSPORT_METRICS.increment("frames_published")
             next_camera = "overview" if selected == "workspace" else "workspace"
-        await asyncio.sleep(0.005)
+        await asyncio.sleep(0.001)
 
 
 def _scan_applied_acks() -> None:

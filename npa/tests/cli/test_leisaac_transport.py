@@ -986,29 +986,20 @@ def test_runtime_frame_watcher_remains_live_across_both_cameras(
 ) -> None:
     runtime = _prepare_runtime(monkeypatch, tmp_path)
     publications: list[tuple[str, dict, bytes]] = []
-    reads = {
-        "workspace": [
-            ({"sequence": 1}, b"workspace-1"),
-            None,
-            ({"sequence": 2}, b"workspace-2"),
-            None,
-        ],
-        "overview": [
-            None,
-            ({"sequence": 1}, b"overview-1"),
-            None,
-            ({"sequence": 2}, b"overview-2"),
-        ],
-    }
+    reads = [
+        [("workspace", {"sequence": 1}, b"workspace-1")],
+        [("overview", {"sequence": 1}, b"overview-1")],
+        [("workspace", {"sequence": 2}, b"workspace-2")],
+        [("overview", {"sequence": 2}, b"overview-2")],
+    ]
 
-    def read(camera: str):
-        items = reads[camera]
-        return items.pop(0) if items else None
+    def read(_sequences: dict[str, int]):
+        return reads.pop(0) if reads else []
 
     async def publish(_camera, item):
         publications.append(item)
 
-    monkeypatch.setattr(runtime, "_read_consistent_frame", read)
+    monkeypatch.setattr(runtime, "_read_new_frames", read)
     monkeypatch.setattr(runtime.FRAME_LATEST, "publish", publish)
 
     async def exercise() -> None:
@@ -1028,6 +1019,29 @@ def test_runtime_frame_watcher_remains_live_across_both_cameras(
         "overview",
     ]
     assert runtime.TRANSPORT_METRICS.snapshot()["frames_published"] == 4
+
+
+def test_runtime_frame_reader_skips_unchanged_jpeg_integrity_work(
+    monkeypatch, tmp_path: Path
+) -> None:
+    runtime = _prepare_runtime(monkeypatch, tmp_path)
+    jpeg = b"\xff\xd8" + b"sequence-gated" * 30 + b"\xff\xd9"
+    runtime.FRAME_PATH.write_bytes(jpeg)
+    runtime.FRAME_META_PATH.write_text(
+        json.dumps(
+            {
+                "sequence": 7,
+                "bytes": len(jpeg),
+                "sha256": hashlib.sha256(jpeg).hexdigest(),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert runtime._read_consistent_frame("workspace", 7) is None
+    metadata, content = runtime._read_consistent_frame("workspace", 6)
+    assert metadata["sequence"] == 7
+    assert content == jpeg
 
 
 def test_runtime_secondary_camera_and_orbit_are_bounded_and_authenticated(
