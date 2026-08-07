@@ -519,7 +519,7 @@ def test_observability_patch_is_exact_and_records_real_upstream_input() -> None:
     assert "and browser_capture_needs_render()" in source
     assert 'capture_state["queue"].clear()' in source
     assert 'capture_state["priority_queue"]' in source
-    assert source.count("background_capture_fps = 2.0") == 1
+    assert source.count("background_capture_fps = 2.5") == 1
     assert 'capture_state["next_at"] = max(' in source
     assert "time.monotonic() + background_capture_interval" in source
     assert '"causal_action_sequence": causal_action_sequence' in source
