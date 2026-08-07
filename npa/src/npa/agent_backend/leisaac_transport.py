@@ -649,11 +649,15 @@ class AsyncLatestByKey:
 
         if not available():
             await asyncio.wait_for(wait(), timeout=timeout)
-        # Put the user-critical viewport on the wire first when both cameras are
-        # ready. Its generation is then observed, so the secondary value is
-        # selected on the immediately following dequeue rather than starved.
+        # Put the user-critical viewport on the wire first for a new consumer,
+        # and whenever round-robin already points at it.  Once it is selected,
+        # do not let a newer primary publication repeatedly preempt an already
+        # pending secondary frame: that scheduling race can otherwise leave a
+        # real overview viewport black indefinitely under continuous capture.
+        start = max(0, int(next_index)) % len(self._keys)
         if (
             preferred_key is not None
+            and (not any(observed.values()) or self._keys[start] == preferred_key)
             and self._generations[preferred_key] > observed[preferred_key]
         ):
             index = self._keys.index(preferred_key)
@@ -665,7 +669,6 @@ class AsyncLatestByKey:
                 max(0, generation - observed[preferred_key] - 1),
                 (index + 1) % len(self._keys),
             )
-        start = max(0, int(next_index)) % len(self._keys)
         for offset in range(len(self._keys)):
             index = (start + offset) % len(self._keys)
             key = self._keys[index]

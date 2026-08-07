@@ -404,6 +404,9 @@ async def test_camera_latest_values_prefer_primary_once_without_starvation() -> 
     )
     generations[camera] = generation
 
+    # A newly published primary cannot preempt the secondary that was already
+    # waiting when the initial preferred frame was selected.
+    await latest.publish("workspace", "workspace-2")
     camera, generation, value, skipped, _ = await latest.wait_after(
         generations,
         next_index=next_index,
@@ -414,6 +417,20 @@ async def test_camera_latest_values_prefer_primary_once_without_starvation() -> 
         "overview",
         1,
         "overview-1",
+        0,
+    )
+
+    generations[camera] = generation
+    camera, generation, value, skipped, _ = await latest.wait_after(
+        generations,
+        next_index=0,
+        preferred_key="workspace",
+        timeout=0.1,
+    )
+    assert (camera, generation, value, skipped) == (
+        "workspace",
+        2,
+        "workspace-2",
         0,
     )
 
