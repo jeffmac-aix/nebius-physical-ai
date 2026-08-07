@@ -9782,6 +9782,7 @@ def verify_live_cmd(
         "connectLeIsaac",
         "/api/leisaac/status",
         "/api/leisaac/select",
+        "/api/leisaac/bundles/reset",
     ):
         if marker not in ui_html:
             _fail(f"UI html missing wiring marker: {marker}")

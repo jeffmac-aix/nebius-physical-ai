@@ -1,3 +1,28 @@
+const defaultLeIsaacConfiguration = () => ({
+  schema: "npa.leisaac.configuration.v1",
+  robot: {
+    id: "so101_follower",
+    display_name: "Built-in SO-101 follower robot",
+    source: "built-in-runtime",
+  },
+  scene: {
+    id: "table_with_cube",
+    display_name: "Built-in table and lift-cube scene",
+    source: "built-in-runtime",
+  },
+  device: {
+    id: "browser_keyboard_so101",
+    display_name: "Browser keyboard SO-101 teleoperator (default test device)",
+    source: "built-in-runtime",
+  },
+  task: {
+    id: "LeIsaac-SO101-LiftCube-v0",
+    display_name: "SO101 Lift Cube",
+    source: "built-in-registry",
+  },
+  custom_bundle_count: 0,
+});
+
 describe("NPA agent LeIsaac capability tab", () => {
   beforeEach(() => {
     cy.intercept("POST", "/api/leisaac/ws-session*", {
@@ -13,6 +38,62 @@ describe("NPA agent LeIsaac capability tab", () => {
     cy.get("#leisaacConnect").should("be.disabled");
     cy.get("#leisaacRetry").should("be.visible");
     cy.get("#leisaacEpisodesTitle").should("be.visible");
+  });
+
+  it("shows and preserves four real defaults for a completely fresh client", () => {
+    const status = {
+      available: true,
+      episodes_available: true,
+      run_id: "mock-run",
+      task: "LeIsaac-SO101-LiftCube-v0",
+      robot: "so101_follower",
+      scene: "table_with_cube",
+      device: "browser_keyboard_so101",
+      configuration: defaultLeIsaacConfiguration(),
+      task_registry: {
+        default_task: "LeIsaac-SO101-LiftCube-v0",
+        tasks: [
+          { task: "LeIsaac-SO101-PickOrange-v0", display_name: "SO101 Pick Orange" },
+          { task: "LeIsaac-SO101-LiftCube-v0", display_name: "SO101 Lift Cube" },
+        ],
+      },
+      environment_id: "operator-0",
+      environment_index: 0,
+      seed: 42,
+      dataset_uri: "s3://bucket/datasets/leisaac",
+      cameras: ["workspace", "overview"],
+      stream_transport: "websocket-v1",
+      control_ws_url: "/api/leisaac/transport/control?run_id=mock-run",
+      video_ws_url: "/api/leisaac/transport/video?run_id=mock-run",
+      bundle_reset_url: "/api/leisaac/bundles/reset?run_id=mock-run",
+      recorder: { state: "idle", completed_episode_count: 0 },
+      gpu: "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+    };
+    cy.intercept("GET", "/api/leisaac/status*", { statusCode: 200, body: status }).as("defaultStatus");
+    cy.clearLocalStorage();
+    cy.window().then((win) => win.sessionStorage.clear());
+    cy.reload();
+    cy.wait("@defaultStatus");
+    cy.get("#tabLeIsaac", { timeout: 10000 }).click();
+    cy.get("#leisaacRobotSelection").should("have.value", "so101_follower");
+    cy.get("#leisaacSceneSelection").should("have.value", "table_with_cube");
+    cy.get("#leisaacDeviceSelection").should("have.value", "browser_keyboard_so101");
+    cy.get("#leisaacTaskSelection").should("have.value", "LeIsaac-SO101-LiftCube-v0");
+    cy.get("#leisaacInputDevice")
+      .should("have.value", "keyboard")
+      .find("option:selected")
+      .should("contain.text", "default test device");
+    cy.get("#leisaacConnect").should("not.be.disabled");
+    cy.get("#leisaacSendNeutralAction").should("not.be.disabled");
+    cy.get("#leisaacCanvas").should("exist");
+    cy.get("#leisaacSecondaryCanvas").should("exist");
+    cy.get("#panelLeIsaac").then(($panel) => {
+      cy.window().then((win) => win.__NPA_AGENT_TEST__.refreshLeIsaacCapability("mock-run"));
+      cy.wait("@defaultStatus");
+      cy.get("#panelLeIsaac").then(($refreshed) => {
+        expect($refreshed[0], "same dual-viewport panel survives polling").to.equal($panel[0]);
+      });
+    });
   });
 
   it("shows task/environment metadata and enforces recorder transitions", () => {
@@ -170,7 +251,7 @@ describe("NPA agent LeIsaac capability tab", () => {
       req.reply({
         available: true,
         run_id: "mock-retry",
-        task: "LeIsaac-SO101-PickOrange-v0",
+        task: "LeIsaac-SO101-LiftCube-v0",
         environment_id: "counter-a",
         environment_index: 0,
         seed: 42,
@@ -1386,10 +1467,12 @@ describe("NPA agent LeIsaac capability tab", () => {
         available: false,
         episodes_available: false,
         run_id: "mock-bundles",
-        task: "LeIsaac-SO101-PickOrange-v0",
+        task: "LeIsaac-SO101-LiftCube-v0",
         dataset_uri: "s3://bucket/datasets/leisaac",
         bundles_url: "/api/leisaac/bundles?run_id=mock-bundles",
         bundle_select_url: "/api/leisaac/bundles/select?run_id=mock-bundles",
+        bundle_reset_url: "/api/leisaac/bundles/reset?run_id=mock-bundles",
+        configuration: defaultLeIsaacConfiguration(),
       },
     }).as("bundleStatus");
     cy.intercept("GET", "/api/leisaac/bundles?run_id=mock-bundles", (req) => {
@@ -1426,6 +1509,18 @@ describe("NPA agent LeIsaac capability tab", () => {
       expect(req.body).to.deep.equal({ kind: req.body.kind, bundle_sha256: digests[req.body.kind] });
       req.reply({ statusCode: 202, body: { selected: req.body, restarting: true } });
     }).as("bundleSelect");
+    cy.intercept("POST", "/api/leisaac/bundles/reset?run_id=mock-bundles", (req) => {
+      expect(req.headers["x-npa-leisaac-control"]).to.equal("1");
+      req.reply({
+        statusCode: 202,
+        body: {
+          reset: true,
+          selected_bundles: {},
+          configuration: defaultLeIsaacConfiguration(),
+          restarting: true,
+        },
+      });
+    }).as("bundleReset");
 
     cy.window().then((win) =>
       win.__NPA_AGENT_TEST__.refreshLeIsaacCapability("mock-bundles"),
@@ -1499,7 +1594,11 @@ describe("NPA agent LeIsaac capability tab", () => {
       body: {
         available: false,
         episodes_available: false,
+        run_id: "mock-bundles",
+        task: "LeIsaac-SO101-LiftCube-v0",
         reason: "selected runtime is restarting",
+        configuration: defaultLeIsaacConfiguration(),
+        bundle_reset_url: "/api/leisaac/bundles/reset?run_id=mock-bundles",
       },
     }).as("bundleRestartStatus");
     cy.get("#panelLeIsaac").then(($mountedPanel) => {
@@ -1516,6 +1615,17 @@ describe("NPA agent LeIsaac capability tab", () => {
         .should("contain.text", "Selected device bundle")
         .and("contain.text", "restart accepted");
     });
+    cy.get("#leisaacResetDefaults").click();
+    cy.wait("@bundleReset");
+    cy.get("#leisaacBundleStatus").should("contain.text", "Built-in defaults selected");
+    cy.window().then((win) =>
+      win.__NPA_AGENT_TEST__.refreshLeIsaacCapability("mock-bundles"),
+    );
+    cy.wait("@bundleRestartStatus");
+    cy.get("#leisaacRobotSelection").should("have.value", "so101_follower");
+    cy.get("#leisaacSceneSelection").should("have.value", "table_with_cube");
+    cy.get("#leisaacDeviceSelection").should("have.value", "browser_keyboard_so101");
+    cy.get("#leisaacTaskSelection").should("have.value", "LeIsaac-SO101-LiftCube-v0");
   });
 
   it("falls back explicitly and self-heals after bounded preferred-transport retries", () => {

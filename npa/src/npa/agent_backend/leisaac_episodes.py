@@ -372,8 +372,15 @@ class EpisodeStore:
             raw.get("scene") or metadata.get("scene") or metadata.get("task") or ""
         )
         device = str(raw.get("device") or metadata.get("teleop_device") or "keyboard")
+        task = str(raw.get("task") or metadata.get("task") or "")
         bundle = str(raw.get("bundle") or metadata.get("bundle") or "stock")
-        return {"robot": robot, "scene": scene, "device": device, "bundle": bundle}
+        return {
+            "robot": robot,
+            "scene": scene,
+            "device": device,
+            "task": task,
+            "bundle": bundle,
+        }
 
     def _summary(self, commit: dict[str, Any], commit_key: str) -> dict[str, Any]:
         metadata = commit["metadata"]
@@ -392,6 +399,7 @@ class EpisodeStore:
             "robot": provenance["robot"],
             "scene": provenance["scene"],
             "device": provenance["device"],
+            "configuration_task": provenance["task"],
             "bundle": provenance["bundle"],
             "commit_uri": f"s3://{self.bucket}/{commit_key}",
         }

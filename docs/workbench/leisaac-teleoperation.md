@@ -16,6 +16,12 @@ at that commit that use this exact single-arm control and asset path:
 - `LeIsaac-SO101-PickOrange-v0`;
 - `LeIsaac-SO101-LiftCube-v0`.
 
+A fresh session defaults to the real `LeIsaac-SO101-LiftCube-v0` task with the
+runtime-fetched built-in SO-101 follower robot, built-in table/lift-cube scene,
+and upstream `SO101Keyboard` driven by the browser keyboard. The tab shows all
+four choices before any upload and labels the keyboard as the default test
+device. Built-ins are reported as runtime assets, never as uploaded S3 bundles.
+
 Inspect the machine-readable source of truth with
 `npa workbench leisaac list-tasks --output json`. A session runs one environment
 at a time. `--num-envs` is intentionally restricted to `1`; collect named
@@ -252,8 +258,8 @@ npa workbench leisaac launch \
   --transport agent-relay \
   --agent-project PROJECT_ALIAS \
   --agent-name AGENT_NAME \
-  --task LeIsaac-SO101-PickOrange-v0 \
-  --environment-id kitchen-a \
+  --task LeIsaac-SO101-LiftCube-v0 \
+  --environment-id table-a \
   --environment-index 0 \
   --seed 42 \
   --num-envs 1 \
@@ -312,6 +318,11 @@ mismatch. It refuses to restart while a recording is active. Otherwise it
 passes the verified robot and scene USD entrypoints to the pinned task config,
 passes the device descriptor as provenance for the validated direct-action
 channel, terminates only the supervised simulator child, and starts it again.
+**Reset to built-in defaults** clears all three uploaded overrides as one
+authenticated operation and restarts the same registered task on its task-aware
+built-ins. The scoped selection is persisted with run, dataset, task, and
+registry identity so a rollout restores valid overrides but never carries a
+stale selection into another dataset.
 The tab remains present with an explicit reconnect state until both distinct
 RTX viewports are nonblank. Runtime health and episode provenance expose the
 selected names and digests without exposing storage credentials. Custom robot

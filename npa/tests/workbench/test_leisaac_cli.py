@@ -16,7 +16,7 @@ from npa.cli.workbench.leisaac import (
     _wait_ready,
     app,
 )
-from npa.agent_backend.leisaac_registry import REGISTRY_FINGERPRINT
+from npa.agent_backend.leisaac_registry import DEFAULT_TASK, REGISTRY_FINGERPRINT
 
 
 IMAGE = "registry.example/npa-leisaac@sha256:" + "1" * 64
@@ -324,7 +324,7 @@ def _patch_launch(monkeypatch):
         "npa.cli.workbench.leisaac._relay_status",
         lambda *_args: {
             "state": "ready",
-            "task": "LeIsaac-SO101-PickOrange-v0",
+            "task": DEFAULT_TASK,
             "source_commit": "1651c321e9b0c1bb54233211fc7b3cd70d8373d5",
             "session_nonce": "nonce-filled-later",
             "gpu": "NVIDIA-RTX-PRO-6000-Blackwell-Server-Edition",
@@ -351,7 +351,7 @@ def _patch_launch(monkeypatch):
         "npa.cli.workbench.leisaac._relay_status",
         lambda *_args: {
             "state": "ready",
-            "task": "LeIsaac-SO101-PickOrange-v0",
+            "task": DEFAULT_TASK,
             "source_commit": "1651c321e9b0c1bb54233211fc7b3cd70d8373d5",
             "task_registry_fingerprint": REGISTRY_FINGERPRINT,
             "session_attestation": hashlib.sha256(

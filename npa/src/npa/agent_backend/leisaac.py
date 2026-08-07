@@ -24,8 +24,10 @@ from urllib.parse import urlparse
 try:  # Shipped agent modules use the top-level package name.
     from agent_backend.leisaac_registry import (  # type: ignore[import-not-found]
         DEFAULT_ENVIRONMENT_ID,
+        DEFAULT_TASK,
         REGISTRY_FINGERPRINT,
         registry_payload,
+        resolve_configuration,
         validate_environment_id,
         validate_environment_index,
         validate_seed,
@@ -34,8 +36,10 @@ try:  # Shipped agent modules use the top-level package name.
 except ImportError:  # Repository package imports use the npa namespace.
     from npa.agent_backend.leisaac_registry import (
         DEFAULT_ENVIRONMENT_ID,
+        DEFAULT_TASK,
         REGISTRY_FINGERPRINT,
         registry_payload,
+        resolve_configuration,
         validate_environment_id,
         validate_environment_index,
         validate_seed,
@@ -56,7 +60,7 @@ LEISAAC_TURN_RELAY_PORT = 47999
 LEISAAC_TURN_RELAY_MAX_PORT = 48015
 LEISAAC_TRANSPORT_LOAD_BALANCER = "public-load-balancer"
 LEISAAC_TRANSPORT_AGENT_RELAY = "agent-relay"
-LEISAAC_TASK = "LeIsaac-SO101-PickOrange-v0"
+LEISAAC_TASK = DEFAULT_TASK
 LEISAAC_TELEOP_DEVICE = "keyboard"
 LEISAAC_CLIENT_VERSION = "5.6.0"
 LEISAAC_CLIENT_JS_SHA256 = (
@@ -69,6 +73,7 @@ LEISAAC_INPUT_PATH = "/api/leisaac/input"
 LEISAAC_RECORDER_PATH = "/api/leisaac/recorder"
 LEISAAC_VIEW_PATH = "/api/leisaac/view"
 LEISAAC_BUNDLES_PATH = "/api/leisaac/bundles"
+LEISAAC_BUNDLE_RESET_PATH = "/api/leisaac/bundles/reset"
 LEISAAC_CONTROL_WS_PATH = "/api/leisaac/transport/control"
 LEISAAC_CONTROL_DATACHANNEL_PATH = "/api/leisaac/transport/control-webrtc"
 LEISAAC_VIDEO_WS_PATH = "/api/leisaac/transport/video"
@@ -371,6 +376,10 @@ def normalize_manifest(
     if not image or "@sha256:" not in image:
         return None, "LeIsaac session image is not digest pinned"
 
+    configuration = resolve_configuration(task)
+    raw_configuration = data.get("configuration")
+    if isinstance(raw_configuration, dict) and raw_configuration != configuration:
+        return None, "LeIsaac session built-in configuration is stale"
     return {
         "schema": schema,
         "run_id": run_id,
@@ -397,6 +406,7 @@ def normalize_manifest(
         "seed": seed,
         "num_envs": 1,
         "dataset_uri": dataset_uri,
+        "configuration": configuration,
         "expires_at": (
             expires_at.isoformat().replace("+00:00", "Z") if expires_at else ""
         ),
@@ -494,6 +504,10 @@ def validate_health(manifest: dict, payload: dict | None) -> tuple[dict | None, 
                 "name": str(item["name"]),
                 "entrypoint": str(item["entrypoint"]),
             }
+    configuration = resolve_configuration(str(manifest["task"]), selected_bundles)
+    raw_configuration = data.get("configuration")
+    if isinstance(raw_configuration, dict) and raw_configuration != configuration:
+        return None, "LeIsaac service returned stale configuration provenance"
     safe_recorder = {
         key: recorder.get(key)
         for key in (
@@ -546,6 +560,7 @@ def validate_health(manifest: dict, payload: dict | None) -> tuple[dict | None, 
         "secondary_frame_sequence": _integer(data.get("secondary_frame_sequence")) or 0,
         "view_orbit": bool(data.get("view_orbit")) and "overview" in cameras,
         "selected_bundles": selected_bundles,
+        "configuration": configuration,
         "transport_metrics": (
             {
                 str(key): int(value)
@@ -577,9 +592,20 @@ def status_payload(
             "reason": reason or "No usable LeIsaac session is selected.",
         }
     run_id = str(manifest["run_id"])
+    configuration = (
+        health.get("configuration")
+        if isinstance(health, dict) and isinstance(health.get("configuration"), dict)
+        else manifest.get("configuration")
+    )
+    if not isinstance(configuration, dict):
+        configuration = resolve_configuration(str(manifest["task"]))
     episode_surface = {
         "run_id": run_id,
         "task": manifest["task"],
+        "robot": str(configuration.get("robot", {}).get("id") or ""),
+        "scene": str(configuration.get("scene", {}).get("id") or ""),
+        "device": str(configuration.get("device", {}).get("id") or ""),
+        "configuration": configuration,
         "task_registry": registry_payload(),
         "environment_id": manifest.get("environment_id", DEFAULT_ENVIRONMENT_ID),
         "environment_index": manifest.get("environment_index", 0),
@@ -598,6 +624,7 @@ def status_payload(
         "episode_versions_url": f"/api/leisaac/episodes/versions?run_id={run_id}",
         "bundles_url": f"{LEISAAC_BUNDLES_PATH}?run_id={run_id}",
         "bundle_select_url": f"{LEISAAC_BUNDLES_PATH}/select?run_id={run_id}",
+        "bundle_reset_url": f"{LEISAAC_BUNDLE_RESET_PATH}?run_id={run_id}",
     }
     if not health:
         return {

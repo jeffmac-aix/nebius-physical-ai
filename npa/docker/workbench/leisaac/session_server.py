@@ -62,9 +62,11 @@ def _log_exception(level: int, event: str, exc: BaseException) -> None:
 
 try:
     from leisaac_registry import (
+        DEFAULT_TASK,
         REGISTRY_FINGERPRINT,
         RUNTIME_ASSETS,
         registry_payload,
+        resolve_configuration,
         validate_environment_id,
         validate_environment_index,
         validate_num_envs,
@@ -73,9 +75,11 @@ try:
     )
 except ImportError:  # Repository unit tests import the script directly.
     from npa.agent_backend.leisaac_registry import (
+        DEFAULT_TASK,
         REGISTRY_FINGERPRINT,
         RUNTIME_ASSETS,
         registry_payload,
+        resolve_configuration,
         validate_environment_id,
         validate_environment_index,
         validate_num_envs,
@@ -140,7 +144,7 @@ except ImportError:  # Repository unit tests import the script directly.
     )
 
 SCHEMA = "npa.leisaac.health.v2"
-TASK = os.environ.get("NPA_LEISAAC_TASK", "LeIsaac-SO101-PickOrange-v0")
+TASK = os.environ.get("NPA_LEISAAC_TASK", DEFAULT_TASK)
 ENVIRONMENT_ID = os.environ.get("NPA_LEISAAC_ENVIRONMENT_ID", "operator-0")
 ENVIRONMENT_INDEX = int(os.environ.get("NPA_LEISAAC_ENVIRONMENT_INDEX", "0"))
 TELEOP_DEVICE = "keyboard"
@@ -173,7 +177,7 @@ CLIENT_SOURCE_JS_SHA256 = (
 )
 CLIENT_JS_SHA256 = CLIENT_SOURCE_JS_SHA256
 UPSTREAM_OBSERVABILITY_PATCH_SHA256 = (
-    "f9533fa721e5907b11be84c624fc43492191866336fe777943c860d4e72033e7"
+    "cc73e19a991ea88ff086023d67e32e260556536d7502ace3db15fc6f47959bf2"
 )
 
 CACHE_ROOT = Path(os.environ.get("NPA_LEISAAC_CACHE_DIR", "/opt/leisaac-cache"))
@@ -534,7 +538,6 @@ def apply_bundle_selection(selection: Any) -> dict[str, dict[str, Any]]:
 
     if (
         not isinstance(selection, dict)
-        or not selection
         or len(selection) > 3
         or any(kind not in {"robot", "scene", "device"} for kind in selection)
         or any(
@@ -552,29 +555,30 @@ def apply_bundle_selection(selection: Any) -> dict[str, dict[str, Any]]:
             "finish or discard the active recording before applying bundles",
             status_code=409,
         )
-    output_uri = os.environ.get("NPA_LEISAAC_OUTPUT_PATH", "")
-    parsed = urlparse(output_uri)
-    if parsed.scheme != "s3" or not parsed.netloc:
-        raise BundleError("bundle storage is unavailable", status_code=503)
-    try:
-        import boto3
+    materialized: dict[str, dict[str, Any]] = {}
+    if selection:
+        output_uri = os.environ.get("NPA_LEISAAC_OUTPUT_PATH", "")
+        parsed = urlparse(output_uri)
+        if parsed.scheme != "s3" or not parsed.netloc:
+            raise BundleError("bundle storage is unavailable", status_code=503)
+        try:
+            import boto3
 
-        client = boto3.client(
-            "s3",
-            endpoint_url=resolve_s3_endpoint(),
-            region_name=os.environ.get("AWS_REGION") or "eu-north1",
-        )
-        store = BundleStore(client, output_uri, allowed_buckets=[parsed.netloc])
-        materialized: dict[str, dict[str, Any]] = {}
-        for kind, digest in sorted(selection.items()):
-            bundle = store.materialize(digest, CUSTOM_BUNDLE_ROOT / digest)
-            if bundle.get("kind") != kind:
-                raise BundleError("bundle selection kind does not match")
-            materialized[kind] = bundle
-    except BundleError:
-        raise
-    except Exception as exc:
-        raise BundleError("bundle storage is unavailable", status_code=503) from exc
+            client = boto3.client(
+                "s3",
+                endpoint_url=resolve_s3_endpoint(),
+                region_name=os.environ.get("AWS_REGION") or "eu-north1",
+            )
+            store = BundleStore(client, output_uri, allowed_buckets=[parsed.netloc])
+            for kind, digest in sorted(selection.items()):
+                bundle = store.materialize(digest, CUSTOM_BUNDLE_ROOT / digest)
+                if bundle.get("kind") != kind:
+                    raise BundleError("bundle selection kind does not match")
+                materialized[kind] = bundle
+        except BundleError:
+            raise
+        except Exception as exc:
+            raise BundleError("bundle storage is unavailable", status_code=503) from exc
     public_selection = {
         kind: {
             "bundle_sha256": item["bundle_sha256"],
@@ -588,7 +592,11 @@ def apply_bundle_selection(selection: Any) -> dict[str, dict[str, Any]]:
         BUNDLE_SELECTION.update(materialized)
     update_state(
         state="restarting",
-        detail="applying checksum-verified custom bundles",
+        detail=(
+            "applying checksum-verified custom bundles"
+            if public_selection
+            else "restoring built-in defaults"
+        ),
         selected_bundles=public_selection,
         webrtc_ready=False,
         stream_ready=False,
@@ -600,7 +608,20 @@ def apply_bundle_selection(selection: Any) -> dict[str, dict[str, Any]]:
 def _selected_bundle_environment() -> dict[str, str]:
     with BUNDLE_APPLY_LOCK:
         selection = {kind: dict(value) for kind, value in BUNDLE_SELECTION.items()}
-    environment: dict[str, str] = {}
+    public_selection = {
+        kind: {
+            "bundle_sha256": item["bundle_sha256"],
+            "name": item["name"],
+            "entrypoint": item["entrypoint"],
+        }
+        for kind, item in selection.items()
+    }
+    configuration = resolve_configuration(TASK, public_selection)
+    environment: dict[str, str] = {
+        "NPA_LEISAAC_ROBOT": str(configuration["robot"]["id"]),
+        "NPA_LEISAAC_SCENE": str(configuration["scene"]["id"]),
+        "NPA_LEISAAC_DEVICE": str(configuration["device"]["id"]),
+    }
     for kind in ("robot", "scene"):
         item = selection.get(kind)
         if item:
@@ -612,10 +633,11 @@ def _selected_bundle_environment() -> dict[str, str]:
     if device:
         environment["NPA_LEISAAC_DEVICE"] = str(device["name"])
         environment["NPA_LEISAAC_DEVICE_DESCRIPTOR"] = str(device["entrypoint_path"])
-    environment["NPA_LEISAAC_BUNDLE"] = json.dumps(
-        {kind: item["bundle_sha256"] for kind, item in sorted(selection.items())},
-        sort_keys=True,
-        separators=(",", ":"),
+    digests = {kind: item["bundle_sha256"] for kind, item in sorted(selection.items())}
+    environment["NPA_LEISAAC_BUNDLE"] = (
+        json.dumps(digests, sort_keys=True, separators=(",", ":"))
+        if digests
+        else "built-in"
     )
     return environment
 
@@ -854,12 +876,21 @@ def health_document() -> dict[str, Any]:
         if len(nonce) == 64
         else ""
     )
+    selected_bundles = state.get("selected_bundles")
+    if not isinstance(selected_bundles, dict):
+        selected_bundles = {}
+    configuration = resolve_configuration(TASK, selected_bundles)
     return {
         "schema": SCHEMA,
         "run_id": os.environ.get("NPA_LEISAAC_RUN_ID", ""),
         "task": TASK,
         "task_registry_fingerprint": REGISTRY_FINGERPRINT,
         "task_registry": registry_payload(),
+        "configuration": configuration,
+        "robot": str(configuration["robot"]["id"]),
+        "scene": str(configuration["scene"]["id"]),
+        "device": str(configuration["device"]["id"]),
+        "selected_bundles": selected_bundles,
         "teleop_device": TELEOP_DEVICE,
         "seed": TELEOP_SEED,
         "environment_id": ENVIRONMENT_ID,

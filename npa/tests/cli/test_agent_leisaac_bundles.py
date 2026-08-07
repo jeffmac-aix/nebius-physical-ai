@@ -304,9 +304,28 @@ def test_bundle_routes_require_same_origin_upload_and_persist_exact_selection() 
         "entrypoint": "robot.usda",
         "name": "custom-robot",
     }
+    assert saved[-1]["leisaac"]["bundle_selection_scope"] == {
+        "run_id": "bundle-route-run",
+        "dataset_uri": "s3://bucket/datasets/leisaac",
+        "task": "LeIsaac-SO101-PickOrange-v0",
+        "task_registry_fingerprint": REGISTRY_FINGERPRINT,
+    }
     assert posts[-1][0] == "http://8.8.8.8:8080/bundles/apply"
     assert posts[-1][1]["json"] == {"selection": {"robot": digest}}
     assert posts[-1][1]["headers"] == {"X-NPA-LeIsaac-Nonce": nonce}
+    reset = client.post(
+        "/leisaac/bundles/reset?run_id=bundle-route-run",
+        headers=headers,
+        json={},
+    )
+    assert reset.status_code == 202
+    assert reset.json()["selected_bundles"] == {}
+    assert reset.json()["configuration"]["scene"]["id"] == "kitchen_with_orange"
+    assert posts[-1][1]["json"] == {"selection": {}}
+    assert saved[-1]["leisaac"]["bundle_selection"] == {}
+    assert saved[-1]["leisaac"]["bundle_selection_scope"]["dataset_uri"] == (
+        "s3://bucket/datasets/leisaac"
+    )
     cross_site = client.get(
         url,
         headers={
@@ -404,6 +423,9 @@ def test_bundle_selection_prunes_state_from_a_previous_dataset_prefix() -> None:
     assert selected.status_code == 202
     assert posts[-1]["json"] == {"selection": {"robot": digest}}
     assert set(saved[-1]["leisaac"]["bundle_selection"]) == {"robot"}
+    assert saved[-1]["leisaac"]["bundle_selection_scope"]["dataset_uri"] == (
+        "s3://bucket/current/leisaac"
+    )
 
 
 def test_cumulative_bundle_selection_uses_atomic_backend_state_mutation() -> None:
@@ -441,6 +463,7 @@ def test_cumulative_bundle_selection_uses_atomic_backend_state_mutation() -> Non
     state: dict = {"leisaac": {}}
     s3 = FakeS3()
     applied: list[dict] = []
+    runtime_selected: dict[str, dict[str, str]] = {}
 
     def mutate_state(mutation):
         result = mutation(state)
@@ -460,10 +483,25 @@ def test_cumulative_bundle_selection_uses_atomic_backend_state_mutation() -> Non
                 "source_commit": raw_manifest["source_commit"],
                 "session_nonce": raw_manifest["session_nonce"],
                 "signal_port": 49100,
+                "selected_bundles": json.loads(json.dumps(runtime_selected)),
             }
 
     def http_post(_url, **kwargs):
         applied.append(kwargs["json"])
+        runtime_selected.clear()
+        for kind, digest in kwargs["json"]["selection"].items():
+            manifest = s3.objects[
+                (
+                    "bucket",
+                    f"current/leisaac/bundles/objects/{digest}/bundle.json",
+                )
+            ][0]
+            bundle = json.loads(manifest)
+            runtime_selected[kind] = {
+                "bundle_sha256": digest,
+                "name": bundle["name"],
+                "entrypoint": bundle["entrypoint"],
+            }
         return SimpleNamespace(status_code=202, json=lambda: {"accepted": True})
 
     app = FastAPI()
@@ -514,8 +552,36 @@ def test_cumulative_bundle_selection_uses_atomic_backend_state_mutation() -> Non
 
     selection = state["leisaac"]["bundle_selection"]
     assert set(selection) == {"robot", "scene", "device"}
+    assert state["leisaac"]["bundle_selection_scope"] == {
+        "run_id": "bundle-atomic-run",
+        "dataset_uri": "s3://bucket/current/leisaac",
+        "task": "LeIsaac-SO101-PickOrange-v0",
+        "task_registry_fingerprint": REGISTRY_FINGERPRINT,
+    }
     assert [set(item["selection"]) for item in applied] == [
         {"scene"},
         {"scene", "device"},
         {"scene", "device", "robot"},
     ]
+
+    # A fresh runtime after a Kubernetes rollout starts on built-ins. The
+    # agent's scoped, atomically saved selection is reconciled exactly once.
+    runtime_selected.clear()
+    before_restore = len(applied)
+    restoring = client.get(
+        "/leisaac/status?run_id=bundle-atomic-run",
+        headers={"x-forwarded-proto": "https"},
+    )
+    assert restoring.status_code == 200
+    assert restoring.json()["available"] is False
+    assert "Restoring persisted" in restoring.json()["reason"]
+    assert len(applied) == before_restore + 1
+    assert set(applied[-1]["selection"]) == {"robot", "scene", "device"}
+    restored = client.get(
+        "/leisaac/status?run_id=bundle-atomic-run",
+        headers={"x-forwarded-proto": "https"},
+    )
+    assert restored.json()["available"] is True
+    assert restored.json()["bundle_selection"] == selection
+    assert restored.json()["configuration"]["custom_bundle_count"] == 3
+    assert len(applied) == before_restore + 1

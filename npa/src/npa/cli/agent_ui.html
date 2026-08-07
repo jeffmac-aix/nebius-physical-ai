@@ -2276,6 +2276,7 @@
       }
       let leisaacCapability = null;
       let leisaacCapabilityGeneration = 0;
+      const LEISAAC_BUNDLE_RESET_PATH = "/api/leisaac/bundles/reset";
       let leisaacStreamer = null;
       let leisaacClientLoadPromise = null;
       let leisaacInputCount = 0;
@@ -2349,6 +2350,10 @@
       let leisaacLastGamepadAction = "";
       let leisaacBundles = [];
       const LEISAAC_KEYS = new Set(["W", "S", "A", "D", "Q", "E", "J", "L", "I", "K", "U", "O"]);
+      function leisaacConfiguration(status) {
+        const value = status && typeof status.configuration === "object" ? status.configuration : {};
+        return value || {};
+      }
       function leisaacPanelMarkup(status) {
         const liveAvailable = Boolean(status && status.available);
         const episodesAvailable = Boolean(status && status.episodes_available);
@@ -2377,6 +2382,21 @@
                 <button id="leisaacDisconnect" class="btn" type="button" disabled>Disconnect</button>
               </div>
             </div>
+            <section class="leisaac-episodes" aria-label="Active LeIsaac configuration">
+              <div class="leisaac-head">
+                <div>
+                  <strong>Ready-to-test configuration</strong>
+                  <p id="leisaacConfigurationStatus" class="hint">Built-in runtime choices are real operator-fetched LeIsaac assets, not uploaded S3 bundles.</p>
+                </div>
+                <button id="leisaacResetDefaults" class="btn" type="button">Reset to built-in defaults</button>
+              </div>
+              <div class="leisaac-filters">
+                <label>Robot<select id="leisaacRobotSelection" aria-label="Selected LeIsaac robot" disabled></select></label>
+                <label>Scene<select id="leisaacSceneSelection" aria-label="Selected LeIsaac scene" disabled></select></label>
+                <label>Input device<select id="leisaacDeviceSelection" aria-label="Selected LeIsaac input device" disabled></select></label>
+                <label>Task<select id="leisaacTaskSelection" aria-label="Selected LeIsaac task" disabled></select></label>
+              </div>
+            </section>
             <section class="leisaac-episodes" aria-label="Custom LeIsaac assets and devices">
               <div class="leisaac-head">
                 <div>
@@ -2453,7 +2473,7 @@
               <div class="leisaac-actions">
                 <label class="hint">Input device
                   <select id="leisaacInputDevice">
-                    <option value="keyboard">Keyboard</option>
+                    <option value="keyboard">Browser keyboard SO-101 (default test device)</option>
                     <option value="browser-gamepad">Browser gamepad</option>
                     <option value="custom-so101">Custom SO-101 action source</option>
                   </select>
@@ -3038,6 +3058,59 @@
         }
         if (Array.from(select.options).some((option) => option.value === prior)) select.value = prior;
       }
+      function renderLeIsaacConfiguration(status) {
+        const configuration = leisaacConfiguration(status);
+        const setSelection = (id, item) => {
+          const select = document.getElementById(id);
+          if (!select) return;
+          const value = item && typeof item === "object" ? item : {};
+          const identifier = String(value.id || "unavailable");
+          const source = String(value.source || "unknown");
+          const label = String(value.display_name || identifier) + " · " + source;
+          select.replaceChildren();
+          const option = document.createElement("option");
+          option.value = identifier;
+          option.textContent = label;
+          option.selected = true;
+          select.appendChild(option);
+          select.value = identifier;
+          select.setAttribute("data-source", source);
+        };
+        setSelection("leisaacRobotSelection", configuration.robot);
+        setSelection("leisaacSceneSelection", configuration.scene);
+        setSelection("leisaacDeviceSelection", configuration.device);
+        const taskSelect = document.getElementById("leisaacTaskSelection");
+        if (taskSelect) {
+          const selectedTask = String(((configuration.task || {}).id) || status.task || "");
+          const tasks = Array.isArray(((status.task_registry || {}).tasks))
+            ? status.task_registry.tasks
+            : [];
+          taskSelect.replaceChildren();
+          for (const task of tasks.length ? tasks : [{ task: selectedTask, display_name: selectedTask }]) {
+            const option = document.createElement("option");
+            option.value = String(task.task || "");
+            option.textContent = String(task.display_name || task.task || "");
+            option.selected = option.value === selectedTask;
+            taskSelect.appendChild(option);
+          }
+          taskSelect.value = selectedTask;
+        }
+        const inputDevice = document.getElementById("leisaacInputDevice");
+        const deviceId = String(((configuration.device || {}).id) || "");
+        if (inputDevice && inputDevice.getAttribute("data-configuration-id") !== deviceId) {
+          inputDevice.value = String(((configuration.device || {}).source) || "") === "uploaded-bundle"
+            ? "custom-so101"
+            : "keyboard";
+          inputDevice.setAttribute("data-configuration-id", deviceId);
+        }
+        const statusLabel = document.getElementById("leisaacConfigurationStatus");
+        if (statusLabel) {
+          const count = Number(configuration.custom_bundle_count || 0);
+          statusLabel.textContent = count
+            ? count + " uploaded checksum-verified override" + (count === 1 ? " is" : "s are") + " active; all other choices remain built-in."
+            : "All four real built-in defaults are active; no uploaded S3 bundle is being represented as a built-in.";
+        }
+      }
       async function loadLeIsaacBundles() {
         const status = leisaacCapability;
         if (!status || !status.bundles_url) return [];
@@ -3115,6 +3188,30 @@
         }
         if (label) label.textContent = "Selected " + kind + " bundle " + String(option.value).slice(0, 16) + "; checksum verified and simulator restart accepted.";
         setLeIsaacStreamState("Applying selected custom bundles; live controls reconnect when RTX rendering is ready", "loading");
+        leisaacBundleRestartPending = true;
+        leisaacManualDisconnect = false;
+        leisaacReconnectAttempts = 0;
+        closeLeIsaacSockets();
+        scheduleLeIsaacReconnect();
+        return result;
+      }
+      async function resetLeIsaacDefaults() {
+        const status = leisaacCapability;
+        const resetUrl = status && status.bundle_reset_url
+          ? String(status.bundle_reset_url)
+          : status && status.run_id
+            ? LEISAAC_BUNDLE_RESET_PATH + "?run_id=" + encodeURIComponent(String(status.run_id))
+            : "";
+        if (!resetUrl) throw new Error("Default reset is unavailable.");
+        const label = document.getElementById("leisaacBundleStatus");
+        if (label) label.textContent = "Restoring the built-in SO-101 robot, task scene, and browser keyboard device.";
+        const result = await apiJson(resetUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-NPA-LeIsaac-Control": "1" },
+          body: JSON.stringify({}),
+        });
+        if (label) label.textContent = "Built-in defaults selected; simulator restart accepted.";
+        setLeIsaacStreamState("Restoring built-in defaults; live controls reconnect when RTX rendering is ready", "loading");
         leisaacBundleRestartPending = true;
         leisaacManualDisconnect = false;
         leisaacReconnectAttempts = 0;
@@ -4657,9 +4754,11 @@
           const bundleUpload = panel.querySelector("#leisaacBundleUpload");
           const bundleSelect = panel.querySelector("#leisaacBundleSelect");
           const bundleRefresh = panel.querySelector("#leisaacBundleRefresh");
+          const resetDefaults = panel.querySelector("#leisaacResetDefaults");
           if (bundleUpload) bundleUpload.addEventListener("click", () => uploadLeIsaacBundle().catch((err) => showToast(String(err), "error")));
           if (bundleSelect) bundleSelect.addEventListener("click", () => selectLeIsaacBundle().catch((err) => showToast(String(err), "error")));
           if (bundleRefresh) bundleRefresh.addEventListener("click", () => loadLeIsaacBundles().catch((err) => showToast(String(err), "error")));
+          if (resetDefaults) resetDefaults.addEventListener("click", () => resetLeIsaacDefaults().catch((err) => showToast(String(err), "error")));
           const recorderButtons = {
             leisaacRecordStart: "start",
             leisaacRecordSuccess: "mark-success",
@@ -4753,6 +4852,7 @@
         }
         const availability = panel.querySelector("#leisaacAvailability");
         const connectBtn = panel.querySelector("#leisaacConnect");
+        renderLeIsaacConfiguration(status);
         if (availability) availability.textContent = status.available
           ? "Live simulation is ready."
           : String(status.reason || "Live simulation is unavailable; Episodes remains usable when an S3 dataset is selected.");

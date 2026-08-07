@@ -13,8 +13,10 @@ from PIL import Image
 
 from npa.workbench.leisaac import dataset as leisaac_dataset
 from npa.agent_backend.leisaac_registry import (
+    DEFAULT_TASK,
     REGISTRY_FINGERPRINT,
     registry_payload,
+    resolve_configuration,
     validate_num_envs,
     validate_task,
 )
@@ -58,11 +60,46 @@ def test_registry_is_the_honest_two_task_sequential_contract() -> None:
     }
     assert payload["environment_model"] == "named-sequential"
     assert payload["max_parallel_environments"] == 1
+    assert payload["default_task"] == "LeIsaac-SO101-LiftCube-v0"
+    assert DEFAULT_TASK == payload["default_task"]
     assert validate_task("LeIsaac-SO101-LiftCube-v0").endswith("LiftCube-v0")
     with pytest.raises(ValueError, match="unsupported"):
         validate_task("made-up")
     with pytest.raises(ValueError, match="exactly one"):
         validate_num_envs(2)
+
+
+def test_registry_resolves_real_defaults_and_cumulative_custom_overrides() -> None:
+    defaults = resolve_configuration()
+    assert defaults["schema"] == "npa.leisaac.configuration.v1"
+    assert defaults["robot"]["id"] == "so101_follower"
+    assert defaults["scene"]["id"] == "table_with_cube"
+    assert defaults["device"]["id"] == "browser_keyboard_so101"
+    assert defaults["task"]["id"] == "LeIsaac-SO101-LiftCube-v0"
+    assert defaults["custom_bundle_count"] == 0
+    assert {
+        defaults[kind]["source"] for kind in ("robot", "scene", "device")
+    } == {"built-in-runtime"}
+
+    custom = resolve_configuration(
+        selected_bundles={
+            "robot": {
+                "bundle_sha256": "a" * 64,
+                "name": "custom-so101",
+                "entrypoint": "robot.usda",
+            },
+            "device": {
+                "bundle_sha256": "b" * 64,
+                "name": "custom-device",
+                "entrypoint": "device.json",
+            },
+        }
+    )
+    assert custom["robot"]["source"] == "uploaded-bundle"
+    assert custom["device"]["source"] == "uploaded-bundle"
+    assert custom["scene"] == defaults["scene"]
+    assert custom["task"] == defaults["task"]
+    assert custom["custom_bundle_count"] == 2
 
 
 def test_extract_step_uses_real_environment_return_values() -> None:
@@ -98,8 +135,8 @@ def test_recorder_requires_outcome_and_atomically_finalizes(tmp_path: Path) -> N
     recorder = EpisodeRecorder(
         root=tmp_path,
         output_uri="s3://bucket/demos",
-        task="LeIsaac-SO101-PickOrange-v0",
-        environment_id="counter-a",
+        task=DEFAULT_TASK,
+        environment_id="table-a",
         environment_index=2,
         seed=7,
         run_id="run-1",
@@ -124,7 +161,7 @@ def test_recorder_requires_outcome_and_atomically_finalizes(tmp_path: Path) -> N
     assert len(published) == 1
     rows = [json.loads(line) for line in published[0][2].splitlines()]
     assert [row["sim_step"] for row in rows] == [1, 2]
-    assert all(row["task"] == "LeIsaac-SO101-PickOrange-v0" for row in rows)
+    assert all(row["task"] == DEFAULT_TASK for row in rows)
     assert rows[-1]["success"] is True
     assert rows[-1]["reset_reason"] == "success"
     assert rows[0]["timestamp"] == 0.0
@@ -146,14 +183,20 @@ def test_recorder_commits_only_complete_synchronized_camera_groups(
     recorder = EpisodeRecorder(
         root=tmp_path,
         output_uri="s3://bucket/demos",
-        task="LeIsaac-SO101-PickOrange-v0",
-        environment_id="counter-a",
+        task=DEFAULT_TASK,
+        environment_id="table-a",
         environment_index=0,
         seed=7,
         run_id="run-dual",
         source_commit="1" * 40,
         camera_ids=("workspace", "overview"),
-        provenance={"robot": "custom-so101", "device": "spacemouse"},
+        provenance={
+            "robot": "so101_follower",
+            "scene": "table_with_cube",
+            "device": "browser_keyboard_so101",
+            "task": DEFAULT_TASK,
+            "bundle": "built-in",
+        },
         publisher=publish,
     )
     recorder.start()
@@ -173,7 +216,12 @@ def test_recorder_commits_only_complete_synchronized_camera_groups(
     assert len(list((episode / "frames-overview").glob("frame-*.jpg"))) == 2
     metadata = json.loads((episode / "episode.json").read_text())
     assert metadata["cameras"] == ["workspace", "overview"]
-    assert metadata["provenance"]["robot"] == "custom-so101"
+    assert metadata["task"] == DEFAULT_TASK
+    assert metadata["provenance"]["robot"] == "so101_follower"
+    assert metadata["provenance"]["scene"] == "table_with_cube"
+    assert metadata["provenance"]["device"] == "browser_keyboard_so101"
+    assert metadata["provenance"]["task"] == DEFAULT_TASK
+    assert metadata["provenance"]["bundle"] == "built-in"
     rows = [
         json.loads(line)
         for line in (episode / "records.jsonl").read_text().splitlines()

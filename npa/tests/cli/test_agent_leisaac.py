@@ -388,6 +388,12 @@ def test_v2_manifest_and_health_bind_task_environment_dataset_and_recorder() -> 
     assert payload["dataset_uri"] == "s3://bucket/datasets/leisaac"
     assert payload["recorder"]["frame_count"] == 12
     assert payload["selected_bundles"]["robot"]["name"] == "custom-so101"
+    assert payload["robot"] == "custom-so101"
+    assert payload["scene"] == "table_with_cube"
+    assert payload["device"] == "browser_keyboard_so101"
+    assert payload["task"] == "LeIsaac-SO101-LiftCube-v0"
+    assert payload["configuration"]["robot"]["source"] == "uploaded-bundle"
+    assert payload["configuration"]["scene"]["source"] == "built-in-runtime"
     assert "session_nonce" not in repr(payload)
 
     stale = dict(_manifest_v2())

@@ -38,6 +38,7 @@ try:  # agent VM: /opt/npa-agent is on sys.path
     from agent_backend.leisaac import (
         LEISAAC_CLIENT_MODULE_PATH,
         LEISAAC_CLIENT_JS_SHA256,
+        LEISAAC_BUNDLE_RESET_PATH,
         LEISAAC_BUNDLES_PATH,
         LEISAAC_CONTROL_DATACHANNEL_PATH,
         LEISAAC_CONTROL_WS_PATH,
@@ -80,6 +81,7 @@ except ImportError:  # repository tests
     from npa.agent_backend.leisaac import (
         LEISAAC_CLIENT_MODULE_PATH,
         LEISAAC_CLIENT_JS_SHA256,
+        LEISAAC_BUNDLE_RESET_PATH,
         LEISAAC_BUNDLES_PATH,
         LEISAAC_CONTROL_DATACHANNEL_PATH,
         LEISAAC_CONTROL_WS_PATH,
@@ -379,6 +381,8 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
     ws_session_secret = secrets.token_bytes(32)
     consumed_ws_nonces: dict[str, int] = {}
     bundle_selection_lock = asyncio.Lock()
+    bundle_restore_pending: dict[str, dict[str, str]] = {}
+    bundle_restore_lock = threading.Lock()
 
     def mutate_state(mutation: Callable[[dict], Any]) -> Any:
         """Apply one state mutation atomically when the backend supports it."""
@@ -470,6 +474,54 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
             str(manifest.get("dataset_uri") or ""),
             allowed_buckets=buckets,
         )
+
+    def selection_scope(manifest: dict[str, Any]) -> dict[str, str]:
+        return {
+            "run_id": str(manifest.get("run_id") or ""),
+            "dataset_uri": str(manifest.get("dataset_uri") or "").rstrip("/"),
+            "task": str(manifest.get("task") or ""),
+            "task_registry_fingerprint": str(
+                manifest.get("task_registry_fingerprint") or ""
+            ),
+        }
+
+    def scoped_selection(
+        state: dict[str, Any] | None, manifest: dict[str, Any] | None
+    ) -> dict[str, dict[str, str]]:
+        if not isinstance(state, dict) or not isinstance(manifest, dict):
+            return {}
+        leisaac = state.get("leisaac")
+        if (
+            not isinstance(leisaac, dict)
+            or leisaac.get("bundle_selection_scope") != selection_scope(manifest)
+        ):
+            return {}
+        raw = leisaac.get("bundle_selection")
+        if not isinstance(raw, dict) or len(raw) > 3:
+            return {}
+        result: dict[str, dict[str, str]] = {}
+        for kind, item in raw.items():
+            if kind not in {"robot", "scene", "device"} or not isinstance(item, dict):
+                return {}
+            normalized = {
+                "bundle_sha256": str(item.get("bundle_sha256") or ""),
+                "name": str(item.get("name") or ""),
+                "entrypoint": str(item.get("entrypoint") or ""),
+            }
+            if (
+                not re.fullmatch(r"[a-f0-9]{64}", normalized["bundle_sha256"])
+                or not normalized["name"]
+                or not normalized["entrypoint"]
+            ):
+                return {}
+            result[str(kind)] = normalized
+        return result
+
+    def _selection_digests(selection: dict[str, dict[str, str]]) -> dict[str, str]:
+        return {
+            kind: str(item["bundle_sha256"])
+            for kind, item in sorted(selection.items())
+        }
 
     def bundle_error(exc: BundleError) -> Any:
         return deps.response(
@@ -579,6 +631,8 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
 
     @app.get("/leisaac/status")
     def leisaac_status(request: Request, run_id: str = "") -> Any:
+        manifest: dict[str, Any] | None = None
+        health: dict[str, Any] | None = None
         if str(request.headers.get("x-forwarded-proto") or "").lower() != "https":
             payload = status_payload(
                 None,
@@ -590,16 +644,62 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
                 payload = status_payload(None, reason=reason)
             else:
                 health, reason = _health(deps, manifest)
-                payload = status_payload(manifest, health, reason=reason)
+                state = deps.load_state()
+                desired_selection = scoped_selection(state, manifest)
+                desired_digests = _selection_digests(desired_selection)
+                actual_digests = _selection_digests(
+                    health.get("selected_bundles", {}) if health else {}
+                )
+                restore_pending = bool(
+                    health and desired_digests and actual_digests != desired_digests
+                )
+                if health and desired_digests and actual_digests != desired_digests:
+                    with bundle_restore_lock:
+                        pending = bundle_restore_pending.get(str(manifest["run_id"]))
+                        if pending != desired_digests and deps.http_post is not None:
+                            try:
+                                upstream = deps.http_post(
+                                    f"{manifest['service_url']}/bundles/apply",
+                                    json={"selection": desired_digests},
+                                    headers={
+                                        "X-NPA-LeIsaac-Nonce": manifest[
+                                            "session_nonce"
+                                        ]
+                                    },
+                                    timeout=30.0,
+                                    follow_redirects=False,
+                                )
+                            except Exception as exc:
+                                _log_exception(
+                                    logging.WARNING,
+                                    "LeIsaac bundle restore failed",
+                                    exc,
+                                )
+                            else:
+                                if (
+                                    upstream is not None
+                                    and int(upstream.status_code) == 202
+                                ):
+                                    bundle_restore_pending[
+                                        str(manifest["run_id"])
+                                    ] = desired_digests
+                elif health and actual_digests == desired_digests:
+                    with bundle_restore_lock:
+                        bundle_restore_pending.pop(str(manifest["run_id"]), None)
+                if restore_pending:
+                    payload = status_payload(
+                        manifest,
+                        reason="Restoring persisted checksum-verified custom bundles.",
+                    )
+                else:
+                    payload = status_payload(manifest, health, reason=reason)
         if payload.get("available"):
             payload["agent_transport_metrics"] = transport_metrics.snapshot()
         state = deps.load_state()
-        leisaac_value = state.get("leisaac") if isinstance(state, dict) else None
-        leisaac_state: dict[str, Any] = (
-            leisaac_value if isinstance(leisaac_value, dict) else {}
+        payload["bundle_selection"] = scoped_selection(state, manifest)
+        payload["bundle_selection_scope"] = (
+            selection_scope(manifest) if manifest else {}
         )
-        selection = leisaac_state.get("bundle_selection")
-        payload["bundle_selection"] = selection if isinstance(selection, dict) else {}
         return deps.response(
             content=json.dumps(payload),
             status_code=200,
@@ -695,6 +795,12 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
             )
             if manifest.get("kind") != payload.get("kind"):
                 raise BundleError("bundle selection kind does not match")
+            capability, reason = await asyncio.to_thread(
+                cached_resolve, str(request.query_params.get("run_id") or "")
+            )
+            if not capability:
+                raise BundleError(reason, status_code=404)
+            current_scope = selection_scope(capability)
             loaded_state = deps.load_state()
             state = (
                 json.loads(json.dumps(loaded_state))
@@ -705,10 +811,15 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
             if not isinstance(leisaac_state, dict):
                 leisaac_state = {}
                 state["leisaac"] = leisaac_state
-            selection = leisaac_state.setdefault("bundle_selection", {})
+            selection = (
+                leisaac_state.setdefault("bundle_selection", {})
+                if leisaac_state.get("bundle_selection_scope") == current_scope
+                else {}
+            )
             if not isinstance(selection, dict):
                 selection = {}
-                leisaac_state["bundle_selection"] = selection
+            leisaac_state["bundle_selection"] = selection
+            leisaac_state["bundle_selection_scope"] = current_scope
             selection[str(payload["kind"])] = {
                 "bundle_sha256": manifest["bundle_sha256"],
                 "name": manifest["name"],
@@ -735,11 +846,6 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
                     continue
                 if selected_manifest.get("kind") != selected_kind:
                     del selection[selected_kind]
-            capability, reason = await asyncio.to_thread(
-                cached_resolve, str(request.query_params.get("run_id") or "")
-            )
-            if not capability:
-                raise BundleError(reason, status_code=404)
             if deps.http_post is None:
                 raise BundleError("bundle application is unavailable", status_code=503)
             apply_payload = {
@@ -790,6 +896,7 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
                     current = {}
                     current_state["leisaac"] = current
                 current["bundle_selection"] = selection_snapshot
+                current["bundle_selection_scope"] = current_scope
 
             await asyncio.to_thread(mutate_state, persist_selection)
         except (ValueError, BundleError) as exc:
@@ -817,6 +924,89 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
         # runtime and persisted selection disagree.
         async with bundle_selection_lock:
             return await _leisaac_bundle_select_impl(request)
+
+    @app.post(LEISAAC_BUNDLE_RESET_PATH.removeprefix("/api"))
+    async def leisaac_bundle_reset(request: Request) -> Any:
+        """Clear uploaded overrides and restart the exact task on real built-ins."""
+
+        if (
+            not episode_request_allowed(request)
+            or request.headers.get("x-npa-leisaac-control") != "1"
+            or (deps.save_state is None and deps.mutate_state is None)
+        ):
+            return bundle_error(
+                BundleError(
+                    "same-origin authenticated reset is required", status_code=403
+                )
+            )
+        async with bundle_selection_lock:
+            capability, reason = await asyncio.to_thread(
+                cached_resolve, str(request.query_params.get("run_id") or "")
+            )
+            if not capability:
+                return bundle_error(BundleError(reason, status_code=404))
+            if deps.http_post is None:
+                return bundle_error(
+                    BundleError("bundle application is unavailable", status_code=503)
+                )
+            try:
+                upstream = await asyncio.to_thread(
+                    deps.http_post,
+                    f"{capability['service_url']}/bundles/apply",
+                    json={"selection": {}},
+                    headers={
+                        "X-NPA-LeIsaac-Nonce": capability["session_nonce"]
+                    },
+                    timeout=30.0,
+                    follow_redirects=False,
+                )
+            except Exception as exc:
+                _log_exception(logging.WARNING, "LeIsaac default reset failed", exc)
+                upstream = None
+            if upstream is None:
+                return bundle_error(
+                    BundleError("bundle application is unavailable", status_code=503)
+                )
+            upstream_status = int(upstream.status_code)
+            if upstream_status != 202:
+                try:
+                    upstream_detail = str(upstream.json().get("detail") or "")
+                except Exception:
+                    upstream_detail = ""
+                return bundle_error(
+                    BundleError(
+                        upstream_detail or "default reset was rejected",
+                        status_code=(
+                            upstream_status if upstream_status in {400, 409} else 502
+                        ),
+                    )
+                )
+            current_scope = selection_scope(capability)
+
+            def persist_reset(current_state: dict) -> None:
+                current = current_state.setdefault("leisaac", {})
+                if not isinstance(current, dict):
+                    current = {}
+                    current_state["leisaac"] = current
+                current["bundle_selection"] = {}
+                current["bundle_selection_scope"] = current_scope
+
+            await asyncio.to_thread(mutate_state, persist_reset)
+            with bundle_restore_lock:
+                bundle_restore_pending.pop(str(capability["run_id"]), None)
+        return deps.response(
+            content=json.dumps(
+                {
+                    "reset": True,
+                    "selected_bundles": {},
+                    "restarting": True,
+                    "configuration": capability.get("configuration", {}),
+                }
+            ),
+            status_code=202,
+            media_type="application/json",
+            headers={"Cache-Control": "private, no-store"},
+        )
 
     @app.get("/leisaac/episodes/versions")
     async def leisaac_episode_versions(request: Request) -> Any:

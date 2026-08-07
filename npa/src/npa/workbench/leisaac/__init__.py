@@ -15,6 +15,7 @@ from npa.agent_backend.leisaac_registry import (
     DEFAULT_TASK,
     REGISTRY_FINGERPRINT,
     TELEOP_DEVICE,
+    resolve_configuration,
     validate_environment_id,
     validate_environment_index,
     validate_num_envs,
@@ -469,6 +470,7 @@ def deployment_manifest(
         "npa.nebius.com/leisaac-task": task,
         "npa.nebius.com/environment-id": environment_id,
     }
+    configuration = resolve_configuration(task)
     environment = {
         "OMNI_KIT_ACCEPT_EULA": "YES",
         "ISAACSIM_ACCEPT_EULA": "YES",
@@ -485,6 +487,10 @@ def deployment_manifest(
         "NPA_LEISAAC_ISAAC_SIM_VERSION": ISAAC_SIM_VERSION,
         "NPA_LEISAAC_ISAAC_LAB_VERSION": ISAAC_LAB_VERSION,
         "NPA_LEISAAC_IMAGE": image,
+        "NPA_LEISAAC_ROBOT": str(configuration["robot"]["id"]),
+        "NPA_LEISAAC_SCENE": str(configuration["scene"]["id"]),
+        "NPA_LEISAAC_DEVICE": str(configuration["device"]["id"]),
+        "NPA_LEISAAC_BUNDLE": "built-in",
         "NVIDIA_DRIVER_CAPABILITIES": "all",
     }
     environment_items: list[dict[str, Any]] = [
@@ -541,7 +547,7 @@ def deployment_manifest(
                 "env": environment_items,
                 "resources": {
                     "requests": {
-                        # PickOrange uses CPU PhysX on sm_120 while the RTX GPU
+                        # LeIsaac uses CPU PhysX on sm_120 while the RTX GPU
                         # renders and encodes the interactive viewport.  The
                         # first scene reset saturates the old eight-core quota.
                         "cpu": "16",
@@ -749,6 +755,7 @@ def session_manifest(
         "task": task,
         "task_registry_fingerprint": REGISTRY_FINGERPRINT,
         "teleop_device": TELEOP_DEVICE,
+        "configuration": resolve_configuration(task),
         "environment": {
             "id": environment_id,
             "index": environment_index,

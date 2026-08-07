@@ -377,8 +377,12 @@ def test_manifest_records_exact_real_component_and_provenance() -> None:
         expires_at=(datetime.now(timezone.utc) + timedelta(days=1)).isoformat(),
         output_path=OUTPUT_PATH,
     )
-    assert manifest["task"] == "LeIsaac-SO101-PickOrange-v0"
+    assert manifest["task"] == "LeIsaac-SO101-LiftCube-v0"
     assert manifest["teleop_device"] == "keyboard"
+    assert manifest["configuration"]["robot"]["id"] == "so101_follower"
+    assert manifest["configuration"]["scene"]["id"] == "table_with_cube"
+    assert manifest["configuration"]["device"]["id"] == "browser_keyboard_so101"
+    assert manifest["configuration"]["task"]["id"] == manifest["task"]
     assert manifest["source_commit"] == "1651c321e9b0c1bb54233211fc7b3cd70d8373d5"
     assert manifest["isaac_sim_version"] == "5.1.0.0"
     assert manifest["isaac_lab_version"] == "2.3.2.post1"
@@ -502,6 +506,7 @@ def test_observability_patch_is_exact_and_records_real_upstream_input() -> None:
     assert "NPA_LEISAAC_INPUT_COUNTER" in source
     assert "NPA_LEISAAC_READY_PATH" in source
     assert "NPA_LEISAAC_BROWSER_TELEOP" in source
+    assert '"task": args_cli.task' in source
     assert (
         " env_cfg = parse_env_cfg(args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs)\n"
         '+    if os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") == "1":'
@@ -784,6 +789,12 @@ def test_custom_bundle_apply_is_mocked_at_s3_call_site_and_restart_safe(
     assert calls == [(digest, tmp_path / "custom" / digest)]
     assert server.BUNDLE_RESTART.is_set()
     assert server.STATE["state"] == "restarting"
+    recorder.write_text('{"state":"idle"}\n', encoding="utf-8")
+    reset = server.apply_bundle_selection({})
+    assert reset == {}
+    assert server.BUNDLE_SELECTION == {}
+    assert server.STATE["selected_bundles"] == {}
+    assert server.STATE["detail"] == "restoring built-in defaults"
     recorder.write_text('{"state":"recording"}\n', encoding="utf-8")
     with pytest.raises(server.BundleError, match="finish or discard"):
         server.apply_bundle_selection({"robot": digest})

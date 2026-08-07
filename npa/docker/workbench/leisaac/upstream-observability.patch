@@ -62,7 +62,7 @@ index a467482..d3bcad5 100644
      env: ManagerBasedRLEnv | DirectRLEnv = gym.make(task_name, cfg=env_cfg).unwrapped
 +    if os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") == "1":
 +        env.cfg.sim.render_interval = 1_000_000_000
-@@ -313 +362,457 @@ def main():  # noqa: C901
+@@ -313 +362,458 @@ def main():  # noqa: C901
      env.reset()
 +    recorder = EpisodeRecorder(
 +        root=Path(os.environ["NPA_LEISAAC_RECORDER_ROOT"]),
@@ -83,6 +83,7 @@ index a467482..d3bcad5 100644
 +            "robot": os.environ.get("NPA_LEISAAC_ROBOT", "stock-so101"),
 +            "scene": os.environ.get("NPA_LEISAAC_SCENE", args_cli.task),
 +            "device": os.environ.get("NPA_LEISAAC_DEVICE", args_cli.teleop_device),
++            "task": args_cli.task,
 +            "bundle": os.environ.get("NPA_LEISAAC_BUNDLE", "stock"),
 +        },
 +    )
@@ -520,11 +521,11 @@ index a467482..d3bcad5 100644
 +        env.render()
 +        schedule_browser_capture()
 +        env.render()
-@@ -375 +806,2 @@ def main():  # noqa: C901
+@@ -375 +807,2 @@ def main():  # noqa: C901
 -                    env.render()
 +                    if os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") != "1":
 +                        env.render()
-@@ -382 +814,20 @@ def main():  # noqa: C901
+@@ -382 +815,20 @@ def main():  # noqa: C901
 -                    env.step(actions)
 +                    step_result = env.step(actions)
 +                    sim_step += 1
@@ -546,10 +547,10 @@ index a467482..d3bcad5 100644
 +                ):
 +                    env.render()
 +                recorder.process_commands(reset=env.reset)
-@@ -384 +835 @@ def main():  # noqa: C901
+@@ -384 +836 @@ def main():  # noqa: C901
 -                    rate_limiter.sleep(env)
 +                    rate_limiter.sleep(None if os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") == "1" else env)
-@@ -395 +920,4 @@ def main():  # noqa: C901
+@@ -395 +921,4 @@ def main():  # noqa: C901
 +        capture_encoder.shutdown(wait=True, cancel_futures=True)
 +        poll_encoded_capture()
 +        recorder.shutdown(wait=True)
