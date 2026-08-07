@@ -4252,6 +4252,7 @@
         for (let attempt = 0; attempt < 3; attempt += 1) {
           if (leisaacManualDisconnect) return false;
           try {
+            const recoveredFromPolling = leisaacActiveTransport === "jpeg-poll";
             if (attempt) await new Promise((resolve) => window.setTimeout(resolve, 250 * (2 ** (attempt - 1))));
             await authorizeLeIsaacSocketPair(status);
             const useControlDataChannel = attempt === 0 &&
@@ -4261,6 +4262,11 @@
               String(status.preferred_transport || "") === "webrtc-datachannel-v1" &&
               Boolean(status.video_datachannel_url);
             await openLeIsaacSocketPair(status, useControlDataChannel, useVideoDataChannel);
+            // A transient preferred-transport failure may have started the
+            // tested JPEG fallback.  Stop its polling loops before accepting
+            // binary frames so the two transports cannot contend or present
+            // stale fallback images after recovery.
+            stopLeIsaacFrames();
             leisaacReconnectAttempts = attempt;
             leisaacActiveTransport = "websocket-v1";
             const generation = leisaacSocketGeneration;
@@ -4304,7 +4310,7 @@
                 }
               };
             }
-            leisaacTransportEvidence.reconnects += attempt;
+            leisaacTransportEvidence.reconnects += attempt + (recoveredFromPolling ? 1 : 0);
             startLeIsaacHeartbeat();
             updateLeIsaacTransportIndicator();
             return true;
@@ -4325,6 +4331,8 @@
         updateLeIsaacTransportIndicator();
         connectLeIsaacFrames(status);
         startLeIsaacHeartbeat();
+        leisaacReconnectAttempts += 1;
+        scheduleLeIsaacReconnect();
         if (lastError) console.warn("LeIsaac preferred transport failed", lastError);
         return false;
       }
@@ -4354,8 +4362,12 @@
             return;
           }
           try {
-            await connectLeIsaac();
-            leisaacReconnectAttempts = 0;
+            const connected = await connectLeIsaac();
+            // connectLeIsaacPreferred schedules the next bounded retry when it
+            // returns false.  Preserve its backoff counter and timer.
+            if (connected !== false || leisaacActiveTransport !== "jpeg-poll") {
+              leisaacReconnectAttempts = 0;
+            }
           } catch (err) {
             leisaacReconnectAttempts += 1;
             setLeIsaacStreamState("Simulator is restarting; retrying authenticated live controls…", "pending");
@@ -4375,9 +4387,9 @@
         try {
           ensureLeIsaacClientIdentity(status);
           if (String(status.stream_transport || "webrtc") === "websocket-v1") {
-            await connectLeIsaacPreferred(status);
+            const connected = await connectLeIsaacPreferred(status);
             if (disconnectBtn) disconnectBtn.disabled = false;
-            return;
+            return connected;
           }
           if (String(status.stream_transport || "webrtc") === "jpeg-poll") {
             leisaacActiveTransport = "jpeg-poll";

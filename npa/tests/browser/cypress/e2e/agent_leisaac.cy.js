@@ -1497,7 +1497,7 @@ describe("NPA agent LeIsaac capability tab", () => {
     });
   });
 
-  it("falls back explicitly after bounded preferred-transport retries", () => {
+  it("falls back explicitly and self-heals after bounded preferred-transport retries", () => {
     cy.intercept("GET", "/api/leisaac/status?run_id=mock-ws-fallback", {
       statusCode: 200,
       body: {
@@ -1547,16 +1547,28 @@ describe("NPA agent LeIsaac capability tab", () => {
       body: '<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360"><rect width="640" height="360" fill="#16a34a"/></svg>',
     }).as("wsFallbackFrame");
     cy.window().then((win) => {
-      class FailingWebSocket {
+      let failuresRemaining = 6;
+      class RecoveringWebSocket {
         static CONNECTING = 0;
         static OPEN = 1;
-        constructor() {
-          this.readyState = FailingWebSocket.CONNECTING;
-          win.setTimeout(() => this.onerror && this.onerror(new Error("blocked")), 0);
+        static CLOSED = 3;
+        constructor(url) {
+          this.url = String(url);
+          this.readyState = RecoveringWebSocket.CONNECTING;
+          if (failuresRemaining > 0) {
+            failuresRemaining -= 1;
+            win.setTimeout(() => this.onerror && this.onerror(new Error("blocked")), 0);
+            return;
+          }
+          win.setTimeout(() => {
+            this.readyState = RecoveringWebSocket.OPEN;
+            if (this.onopen) this.onopen({ target: this });
+          }, 0);
         }
-        close() {}
+        send() {}
+        close() { this.readyState = RecoveringWebSocket.CLOSED; }
       }
-      win.WebSocket = FailingWebSocket;
+      win.WebSocket = RecoveringWebSocket;
     });
     cy.window().then((win) =>
       win.__NPA_AGENT_TEST__.refreshLeIsaacCapability("mock-ws-fallback"),
@@ -1569,6 +1581,16 @@ describe("NPA agent LeIsaac capability tab", () => {
       .should("contain.text", "JPEG polling")
       .and("contain.text", "fallback");
     cy.get("#leisaacFrame").should("be.visible");
+    cy.get("#leisaacTransportStatus", { timeout: 10000 })
+      .should("contain.text", "WebSocket")
+      .and("contain.text", "latest-frame-wins");
+    cy.get("#leisaacFrame").should("not.be.visible");
+    cy.window().should((win) => {
+      const evidence = win.__NPA_AGENT_TEST__.leisaacTransportEvidence();
+      expect(evidence.active).to.equal("websocket-v1");
+      expect(evidence.video).to.equal("websocket-v1");
+      expect(evidence.reconnects).to.be.greaterThan(0);
+    });
     cy.get("#leisaacDisconnect").click();
   });
 });
