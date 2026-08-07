@@ -520,10 +520,16 @@ def test_observability_patch_is_exact_and_records_real_upstream_input() -> None:
     assert 'capture_state["queue"].clear()' in source
     assert 'capture_state["priority_queue"]' in source
     assert source.count("idle_background_capture_fps = 2.5") == 1
-    assert source.count("active_background_capture_fps = 2.5") == 1
+    assert source.count("active_background_capture_fps = 2.0") == 1
     assert 'capture_state["last_causal_at"] = causal_at' in source
     assert (
         'capture_state["next_at"] = causal_at + background_capture_interval()'
+        in source
+    )
+    assert (
+        'if str(applied.get("event") or "") == "release":\n'
+        '+            capture_state["next_at"] = causal_at + background_capture_interval()\n'
+        '+        # A causal pair supersedes background work'
         in source
     )
     assert "time.monotonic() + background_capture_interval()" in source
