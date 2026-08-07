@@ -27,7 +27,12 @@ VIDEO_DATACHANNEL_PROTOCOL = "npa.leisaac.video.v1"
 MAX_VIDEO_DATACHANNEL_OFFER_BYTES = 65_536
 MAX_VIDEO_DATACHANNEL_FRAME_BYTES = 65_536
 MAX_VIDEO_DATACHANNEL_PEERS = 4
-VIDEO_DATACHANNEL_BUFFER_LOW_BYTES = 65_536
+# One independently decodable JPEG at a time.  A positive threshold let a full
+# workspace frame plus an overview frame enter SCTP while the previous message
+# was still draining; on a TURN path that converted latest-value delivery into
+# roughly one second of user-visible queue age.  Pull the next latest frame only
+# after aiortc has handed the current message out of its application buffer.
+VIDEO_DATACHANNEL_BUFFER_LOW_BYTES = 0
 
 
 class VideoDataChannelError(RuntimeError):

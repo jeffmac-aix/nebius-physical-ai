@@ -9,6 +9,7 @@ import pytest
 
 from npa.agent_backend.leisaac_datachannel import (
     MAX_VIDEO_DATACHANNEL_OFFER_BYTES,
+    VIDEO_DATACHANNEL_BUFFER_LOW_BYTES,
     VideoDataChannelError,
     VideoDataChannelPeerPool,
     parse_video_datachannel_offer,
@@ -80,6 +81,7 @@ def test_datachannel_peer_pool_is_bounded() -> None:
 
 
 def test_datachannel_relay_is_bounded_and_preserves_causal_stamp() -> None:
+    assert VIDEO_DATACHANNEL_BUFFER_LOW_BYTES == 0
     asyncio.run(_assert_datachannel_relay_contract())
 
 
@@ -114,7 +116,7 @@ async def _assert_datachannel_relay_contract() -> None:
         @property
         def bufferedAmount(self) -> int:
             self.buffer_checks += 1
-            return 70_000 if self.buffer_checks == 1 else 0
+            return 1 if self.buffer_checks == 1 else 0
 
         def send(self, raw: bytes) -> None:
             self.frames.append(bytes(raw))
