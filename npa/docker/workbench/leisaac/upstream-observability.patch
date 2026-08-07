@@ -58,7 +58,7 @@ index a467482..d3bcad5 100644
 @@ -226,0 +272,2 @@ def main():  # noqa: C901
 +    if os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") == "1":
 +        env.cfg.sim.render_interval = 1_000_000_000
-@@ -314,0 +362,395 @@ def main():  # noqa: C901
+@@ -314,0 +362,398 @@ def main():  # noqa: C901
 +    recorder = EpisodeRecorder(
 +        root=Path(os.environ["NPA_LEISAAC_RECORDER_ROOT"]),
 +        output_uri=os.environ["NPA_LEISAAC_OUTPUT_PATH"],
@@ -111,7 +111,7 @@ index a467482..d3bcad5 100644
 +    }
 +    # Background frames must not monopolize the Isaac render/event loop. Causal
 +    # action pairs bypass this cadence and remain immediate at full quality.
-+    background_capture_fps = 2.5
++    background_capture_fps = 2.0
 +    background_capture_interval = 1.0 / background_capture_fps
 +    viewport = get_active_viewport() if frame_path else None
 +    if viewport is not None:
@@ -335,6 +335,11 @@ index a467482..d3bcad5 100644
 +        applied_ns = int(applied.get("simulator_applied_mono_ns") or 0)
 +        if sequence <= 0 or applied_ns <= 0:
 +            return
++        capture_state["causal_action_sequence"] = sequence
++        capture_state["causal_applied_monotonic_ns"] = applied_ns
++        # Safety releases update the next synchronized pair without adding stale GPU work.
++        if str(applied.get("event") or "") == "release":
++            return
 +        # A causal pair supersedes background work that has not started. The
 +        # active capture is never cancelled while Kit/GPU owns its buffer.
 +        capture_state["queue"].clear()
@@ -342,8 +347,6 @@ index a467482..d3bcad5 100644
 +        if capture_state["active_priority"] or capture_state["priority_queue"]:
 +            capture_state["deferred_causal"] = applied
 +            return
-+        capture_state["causal_action_sequence"] = sequence
-+        capture_state["causal_applied_monotonic_ns"] = applied_ns
 +        capture_state["group"] += 1
 +        capture_group = f"causal-{capture_state['group']}"
 +        cameras = (
