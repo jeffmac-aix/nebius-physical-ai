@@ -8,7 +8,7 @@ index a467482..d3bcad5 100644
 +import hashlib
 +import json
 @@ -92,0 +97,2 @@ import os
-+from leisaac_dataset import FPS, EpisodeRecorder, extract_step
++from leisaac_dataset import EpisodeRecorder, extract_step
 +from pathlib import Path
 @@ -94,0 +101 @@ import time
 +from PIL import Image
@@ -50,7 +50,7 @@ index a467482..d3bcad5 100644
 +    if custom_scene_usd:
 +        # Custom scenes retain the task's expected object prim names and layout.
 +        env_cfg.scene.scene.spawn.usd_path = custom_scene_usd
-@@ -314,0 +358,375 @@ def main():  # noqa: C901
+@@ -314,0 +358,383 @@ def main():  # noqa: C901
 +    recorder = EpisodeRecorder(
 +        root=Path(os.environ["NPA_LEISAAC_RECORDER_ROOT"]),
 +        output_uri=os.environ["NPA_LEISAAC_OUTPUT_PATH"],
@@ -101,6 +101,10 @@ index a467482..d3bcad5 100644
 +        "causal_action_sequence": 0,
 +        "causal_applied_monotonic_ns": 0,
 +    }
++    # Background frames must not monopolize the Isaac render/event loop. Causal
++    # action pairs bypass this cadence and remain immediate at full quality.
++    background_capture_fps = 3.0
++    background_capture_interval = 1.0 / background_capture_fps
 +    viewport = get_active_viewport() if frame_path else None
 +    if viewport is not None:
 +        viewport.resolution = (1280, 720)
@@ -241,6 +245,10 @@ index a467482..d3bcad5 100644
 +                for item in capture_state["priority_queue"]
 +            )
 +            if completed_priority and not group_pending:
++                capture_state["next_at"] = max(
++                    capture_state["next_at"],
++                    time.monotonic() + background_capture_interval,
++                )
 +                deferred = capture_state["deferred_causal"]
 +                capture_state["deferred_causal"] = None
 +                if deferred:
@@ -354,7 +362,7 @@ index a467482..d3bcad5 100644
 +            return
 +        capture_state["group"] += 1
 +        capture_group = f"capture-{capture_state['group']}"
-+        capture_state["next_at"] = time.monotonic() + (1.0 / FPS)
++        capture_state["next_at"] = time.monotonic() + background_capture_interval
 +        cameras = (
 +            ("workspace", workspace_camera_path, frame_path, frame_meta_path),
 +            (
