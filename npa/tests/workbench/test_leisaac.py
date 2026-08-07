@@ -151,7 +151,7 @@ def test_runtime_datachannel_source_coalesces_stale_causal_frames() -> None:
     module.FRAME_LATEST = AsyncLatestByKey(("workspace", "overview"))
 
     def item(sequence: int):
-        jpeg = b"\xff\xd8" + bytes([sequence]) * 8 + b"\xff\xd9"
+        webp = b"RIFF" + (20).to_bytes(4, "little") + b"WEBP" + bytes([sequence]) * 8
         metadata = {
             "sequence": sequence,
             "capture_wall_ns": 100 + sequence,
@@ -160,9 +160,9 @@ def test_runtime_datachannel_source_coalesces_stale_causal_frames() -> None:
             "encoded_monotonic_ns": 400 + sequence,
             "causal_action_sequence": 40 + sequence,
             "causal_applied_monotonic_ns": 500 + sequence,
-            "sha256": hashlib.sha256(jpeg).hexdigest(),
+            "transport_sha256": hashlib.sha256(webp).hexdigest(),
         }
-        return "workspace", metadata, jpeg
+        return "workspace", metadata, webp
 
     async def verify() -> None:
         await module.FRAME_LATEST.publish("workspace", item(1))
@@ -464,7 +464,7 @@ def test_container_never_bakes_eula_client_or_assets() -> None:
     assert 'f"--/app/livestream/port={SIGNAL_PORT}"' in server
     assert "ROBOT_SHA256" in server and "KITCHEN_SHA256" in server
     assert "safe_extract_zip" in server and "safe_extract_client" in server
-    assert '"--device=cuda:0"' in server
+    assert '"--device=cpu"' in server
     assert 'f"--seed={TELEOP_SEED}"' in server
     assert 'module_root = "/opt/npa/leisaac"' in server
     assert 'environment["PYTHONPATH"]' in server
@@ -504,6 +504,8 @@ def test_observability_patch_is_exact_and_records_real_upstream_input() -> None:
     assert "NPA_LEISAAC_BROWSER_TELEOP" in source
     assert "capture_viewport_to_buffer" in source
     assert 'image.save(temporary, format="JPEG", quality=82, optimize=True)' in source
+    assert 'transport_temporary, format="WEBP", quality=82, method=0' in source
+    assert '"transport_codec": "webp"' in source
     assert "optimize=False" not in source
     assert 'source_queue.pop(0)' in source
     assert 'if capture_state["active"]:' in source

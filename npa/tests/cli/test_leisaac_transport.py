@@ -27,6 +27,7 @@ from npa.agent_backend.leisaac_transport import (
     CONTROL_SUBPROTOCOL,
     ControlLedger,
     FrameEnvelope,
+    FRAME_FLAG_WEBP,
     MAX_CONTROL_MESSAGE_BYTES,
     TransportMetrics,
     TransportProtocolError,
@@ -239,6 +240,39 @@ def test_binary_frame_envelope_accepts_v1_as_zero_causal_compatibility() -> None
     assert envelope.causal_action_sequence == 0
     assert envelope.causal_applied_monotonic_ns == 0
     assert envelope.dropped_before == 2
+
+
+def test_binary_frame_envelope_carries_bounded_webp_with_explicit_flag() -> None:
+    webp = b"RIFF" + (20).to_bytes(4, "little") + b"WEBP" + b"frame-webp"
+    packed = pack_frame(
+        FrameEnvelope(
+            sequence=4,
+            capture_wall_ns=10,
+            capture_monotonic_ns=11,
+            encoded_wall_ns=12,
+            encoded_monotonic_ns=13,
+            runtime_send_monotonic_ns=14,
+            flags=FRAME_FLAG_WEBP,
+        ),
+        webp,
+    )
+    envelope, content = unpack_frame(packed)
+    assert envelope.flags == FRAME_FLAG_WEBP
+    assert content == webp
+
+    with pytest.raises(TransportProtocolError, match="compressed frame"):
+        pack_frame(
+            FrameEnvelope(
+                sequence=5,
+                capture_wall_ns=10,
+                capture_monotonic_ns=11,
+                encoded_wall_ns=12,
+                encoded_monotonic_ns=13,
+                runtime_send_monotonic_ns=14,
+                flags=FRAME_FLAG_WEBP,
+            ),
+            b"not-webp",
+        )
 
 
 def test_verified_relay_stamps_a_frame_without_hashing_the_jpeg_twice(
@@ -921,7 +955,9 @@ def test_runtime_video_envelope_is_binary_and_nonblank(
 ) -> None:
     runtime = _prepare_runtime(monkeypatch, tmp_path)
     jpeg = b"\xff\xd8" + b"real-frame" * 30 + b"\xff\xd9"
+    webp = b"RIFF" + (320).to_bytes(4, "little") + b"WEBP" + b"real-webp" * 30
     runtime.FRAME_PATH.write_bytes(jpeg)
+    runtime.FRAME_PATH.with_suffix(".webp").write_bytes(webp)
     runtime.FRAME_META_PATH.write_text(
         json.dumps(
             {
@@ -933,6 +969,9 @@ def test_runtime_video_envelope_is_binary_and_nonblank(
                 "encoded_monotonic_ns": 103,
                 "bytes": len(jpeg),
                 "sha256": hashlib.sha256(jpeg).hexdigest(),
+                "transport_codec": "webp",
+                "transport_bytes": len(webp),
+                "transport_sha256": hashlib.sha256(webp).hexdigest(),
             }
         ),
         encoding="utf-8",
@@ -945,11 +984,13 @@ def test_runtime_video_envelope_is_binary_and_nonblank(
         ) as websocket:
             envelope, content = unpack_frame(websocket.receive_bytes())
             assert envelope.sequence == 4
-            assert envelope.flags == 0
+            assert envelope.flags == FRAME_FLAG_WEBP
             assert envelope.runtime_send_monotonic_ns > 0
-            assert content == jpeg
+            assert content == webp
             next_jpeg = b"\xff\xd8" + b"new-frame" * 30 + b"\xff\xd9"
+            next_webp = b"RIFF" + (320).to_bytes(4, "little") + b"WEBP" + b"new-webp" * 30
             runtime.FRAME_PATH.write_bytes(next_jpeg)
+            runtime.FRAME_PATH.with_suffix(".webp").write_bytes(next_webp)
             next_metadata = {
                 "schema": "npa.leisaac.frame.v1",
                 "sequence": 5,
@@ -959,6 +1000,9 @@ def test_runtime_video_envelope_is_binary_and_nonblank(
                 "encoded_monotonic_ns": 203,
                 "bytes": len(next_jpeg),
                 "sha256": hashlib.sha256(next_jpeg).hexdigest(),
+                "transport_codec": "webp",
+                "transport_bytes": len(next_webp),
+                "transport_sha256": hashlib.sha256(next_webp).hexdigest(),
             }
             runtime.FRAME_META_PATH.write_text(
                 json.dumps(next_metadata), encoding="utf-8"
@@ -966,13 +1010,14 @@ def test_runtime_video_envelope_is_binary_and_nonblank(
             client.portal.call(
                 runtime.FRAME_LATEST.publish,
                 "workspace",
-                ("workspace", next_metadata, next_jpeg),
+                ("workspace", next_metadata, next_webp),
             )
             # The bounded sliding window permits the next frame without waiting
             # one full runtime-to-relay acknowledgement round trip.
             next_envelope, next_content = unpack_frame(websocket.receive_bytes())
             assert next_envelope.sequence == 5
-            assert next_content == next_jpeg
+            assert next_envelope.flags == FRAME_FLAG_WEBP
+            assert next_content == next_webp
             websocket.send_json(
                 {"v": 1, "type": "frame-ack", "run_id": RUN_ID, "sequence": 4}
             )

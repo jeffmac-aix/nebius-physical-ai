@@ -22,6 +22,9 @@ from typing import Any
 
 PROTOCOL_VERSION = 1
 FRAME_PROTOCOL_VERSION = 2
+FRAME_FLAG_OVERVIEW = 1
+FRAME_FLAG_WEBP = 2
+FRAME_FLAGS_ALLOWED = FRAME_FLAG_OVERVIEW | FRAME_FLAG_WEBP
 CONTROL_SUBPROTOCOL = "npa.leisaac.control.v1"
 VIDEO_SUBPROTOCOL = "npa.leisaac.video.v1"
 MAX_CONTROL_MESSAGE_BYTES = 4096
@@ -455,12 +458,16 @@ class FrameEnvelope:
 
 def pack_frame(envelope: FrameEnvelope, jpeg: bytes) -> bytes:
     content = bytes(jpeg)
-    if (
-        not content.startswith(b"\xff\xd8")
-        or not content.endswith(b"\xff\xd9")
-        or len(content) > MAX_FRAME_BYTES
-    ):
-        raise TransportProtocolError("invalid_frame", "invalid JPEG frame")
+    is_webp = bool(envelope.flags & FRAME_FLAG_WEBP)
+    valid_content = (
+        len(content) >= 12
+        and content.startswith(b"RIFF")
+        and content[8:12] == b"WEBP"
+        if is_webp
+        else content.startswith(b"\xff\xd8") and content.endswith(b"\xff\xd9")
+    )
+    if envelope.flags & ~FRAME_FLAGS_ALLOWED or not valid_content or len(content) > MAX_FRAME_BYTES:
+        raise TransportProtocolError("invalid_frame", "invalid compressed frame")
     digest = envelope.sha256 or hashlib.sha256(content).digest()
     if len(digest) != 32:
         raise TransportProtocolError("invalid_frame", "invalid frame digest")
@@ -514,6 +521,14 @@ def unpack_frame(
     digest = unpacked[digest_index]
     if verify_digest and not hashlib.sha256(jpeg).digest() == digest:
         raise TransportProtocolError("invalid_frame", "frame digest mismatch")
+    is_webp = bool(flags & FRAME_FLAG_WEBP)
+    valid_content = (
+        len(jpeg) >= 12 and jpeg.startswith(b"RIFF") and jpeg[8:12] == b"WEBP"
+        if is_webp
+        else jpeg.startswith(b"\xff\xd8") and jpeg.endswith(b"\xff\xd9")
+    )
+    if flags & ~FRAME_FLAGS_ALLOWED or not valid_content:
+        raise TransportProtocolError("invalid_frame", "frame codec is invalid")
     envelope = FrameEnvelope(
         sequence=unpacked[4],
         capture_wall_ns=unpacked[5],

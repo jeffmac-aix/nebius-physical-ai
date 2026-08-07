@@ -90,6 +90,8 @@ try:
         CONTROL_SUBPROTOCOL,
         ControlLedger,
         FrameEnvelope,
+        FRAME_FLAG_OVERVIEW,
+        FRAME_FLAG_WEBP,
         MAX_CLIENT_HISTORY,
         MAX_CONTROL_MESSAGE_BYTES,
         MAX_FRAME_BYTES,
@@ -108,6 +110,8 @@ except ImportError:  # Repository unit tests import the script directly.
         CONTROL_SUBPROTOCOL,
         ControlLedger,
         FrameEnvelope,
+        FRAME_FLAG_OVERVIEW,
+        FRAME_FLAG_WEBP,
         MAX_CLIENT_HISTORY,
         MAX_CONTROL_MESSAGE_BYTES,
         MAX_FRAME_BYTES,
@@ -172,7 +176,7 @@ CLIENT_SOURCE_JS_SHA256 = (
 )
 CLIENT_JS_SHA256 = CLIENT_SOURCE_JS_SHA256
 UPSTREAM_OBSERVABILITY_PATCH_SHA256 = (
-    "d6badbd64e9522c397ed52d163f35c5b873d4abf1b008c07283adca35fad7b9d"
+    "bc4fe59f37db1c96342d973f312a791ee2976a4df97af7fcd185d4ec109764d5"
 )
 
 CACHE_ROOT = Path(os.environ.get("NPA_LEISAAC_CACHE_DIR", "/opt/leisaac-cache"))
@@ -630,7 +634,7 @@ def _simulation_launch() -> tuple[list[str], dict[str, str]]:
         f"--teleop_device={TELEOP_DEVICE}",
         f"--num_envs={NUM_ENVS}",
         f"--seed={TELEOP_SEED}",
-        "--device=cuda:0",
+        "--device=cpu",
         "--enable_cameras",
         "--kit_args="
         + " ".join(
@@ -938,7 +942,7 @@ def _append_input(record: dict[str, Any]) -> int:
 
 
 def _read_consistent_frame(
-    camera: str = "workspace",
+    camera: str = "workspace", *, live_transport: bool = True
 ) -> tuple[dict[str, Any], bytes] | None:
     paths = CAMERA_PATHS.get(camera)
     if paths is None:
@@ -947,21 +951,36 @@ def _read_consistent_frame(
     for _attempt in range(3):
         try:
             first = json.loads(metadata_path.read_text(encoding="utf-8"))
-            jpeg = frame_path.read_bytes()
+            content_path = (
+                frame_path.with_suffix(".webp") if live_transport else frame_path
+            )
+            content = content_path.read_bytes()
             second = json.loads(metadata_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return None
         if first != second or not isinstance(first, dict):
             continue
-        digest = hashlib.sha256(jpeg).hexdigest()
+        digest = hashlib.sha256(content).hexdigest()
+        expected_bytes = int(
+            first.get("transport_bytes" if live_transport else "bytes") or 0
+        )
+        expected_digest = str(
+            first.get("transport_sha256" if live_transport else "sha256") or ""
+        )
+        valid_codec = (
+            content.startswith(b"RIFF")
+            and content[8:12] == b"WEBP"
+            and first.get("transport_codec") == "webp"
+            if live_transport
+            else content.startswith(b"\xff\xd8") and content.endswith(b"\xff\xd9")
+        )
         if (
-            0 < len(jpeg) <= MAX_FRAME_BYTES
-            and jpeg.startswith(b"\xff\xd8")
-            and jpeg.endswith(b"\xff\xd9")
-            and digest == str(first.get("sha256") or "")
-            and len(jpeg) == int(first.get("bytes") or 0)
+            0 < len(content) <= MAX_FRAME_BYTES
+            and valid_codec
+            and digest == expected_digest
+            and len(content) == expected_bytes
         ):
-            return first, jpeg
+            return first, content
     return None
 
 
@@ -1282,8 +1301,9 @@ async def _video_datachannel_frames():
                 metadata.get("causal_applied_monotonic_ns") or 0
             ),
             dropped_before=dropped,
-            flags=1 if camera == "overview" else 0,
-            sha256=bytes.fromhex(str(metadata["sha256"])),
+            flags=(FRAME_FLAG_OVERVIEW if camera == "overview" else 0)
+            | FRAME_FLAG_WEBP,
+            sha256=bytes.fromhex(str(metadata["transport_sha256"])),
         )
         if dropped:
             TRANSPORT_METRICS.increment("frames_coalesced", dropped)
@@ -1323,7 +1343,7 @@ def build_app() -> FastAPI:
             return JSONResponse(status_code=403, content={"detail": "forbidden"})
         if camera not in CAMERA_PATHS:
             return JSONResponse(status_code=400, content={"detail": "invalid camera"})
-        item = _read_consistent_frame(camera)
+        item = _read_consistent_frame(camera, live_transport=False)
         if item is None:
             return JSONResponse(
                 status_code=503, content={"detail": "frame unavailable"}
@@ -1877,8 +1897,9 @@ def build_app() -> FastAPI:
                         metadata.get("causal_applied_monotonic_ns") or 0
                     ),
                     dropped_before=dropped,
-                    flags=1 if camera == "overview" else 0,
-                    sha256=bytes.fromhex(str(metadata["sha256"])),
+                    flags=(FRAME_FLAG_OVERVIEW if camera == "overview" else 0)
+                    | FRAME_FLAG_WEBP,
+                    sha256=bytes.fromhex(str(metadata["transport_sha256"])),
                 )
                 if dropped:
                     TRANSPORT_METRICS.increment("frames_coalesced", dropped)

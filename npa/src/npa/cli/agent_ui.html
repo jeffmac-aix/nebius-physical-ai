@@ -3624,6 +3624,7 @@
           jpegSize: jpegSize,
           sequence: Number(view.getBigUint64(8, false)),
           camera: (view.getUint8(5) & 1) === 1 ? "overview" : "workspace",
+          codec: (view.getUint8(5) & 2) === 2 ? "webp" : "jpeg",
           captureWallNs: Number(view.getBigUint64(16, false)),
           captureMonoNs: String(view.getBigUint64(24, false)),
           encodedMonoNs: String(view.getBigUint64(40, false)),
@@ -3647,7 +3648,7 @@
             const jpeg = new Uint8Array(frame.buffer, frame.headerSize, frame.jpegSize);
             const blob = new Blob(
               [jpeg],
-              { type: "image/jpeg" },
+              { type: frame.codec === "webp" ? "image/webp" : "image/jpeg" },
             );
             const bitmap = await createImageBitmap(blob);
             let paintMonoMs = 0;
@@ -3722,6 +3723,7 @@
               sequence: frame.sequence,
               camera: frame.camera,
               bytes: frame.jpegSize,
+              codec: frame.codec,
               capture_mono_ns: frame.captureMonoNs,
               encoded_mono_ns: frame.encodedMonoNs,
               runtime_send_mono_ns: frame.runtimeSendMonoNs,
