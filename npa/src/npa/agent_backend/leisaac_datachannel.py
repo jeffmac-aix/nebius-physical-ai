@@ -13,14 +13,13 @@ import asyncio
 from collections.abc import AsyncIterator
 from typing import Any, Callable
 
-try:  # agent VM: /opt/npa-agent is on sys.path
-    from agent_backend.leisaac_transport import (
-        TransportMetrics,
-    )
-except ImportError:  # repository tests
-    from npa.agent_backend.leisaac_transport import (
-        TransportMetrics,
-    )
+try:  # workbench image: sibling modules are on sys.path
+    from leisaac_transport import TransportMetrics
+except ImportError:
+    try:  # agent VM: /opt/npa-agent is on sys.path
+        from agent_backend.leisaac_transport import TransportMetrics
+    except ImportError:  # repository tests
+        from npa.agent_backend.leisaac_transport import TransportMetrics
 
 
 VIDEO_DATACHANNEL_LABEL = "npa-leisaac-video"
