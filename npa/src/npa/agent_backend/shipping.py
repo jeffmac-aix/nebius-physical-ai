@@ -24,6 +24,7 @@ SHIPPED_BACKEND_MODULES = (
     "leisaac_episodes",
     "leisaac_bundles",
     "leisaac_transport",
+    "leisaac_datachannel",
     "leisaac_routes",
 )
 

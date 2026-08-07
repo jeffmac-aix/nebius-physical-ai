@@ -43,6 +43,7 @@ try:  # agent VM: /opt/npa-agent is on sys.path
         LEISAAC_RECORDER_PATH,
         LEISAAC_SIGNAL_PORT,
         LEISAAC_VIEW_PATH,
+        LEISAAC_VIDEO_DATACHANNEL_PATH,
         LEISAAC_VIDEO_WS_PATH,
         normalize_manifest,
         selected_run_id,
@@ -62,6 +63,11 @@ try:  # agent VM: /opt/npa-agent is on sys.path
         stamp_verified_frame,
         unpack_frame,
     )
+    from agent_backend.leisaac_datachannel import (
+        VideoDataChannelError,
+        VideoDataChannelPeerPool,
+        parse_video_datachannel_offer,
+    )
     from agent_backend.leisaac_episodes import (
         EpisodeStore,
         EpisodeStoreError,
@@ -79,6 +85,7 @@ except ImportError:  # repository tests
         LEISAAC_RECORDER_PATH,
         LEISAAC_SIGNAL_PORT,
         LEISAAC_VIEW_PATH,
+        LEISAAC_VIDEO_DATACHANNEL_PATH,
         LEISAAC_VIDEO_WS_PATH,
         normalize_manifest,
         selected_run_id,
@@ -97,6 +104,11 @@ except ImportError:  # repository tests
         parse_video_ack,
         stamp_verified_frame,
         unpack_frame,
+    )
+    from npa.agent_backend.leisaac_datachannel import (
+        VideoDataChannelError,
+        VideoDataChannelPeerPool,
+        parse_video_datachannel_offer,
     )
     from npa.agent_backend.leisaac_episodes import (
         EpisodeStore,
@@ -364,6 +376,7 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
     manifest_cache: dict[str, tuple[float, dict | None, str]] = {}
     manifest_cache_lock = threading.Lock()
     transport_metrics = TransportMetrics()
+    video_datachannel_peers = VideoDataChannelPeerPool()
     ws_session_secret = secrets.token_bytes(32)
     consumed_ws_nonces: dict[str, int] = {}
     bundle_selection_lock = asyncio.Lock()
@@ -1180,6 +1193,119 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
                 samesite="strict",
             )
         return response
+
+    @app.post(LEISAAC_VIDEO_DATACHANNEL_PATH.removeprefix("/api"))
+    async def leisaac_video_datachannel(request: Request) -> Any:
+        """Negotiate authenticated, partial-reliability WebRTC video only."""
+
+        if (
+            not _same_origin_session_request(request.headers)
+            or request.headers.get("x-npa-leisaac-control") != "1"
+        ):
+            return deps.response(
+                content=json.dumps(
+                    {"detail": "same-origin authenticated HTTPS is required"}
+                ),
+                status_code=403,
+                media_type="application/json",
+                headers={"Cache-Control": "private, no-store"},
+            )
+        try:
+            content_length = int(request.headers.get("content-length") or "0")
+        except ValueError:
+            content_length = 0
+        if content_length <= 0 or content_length > 131_072:
+            return deps.response(
+                content=json.dumps({"detail": "invalid WebRTC video offer size"}),
+                status_code=400,
+                media_type="application/json",
+                headers={"Cache-Control": "private, no-store"},
+            )
+        try:
+            payload = await request.json()
+        except ValueError:
+            payload = None
+        run_id = str(payload.get("run_id") if isinstance(payload, dict) else "")
+        manifest, reason = await asyncio.to_thread(cached_resolve, run_id)
+        if not manifest:
+            return deps.response(
+                content=json.dumps({"detail": reason}),
+                status_code=404,
+                media_type="application/json",
+                headers={"Cache-Control": "private, no-store"},
+            )
+        try:
+            offer_sdp = parse_video_datachannel_offer(
+                payload, expected_run_id=str(manifest["run_id"])
+            )
+        except VideoDataChannelError as exc:
+            return deps.response(
+                content=json.dumps({"detail": str(exc)}),
+                status_code=400,
+                media_type="application/json",
+                headers={"Cache-Control": "private, no-store"},
+            )
+        health, reason = await asyncio.to_thread(_health, deps, manifest)
+        if not health or str(health.get("stream_transport") or "") != "websocket-v1":
+            return deps.response(
+                content=json.dumps(
+                    {"detail": reason or "preferred video transport is unavailable"}
+                ),
+                status_code=503,
+                media_type="application/json",
+                headers={"Cache-Control": "private, no-store"},
+            )
+        safe_status = status_payload(manifest, health)
+        ice_servers = safe_status.get("ice_servers")
+        if not isinstance(ice_servers, list) or len(ice_servers) != 1:
+            return deps.response(
+                content=json.dumps({"detail": "WebRTC relay is unavailable"}),
+                status_code=503,
+                media_type="application/json",
+                headers={"Cache-Control": "private, no-store"},
+            )
+
+        def open_runtime() -> Any:
+            return deps.websocket_connect(
+                _runtime_ws_uri(manifest, "/transport/video"),
+                subprotocols=[VIDEO_SUBPROTOCOL],
+                additional_headers={
+                    "X-NPA-LeIsaac-Nonce": manifest["session_nonce"],
+                    "X-NPA-LeIsaac-Run-ID": str(manifest["run_id"]),
+                },
+                open_timeout=5,
+                close_timeout=2,
+                max_size=MAX_FRAME_BYTES + 256,
+                max_queue=2,
+                ping_interval=10,
+                ping_timeout=10,
+                compression=None,
+            )
+
+        try:
+            answer = await video_datachannel_peers.create_answer(
+                offer_sdp=offer_sdp,
+                run_id=str(manifest["run_id"]),
+                ice_server=ice_servers[0],
+                open_runtime=open_runtime,
+                metrics=transport_metrics,
+            )
+        except VideoDataChannelError as exc:
+            return deps.response(
+                content=json.dumps({"detail": str(exc)}),
+                status_code=503,
+                media_type="application/json",
+                headers={"Cache-Control": "private, no-store"},
+            )
+        return deps.response(
+            content=json.dumps(answer),
+            status_code=200,
+            media_type="application/json",
+            headers={
+                "Cache-Control": "private, no-store",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
 
     @app.get("/leisaac/frame.jpg")
     def leisaac_frame(

@@ -2287,6 +2287,9 @@
       let leisaacFrameSequence = 0;
       let leisaacControlSocket = null;
       let leisaacVideoSocket = null;
+      let leisaacVideoPeer = null;
+      let leisaacVideoDataChannel = null;
+      let leisaacVideoTransport = "disconnected";
       let leisaacSocketGeneration = 0;
       let leisaacReconnectAttempts = 0;
       let leisaacReconnectTimer = null;
@@ -2312,7 +2315,7 @@
       const leisaacUnackedControls = new Map();
       const leisaacKeysDown = new Set();
       const leisaacPings = new Map();
-      const leisaacTransportEvidence = { controls: [], frames: [], reconnects: 0, active: "disconnected", dropped_frames: 0 };
+      const leisaacTransportEvidence = { controls: [], frames: [], reconnects: 0, active: "disconnected", video: "disconnected", dropped_frames: 0 };
       const LEISAAC_EVIDENCE_LIMIT = 4096;
       function recordLeIsaacEvidence(kind, value) {
         const collection = leisaacTransportEvidence[kind];
@@ -3164,7 +3167,9 @@
         const latency = document.getElementById("leisaacLatencyStatus");
         if (transport) {
           const label = leisaacActiveTransport === "websocket-v1"
-            ? "WebSocket · preferred · latest-frame-wins"
+            ? (leisaacVideoTransport === "webrtc-datachannel-v1"
+              ? "WebSocket control + WebRTC video · preferred · latest-frame-wins"
+              : "WebSocket · fallback · latest-frame-wins")
             : leisaacActiveTransport === "jpeg-poll"
               ? "JPEG polling · fallback"
               : "disconnected";
@@ -3185,6 +3190,7 @@
           }
         }
         leisaacTransportEvidence.active = leisaacActiveTransport;
+        leisaacTransportEvidence.video = leisaacVideoTransport;
         leisaacTransportEvidence.dropped_frames = leisaacDroppedFrames;
       }
       function leisaacControlPayload(key, event) {
@@ -3892,20 +3898,130 @@
           socket.onopen = socket.onclose = socket.onerror = socket.onmessage = null;
           try { socket.close(1000, "client disconnect"); } catch (_err) { /* already closed */ }
         }
+        const channel = leisaacVideoDataChannel;
+        const peer = leisaacVideoPeer;
+        leisaacVideoDataChannel = null;
+        leisaacVideoPeer = null;
+        leisaacVideoTransport = "disconnected";
+        if (channel) {
+          channel.onopen = channel.onclose = channel.onerror = channel.onmessage = null;
+          try { channel.close(); } catch (_err) { /* already closed */ }
+        }
+        if (peer) {
+          peer.onconnectionstatechange = null;
+          try { peer.close(); } catch (_err) { /* already closed */ }
+        }
       }
-      function openLeIsaacSocketPair(status) {
+      function waitForLeIsaacIceGathering(peer) {
+        if (peer.iceGatheringState === "complete") return Promise.resolve();
+        return new Promise((resolve, reject) => {
+          const timeout = window.setTimeout(() => finish(new Error("WebRTC ICE gathering timed out")), 8000);
+          const changed = () => {
+            if (peer.iceGatheringState === "complete") finish();
+          };
+          const finish = (error) => {
+            window.clearTimeout(timeout);
+            peer.removeEventListener("icegatheringstatechange", changed);
+            if (error) reject(error); else resolve();
+          };
+          peer.addEventListener("icegatheringstatechange", changed);
+        });
+      }
+      async function openLeIsaacVideoDataChannel(status, generation) {
+        if (typeof window.RTCPeerConnection !== "function" || !status.video_datachannel_url) {
+          throw new Error("WebRTC video data channel is unavailable");
+        }
+        const servers = Array.isArray(status.ice_servers) ? status.ice_servers : [];
+        if (String(status.ice_transport_policy || "") !== "relay" || servers.length !== 1) {
+          throw new Error("WebRTC video relay configuration is invalid");
+        }
+        const peer = new window.RTCPeerConnection({
+          iceServers: servers,
+          iceTransportPolicy: "relay",
+          bundlePolicy: "max-bundle",
+        });
+        const channel = peer.createDataChannel("npa-leisaac-video", {
+          ordered: false,
+          maxRetransmits: 0,
+          protocol: "npa.leisaac.video.v1",
+        });
+        channel.binaryType = "arraybuffer";
+        channel.onmessage = handleLeIsaacVideoMessage;
+        leisaacVideoPeer = peer;
+        leisaacVideoDataChannel = channel;
+        let cancelOpenWait = () => {};
+        const opened = new Promise((resolve, reject) => {
+          const timeout = window.setTimeout(() => finish(new Error("WebRTC video channel timed out")), 10000);
+          const finish = (error) => {
+            window.clearTimeout(timeout);
+            channel.onopen = null;
+            channel.onerror = null;
+            if (error) reject(error); else resolve();
+          };
+          cancelOpenWait = () => {
+            window.clearTimeout(timeout);
+            channel.onopen = null;
+            channel.onerror = null;
+          };
+          channel.onopen = () => finish();
+          channel.onerror = () => finish(new Error("WebRTC video channel failed"));
+        });
+        try {
+          const offer = await peer.createOffer();
+          await peer.setLocalDescription(offer);
+          await waitForLeIsaacIceGathering(peer);
+          if (generation !== leisaacSocketGeneration) throw new Error("stale WebRTC negotiation");
+          const response = await fetch(String(status.video_datachannel_url), {
+            method: "POST",
+            credentials: "include",
+            cache: "no-store",
+            headers: {
+              "Content-Type": "application/json",
+              "X-NPA-LeIsaac-Control": "1",
+            },
+            body: JSON.stringify({
+              v: 1,
+              run_id: String(status.run_id || ""),
+              type: "offer",
+              sdp: String((peer.localDescription && peer.localDescription.sdp) || ""),
+            }),
+          });
+          if (!response.ok) throw new Error("WebRTC video offer returned HTTP " + String(response.status));
+          const answer = await response.json();
+          if (
+            !answer || answer.v !== 1 || answer.type !== "answer" ||
+            typeof answer.sdp !== "string" || !answer.sdp ||
+            Object.keys(answer).sort().join(",") !== "sdp,type,v"
+          ) throw new Error("WebRTC video answer is invalid");
+          await peer.setRemoteDescription({ type: "answer", sdp: answer.sdp });
+          await opened;
+          if (generation !== leisaacSocketGeneration) throw new Error("stale WebRTC video channel");
+          const maximum = Number((peer.sctp && peer.sctp.maxMessageSize) || 0);
+          if (maximum && maximum < 65536) throw new Error("WebRTC video message size is too small");
+          leisaacVideoTransport = "webrtc-datachannel-v1";
+        } catch (error) {
+          // Negotiation can fail before `opened` is awaited (for example, an
+          // authenticated offer rejection).  Cancel its timer so that failure
+          // cannot become a later unhandled rejection during WebSocket fallback.
+          cancelOpenWait();
+          throw error;
+        }
+      }
+      function openLeIsaacSocketPair(status, useDataChannel) {
         closeLeIsaacSockets();
         const generation = leisaacSocketGeneration;
         const control = new WebSocket(leisaacWebSocketUrl(status.control_ws_url), "npa.leisaac.control.v1");
-        const video = new WebSocket(leisaacWebSocketUrl(status.video_ws_url), "npa.leisaac.video.v1");
-        video.binaryType = "arraybuffer";
+        const video = useDataChannel
+          ? null
+          : new WebSocket(leisaacWebSocketUrl(status.video_ws_url), "npa.leisaac.video.v1");
+        if (video) video.binaryType = "arraybuffer";
         leisaacControlSocket = control;
         leisaacVideoSocket = video;
         return new Promise((resolve, reject) => {
           let controlOpen = false;
           let videoOpen = false;
           let settled = false;
-          const timeout = window.setTimeout(() => finish(new Error("WebSocket connection timed out")), 8000);
+          const timeout = window.setTimeout(() => finish(new Error("preferred connection timed out")), 15000);
           const finish = (error) => {
             if (settled) return;
             if (!error && (!controlOpen || !videoOpen)) return;
@@ -3928,20 +4044,33 @@
             }));
             finish();
           };
-          video.onopen = () => { videoOpen = true; finish(); };
           control.onmessage = handleLeIsaacControlMessage;
-          video.onmessage = handleLeIsaacVideoMessage;
-          const failed = () => finish(new Error("preferred WebSocket transport unavailable"));
+          if (video) {
+            video.onopen = () => {
+              leisaacVideoTransport = "websocket-v1";
+              videoOpen = true;
+              finish();
+            };
+            video.onmessage = handleLeIsaacVideoMessage;
+          } else {
+            openLeIsaacVideoDataChannel(status, generation).then(() => {
+              videoOpen = true;
+              finish();
+            }).catch(finish);
+          }
+          const failed = () => finish(new Error("preferred transport unavailable"));
           control.onerror = failed;
-          video.onerror = failed;
+          if (video) video.onerror = failed;
           control.onclose = () => {
             if (!settled) failed();
             else if (generation === leisaacSocketGeneration && leisaacActiveTransport === "websocket-v1") recoverLeIsaacPreferred(status);
           };
-          video.onclose = () => {
-            if (!settled) failed();
-            else if (generation === leisaacSocketGeneration && leisaacActiveTransport === "websocket-v1") recoverLeIsaacPreferred(status);
-          };
+          if (video) {
+            video.onclose = () => {
+              if (!settled) failed();
+              else if (generation === leisaacSocketGeneration && leisaacActiveTransport === "websocket-v1") recoverLeIsaacPreferred(status);
+            };
+          }
         });
       }
       async function authorizeLeIsaacSocketPair(status) {
@@ -3966,9 +4095,25 @@
           try {
             if (attempt) await new Promise((resolve) => window.setTimeout(resolve, 250 * (2 ** (attempt - 1))));
             await authorizeLeIsaacSocketPair(status);
-            await openLeIsaacSocketPair(status);
+            const useDataChannel = attempt === 0 && Boolean(status.video_datachannel_url);
+            await openLeIsaacSocketPair(status, useDataChannel);
             leisaacReconnectAttempts = attempt;
             leisaacActiveTransport = "websocket-v1";
+            const generation = leisaacSocketGeneration;
+            if (leisaacVideoDataChannel) {
+              leisaacVideoDataChannel.onclose = () => {
+                if (generation === leisaacSocketGeneration && leisaacActiveTransport === "websocket-v1") recoverLeIsaacPreferred(status);
+              };
+            }
+            if (leisaacVideoPeer) {
+              leisaacVideoPeer.onconnectionstatechange = () => {
+                if (
+                  ["failed", "closed"].includes(String(leisaacVideoPeer && leisaacVideoPeer.connectionState || "")) &&
+                  generation === leisaacSocketGeneration &&
+                  leisaacActiveTransport === "websocket-v1"
+                ) recoverLeIsaacPreferred(status);
+              };
+            }
             leisaacTransportEvidence.reconnects += attempt;
             startLeIsaacHeartbeat();
             updateLeIsaacTransportIndicator();

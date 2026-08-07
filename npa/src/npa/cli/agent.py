@@ -8416,7 +8416,7 @@ cat <<'HTML' | sudo tee /opt/npa-agent/ui.html >/dev/null
 HTML
 sudo python3 -m venv /opt/npa-agent/venv
 sudo /opt/npa-agent/venv/bin/pip install --upgrade pip
-sudo /opt/npa-agent/venv/bin/pip install fastapi uvicorn httpx pyyaml boto3 websockets "rerun-sdk>=0.32"
+sudo /opt/npa-agent/venv/bin/pip install fastapi uvicorn httpx pyyaml boto3 websockets "rerun-sdk>=0.32" "aiortc==1.15.0"
 sudo /opt/npa-agent/venv/bin/pip install -e "{AGENT_SOURCE_ROOT}/npa[server,foxglove]"
 sudo /opt/npa-agent/venv/bin/python /opt/npa-agent/bootstrap_rrd.py
 sudo systemctl restart npa-rerun || true

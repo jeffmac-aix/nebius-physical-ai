@@ -596,7 +596,142 @@ describe("NPA agent LeIsaac capability tab", () => {
     cy.get("#leisaacDisconnect").click();
   });
 
-  it("uses preferred binary WebSockets while controls and recorder stay responsive", () => {
+  it("negotiates authenticated partial-reliability WebRTC video with reliable WebSocket control", () => {
+    const status = {
+      available: true,
+      run_id: "mock-datachannel",
+      task: "LeIsaac-SO101-LiftCube-v0",
+      environment_id: "latency-test",
+      environment_index: 2,
+      seed: 47,
+      stream_transport: "websocket-v1",
+      preferred_transport: "websocket-v1",
+      control_ws_url: "/api/leisaac/transport/control?run_id=mock-datachannel",
+      video_ws_url: "/api/leisaac/transport/video?run_id=mock-datachannel",
+      video_datachannel_url: "/api/leisaac/transport/video-webrtc?run_id=mock-datachannel",
+      ice_transport_policy: "relay",
+      ice_servers: [{
+        urls: ["turn:203.0.113.50:3478?transport=udp"],
+        username: "bounded-test-user",
+        credential: "bounded-test-credential",
+      }],
+      cameras: ["workspace", "overview"],
+      view_orbit: true,
+      recorder: { state: "idle", completed_episode_count: 0 },
+    };
+    cy.intercept("GET", "/api/leisaac/status?run_id=mock-datachannel", status).as("dcStatus");
+    cy.intercept("GET", "/api/leisaac/status?run_id=mock-run", status);
+    cy.intercept("GET", "/api/leisaac/status", status);
+    cy.intercept("POST", "/api/leisaac/select", {
+      statusCode: 200,
+      body: { selected: true, run_id: "mock-datachannel", available: true },
+    });
+    cy.intercept("POST", "/api/leisaac/transport/video-webrtc?run_id=mock-datachannel", (req) => {
+      expect(req.headers["x-npa-leisaac-control"]).to.equal("1");
+      expect(req.body).to.have.all.keys("v", "run_id", "type", "sdp");
+      expect(req.body).to.include({ v: 1, run_id: "mock-datachannel", type: "offer" });
+      expect(req.body.sdp).to.include("m=application");
+      req.reply({
+        statusCode: 200,
+        headers: { "cache-control": "no-store" },
+        body: { v: 1, type: "answer", sdp: "v=0\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n" },
+      });
+    }).as("dcOffer");
+
+    cy.window().then((win) => {
+      class FakeControlWebSocket {
+        static CONNECTING = 0;
+        static OPEN = 1;
+        static CLOSING = 2;
+        static CLOSED = 3;
+        constructor(url, protocol) {
+          this.url = String(url);
+          this.protocol = String(protocol || "");
+          this.readyState = FakeControlWebSocket.CONNECTING;
+          win.setTimeout(() => {
+            this.readyState = FakeControlWebSocket.OPEN;
+            if (this.onopen) this.onopen({ target: this });
+          }, 0);
+        }
+        send(raw) {
+          const message = JSON.parse(String(raw));
+          if (message.type === "resume") {
+            win.setTimeout(() => this.onmessage && this.onmessage({ data: JSON.stringify({
+              v: 1,
+              type: "resumed",
+              run_id: message.run_id,
+              client_id: message.client_id,
+              next_seq: 1,
+              last_applied_seq: 0,
+              keys_down: [],
+            }) }), 0);
+          }
+        }
+        close() { this.readyState = FakeControlWebSocket.CLOSED; }
+      }
+      class FakeDataChannel {
+        constructor(label, options) {
+          this.label = label;
+          this.options = options;
+          this.readyState = "connecting";
+          this.binaryType = "blob";
+        }
+        close() { this.readyState = "closed"; }
+      }
+      class FakePeerConnection {
+        constructor(configuration) {
+          this.configuration = configuration;
+          this.iceGatheringState = "complete";
+          this.connectionState = "new";
+          this.sctp = { maxMessageSize: 65536 };
+          win.__LEISAAC_DC_PEER__ = this;
+        }
+        createDataChannel(label, options) {
+          this.channel = new FakeDataChannel(label, options);
+          return this.channel;
+        }
+        async createOffer() {
+          return { type: "offer", sdp: "v=0\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n" };
+        }
+        async setLocalDescription(description) { this.localDescription = description; }
+        async setRemoteDescription(description) {
+          this.remoteDescription = description;
+          this.connectionState = "connected";
+          this.channel.readyState = "open";
+          win.setTimeout(() => this.channel.onopen && this.channel.onopen(), 0);
+        }
+        addEventListener() {}
+        removeEventListener() {}
+        close() { this.connectionState = "closed"; }
+      }
+      win.WebSocket = FakeControlWebSocket;
+      win.RTCPeerConnection = FakePeerConnection;
+    });
+
+    cy.window().then((win) =>
+      win.__NPA_AGENT_TEST__.refreshLeIsaacCapability("mock-datachannel"),
+    );
+    cy.wait("@dcStatus");
+    cy.get("#tabLeIsaac").click();
+    cy.get("#leisaacConnect").click();
+    cy.wait("@dcOffer");
+    cy.get("#leisaacTransportStatus", { timeout: 10000 })
+      .should("contain.text", "WebSocket control + WebRTC video")
+      .and("contain.text", "latest-frame-wins");
+    cy.window().should((win) => {
+      const peer = win.__LEISAAC_DC_PEER__;
+      expect(peer.configuration.iceTransportPolicy).to.equal("relay");
+      expect(peer.configuration.iceServers).to.deep.equal(status.ice_servers);
+      expect(peer.channel.label).to.equal("npa-leisaac-video");
+      expect(peer.channel.options).to.deep.include({ ordered: false, maxRetransmits: 0 });
+      expect(peer.channel.binaryType).to.equal("arraybuffer");
+      expect(win.__NPA_AGENT_TEST__.leisaacTransportEvidence().video)
+        .to.equal("webrtc-datachannel-v1");
+    });
+    cy.get("#leisaacDisconnect").click();
+  });
+
+  it("uses binary WebSocket video fallback while controls and recorder stay responsive", () => {
     let recorderState = "idle";
     const status = () => ({
       available: true,
@@ -827,6 +962,8 @@ describe("NPA agent LeIsaac capability tab", () => {
       .should("contain.text", "WebSocket")
       .and("contain.text", "latest-frame-wins");
     cy.window().should((win) => {
+      expect(win.__NPA_AGENT_TEST__.leisaacTransportEvidence().video)
+        .to.equal("websocket-v1");
       const video = win.__LEISAAC_FAKE_SOCKETS__.find(
         (socket) => socket.url.includes("/video") && socket.readyState === 1,
       );

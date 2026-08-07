@@ -71,6 +71,7 @@ LEISAAC_VIEW_PATH = "/api/leisaac/view"
 LEISAAC_BUNDLES_PATH = "/api/leisaac/bundles"
 LEISAAC_CONTROL_WS_PATH = "/api/leisaac/transport/control"
 LEISAAC_VIDEO_WS_PATH = "/api/leisaac/transport/video"
+LEISAAC_VIDEO_DATACHANNEL_PATH = "/api/leisaac/transport/video-webrtc"
 
 _RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
@@ -618,6 +619,7 @@ def status_payload(
         "preferred_transport": "websocket-v1",
         "control_ws_url": f"{LEISAAC_CONTROL_WS_PATH}?run_id={run_id}",
         "video_ws_url": f"{LEISAAC_VIDEO_WS_PATH}?run_id={run_id}",
+        "video_datachannel_url": LEISAAC_VIDEO_DATACHANNEL_PATH,
         "frame_url": f"{LEISAAC_FRAME_PATH}?run_id={run_id}",
         "input_url": f"{LEISAAC_INPUT_PATH}?run_id={run_id}",
         "recorder_url": f"{LEISAAC_RECORDER_PATH}?run_id={run_id}",

@@ -407,6 +407,13 @@ function frameStageSummary(frames) {
         const workspace = sampleCanvas(win, "leisaacCanvas");
         const overview = sampleCanvas(win, "leisaacSecondaryCanvas");
         benchmark.completed_at = new Date().toISOString();
+        benchmark.transport = {
+          control: String(finalEvidence.active || ""),
+          video: String(finalEvidence.video || ""),
+          policy: finalEvidence.video === "webrtc-datachannel-v1"
+            ? "TURN-only unordered maxRetransmits=0; reliable ordered control WebSocket"
+            : "binary WebSocket latest-frame-wins fallback",
+        };
         benchmark.quality = {
           workspace: { width: 1280, height: 720, jpeg_quality: 82, variance: workspace.variance },
           overview: { width: 1280, height: 720, jpeg_quality: 82, variance: overview.variance },
@@ -454,6 +461,11 @@ function frameStageSummary(frames) {
         }
         if (benchmark.quality.viewport_pixel_difference < 1) {
           throw new Error("the two camera canvases are not visually distinct");
+        }
+        if (phase === "optimized" && benchmark.transport.video !== "webrtc-datachannel-v1") {
+          throw new Error(
+            `optimized benchmark requires WebRTC video, got ${benchmark.transport.video || "none"}`,
+          );
         }
       });
 

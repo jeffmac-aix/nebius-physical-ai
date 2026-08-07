@@ -325,6 +325,7 @@ def test_live_health_attestation_gates_secret_free_status() -> None:
     assert payload["available"] is True
     assert payload["signaling_server"] == "same-origin"
     assert payload["signaling_path"] == "/api/leisaac/signal"
+    assert payload["video_datachannel_url"] == "/api/leisaac/transport/video-webrtc"
     assert payload["media_server"] == "1.1.1.1"
     serialized = repr(payload)
     assert manifest["session_nonce"] not in serialized
@@ -544,6 +545,7 @@ def test_authenticated_backend_routes_gate_status_and_proxy_client(monkeypatch) 
     assert status.status_code == 200
     assert status.json()["available"] is True
     assert status.json()["input_events"] == 17
+    assert status.json()["video_datachannel_url"] == "/api/leisaac/transport/video-webrtc"
     assert status.headers["cache-control"] == "private, no-store"
     forbidden_selection = client.post(
         "/leisaac/select",
@@ -627,6 +629,16 @@ def test_authenticated_backend_routes_gate_status_and_proxy_client(monkeypatch) 
         },
     )
     assert cross_site_metadata_session.status_code == 403
+    cross_site_video_offer = client.post(
+        "/leisaac/transport/video-webrtc",
+        headers={
+            **ws_session_headers,
+            "origin": "https://evil.example",
+            "content-type": "application/json",
+        },
+        json={"v": 1, "run_id": raw_manifest["run_id"], "type": "offer", "sdp": "v=0"},
+    )
+    assert cross_site_video_offer.status_code == 403
     state["sim_viz"] = {"active_run_id": "unrelated-artifact-run"}
     remembered = client.get("/leisaac/status", headers={"x-forwarded-proto": "https"})
     assert remembered.status_code == 200
