@@ -549,7 +549,7 @@ index a467482..d3bcad5 100644
 @@ -384 +835 @@ def main():  # noqa: C901
 -                    rate_limiter.sleep(env)
 +                    rate_limiter.sleep(None if os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") == "1" else env)
-@@ -395 +920,3 @@ def main():  # noqa: C901
+@@ -395 +920,4 @@ def main():  # noqa: C901
 +        capture_encoder.shutdown(wait=True, cancel_futures=True)
 +        poll_encoded_capture()
 +        recorder.shutdown(wait=True)
