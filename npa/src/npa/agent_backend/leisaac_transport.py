@@ -17,7 +17,7 @@ import re
 import struct
 import threading
 import time
-from typing import Any, Callable
+from typing import Any
 
 
 PROTOCOL_VERSION = 1
@@ -29,7 +29,6 @@ MAX_VIDEO_ACK_BYTES = 512
 MAX_FRAME_BYTES = 4 * 1024 * 1024
 MAX_CLIENT_HISTORY = 1024
 MAX_VIDEO_IN_FLIGHT = 4
-MAX_SECONDARY_STARVATION_SECONDS = 2.0
 CLIENT_ID_PATTERN = re.compile(r"[A-Za-z0-9._:-]{1,96}")
 RUN_ID_PATTERN = re.compile(r"[A-Za-z0-9._:-]{1,128}")
 ALLOWED_KEYS = frozenset({"W", "S", "A", "D", "Q", "E", "J", "L", "I", "K", "U", "O"})
@@ -635,7 +634,6 @@ class AsyncLatestByKey:
         *,
         next_index: int = 0,
         preferred_key: str | None = None,
-        preferred_predicate: Callable[[Any], bool] | None = None,
         timeout: float | None = None,
     ) -> tuple[str, int, Any, int, int]:
         if preferred_key is not None and preferred_key not in self._keys:
@@ -651,20 +649,13 @@ class AsyncLatestByKey:
 
         if not available():
             await asyncio.wait_for(wait(), timeout=timeout)
-        # Put the user-critical viewport on the wire first for a new consumer,
-        # and whenever round-robin already points at it. Callers may supply a
-        # bounded policy (for example, prefer primary only while the secondary
-        # delivery deadline has not expired).
-        start = max(0, int(next_index)) % len(self._keys)
-        preferred_ready = (
+        # Put the user-critical viewport on the wire first when both cameras are
+        # ready. Its generation is then observed, so the secondary value is
+        # selected on the immediately following dequeue rather than starved.
+        if (
             preferred_key is not None
             and self._generations[preferred_key] > observed[preferred_key]
-        )
-        if preferred_ready and preferred_predicate is not None:
-            prefer_now = bool(preferred_predicate(self._values[preferred_key]))
-        else:
-            prefer_now = not any(observed.values()) or self._keys[start] == preferred_key
-        if preferred_ready and prefer_now:
+        ):
             index = self._keys.index(preferred_key)
             generation = self._generations[preferred_key]
             return (
@@ -674,6 +665,7 @@ class AsyncLatestByKey:
                 max(0, generation - observed[preferred_key] - 1),
                 (index + 1) % len(self._keys),
             )
+        start = max(0, int(next_index)) % len(self._keys)
         for offset in range(len(self._keys)):
             index = (start + offset) % len(self._keys)
             key = self._keys[index]

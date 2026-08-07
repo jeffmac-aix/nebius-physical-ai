@@ -56,7 +56,6 @@ try:  # agent VM: /opt/npa-agent is on sys.path
         CONTROL_SUBPROTOCOL,
         MAX_CONTROL_MESSAGE_BYTES,
         MAX_FRAME_BYTES,
-        MAX_SECONDARY_STARVATION_SECONDS,
         TransportMetrics,
         TransportProtocolError,
         VIDEO_SUBPROTOCOL,
@@ -99,7 +98,6 @@ except ImportError:  # repository tests
         CONTROL_SUBPROTOCOL,
         MAX_CONTROL_MESSAGE_BYTES,
         MAX_FRAME_BYTES,
-        MAX_SECONDARY_STARVATION_SECONDS,
         TransportMetrics,
         TransportProtocolError,
         VIDEO_SUBPROTOCOL,
@@ -1925,7 +1923,6 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
                 async def send_browser() -> None:
                     generations: dict[str, int] = {}
                     next_camera_index = 0
-                    last_overview_sent_at = time.monotonic()
                     while True:
                         (
                             camera,
@@ -1937,10 +1934,6 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
                             generations,
                             next_index=next_camera_index,
                             preferred_key="workspace",
-                            preferred_predicate=lambda _queued: (
-                                time.monotonic() - last_overview_sent_at
-                                < MAX_SECONDARY_STARVATION_SECONDS
-                            ),
                             timeout=20.0,
                         )
                         generations[camera] = generation
@@ -1962,8 +1955,6 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
                             transport_metrics.increment("slow_client_disconnects")
                             raise
                         transport_metrics.increment("frames_sent")
-                        if camera == "overview":
-                            last_overview_sent_at = time.monotonic()
 
                 tasks = {
                     asyncio.create_task(read_runtime()),

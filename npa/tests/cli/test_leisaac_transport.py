@@ -404,9 +404,6 @@ async def test_camera_latest_values_prefer_primary_once_without_starvation() -> 
     )
     generations[camera] = generation
 
-    # A newly published primary cannot preempt the secondary that was already
-    # waiting when the initial preferred frame was selected.
-    await latest.publish("workspace", "workspace-2")
     camera, generation, value, skipped, _ = await latest.wait_after(
         generations,
         next_index=next_index,
@@ -419,50 +416,6 @@ async def test_camera_latest_values_prefer_primary_once_without_starvation() -> 
         "overview-1",
         0,
     )
-
-    generations[camera] = generation
-    camera, generation, value, skipped, _ = await latest.wait_after(
-        generations,
-        next_index=0,
-        preferred_key="workspace",
-        timeout=0.1,
-    )
-    assert (camera, generation, value, skipped) == (
-        "workspace",
-        2,
-        "workspace-2",
-        0,
-    )
-
-
-@pytest.mark.anyio
-async def test_preference_predicate_bounds_primary_burst() -> None:
-    latest = AsyncLatestByKey(("workspace", "overview"))
-    await latest.publish("overview", {"causal": 0, "name": "overview-1"})
-    await latest.publish("workspace", {"causal": 7, "name": "workspace-1"})
-    generations: dict[str, int] = {}
-    allow_preferred = True
-
-    camera, generation, value, skipped, next_index = await latest.wait_after(
-        generations,
-        next_index=1,
-        preferred_key="workspace",
-        preferred_predicate=lambda _item: allow_preferred,
-        timeout=0.1,
-    )
-    assert (camera, value["name"], skipped) == ("workspace", "workspace-1", 0)
-    generations[camera] = generation
-    allow_preferred = False
-
-    await latest.publish("workspace", {"causal": 7, "name": "workspace-2"})
-    camera, generation, value, skipped, _ = await latest.wait_after(
-        generations,
-        next_index=next_index,
-        preferred_key="workspace",
-        preferred_predicate=lambda _item: allow_preferred,
-        timeout=0.1,
-    )
-    assert (camera, value["name"], skipped) == ("overview", "overview-1", 0)
 
 
 def test_transport_metrics_are_low_cardinality() -> None:

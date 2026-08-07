@@ -93,7 +93,6 @@ try:
         MAX_CLIENT_HISTORY,
         MAX_CONTROL_MESSAGE_BYTES,
         MAX_FRAME_BYTES,
-        MAX_SECONDARY_STARVATION_SECONDS,
         TransportMetrics,
         TransportProtocolError,
         VIDEO_SUBPROTOCOL,
@@ -112,7 +111,6 @@ except ImportError:  # Repository unit tests import the script directly.
         MAX_CLIENT_HISTORY,
         MAX_CONTROL_MESSAGE_BYTES,
         MAX_FRAME_BYTES,
-        MAX_SECONDARY_STARVATION_SECONDS,
         TransportMetrics,
         TransportProtocolError,
         VIDEO_SUBPROTOCOL,
@@ -1310,7 +1308,6 @@ async def _video_datachannel_frames():
     generations: dict[str, int] = {}
     previous_sequences = {camera: 0 for camera in CAMERA_PATHS}
     next_camera_index = 0
-    last_overview_sent_at = time.monotonic()
     while True:
         (
             camera,
@@ -1322,10 +1319,6 @@ async def _video_datachannel_frames():
             generations,
             next_index=next_camera_index,
             preferred_key="workspace",
-            preferred_predicate=lambda _queued: (
-                time.monotonic() - last_overview_sent_at
-                < MAX_SECONDARY_STARVATION_SECONDS
-            ),
             timeout=20.0,
         )
         generations[camera] = generation
@@ -1360,8 +1353,6 @@ async def _video_datachannel_frames():
         )
         if dropped:
             TRANSPORT_METRICS.increment("frames_coalesced", dropped)
-        if camera == "overview":
-            last_overview_sent_at = time.monotonic()
         yield pack_frame(envelope, jpeg)
 
 
@@ -1916,7 +1907,6 @@ def build_app() -> FastAPI:
 
         async def send_frames() -> None:
             nonlocal next_camera_index
-            last_overview_sent_at = time.monotonic()
             while True:
                 (
                     camera,
@@ -1928,10 +1918,6 @@ def build_app() -> FastAPI:
                     generations,
                     next_index=next_camera_index,
                     preferred_key="workspace",
-                    preferred_predicate=lambda _queued: (
-                        time.monotonic() - last_overview_sent_at
-                        < MAX_SECONDARY_STARVATION_SECONDS
-                    ),
                     timeout=20.0,
                 )
                 generations[camera] = generation
@@ -1975,8 +1961,6 @@ def build_app() -> FastAPI:
                     await websocket.close(code=1013)
                     return
                 TRANSPORT_METRICS.increment("frames_sent")
-                if camera == "overview":
-                    last_overview_sent_at = time.monotonic()
 
         try:
             tasks = {
