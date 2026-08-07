@@ -435,11 +435,11 @@ function frameStageSummary(frames) {
             ? "TURN-only reliable ordered control RTCDataChannel; binary WebSocket latest-frame-wins video"
             : finalEvidence.video === "webrtc-datachannel-v1"
               ? "TURN-only unordered maxRetransmits=0 video; reliable ordered control WebSocket"
-              : "same-origin WebSocket control; WebP q82 latest-frame-wins video",
+              : "binary same-origin WebSocket control/video; CUDA fixed-step simulation; latest-frame-wins video",
         };
         benchmark.quality = {
-          workspace: { width: 1280, height: 720, codec: "webp", quality_floor: 82, variance: workspace.variance },
-          overview: { width: 1280, height: 720, codec: "webp", quality_floor: 82, variance: overview.variance },
+          workspace: { width: 1280, height: 720, jpeg_quality: 82, variance: workspace.variance },
+          overview: { width: 1280, height: 720, jpeg_quality: 82, variance: overview.variance },
           viewport_pixel_difference: pixelDifference(workspace, overview),
         };
         benchmark.summary = {
