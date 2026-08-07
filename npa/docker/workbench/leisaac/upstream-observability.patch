@@ -113,7 +113,7 @@ index a467482..d3bcad5 100644
 +    # Background frames must not monopolize the Isaac render/event loop. Causal
 +    # action pairs bypass this cadence and remain immediate at full quality.
 +    idle_background_capture_fps = 2.5
-+    active_background_capture_fps = 2.0
++    active_background_capture_fps = 2.5
 +    def background_capture_interval():
 +        active = time.monotonic() - capture_state["last_causal_at"] < 2.5
 +        return 1.0 / (active_background_capture_fps if active else idle_background_capture_fps)
@@ -337,9 +337,13 @@ index a467482..d3bcad5 100644
 +            return
 +        capture_state["causal_action_sequence"] = sequence
 +        capture_state["causal_applied_monotonic_ns"] = applied_ns
-+        capture_state["last_causal_at"] = time.monotonic()
-+        # Safety releases update the next synchronized pair without adding stale GPU work.
++        causal_at = time.monotonic()
++        capture_state["last_causal_at"] = causal_at
++        # Keep the background pair cadence phase-locked behind the safety
++        # release. This preserves 2.5 FPS while leaving the next likely control
++        # boundary free for its latency-critical causal capture.
 +        if str(applied.get("event") or "") == "release":
++            capture_state["next_at"] = causal_at + background_capture_interval()
 +            return
 +        # A causal pair supersedes background work that has not started. The
 +        # active capture is never cancelled while Kit/GPU owns its buffer.
