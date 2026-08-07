@@ -7,6 +7,7 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import struct
 from types import SimpleNamespace
 
 import pytest
@@ -176,12 +177,16 @@ def test_binary_frame_envelope_round_trips_and_detects_tampering() -> None:
         encoded_wall_ns=102,
         encoded_monotonic_ns=103,
         runtime_send_monotonic_ns=104,
+        causal_action_sequence=7,
+        causal_applied_monotonic_ns=99,
         dropped_before=2,
     )
     packed = pack_frame(envelope, jpeg)
     decoded, content = unpack_frame(packed)
     assert content == jpeg
     assert decoded.sequence == 9
+    assert decoded.causal_action_sequence == 7
+    assert decoded.causal_applied_monotonic_ns == 99
     assert decoded.dropped_before == 2
     assert decoded.sha256 == hashlib.sha256(jpeg).digest()
 
@@ -204,6 +209,35 @@ def test_binary_frame_envelope_round_trips_and_detects_tampering() -> None:
     tampered[-2] ^= 0x01
     with pytest.raises(TransportProtocolError, match="digest"):
         unpack_frame(bytes(tampered))
+
+
+def test_binary_frame_envelope_accepts_v1_as_zero_causal_compatibility() -> None:
+    jpeg = b"\xff\xd8legacy\xff\xd9"
+    legacy = struct.Struct("!4sBBHQQQQQQQQII32s").pack(
+        b"NPAF",
+        1,
+        0,
+        112,
+        3,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        len(jpeg),
+        2,
+        hashlib.sha256(jpeg).digest(),
+    ) + jpeg
+
+    envelope, content = unpack_frame(legacy)
+
+    assert content == jpeg
+    assert envelope.sequence == 3
+    assert envelope.causal_action_sequence == 0
+    assert envelope.causal_applied_monotonic_ns == 0
+    assert envelope.dropped_before == 2
 
 
 def test_verified_relay_stamps_a_frame_without_hashing_the_jpeg_twice(

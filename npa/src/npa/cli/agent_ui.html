@@ -2293,9 +2293,8 @@
       let leisaacHeartbeatTimer = null;
       let leisaacActiveTransport = "disconnected";
       const leisaacVideoPending = { workspace: null, overview: null };
-      let leisaacVideoDecoding = false;
+      const leisaacVideoDecoding = { workspace: false, overview: false };
       const leisaacLastFrameSequences = { workspace: 0, overview: 0 };
-      let leisaacDecodeNextCamera = "workspace";
       let leisaacDeliveredFrames = 0;
       let leisaacDroppedFrames = 0;
       let leisaacLastFpsAt = 0;
@@ -2314,6 +2313,15 @@
       const leisaacKeysDown = new Set();
       const leisaacPings = new Map();
       const leisaacTransportEvidence = { controls: [], frames: [], reconnects: 0, active: "disconnected", dropped_frames: 0 };
+      const LEISAAC_EVIDENCE_LIMIT = 4096;
+      function recordLeIsaacEvidence(kind, value) {
+        const collection = leisaacTransportEvidence[kind];
+        if (!Array.isArray(collection)) return;
+        collection.push(value);
+        if (collection.length > LEISAAC_EVIDENCE_LIMIT) {
+          collection.splice(0, collection.length - LEISAAC_EVIDENCE_LIMIT);
+        }
+      }
       let leisaacRecorderTimer = null;
       let leisaacRecorderPollInFlight = false;
       let leisaacRecorderPending = null;
@@ -3235,7 +3243,7 @@
             });
             if (!response.ok) throw new Error("LeIsaac fallback control returned HTTP " + String(response.status));
             leisaacLastControlLatencyMs = performance.now() - started;
-            leisaacTransportEvidence.controls.push({
+            recordLeIsaacEvidence("controls", {
               seq: seq,
               phase: "fallback-accepted",
               event_to_ack_ms: leisaacLastControlLatencyMs,
@@ -3545,7 +3553,7 @@
         const pending = leisaacUnackedControls.get(seq);
         if (!pending) return;
         const latencyMs = performance.now() - pending.eventMonoMs;
-        leisaacTransportEvidence.controls.push({
+        recordLeIsaacEvidence("controls", {
           seq: seq,
           phase: String(payload.phase || ""),
           key: String(payload.key || ""),
@@ -3571,11 +3579,15 @@
           buffer.byteLength < 112 ||
           view.getUint8(0) !== 0x4e || view.getUint8(1) !== 0x50 ||
           view.getUint8(2) !== 0x41 || view.getUint8(3) !== 0x46 ||
-          view.getUint8(4) !== 1
+          ![1, 2].includes(view.getUint8(4))
         ) throw new Error("invalid LeIsaac frame envelope");
+        const version = view.getUint8(4);
         const headerSize = view.getUint16(6, false);
-        const jpegSize = view.getUint32(72, false);
-        if (headerSize !== 112 || jpegSize <= 0 || headerSize + jpegSize !== buffer.byteLength || jpegSize > 4194304) {
+        const jpegSizeOffset = version === 2 ? 88 : 72;
+        const droppedOffset = version === 2 ? 92 : 76;
+        const jpegSize = view.getUint32(jpegSizeOffset, false);
+        if (!((version === 1 && headerSize === 112) || (version === 2 && headerSize === 128)) ||
+            jpegSize <= 0 || headerSize + jpegSize !== buffer.byteLength || jpegSize > 4194304) {
           throw new Error("invalid LeIsaac frame size");
         }
         return {
@@ -3590,29 +3602,31 @@
           runtimeSendMonoNs: String(view.getBigUint64(48, false)),
           agentReceiveMonoNs: String(view.getBigUint64(56, false)),
           agentSendMonoNs: String(view.getBigUint64(64, false)),
-          droppedBefore: view.getUint32(76, false),
+          causalActionSequence: version === 2 ? Number(view.getBigUint64(72, false)) : 0,
+          causalAppliedMonoNs: version === 2 ? String(view.getBigUint64(80, false)) : "0",
+          droppedBefore: view.getUint32(droppedOffset, false),
           receivedMonoMs: performance.now(),
           receivedWallNs: Date.now() * 1000000,
         };
       }
-      async function decodeLatestLeIsaacFrame() {
-        if (leisaacVideoDecoding) return;
-        leisaacVideoDecoding = true;
+      async function decodeLatestLeIsaacFrame(camera) {
+        if (!Object.hasOwn(leisaacVideoPending, camera) || leisaacVideoDecoding[camera]) return;
+        leisaacVideoDecoding[camera] = true;
         try {
-          while (leisaacVideoPending.workspace || leisaacVideoPending.overview) {
-            const camera = leisaacVideoPending[leisaacDecodeNextCamera]
-              ? leisaacDecodeNextCamera
-              : (leisaacDecodeNextCamera === "workspace" ? "overview" : "workspace");
+          while (leisaacVideoPending[camera]) {
             const frame = leisaacVideoPending[camera];
             leisaacVideoPending[camera] = null;
-            leisaacDecodeNextCamera = camera === "workspace" ? "overview" : "workspace";
+            const jpeg = new Uint8Array(frame.buffer, frame.headerSize, frame.jpegSize);
             const blob = new Blob(
-              [frame.buffer.slice(frame.headerSize, frame.headerSize + frame.jpegSize)],
+              [jpeg],
               { type: "image/jpeg" },
             );
             const bitmap = await createImageBitmap(blob);
+            let paintMonoMs = 0;
             try {
-              // A newer credited frame can arrive while createImageBitmap runs.
+              // Never present a decoded frame if a newer frame for this camera won
+              // while decode was running. Each camera has an independent worker so
+              // overview decode cannot hold up a causally urgent workspace frame.
               if (
                 leisaacVideoPending[camera] &&
                 Number(leisaacVideoPending[camera].sequence || 0) > Number(frame.sequence || 0)
@@ -3627,22 +3641,42 @@
               const image = document.getElementById(secondary ? "leisaacSecondaryFrame" : "leisaacFrame");
               const video = secondary ? null : document.getElementById("leisaacVideo");
               if (!canvas) return;
-              canvas.width = bitmap.width;
-              canvas.height = bitmap.height;
+              if (canvas.width !== bitmap.width) canvas.width = bitmap.width;
+              if (canvas.height !== bitmap.height) canvas.height = bitmap.height;
               const context = canvas.getContext("2d", { alpha: false });
               if (!context) throw new Error("LeIsaac 2D canvas context is unavailable");
-              context.drawImage(bitmap, 0, 0);
+              paintMonoMs = await new Promise((resolve, reject) => {
+                requestAnimationFrame(() => {
+                  try {
+                    if (
+                      leisaacVideoPending[camera] &&
+                      Number(leisaacVideoPending[camera].sequence || 0) > Number(frame.sequence || 0)
+                    ) {
+                      resolve(0);
+                      return;
+                    }
+                    context.drawImage(bitmap, 0, 0);
+                    canvas.hidden = false;
+                    if (image) image.hidden = true;
+                    if (video) video.hidden = true;
+                    resolve(performance.now());
+                  } catch (error) {
+                    reject(error);
+                  }
+                });
+              });
             } finally {
               bitmap.close();
             }
+            if (!paintMonoMs) {
+              if (leisaacVideoPending[camera]) {
+                leisaacVideoPending[camera].browserDropped =
+                  Number(leisaacVideoPending[camera].browserDropped || 0) +
+                  Number(frame.browserDropped || 0) + 1;
+              }
+              continue;
+            }
             const secondary = frame.camera === "overview";
-            const canvas = document.getElementById(secondary ? "leisaacSecondaryCanvas" : "leisaacCanvas");
-            const image = document.getElementById(secondary ? "leisaacSecondaryFrame" : "leisaacFrame");
-            const video = secondary ? null : document.getElementById("leisaacVideo");
-            canvas.hidden = false;
-            if (image) image.hidden = true;
-            if (video) video.hidden = true;
-            await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
             leisaacDeliveredFrames += 1;
             const lastSequence = Number(leisaacLastFrameSequences[frame.camera] || 0);
             const sequenceGap = lastSequence
@@ -3654,10 +3688,9 @@
               Number(frame.browserDropped || 0),
             );
             leisaacLastFrameSequences[frame.camera] = frame.sequence;
-            const paintMonoMs = performance.now();
             const captureClientWallNs = frame.captureWallNs - leisaacClockOffsetNs;
             const frameAgeMs = (Date.now() * 1000000 - captureClientWallNs) / 1000000;
-            leisaacTransportEvidence.frames.push({
+            recordLeIsaacEvidence("frames", {
               sequence: frame.sequence,
               camera: frame.camera,
               bytes: frame.jpegSize,
@@ -3666,6 +3699,8 @@
               runtime_send_mono_ns: frame.runtimeSendMonoNs,
               agent_receive_mono_ns: frame.agentReceiveMonoNs,
               agent_send_mono_ns: frame.agentSendMonoNs,
+              causal_action_sequence: frame.causalActionSequence,
+              causal_applied_mono_ns: frame.causalAppliedMonoNs,
               received_mono_ms: frame.receivedMonoMs,
               painted_mono_ms: paintMonoMs,
               frame_age_ms: frameAgeMs,
@@ -3676,7 +3711,9 @@
             leisaacStreamReady = true;
             if (secondary) {
               const secondaryStatus = document.getElementById("leisaacSecondaryStatus");
-              if (secondaryStatus) secondaryStatus.textContent = "Overview camera · synchronized WebSocket · drag or touch to orbit";
+              if (secondaryStatus && !secondaryStatus.textContent.includes("rotation")) {
+                secondaryStatus.textContent = "Overview camera · synchronized WebSocket · drag or touch to orbit";
+              }
             } else {
               setLeIsaacStreamState("Live WebSocket · keyboard teleoperation active", "ready");
               const host = document.getElementById("leisaacStreamHost");
@@ -3687,8 +3724,8 @@
         } catch (err) {
           setLeIsaacStreamState("Video decode failed: " + String((err && err.message) || err), "error");
         } finally {
-          leisaacVideoDecoding = false;
-          if (leisaacVideoPending.workspace || leisaacVideoPending.overview) decodeLatestLeIsaacFrame();
+          leisaacVideoDecoding[camera] = false;
+          if (leisaacVideoPending[camera]) decodeLatestLeIsaacFrame(camera);
         }
       }
       function handleLeIsaacVideoMessage(message) {
@@ -3713,7 +3750,7 @@
             parsed.browserDropped = 0;
           }
           leisaacVideoPending[parsed.camera] = parsed;
-          decodeLatestLeIsaacFrame();
+          decodeLatestLeIsaacFrame(parsed.camera);
         } catch (err) {
           setLeIsaacStreamState(String((err && err.message) || err), "error");
         }

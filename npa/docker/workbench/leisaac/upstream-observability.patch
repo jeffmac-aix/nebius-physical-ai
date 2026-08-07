@@ -1,5 +1,5 @@
 diff --git a/scripts/environments/teleoperation/teleop_se3_agent.py b/scripts/environments/teleoperation/teleop_se3_agent.py
-index a467482..09dc24d 100644
+index a467482..2ea7000 100644
 --- a/scripts/environments/teleoperation/teleop_se3_agent.py
 +++ b/scripts/environments/teleoperation/teleop_se3_agent.py
 @@ -89,12 +89,26 @@ app_launcher_args = vars(args_cli)
@@ -65,7 +65,7 @@ index a467482..09dc24d 100644
      env_cfg.seed = args_cli.seed if args_cli.seed is not None else int(time.time())
      task_name = args_cli.task
 
-@@ -312,6 +355,261 @@ def main():  # noqa: C901
+@@ -312,6 +355,347 @@ def main():  # noqa: C901
          env.initialize()
      env.reset()
      teleop_interface.reset()
@@ -107,11 +107,17 @@ index a467482..09dc24d 100644
 +    capture_state = {
 +        "pending": set(),
 +        "queue": [],
++        "priority_queue": [],
 +        "active": False,
++        "active_group": "",
++        "active_priority": False,
++        "deferred_causal": None,
 +        "task": None,
 +        "next_at": 0.0,
 +        "sequences": {"workspace": 0, "overview": 0},
 +        "group": 0,
++        "causal_action_sequence": 0,
++        "causal_applied_monotonic_ns": 0,
 +    }
 +    viewport = get_active_viewport() if frame_path else None
 +    if viewport is not None:
@@ -136,7 +142,12 @@ index a467482..09dc24d 100644
 +    last_view_sequence = 0
 +
 +    def on_viewport_captured(
-+        camera_id, destination, metadata_destination, capture_group
++        camera_id,
++        destination,
++        metadata_destination,
++        capture_group,
++        causal_action_sequence,
++        causal_applied_monotonic_ns,
 +    ):
 +        def captured(buffer, buffer_size, width, height, _byte_format):
 +            """Publish one real RTX frame without blocking another camera."""
@@ -168,6 +179,8 @@ index a467482..09dc24d 100644
 +                        "camera": camera_id,
 +                        "capture_group": capture_group,
 +                        "sequence": capture_state["sequences"][camera_id],
++                        "causal_action_sequence": causal_action_sequence,
++                        "causal_applied_monotonic_ns": causal_applied_monotonic_ns,
 +                        "capture_monotonic_ns": capture_monotonic_ns,
 +                        "capture_wall_ns": capture_wall_ns,
 +                        "encoded_monotonic_ns": encoded_monotonic_ns,
@@ -195,48 +208,84 @@ index a467482..09dc24d 100644
 +        return captured
 +
 +    async def capture_one(
-+        camera_id, selected_camera_path, destination, metadata_destination, capture_group
++        camera_id,
++        selected_camera_path,
++        destination,
++        metadata_destination,
++        capture_group,
++        causal_action_sequence,
++        causal_applied_monotonic_ns,
 +    ):
 +        """Capture only between completed viewport frames and await GPU retirement."""
 +        try:
 +            viewport.camera_path = selected_camera_path
 +            # env.render() submits RTX work but returns before the viewport's GPU
 +            # command list retires.  The public utility provides the safe boundary.
-+            await next_viewport_frame_async(viewport, n_frames=2)
-+            # Resume outside the renderer's frame callback before beginning capture.
-+            await asyncio.sleep(0)
++            await next_viewport_frame_async(viewport, n_frames=1)
 +            capture_helper = capture_viewport_to_buffer(
 +                viewport,
 +                on_viewport_captured(
-+                    camera_id, destination, metadata_destination, capture_group
++                    camera_id,
++                    destination,
++                    metadata_destination,
++                    capture_group,
++                    causal_action_sequence,
++                    causal_applied_monotonic_ns,
 +                ),
 +            )
-+            # The callback only means that CPU buffer access is available.  NVIDIA's
-+            # public API requires awaiting the returned helper before another capture;
-+            # completion frames let RTX retire the command list after the callback.
-+            await capture_helper.wait_for_result(completion_frames=3)
++            # Await the utility's completion future before switching the shared
++            # viewport. Extra completion frames add presentation latency after the
++            # capture buffer is already safe and are not required by this API.
++            await capture_helper.wait_for_result(completion_frames=0)
 +        except Exception as exc:
 +            print(
 +                f"[WARN] Could not complete {camera_id} browser frame: "
 +                f"{type(exc).__name__}: {exc}"
 +            )
 +        finally:
++            completed_group = capture_state["active_group"]
++            completed_priority = capture_state["active_priority"]
 +            capture_state["active"] = False
++            capture_state["active_group"] = ""
++            capture_state["active_priority"] = False
 +            capture_state["pending"].discard(camera_id)
 +            capture_state["task"] = None
++            group_pending = any(
++                item[4] == completed_group
++                for item in capture_state["priority_queue"]
++            )
++            if completed_priority and not group_pending:
++                deferred = capture_state["deferred_causal"]
++                capture_state["deferred_causal"] = None
++                if deferred:
++                    request_causal_capture(deferred)
 +
 +    def capture_next():
 +        """Submit only after Kit reports the prior GPU capture fully complete."""
 +        if capture_state["active"]:
 +            return
-+        if not capture_state["queue"]:
-+            if not capture_state["pending"]:
-+                capture_state["next_at"] = time.monotonic() + (1.0 / FPS)
++        source_queue = (
++            capture_state["priority_queue"]
++            if capture_state["priority_queue"]
++            else capture_state["queue"]
++        )
++        selected_priority = source_queue is capture_state["priority_queue"]
++        if not source_queue:
 +            return
-+        camera_id, selected_camera_path, destination, metadata_destination, capture_group = (
-+            capture_state["queue"].pop(0)
++        (
++            camera_id,
++            selected_camera_path,
++            destination,
++            metadata_destination,
++            capture_group,
++            causal_action_sequence,
++            causal_applied_monotonic_ns,
++        ) = (
++            source_queue.pop(0)
 +        )
 +        capture_state["active"] = True
++        capture_state["active_group"] = capture_group
++        capture_state["active_priority"] = selected_priority
 +        capture_state["task"] = asyncio.ensure_future(
 +            capture_one(
 +                camera_id,
@@ -244,12 +293,42 @@ index a467482..09dc24d 100644
 +                destination,
 +                metadata_destination,
 +                capture_group,
++                causal_action_sequence,
++                causal_applied_monotonic_ns,
 +            )
 +        )
++
++    def request_causal_capture(applied):
++        """Latest applied action wins; releases can never wait behind stale frames."""
++        if not applied:
++            return
++        sequence = int(applied.get("seq") or 0)
++        applied_ns = int(applied.get("simulator_applied_mono_ns") or 0)
++        if sequence <= 0 or applied_ns <= 0:
++            return
++        if capture_state["active_priority"] or capture_state["priority_queue"]:
++            capture_state["deferred_causal"] = applied
++            return
++        capture_state["causal_action_sequence"] = sequence
++        capture_state["causal_applied_monotonic_ns"] = applied_ns
++        capture_state["group"] += 1
++        capture_group = f"causal-{capture_state['group']}"
++        cameras = (
++            ("workspace", workspace_camera_path, frame_path, frame_meta_path),
++            (
++                "overview",
++                overview_camera_path,
++                secondary_frame_path,
++                secondary_frame_meta_path,
++            ),
++        )
++        capture_state["priority_queue"][:] = [
++            (*camera, capture_group, sequence, applied_ns) for camera in cameras
++        ]
 +    def schedule_browser_capture():
 +        if capture_state["active"]:
 +            return
-+        if capture_state["queue"]:
++        if capture_state["priority_queue"] or capture_state["queue"]:
 +            capture_next()
 +            return
 +        if (
@@ -261,6 +340,7 @@ index a467482..09dc24d 100644
 +            return
 +        capture_state["group"] += 1
 +        capture_group = f"capture-{capture_state['group']}"
++        capture_state["next_at"] = time.monotonic() + (1.0 / FPS)
 +        cameras = (
 +            ("workspace", workspace_camera_path, frame_path, frame_meta_path),
 +            (
@@ -272,7 +352,13 @@ index a467482..09dc24d 100644
 +        )
 +        capture_state["pending"].update(camera[0] for camera in cameras)
 +        capture_state["queue"].extend(
-+            (*camera, capture_group) for camera in cameras
++            (
++                *camera,
++                capture_group,
++                capture_state["causal_action_sequence"],
++                capture_state["causal_applied_monotonic_ns"],
++            )
++            for camera in cameras
 +        )
 +        capture_next()
 +
@@ -327,13 +413,16 @@ index a467482..09dc24d 100644
 
      resume_recorded_demo_count = 0
      if args_cli.record and args_cli.resume:
-@@ -379,7 +677,20 @@ def main():  # noqa: C901
+@@ -379,7 +763,23 @@ def main():  # noqa: C901
                          if args_cli.record:
                              print("Start Recording!!!")
                          start_record_state = True
 -                    env.step(actions)
 +                    step_result = env.step(actions)
 +                    sim_step += 1
++                    if os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") == "1":
++                        applied = teleop_interface.mark_remote_step_applied(sim_step)
++                        request_causal_capture(applied)
 +                    recorder.observe(
 +                        extract_step(
 +                            step_result,
@@ -350,7 +439,7 @@ index a467482..09dc24d 100644
                      rate_limiter.sleep(env)
              if interrupted:
 diff --git a/source/leisaac/leisaac/devices/keyboard/so101_keyboard.py b/source/leisaac/leisaac/devices/keyboard/so101_keyboard.py
-index 1ecc934..1ff910a 100644
+index 1ecc934..cb304f1 100644
 --- a/source/leisaac/leisaac/devices/keyboard/so101_keyboard.py
 +++ b/source/leisaac/leisaac/devices/keyboard/so101_keyboard.py
 @@ -1,3 +1,8 @@
@@ -362,7 +451,7 @@ index 1ecc934..1ff910a 100644
  import carb
  import numpy as np
 
-@@ -34,6 +39,18 @@ class SO101Keyboard(Device):
+@@ -34,6 +39,19 @@ class SO101Keyboard(Device):
 
          # command buffers (dx, dy, dz, droll, dpitch, dyaw, d_shoulder_pan, d_gripper)
          self._delta_action = np.zeros(8)
@@ -373,6 +462,7 @@ index 1ecc934..1ff910a 100644
 +        self._remote_offset = 0
 +        self._remote_pulses = {}
 +        self._remote_direct_action = np.zeros(8)
++        self._remote_pending_applied = []
 +        self._applied_counter = Path(counter_name) if counter_name else None
 +        self._applied_ack = Path(ack_name) if ack_name else None
 +        self._remote_sim_step = 0
@@ -381,7 +471,7 @@ index 1ecc934..1ff910a 100644
 
          # initialize the target frame
          self.asset_name = "robot"
-@@ -57,11 +74,98 @@ class SO101Keyboard(Device):
+@@ -57,11 +75,112 @@ class SO101Keyboard(Device):
          self._display_controls_table.add_row(["U", "gripper_open"])
          self._display_controls_table.add_row(["O", "gripper_close"])
 
@@ -392,8 +482,9 @@ index 1ecc934..1ff910a 100644
          self._delta_action[:] = 0.0
 +        self._remote_pulses.clear()
 +        self._remote_direct_action[:] = 0.0
++        self._remote_pending_applied.clear()
 +
-+    def _record_applied_input(self, payload):
++    def _record_applied_input(self, acknowledgement):
 +        if self._applied_counter is not None:
 +            try:
 +                current = self._applied_counter.read_text(encoding="utf-8").strip()
@@ -405,17 +496,30 @@ index 1ecc934..1ff910a 100644
 +                pass
 +        if self._applied_ack is not None:
 +            try:
-+                acknowledgement = dict(payload)
-+                acknowledgement.update(
-+                    simulator_applied_mono_ns=str(time.monotonic_ns()),
-+                    simulator_applied_wall_ns=str(time.time_ns()),
-+                    simulator_step=self._remote_sim_step,
-+                )
 +                with self._applied_ack.open("a", encoding="utf-8") as target:
 +                    target.write(json.dumps(acknowledgement, sort_keys=True, separators=(",", ":")) + "\n")
 +                    target.flush()
 +            except OSError:
 +                pass
++
++    def mark_remote_step_applied(self, simulator_step):
++        """Acknowledge inputs only after the simulator step consumed them."""
++        if not self._remote_pending_applied:
++            return None
++        applied_monotonic_ns = time.monotonic_ns()
++        applied_wall_ns = time.time_ns()
++        acknowledged = []
++        for payload in self._remote_pending_applied:
++            acknowledgement = dict(payload)
++            acknowledgement.update(
++                simulator_applied_mono_ns=str(applied_monotonic_ns),
++                simulator_applied_wall_ns=str(applied_wall_ns),
++                simulator_step=int(simulator_step),
++            )
++            self._record_applied_input(acknowledgement)
++            acknowledged.append(acknowledgement)
++        self._remote_pending_applied.clear()
++        return acknowledged[-1]
 +
 +    def _read_remote_inputs(self):
 +        if self._remote_queue is None:
@@ -447,7 +551,7 @@ index 1ecc934..1ff910a 100644
 +                    continue
 +                self._remote_direct_action[:] = direct
 +                self._started = True
-+                self._record_applied_input(payload)
++                self._remote_pending_applied.append(payload)
 +                continue
 +            key = str(payload.get("key") or "").upper()
 +            event = str(payload.get("event") or "")
@@ -459,13 +563,13 @@ index 1ecc934..1ff910a 100644
 +                    self._remote_pulses.pop(key, None)
 +                else:
 +                    continue
-+                self._record_applied_input(payload)
++                self._remote_pending_applied.append(payload)
 +            elif event == "press" and key in {"R", "N"}:
 +                self._started = False
 +                self._reset_state = True
 +                if key in self._additional_callbacks:
 +                    self._additional_callbacks[key]()
-+                self._record_applied_input(payload)
++                self._remote_pending_applied.append(payload)
 +
 +    def get_device_state(self):
 +        self._remote_sim_step += 1
@@ -483,7 +587,7 @@ index 1ecc934..1ff910a 100644
 
      def _on_keyboard_event(self, event, *args, **kwargs):
          super()._on_keyboard_event(event, *args, **kwargs)
-@@ -69,6 +173,17 @@ class SO101Keyboard(Device):
+@@ -69,6 +188,17 @@ class SO101Keyboard(Device):
          if event.type == carb.input.KeyboardEventType.KEY_PRESS:
              if event.input.name in self._INPUT_KEY_MAPPING.keys():
                  self._delta_action += self._ACTION_DELTA_MAPPING[self._INPUT_KEY_MAPPING[event.input.name]]

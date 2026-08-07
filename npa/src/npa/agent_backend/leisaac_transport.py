@@ -21,6 +21,7 @@ from typing import Any
 
 
 PROTOCOL_VERSION = 1
+FRAME_PROTOCOL_VERSION = 2
 CONTROL_SUBPROTOCOL = "npa.leisaac.control.v1"
 VIDEO_SUBPROTOCOL = "npa.leisaac.video.v1"
 MAX_CONTROL_MESSAGE_BYTES = 4096
@@ -33,7 +34,8 @@ ALLOWED_KEYS = frozenset({"W", "S", "A", "D", "Q", "E", "J", "L", "I", "K", "U",
 ALLOWED_EVENTS = frozenset({"press", "release"})
 ALLOWED_ACTION_DEVICES = frozenset({"browser-gamepad", "custom-so101"})
 FRAME_MAGIC = b"NPAF"
-FRAME_HEADER = struct.Struct("!4sBBHQQQQQQQQII32s")
+FRAME_HEADER_V1 = struct.Struct("!4sBBHQQQQQQQQII32s")
+FRAME_HEADER = struct.Struct("!4sBBHQQQQQQQQQQII32s")
 
 
 class TransportProtocolError(ValueError):
@@ -403,6 +405,8 @@ class FrameEnvelope:
     runtime_send_monotonic_ns: int
     agent_receive_monotonic_ns: int = 0
     agent_send_monotonic_ns: int = 0
+    causal_action_sequence: int = 0
+    causal_applied_monotonic_ns: int = 0
     dropped_before: int = 0
     flags: int = 0
     sha256: bytes = b""
@@ -421,7 +425,7 @@ def pack_frame(envelope: FrameEnvelope, jpeg: bytes) -> bytes:
         raise TransportProtocolError("invalid_frame", "invalid frame digest")
     header = FRAME_HEADER.pack(
         FRAME_MAGIC,
-        PROTOCOL_VERSION,
+        FRAME_PROTOCOL_VERSION,
         envelope.flags,
         FRAME_HEADER.size,
         envelope.sequence,
@@ -432,6 +436,8 @@ def pack_frame(envelope: FrameEnvelope, jpeg: bytes) -> bytes:
         envelope.runtime_send_monotonic_ns,
         envelope.agent_receive_monotonic_ns,
         envelope.agent_send_monotonic_ns,
+        envelope.causal_action_sequence,
+        envelope.causal_applied_monotonic_ns,
         len(content),
         envelope.dropped_before,
         digest,
@@ -442,25 +448,29 @@ def pack_frame(envelope: FrameEnvelope, jpeg: bytes) -> bytes:
 def unpack_frame(
     payload: bytes, *, verify_digest: bool = True
 ) -> tuple[FrameEnvelope, bytes]:
-    if len(payload) < FRAME_HEADER.size:
+    if len(payload) < FRAME_HEADER_V1.size:
         raise TransportProtocolError("invalid_frame", "frame envelope is truncated")
-    unpacked = FRAME_HEADER.unpack(payload[: FRAME_HEADER.size])
-    magic, version, flags, header_size = unpacked[:4]
-    if (
-        magic != FRAME_MAGIC
-        or version != PROTOCOL_VERSION
-        or header_size != FRAME_HEADER.size
-    ):
+    prefix = struct.unpack("!4sBBH", payload[:8])
+    magic, version, flags, header_size = prefix
+    if magic != FRAME_MAGIC or (version, header_size) not in {
+        (PROTOCOL_VERSION, FRAME_HEADER_V1.size),
+        (FRAME_PROTOCOL_VERSION, FRAME_HEADER.size),
+    }:
         raise TransportProtocolError(
             "invalid_frame", "frame envelope header is invalid"
         )
-    jpeg_size = unpacked[12]
-    jpeg = payload[FRAME_HEADER.size :]
+    header = FRAME_HEADER if version == FRAME_PROTOCOL_VERSION else FRAME_HEADER_V1
+    unpacked = header.unpack(payload[:header_size])
+    jpeg_size_index = 14 if version == FRAME_PROTOCOL_VERSION else 12
+    dropped_index = jpeg_size_index + 1
+    digest_index = jpeg_size_index + 2
+    jpeg_size = unpacked[jpeg_size_index]
+    jpeg = payload[header_size:]
     if jpeg_size != len(jpeg) or jpeg_size > MAX_FRAME_BYTES:
         raise TransportProtocolError(
             "invalid_frame", "frame envelope length is invalid"
         )
-    digest = unpacked[14]
+    digest = unpacked[digest_index]
     if verify_digest and not hashlib.sha256(jpeg).digest() == digest:
         raise TransportProtocolError("invalid_frame", "frame digest mismatch")
     envelope = FrameEnvelope(
@@ -472,7 +482,11 @@ def unpack_frame(
         runtime_send_monotonic_ns=unpacked[9],
         agent_receive_monotonic_ns=unpacked[10],
         agent_send_monotonic_ns=unpacked[11],
-        dropped_before=unpacked[13],
+        causal_action_sequence=(unpacked[12] if version == FRAME_PROTOCOL_VERSION else 0),
+        causal_applied_monotonic_ns=(
+            unpacked[13] if version == FRAME_PROTOCOL_VERSION else 0
+        ),
+        dropped_before=unpacked[dropped_index],
         flags=flags,
         sha256=digest,
     )

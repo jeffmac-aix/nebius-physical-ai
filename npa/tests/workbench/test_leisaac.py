@@ -378,12 +378,14 @@ def test_observability_patch_is_exact_and_records_real_upstream_input() -> None:
     assert "NPA_LEISAAC_READY_PATH" in source
     assert "NPA_LEISAAC_BROWSER_TELEOP" in source
     assert "capture_viewport_to_buffer" in source
-    assert 'capture_state["queue"].pop(0)' in source
+    assert 'source_queue.pop(0)' in source
     assert 'if capture_state["active"]:' in source
     assert "Submit only after Kit reports the prior GPU capture fully complete" in source
-    assert "await next_viewport_frame_async(viewport, n_frames=2)" in source
-    assert "await asyncio.sleep(0)" in source
-    assert "await capture_helper.wait_for_result(completion_frames=3)" in source
+    assert "await next_viewport_frame_async(viewport, n_frames=1)" in source
+    assert "await capture_helper.wait_for_result(completion_frames=0)" in source
+    assert 'capture_state["priority_queue"]' in source
+    assert '"causal_action_sequence": causal_action_sequence' in source
+    assert "mark_remote_step_applied(sim_step)" in source
     assert "asyncio.ensure_future" in source
     assert "create_viewport_window" not in source
     assert "Alternate two camera paths on one fully-awaited viewport" in source

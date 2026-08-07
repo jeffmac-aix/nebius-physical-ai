@@ -660,13 +660,13 @@ describe("NPA agent LeIsaac capability tab", () => {
       const sockets = [];
       const encodeFrame = () => {
         const jpeg = new win.Uint8Array([0xff, 0xd8, 1, 2, 3, 4, 0xff, 0xd9]);
-        const payload = new win.ArrayBuffer(112 + jpeg.length);
+        const payload = new win.ArrayBuffer(128 + jpeg.length);
         const view = new win.DataView(payload);
         [0x4e, 0x50, 0x41, 0x46].forEach((value, index) =>
           view.setUint8(index, value),
         );
-        view.setUint8(4, 1);
-        view.setUint16(6, 112, false);
+        view.setUint8(4, 2);
+        view.setUint16(6, 128, false);
         frameSequence += 1;
         view.setUint8(5, frameSequence % 2 === 0 ? 1 : 0);
         view.setBigUint64(8, BigInt(frameSequence), false);
@@ -677,9 +677,11 @@ describe("NPA agent LeIsaac capability tab", () => {
         view.setBigUint64(48, 500n, false);
         view.setBigUint64(56, 600n, false);
         view.setBigUint64(64, 700n, false);
-        view.setUint32(72, jpeg.length, false);
-        view.setUint32(76, Math.max(0, frameSequence - 1), false);
-        new win.Uint8Array(payload, 112).set(jpeg);
+        view.setBigUint64(72, BigInt(frameSequence), false);
+        view.setBigUint64(80, 650n, false);
+        view.setUint32(88, jpeg.length, false);
+        view.setUint32(92, Math.max(0, frameSequence - 1), false);
+        new win.Uint8Array(payload, 128).set(jpeg);
         return payload;
       };
       class FakeWebSocket {
@@ -768,6 +770,17 @@ describe("NPA agent LeIsaac capability tab", () => {
         }
       }
       win.WebSocket = FakeWebSocket;
+      win.requestAnimationFrame = (callback) => win.setTimeout(
+        () => callback(win.performance.now()),
+        0,
+      );
+      win.__LEISAAC_TEST_ERRORS__ = [];
+      win.addEventListener("error", (event) => {
+        win.__LEISAAC_TEST_ERRORS__.push(String(event.message || event.error || "error"));
+      });
+      win.addEventListener("unhandledrejection", (event) => {
+        win.__LEISAAC_TEST_ERRORS__.push(String(event.reason || "rejection"));
+      });
       let releaseFirstBitmap;
       let firstBitmap = true;
       let bitmapCloses = 0;
@@ -783,7 +796,10 @@ describe("NPA agent LeIsaac capability tab", () => {
       win.__LEISAAC_BITMAP_CLOSES__ = () => bitmapCloses;
       win.__LEISAAC_RELEASE_FIRST_BITMAP__ = () => releaseFirstBitmap();
       const nativeGetContext = win.HTMLCanvasElement.prototype.getContext;
-      let canvasFailures = 2;
+      let canvasFailures = 0;
+      win.__LEISAAC_SET_CANVAS_FAILURES__ = (count) => {
+        canvasFailures = Number(count);
+      };
       win.HTMLCanvasElement.prototype.getContext = function getContext(kind, ...args) {
         if (["leisaacCanvas", "leisaacSecondaryCanvas"].includes(this.id) && kind === "2d") {
           if (canvasFailures === 2) {
@@ -820,11 +836,19 @@ describe("NPA agent LeIsaac capability tab", () => {
       expect(credits, "receipt credits before a blocked decode").to.have.length
         .greaterThan(0);
       expect(
-        win.__NPA_AGENT_TEST__.leisaacTransportEvidence().frames,
-        "no painted frame while the first decode is blocked",
-      ).to.have.length(0);
+        win.__NPA_AGENT_TEST__.leisaacTransportEvidence().frames.some(
+          (frame) => frame.camera === "overview",
+        ),
+        "overview paints independently while workspace decode is blocked",
+      ).to.equal(true, JSON.stringify({
+        errors: win.__LEISAAC_TEST_ERRORS__,
+        status: win.document.getElementById("leisaacStreamStatus")?.textContent,
+      }));
     });
-    cy.window().then((win) => win.__LEISAAC_RELEASE_FIRST_BITMAP__());
+    cy.window().then((win) => {
+      win.__LEISAAC_SET_CANVAS_FAILURES__(2);
+      win.__LEISAAC_RELEASE_FIRST_BITMAP__();
+    });
     cy.get("#leisaacCanvas").should("be.visible");
     cy.get("#leisaacSecondaryCanvas", { timeout: 10000 }).should("be.visible");
     cy.window().should((win) => {
@@ -872,6 +896,7 @@ describe("NPA agent LeIsaac capability tab", () => {
         );
       }, 0);
       expect(evidence.dropped_frames).to.equal(expectedDrops);
+      expect(evidence.frames.some((frame) => frame.causal_action_sequence > 0)).to.equal(true);
     });
     cy.get("#leisaacInputDevice").select("custom-so101");
     cy.get("#leisaacSendNeutralAction").click();

@@ -154,7 +154,7 @@ CLIENT_SOURCE_JS_SHA256 = (
 )
 CLIENT_JS_SHA256 = CLIENT_SOURCE_JS_SHA256
 UPSTREAM_OBSERVABILITY_PATCH_SHA256 = (
-    "ad7bfcbdeb32aa8cdb5e65bb4de1ec570021e0cf9a806634f373921e4275fad1"
+    "dcc952d7f1e2cae920c77c67a8cae2956d6486ff0cea240aa99b667b59a1d5b6"
 )
 
 CACHE_ROOT = Path(os.environ.get("NPA_LEISAAC_CACHE_DIR", "/opt/leisaac-cache"))
@@ -1470,6 +1470,12 @@ def build_app() -> FastAPI:
                     encoded_wall_ns=int(metadata["encoded_wall_ns"]),
                     encoded_monotonic_ns=int(metadata["encoded_monotonic_ns"]),
                     runtime_send_monotonic_ns=time.monotonic_ns(),
+                    causal_action_sequence=int(
+                        metadata.get("causal_action_sequence") or 0
+                    ),
+                    causal_applied_monotonic_ns=int(
+                        metadata.get("causal_applied_monotonic_ns") or 0
+                    ),
                     dropped_before=dropped,
                     flags=1 if camera == "overview" else 0,
                     sha256=bytes.fromhex(str(metadata["sha256"])),
