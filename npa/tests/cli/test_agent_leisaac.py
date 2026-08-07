@@ -1110,6 +1110,8 @@ def test_video_relay_credits_runtime_before_browser_ack() -> None:
                 "signal_port": LEISAAC_SIGNAL_PORT,
             }
 
+    upstream_closed = threading.Event()
+
     class FakeUpstream:
         subprotocol = VIDEO_SUBPROTOCOL
 
@@ -1121,6 +1123,7 @@ def test_video_relay_credits_runtime_before_browser_ack() -> None:
             return self
 
         async def __aexit__(self, *_args):
+            upstream_closed.set()
             return None
 
         async def send(self, message):
@@ -1193,6 +1196,8 @@ def test_video_relay_credits_runtime_before_browser_ack() -> None:
                 "sequence": 7,
             }
         )
+        websocket.close()
+        assert upstream_closed.wait(5), "video relay cleanup did not complete"
 
     status = client.get(
         "/leisaac/status",

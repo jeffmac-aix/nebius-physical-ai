@@ -1817,17 +1817,21 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
                     asyncio.create_task(acknowledge_runtime()),
                     asyncio.create_task(send_browser()),
                 }
-                done, pending = await asyncio.wait(
-                    tasks, return_when=asyncio.FIRST_COMPLETED
-                )
-                for task in pending:
-                    task.cancel()
-                results = await asyncio.gather(*done, *pending, return_exceptions=True)
+                try:
+                    await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                finally:
+                    for task in tasks:
+                        if not task.done():
+                            task.cancel()
+                    results = await asyncio.gather(*tasks, return_exceptions=True)
                 for result in results:
                     if isinstance(result, Exception) and not isinstance(
                         result, asyncio.CancelledError
                     ):
                         raise result
+        except asyncio.CancelledError:
+            LOG.debug("LeIsaac video transport cancelled after relay cleanup")
+            raise
         except Exception as exc:
             _log_exception(logging.WARNING, "LeIsaac video transport closed", exc)
             try:
