@@ -103,7 +103,7 @@ index a467482..d3bcad5 100644
 +    }
 +    # Background frames must not monopolize the Isaac render/event loop. Causal
 +    # action pairs bypass this cadence and remain immediate at full quality.
-+    background_capture_fps = 3.0
++    background_capture_fps = 2.5
 +    background_capture_interval = 1.0 / background_capture_fps
 +    viewport = get_active_viewport() if frame_path else None
 +    if viewport is not None:
