@@ -887,6 +887,10 @@ describe("NPA agent LeIsaac capability tab", () => {
           } else if (message.type === "control" || message.type === "action") {
             expect(message.seq).to.equal(nextExpected);
             nextExpected += 1;
+            if (win.__LEISAAC_DROP_NEXT_CONTROL_ACKS__) {
+              win.__LEISAAC_DROP_NEXT_CONTROL_ACKS__ = false;
+              return;
+            }
             response = { ...message, type: "ack", phase: "accepted" };
             win.setTimeout(() => {
               if (this.onmessage)
@@ -1055,6 +1059,44 @@ describe("NPA agent LeIsaac capability tab", () => {
       }, 0);
       expect(evidence.dropped_frames).to.equal(expectedDrops);
       expect(evidence.frames.some((frame) => frame.causal_action_sequence > 0)).to.equal(true);
+    });
+    cy.window().then((win) => {
+      const host = win.document.getElementById("leisaacStreamHost");
+      host.focus();
+      host.dispatchEvent(
+        new win.KeyboardEvent("keydown", { key: "A", code: "KeyA", bubbles: true }),
+      );
+    });
+    cy.window().should((win) => {
+      expect(
+        win.__NPA_AGENT_TEST__.leisaacTransportEvidence().controls.some(
+          (item) => item.phase === "applied" && item.key === "A" && item.event === "press",
+        ),
+      ).to.equal(true);
+    });
+    cy.window().then((win) => {
+      win.__LEISAAC_DROP_NEXT_CONTROL_ACKS__ = true;
+      const host = win.document.getElementById("leisaacStreamHost");
+      host.dispatchEvent(
+        new win.KeyboardEvent("keyup", { key: "A", code: "KeyA", bubbles: true }),
+      );
+      const video = win.__LEISAAC_FAKE_SOCKETS__.find(
+        (socket) => socket.url.includes("/video") && socket.readyState === 1,
+      );
+      video.fail();
+    });
+    cy.window().should((win) => {
+      const evidence = win.__NPA_AGENT_TEST__.leisaacTransportEvidence();
+      expect(
+        evidence.controls.some(
+          (item) =>
+            item.phase === "applied" &&
+            item.key === "A" &&
+            item.event === "release" &&
+            item.recovered_on_resume === true,
+        ),
+      ).to.equal(true);
+      expect(evidence.reconnects).to.be.greaterThan(0);
     });
     cy.get("#leisaacInputDevice").select("custom-so101");
     cy.get("#leisaacSendNeutralAction").click();

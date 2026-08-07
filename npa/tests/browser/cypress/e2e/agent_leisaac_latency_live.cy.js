@@ -281,20 +281,30 @@ async function fetchStatus(win, runId) {
               win
                 .__NPA_AGENT_TEST__.leisaacTransportEvidence()
                 .controls.slice(before)
-                .find((item) => item.phase === "accepted" && item.event === event),
+                .find(
+                  (item) =>
+                    ["accepted", "applied"].includes(item.phase) &&
+                    item.event === event,
+                ),
             10000,
-            `${event} accepted acknowledgement ${ordinal}`,
+            `${event} accepted or terminal-applied acknowledgement ${ordinal}`,
           );
-          const applied = await waitUntil(
-            win,
-            () =>
-              win
-                .__NPA_AGENT_TEST__.leisaacTransportEvidence()
-                .controls.slice(before)
-                .find((item) => item.phase === "applied" && item.seq === accepted.seq),
-            10000,
-            `${event} simulator-applied acknowledgement ${ordinal}`,
-          );
+          const applied =
+            accepted.phase === "applied"
+              ? accepted
+              : await waitUntil(
+                  win,
+                  () =>
+                    win
+                      .__NPA_AGENT_TEST__.leisaacTransportEvidence()
+                      .controls.slice(before)
+                      .find(
+                        (item) =>
+                          item.phase === "applied" && item.seq === accepted.seq,
+                      ),
+                  10000,
+                  `${event} simulator-applied acknowledgement ${ordinal}`,
+                );
           benchmark.control_samples.push({
             protocol: "websocket-v1",
             seq: accepted.seq,
@@ -303,6 +313,8 @@ async function fetchStatus(win, runId) {
             rtt_ms: accepted.event_to_ack_ms,
             status: 101,
             ok: true,
+            terminal_phase: applied.phase,
+            recovered_on_resume: Boolean(applied.recovered_on_resume),
             runtime_received_mono_ns: accepted.runtime_received_mono_ns,
             agent_received_mono_ns: accepted.agent_received_mono_ns,
             agent_send_mono_ns: accepted.agent_send_mono_ns,

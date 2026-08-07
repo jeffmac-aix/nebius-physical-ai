@@ -993,7 +993,7 @@ def test_runtime_frame_watcher_remains_live_across_both_cameras(
         [("overview", {"sequence": 2}, b"overview-2")],
     ]
 
-    def read(_sequences: dict[str, int]):
+    def read(_sequences: dict[str, int], _producers: dict[str, int]):
         return reads.pop(0) if reads else []
 
     async def publish(_camera, item):
@@ -1042,6 +1042,44 @@ def test_runtime_frame_reader_skips_unchanged_jpeg_integrity_work(
     metadata, content = runtime._read_consistent_frame("workspace", 6)
     assert metadata["sequence"] == 7
     assert content == jpeg
+
+
+def test_runtime_frame_reader_accepts_sequence_reset_from_new_producer(
+    monkeypatch, tmp_path: Path
+) -> None:
+    runtime = _prepare_runtime(monkeypatch, tmp_path)
+    jpeg = b"\xff\xd8" + b"new-producer" * 30 + b"\xff\xd9"
+    runtime.FRAME_PATH.write_bytes(jpeg)
+    runtime.FRAME_META_PATH.write_text(
+        json.dumps(
+            {
+                "producer_pid": 202,
+                "sequence": 1,
+                "bytes": len(jpeg),
+                "sha256": hashlib.sha256(jpeg).hexdigest(),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert runtime._read_consistent_frame("workspace", 99, 202) is None
+    metadata, content = runtime._read_consistent_frame("workspace", 99, 101)
+    assert metadata["producer_pid"] == 202
+    assert metadata["sequence"] == 1
+    assert content == jpeg
+
+
+def test_runtime_detects_only_stale_complete_dual_camera_stream(
+    monkeypatch, tmp_path: Path
+) -> None:
+    runtime = _prepare_runtime(monkeypatch, tmp_path)
+    assert runtime._frame_stream_stalled(now=100.0) is False
+    runtime.FRAME_PATH.write_bytes(b"workspace")
+    assert runtime._frame_stream_stalled(now=100.0) is False
+    runtime.SECONDARY_FRAME_PATH.write_bytes(b"overview")
+    frame_time = runtime.FRAME_PATH.stat().st_mtime
+    assert runtime._frame_stream_stalled(now=frame_time + 29) is False
+    assert runtime._frame_stream_stalled(now=frame_time + 31) is True
 
 
 def test_runtime_secondary_camera_and_orbit_are_bounded_and_authenticated(

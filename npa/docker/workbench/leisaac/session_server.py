@@ -153,6 +153,7 @@ ISAAC_LAB_VERSION = "2.3.2.post1"
 SIGNAL_PORT = 49100
 MEDIA_PORT = 47998
 SERVICE_PORT = 8080
+FRAME_STALL_SECONDS = 30.0
 
 _ASSET_BY_ID = {item["id"]: item for item in RUNTIME_ASSETS}
 ROBOT_URL = _ASSET_BY_ID["so101_follower"]["url"]
@@ -700,6 +701,16 @@ def _reset_runtime_files() -> None:
     RECORDER_ROOT.mkdir(parents=True, exist_ok=True)
 
 
+def _frame_stream_stalled(now: float | None = None) -> bool:
+    """Detect a live child whose two-camera publisher stopped making progress."""
+
+    try:
+        oldest = min(FRAME_PATH.stat().st_mtime, SECONDARY_FRAME_PATH.stat().st_mtime)
+    except OSError:
+        return False
+    return (time.time() if now is None else now) - oldest > FRAME_STALL_SECONDS
+
+
 def run_simulation() -> None:
     global CHILD
     try:
@@ -732,6 +743,16 @@ def run_simulation() -> None:
                     and SECONDARY_FRAME_PATH.is_file()
                     and SECONDARY_FRAME_PATH.stat().st_size > 0
                 ):
+                    if _frame_stream_stalled():
+                        update_state(
+                            state="restarting",
+                            detail="recovering stalled two-camera frame publisher",
+                            webrtc_ready=False,
+                            stream_ready=False,
+                        )
+                        CHILD.terminate()
+                        BUNDLE_RESTART.wait(1)
+                        continue
                     update_state(
                         state="ready",
                         detail="live",
@@ -940,6 +961,7 @@ def _append_input(record: dict[str, Any]) -> int:
 def _read_consistent_frame(
     camera: str = "workspace",
     after_sequence: int = 0,
+    producer_pid: int = 0,
 ) -> tuple[dict[str, Any], bytes] | None:
     paths = CAMERA_PATHS.get(camera)
     if paths is None:
@@ -948,7 +970,13 @@ def _read_consistent_frame(
     for _attempt in range(3):
         try:
             first = json.loads(metadata_path.read_text(encoding="utf-8"))
-            if int(first.get("sequence") or 0) <= after_sequence:
+            if not isinstance(first, dict):
+                return None
+            observed_producer = int(first.get("producer_pid") or 0)
+            if (
+                observed_producer == producer_pid
+                and int(first.get("sequence") or 0) <= after_sequence
+            ):
                 return None
             jpeg = frame_path.read_bytes()
             second = json.loads(metadata_path.read_text(encoding="utf-8"))
@@ -970,12 +998,17 @@ def _read_consistent_frame(
 
 def _read_new_frames(
     sequences: dict[str, int],
+    producers: dict[str, int],
 ) -> list[tuple[str, dict[str, Any], bytes]]:
     """Read and authenticate only frames newer than the watcher snapshot."""
 
     frames: list[tuple[str, dict[str, Any], bytes]] = []
     for camera in CAMERA_PATHS:
-        item = _read_consistent_frame(camera, sequences.get(camera, 0))
+        item = _read_consistent_frame(
+            camera,
+            sequences.get(camera, 0),
+            producers.get(camera, 0),
+        )
         if item is not None:
             metadata, jpeg = item
             frames.append((camera, metadata, jpeg))
@@ -984,6 +1017,7 @@ def _read_new_frames(
 
 async def _watch_frames() -> None:
     sequences = {camera: 0 for camera in CAMERA_PATHS}
+    producers = {camera: 0 for camera in CAMERA_PATHS}
     pending: dict[str, tuple[dict[str, Any], bytes]] = {}
     next_camera = "workspace"
     while True:
@@ -991,9 +1025,17 @@ async def _watch_frames() -> None:
         # before JPEG I/O and SHA-256, avoiding duplicate work at the tighter
         # poll cadence while retaining the full consistency/integrity check for
         # every newly published frame.
-        discovered = await asyncio.to_thread(_read_new_frames, dict(sequences))
+        discovered = await asyncio.to_thread(
+            _read_new_frames,
+            dict(sequences),
+            dict(producers),
+        )
         for camera, metadata, jpeg in discovered:
             observed = int(metadata.get("sequence") or 0)
+            producer = int(metadata.get("producer_pid") or 0)
+            if producer != producers[camera]:
+                producers[camera] = producer
+                sequences[camera] = 0
             if observed > sequences[camera]:
                 sequences[camera] = observed
                 pending[camera] = (metadata, jpeg)

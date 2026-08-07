@@ -3533,7 +3533,19 @@
           const expected = Number(payload.next_seq || 1);
           const lastApplied = Number(payload.last_applied_seq || 0);
           for (const seq of Array.from(leisaacUnackedControls.keys())) {
-            if (seq <= lastApplied) leisaacUnackedControls.delete(seq);
+            if (seq <= lastApplied) {
+              const pending = leisaacUnackedControls.get(seq);
+              recordLeIsaacEvidence("controls", {
+                seq: seq,
+                phase: "applied",
+                key: String((pending && pending.payload && pending.payload.key) || ""),
+                event: String((pending && pending.payload && pending.payload.event) || ""),
+                event_to_ack_ms: pending ? performance.now() - pending.eventMonoMs : null,
+                recovered_on_resume: true,
+                simulator_step: 0,
+              });
+              leisaacUnackedControls.delete(seq);
+            }
           }
           const pendingSequences = Array.from(leisaacUnackedControls.keys());
           const runtimeReset = pendingSequences.length && expected < Math.min(...pendingSequences);
@@ -4318,6 +4330,7 @@
       }
       function recoverLeIsaacPreferred(status) {
         if (leisaacReconnectPromise) return leisaacReconnectPromise;
+        leisaacTransportEvidence.reconnects += 1;
         leisaacStreamReady = false;
         setLeIsaacStreamState("Reconnecting preferred transport…", "pending");
         leisaacReconnectPromise = connectLeIsaacPreferred(status).finally(() => { leisaacReconnectPromise = null; });

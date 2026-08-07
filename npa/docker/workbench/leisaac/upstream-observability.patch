@@ -172,6 +172,7 @@ index a467482..d3bcad5 100644
 +                if metadata_destination:
 +                    metadata = {
 +                        "schema": "npa.leisaac.frame.v1",
++                        "producer_pid": os.getpid(),
 +                        "camera": camera_id,
 +                        "capture_group": capture_group,
 +                        "sequence": capture_state["sequences"][camera_id],
