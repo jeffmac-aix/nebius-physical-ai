@@ -39,6 +39,7 @@ try:  # agent VM: /opt/npa-agent is on sys.path
         LEISAAC_CLIENT_MODULE_PATH,
         LEISAAC_CLIENT_JS_SHA256,
         LEISAAC_BUNDLES_PATH,
+        LEISAAC_CONTROL_DATACHANNEL_PATH,
         LEISAAC_CONTROL_WS_PATH,
         LEISAAC_RECORDER_PATH,
         LEISAAC_SIGNAL_PORT,
@@ -80,6 +81,7 @@ except ImportError:  # repository tests
         LEISAAC_CLIENT_MODULE_PATH,
         LEISAAC_CLIENT_JS_SHA256,
         LEISAAC_BUNDLES_PATH,
+        LEISAAC_CONTROL_DATACHANNEL_PATH,
         LEISAAC_CONTROL_WS_PATH,
         LEISAAC_RECORDER_PATH,
         LEISAAC_SIGNAL_PORT,
@@ -1191,9 +1193,12 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
             )
         return response
 
+    @app.post(LEISAAC_CONTROL_DATACHANNEL_PATH.removeprefix("/api"))
     @app.post(LEISAAC_VIDEO_DATACHANNEL_PATH.removeprefix("/api"))
     async def leisaac_video_datachannel(request: Request) -> Any:
-        """Negotiate authenticated, partial-reliability WebRTC video only."""
+        """Negotiate one authenticated direct WebRTC data channel."""
+
+        control_offer = str(request.url.path).endswith("/control-webrtc")
 
         if (
             not _same_origin_session_request(request.headers)
@@ -1263,7 +1268,8 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
         try:
             upstream = await asyncio.to_thread(
                 deps.http_post,
-                f"{manifest['service_url']}/transport/video-webrtc",
+                f"{manifest['service_url']}/transport/"
+                + ("control-webrtc" if control_offer else "video-webrtc"),
                 json={
                     "v": 1,
                     "run_id": str(manifest["run_id"]),

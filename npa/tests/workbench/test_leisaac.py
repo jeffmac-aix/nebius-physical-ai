@@ -106,6 +106,46 @@ def test_runtime_datachannel_offer_is_private_authenticated_and_run_bound(
     assert hasattr(observed["frame_source"](), "__aiter__")
 
 
+def test_runtime_control_datachannel_offer_uses_shared_control_handler(
+    monkeypatch,
+) -> None:
+    module = _session_server_module()
+    run_id = "live-control-datachannel"
+    nonce = "c" * 64
+    monkeypatch.setenv("NPA_LEISAAC_RUN_ID", run_id)
+    monkeypatch.setenv("NPA_LEISAAC_SESSION_NONCE", nonce)
+    observed = {}
+
+    async def create_answer(**kwargs):
+        observed.update(kwargs)
+        return {
+            "v": 1,
+            "type": "answer",
+            "sdp": "v=0\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n",
+        }
+
+    monkeypatch.setattr(module.CONTROL_DATACHANNEL_PEERS, "create_answer", create_answer)
+    client = TestClient(module.build_app())
+    payload = {
+        "v": 1,
+        "run_id": run_id,
+        "type": "offer",
+        "sdp": "v=0\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n",
+    }
+    assert client.post("/transport/control-webrtc", json=payload).status_code == 403
+    response = client.post(
+        "/transport/control-webrtc",
+        headers={
+            "X-NPA-LeIsaac-Nonce": nonce,
+            "X-NPA-LeIsaac-Run-ID": run_id,
+        },
+        json=payload,
+    )
+    assert response.status_code == 200
+    assert observed["channel_handler"] is module._serve_control_datachannel
+    assert observed["metrics"] is module.TRANSPORT_METRICS
+
+
 def test_runtime_datachannel_source_coalesces_stale_causal_frames() -> None:
     module = _session_server_module()
     module.FRAME_LATEST = AsyncLatestByKey(("workspace", "overview"))

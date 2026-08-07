@@ -70,6 +70,7 @@ LEISAAC_RECORDER_PATH = "/api/leisaac/recorder"
 LEISAAC_VIEW_PATH = "/api/leisaac/view"
 LEISAAC_BUNDLES_PATH = "/api/leisaac/bundles"
 LEISAAC_CONTROL_WS_PATH = "/api/leisaac/transport/control"
+LEISAAC_CONTROL_DATACHANNEL_PATH = "/api/leisaac/transport/control-webrtc"
 LEISAAC_VIDEO_WS_PATH = "/api/leisaac/transport/video"
 LEISAAC_VIDEO_DATACHANNEL_PATH = "/api/leisaac/transport/video-webrtc"
 
@@ -617,7 +618,9 @@ def status_payload(
         "client_module_url": f"{LEISAAC_CLIENT_MODULE_PATH}?run_id={run_id}",
         "stream_transport": health.get("stream_transport", "webrtc"),
         "preferred_transport": "websocket-v1",
+        "preferred_control_transport": "webrtc-datachannel-v1",
         "control_ws_url": f"{LEISAAC_CONTROL_WS_PATH}?run_id={run_id}",
+        "control_datachannel_url": LEISAAC_CONTROL_DATACHANNEL_PATH,
         "video_ws_url": f"{LEISAAC_VIDEO_WS_PATH}?run_id={run_id}",
         "video_datachannel_url": LEISAAC_VIDEO_DATACHANNEL_PATH,
         "frame_url": f"{LEISAAC_FRAME_PATH}?run_id={run_id}",

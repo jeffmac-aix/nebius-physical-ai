@@ -50,11 +50,17 @@ the response through HTTPS. The service reports accepted inputs separately
 from inputs consumed by upstream `SO101Keyboard`, so live validation proves
 that controls reached the simulator rather than only the public API.
 
-The preferred control WebSocket also accepts direct SO-101 actions for a real
-browser gamepad or a custom action source. It is not a raw public device port:
-the same HTTPS authentication, short-lived run/client-bound WebSocket session,
-sequence ledger, bounded message size, reconnect handling, and accepted/applied
-acknowledgements apply. The exact action message is:
+The preferred control path is a TURN-only, reliable ordered WebRTC data channel
+negotiated by an authenticated same-origin no-store SDP POST. The existing
+control WebSocket remains the tested fallback; both terminate in the same
+runtime sequence ledger, applied-ack service, and cancellation-safe disconnect
+release transaction. Full-quality dual-camera JPEG stays on the independent
+bounded binary WebSocket because real profiling showed large SCTP messages
+were slower over TURN. Direct SO-101 actions for a real browser gamepad or a
+custom action source use the same control path. It is not a raw public device
+port: HTTPS authentication, a run/client-bound session, bounded messages,
+reconnect handling, and accepted/applied acknowledgements still apply. The
+exact action message is:
 
 ```json
 {

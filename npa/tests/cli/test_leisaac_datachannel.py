@@ -8,11 +8,15 @@ from types import SimpleNamespace
 import pytest
 
 from npa.agent_backend.leisaac_datachannel import (
+    CONTROL_DATACHANNEL_LABEL,
+    CONTROL_DATACHANNEL_PROTOCOL,
+    ControlDataChannelPeerPool,
     MAX_VIDEO_DATACHANNEL_OFFER_BYTES,
     VIDEO_DATACHANNEL_BUFFER_LOW_BYTES,
     VideoDataChannelError,
     VideoDataChannelPeerPool,
     parse_video_datachannel_offer,
+    valid_control_datachannel,
     valid_video_datachannel,
 )
 from npa.agent_backend.leisaac_transport import (
@@ -72,6 +76,26 @@ def test_datachannel_contract_is_unordered_and_never_retransmits_stale_frames() 
         assert not valid_video_datachannel(rejected)
 
 
+def test_control_datachannel_contract_is_reliable_and_ordered() -> None:
+    channel = SimpleNamespace(
+        label=CONTROL_DATACHANNEL_LABEL,
+        protocol=CONTROL_DATACHANNEL_PROTOCOL,
+        ordered=True,
+        maxRetransmits=None,
+        maxPacketLifeTime=None,
+    )
+    assert valid_control_datachannel(channel)
+    for override in (
+        {"ordered": False},
+        {"maxRetransmits": 0},
+        {"maxPacketLifeTime": 100},
+        {"label": "other"},
+        {"protocol": "other"},
+    ):
+        rejected = SimpleNamespace(**{**channel.__dict__, **override})
+        assert not valid_control_datachannel(rejected)
+
+
 def test_datachannel_peer_pool_is_bounded() -> None:
     assert VideoDataChannelPeerPool(limit=4).active == 0
     with pytest.raises(ValueError, match="invalid WebRTC video peer limit"):
@@ -83,6 +107,32 @@ def test_datachannel_peer_pool_is_bounded() -> None:
 def test_datachannel_relay_is_bounded_and_preserves_causal_stamp() -> None:
     assert VIDEO_DATACHANNEL_BUFFER_LOW_BYTES == 0
     asyncio.run(_assert_datachannel_relay_contract())
+
+
+def test_control_datachannel_pool_invokes_one_shared_handler() -> None:
+    asyncio.run(_assert_control_datachannel_handler())
+
+
+async def _assert_control_datachannel_handler() -> None:
+    handled: list[object] = []
+
+    async def handler(channel: object) -> None:
+        handled.append(channel)
+
+    class Peer:
+        async def close(self) -> None:
+            return None
+
+    channel = object()
+    ready = asyncio.get_running_loop().create_future()
+    ready.set_result(channel)
+    await ControlDataChannelPeerPool()._serve_control(
+        peer=Peer(),
+        channel_ready=ready,
+        channel_handler=handler,
+        metrics=TransportMetrics(),
+    )
+    assert handled == [channel]
 
 
 async def _assert_datachannel_relay_contract() -> None:

@@ -2286,6 +2286,9 @@
       let leisaacSecondaryFrameTimer = null;
       let leisaacFrameSequence = 0;
       let leisaacControlSocket = null;
+      let leisaacControlPeer = null;
+      let leisaacControlDataChannel = null;
+      let leisaacControlTransport = "disconnected";
       let leisaacVideoSocket = null;
       let leisaacVideoPeer = null;
       let leisaacVideoDataChannel = null;
@@ -3167,9 +3170,11 @@
         const latency = document.getElementById("leisaacLatencyStatus");
         if (transport) {
           const label = leisaacActiveTransport === "websocket-v1"
-            ? (leisaacVideoTransport === "webrtc-datachannel-v1"
-              ? "WebSocket control + WebRTC video · preferred · latest-frame-wins"
-              : "WebSocket · fallback · latest-frame-wins")
+            ? (leisaacControlTransport === "webrtc-datachannel-v1"
+              ? "WebRTC control + WebSocket video · preferred · latest-frame-wins"
+              : leisaacVideoTransport === "webrtc-datachannel-v1"
+                ? "WebSocket control + WebRTC video · preferred · latest-frame-wins"
+                : "WebSocket · fallback · latest-frame-wins")
             : leisaacActiveTransport === "jpeg-poll"
               ? "JPEG polling · fallback"
               : "disconnected";
@@ -3189,7 +3194,9 @@
             leisaacLastFpsFrames = leisaacDeliveredFrames;
           }
         }
-        leisaacTransportEvidence.active = leisaacActiveTransport;
+        leisaacTransportEvidence.active = leisaacActiveTransport === "websocket-v1"
+          ? leisaacControlTransport
+          : leisaacActiveTransport;
         leisaacTransportEvidence.video = leisaacVideoTransport;
         leisaacTransportEvidence.dropped_frames = leisaacDroppedFrames;
       }
@@ -3235,9 +3242,12 @@
         leisaacNextControlSequence += 1;
         return payload;
       }
+      function leisaacControlIsOpen(socket) {
+        return Boolean(socket) && (socket.readyState === WebSocket.OPEN || socket.readyState === "open");
+      }
       function sendQueuedWebSocketControls() {
         const socket = leisaacControlSocket;
-        if (!socket || socket.readyState !== WebSocket.OPEN) return;
+        if (!leisaacControlIsOpen(socket)) return;
         for (const item of Array.from(leisaacUnackedControls.values()).sort((left, right) => left.payload.seq - right.payload.seq)) {
           if (item.sentGeneration === leisaacSocketGeneration) continue;
           socket.send(JSON.stringify(item.payload));
@@ -3880,7 +3890,7 @@
             return;
           }
           const socket = leisaacControlSocket;
-          if (!socket || socket.readyState !== WebSocket.OPEN) return;
+          if (!leisaacControlIsOpen(socket)) return;
           const nonce = String(Date.now()) + "-" + String(Math.random()).slice(2);
           const wallNs = Date.now() * 1000000;
           leisaacPings.set(nonce, { wallNs: wallNs, monoMs: performance.now() });
@@ -3902,13 +3912,29 @@
         stopLeIsaacHeartbeat();
         if (leisaacReconnectTimer !== null) window.clearTimeout(leisaacReconnectTimer);
         leisaacReconnectTimer = null;
-        const sockets = [leisaacControlSocket, leisaacVideoSocket];
+        const controlChannel = leisaacControlDataChannel;
+        const controlPeer = leisaacControlPeer;
+        const sockets = [
+          leisaacControlSocket === controlChannel ? null : leisaacControlSocket,
+          leisaacVideoSocket,
+        ];
         leisaacControlSocket = null;
+        leisaacControlPeer = null;
+        leisaacControlDataChannel = null;
+        leisaacControlTransport = "disconnected";
         leisaacVideoSocket = null;
         for (const socket of sockets) {
           if (!socket) continue;
           socket.onopen = socket.onclose = socket.onerror = socket.onmessage = null;
           try { socket.close(1000, "client disconnect"); } catch (_err) { /* already closed */ }
+        }
+        if (controlChannel) {
+          controlChannel.onopen = controlChannel.onclose = controlChannel.onerror = controlChannel.onmessage = null;
+          try { controlChannel.close(); } catch (_err) { /* already closed */ }
+        }
+        if (controlPeer) {
+          controlPeer.onconnectionstatechange = null;
+          try { controlPeer.close(); } catch (_err) { /* already closed */ }
         }
         const channel = leisaacVideoDataChannel;
         const peer = leisaacVideoPeer;
@@ -3954,6 +3980,83 @@
           };
           peer.addEventListener("icecandidate", candidate);
         });
+      }
+      async function openLeIsaacControlDataChannel(status, generation) {
+        if (typeof window.RTCPeerConnection !== "function" || !status.control_datachannel_url) {
+          throw new Error("WebRTC control data channel is unavailable");
+        }
+        const servers = Array.isArray(status.ice_servers) ? status.ice_servers : [];
+        if (String(status.ice_transport_policy || "") !== "relay" || servers.length !== 1) {
+          throw new Error("WebRTC control relay configuration is invalid");
+        }
+        const peer = new window.RTCPeerConnection({
+          iceServers: servers,
+          iceTransportPolicy: "relay",
+          bundlePolicy: "max-bundle",
+        });
+        const channel = peer.createDataChannel("npa-leisaac-control", {
+          ordered: true,
+          protocol: "npa.leisaac.control.v1",
+        });
+        channel.onmessage = handleLeIsaacControlMessage;
+        leisaacControlPeer = peer;
+        leisaacControlDataChannel = channel;
+        let cancelOpenWait = () => {};
+        const opened = new Promise((resolve, reject) => {
+          const timeout = window.setTimeout(() => finish(new Error("WebRTC control channel timed out")), 10000);
+          const finish = (error) => {
+            window.clearTimeout(timeout);
+            channel.onopen = null;
+            channel.onerror = null;
+            if (error) reject(error); else resolve();
+          };
+          cancelOpenWait = () => {
+            window.clearTimeout(timeout);
+            channel.onopen = null;
+            channel.onerror = null;
+          };
+          channel.onopen = () => finish();
+          channel.onerror = () => finish(new Error("WebRTC control channel failed"));
+        });
+        try {
+          const offer = await peer.createOffer();
+          await peer.setLocalDescription(offer);
+          await waitForLeIsaacRelayCandidate(peer);
+          if (generation !== leisaacSocketGeneration) throw new Error("stale WebRTC negotiation");
+          const response = await fetch(String(status.control_datachannel_url), {
+            method: "POST",
+            credentials: "include",
+            cache: "no-store",
+            headers: {
+              "Content-Type": "application/json",
+              "X-NPA-LeIsaac-Control": "1",
+            },
+            body: JSON.stringify({
+              v: 1,
+              run_id: String(status.run_id || ""),
+              type: "offer",
+              sdp: String((peer.localDescription && peer.localDescription.sdp) || ""),
+            }),
+          });
+          if (!response.ok) throw new Error("WebRTC control offer returned HTTP " + String(response.status));
+          const answer = await response.json();
+          if (
+            !answer || answer.v !== 1 || answer.type !== "answer" ||
+            typeof answer.sdp !== "string" || !answer.sdp ||
+            Object.keys(answer).sort().join(",") !== "sdp,type,v"
+          ) throw new Error("WebRTC control answer is invalid");
+          await peer.setRemoteDescription({ type: "answer", sdp: answer.sdp });
+          await opened;
+          if (generation !== leisaacSocketGeneration) throw new Error("stale WebRTC control channel");
+          const maximum = Number((peer.sctp && peer.sctp.maxMessageSize) || 0);
+          if (maximum && maximum < 4096) throw new Error("WebRTC control message size is too small");
+          leisaacControlSocket = channel;
+          leisaacControlTransport = "webrtc-datachannel-v1";
+          return channel;
+        } catch (error) {
+          cancelOpenWait();
+          throw error;
+        }
       }
       async function openLeIsaacVideoDataChannel(status, generation) {
         if (typeof window.RTCPeerConnection !== "function" || !status.video_datachannel_url) {
@@ -4039,11 +4142,13 @@
           throw error;
         }
       }
-      function openLeIsaacSocketPair(status, useDataChannel) {
+      function openLeIsaacSocketPair(status, useControlDataChannel, useVideoDataChannel) {
         closeLeIsaacSockets();
         const generation = leisaacSocketGeneration;
-        const control = new WebSocket(leisaacWebSocketUrl(status.control_ws_url), "npa.leisaac.control.v1");
-        const video = useDataChannel
+        const control = useControlDataChannel
+          ? null
+          : new WebSocket(leisaacWebSocketUrl(status.control_ws_url), "npa.leisaac.control.v1");
+        const video = useVideoDataChannel
           ? null
           : new WebSocket(leisaacWebSocketUrl(status.video_ws_url), "npa.leisaac.video.v1");
         if (video) video.binaryType = "arraybuffer";
@@ -4061,10 +4166,10 @@
             window.clearTimeout(timeout);
             if (error) reject(error); else resolve();
           };
-          control.onopen = () => {
+          const resume = (transport) => {
             if (generation !== leisaacSocketGeneration) return;
             controlOpen = true;
-            control.send(JSON.stringify({
+            transport.send(JSON.stringify({
               v: 1,
               type: "resume",
               run_id: String(status.run_id || ""),
@@ -4076,7 +4181,15 @@
             }));
             finish();
           };
-          control.onmessage = handleLeIsaacControlMessage;
+          if (control) {
+            leisaacControlTransport = "websocket-v1";
+            control.onopen = () => resume(control);
+            control.onmessage = handleLeIsaacControlMessage;
+          } else {
+            openLeIsaacControlDataChannel(status, generation)
+              .then((channel) => resume(channel))
+              .catch(finish);
+          }
           if (video) {
             video.onopen = () => {
               leisaacVideoTransport = "websocket-v1";
@@ -4091,12 +4204,14 @@
             }).catch(finish);
           }
           const failed = () => finish(new Error("preferred transport unavailable"));
-          control.onerror = failed;
+          if (control) control.onerror = failed;
           if (video) video.onerror = failed;
-          control.onclose = () => {
-            if (!settled) failed();
-            else if (generation === leisaacSocketGeneration && leisaacActiveTransport === "websocket-v1") recoverLeIsaacPreferred(status);
-          };
+          if (control) {
+            control.onclose = () => {
+              if (!settled) failed();
+              else if (generation === leisaacSocketGeneration && leisaacActiveTransport === "websocket-v1") recoverLeIsaacPreferred(status);
+            };
+          }
           if (video) {
             video.onclose = () => {
               if (!settled) failed();
@@ -4127,13 +4242,36 @@
           try {
             if (attempt) await new Promise((resolve) => window.setTimeout(resolve, 250 * (2 ** (attempt - 1))));
             await authorizeLeIsaacSocketPair(status);
-            const useDataChannel = attempt === 0 &&
+            const useControlDataChannel = attempt === 0 &&
+              String(status.preferred_control_transport || "") === "webrtc-datachannel-v1" &&
+              Boolean(status.control_datachannel_url);
+            const useVideoDataChannel = attempt === 0 && !useControlDataChannel &&
               String(status.preferred_transport || "") === "webrtc-datachannel-v1" &&
               Boolean(status.video_datachannel_url);
-            await openLeIsaacSocketPair(status, useDataChannel);
+            await openLeIsaacSocketPair(status, useControlDataChannel, useVideoDataChannel);
             leisaacReconnectAttempts = attempt;
             leisaacActiveTransport = "websocket-v1";
             const generation = leisaacSocketGeneration;
+            if (leisaacControlDataChannel) {
+              leisaacControlDataChannel.onclose = () => {
+                if (generation === leisaacSocketGeneration && leisaacActiveTransport === "websocket-v1") {
+                  recordLeIsaacTransportFailure("webrtc-control", attempt, new Error("data channel closed"));
+                  recoverLeIsaacPreferred(status);
+                }
+              };
+            }
+            if (leisaacControlPeer) {
+              leisaacControlPeer.onconnectionstatechange = () => {
+                if (
+                  ["failed", "closed"].includes(String(leisaacControlPeer && leisaacControlPeer.connectionState || "")) &&
+                  generation === leisaacSocketGeneration &&
+                  leisaacActiveTransport === "websocket-v1"
+                ) {
+                  recordLeIsaacTransportFailure("webrtc-control-peer", attempt, new Error("peer connection failed"));
+                  recoverLeIsaacPreferred(status);
+                }
+              };
+            }
             if (leisaacVideoDataChannel) {
               leisaacVideoDataChannel.onclose = () => {
                 if (generation === leisaacSocketGeneration && leisaacActiveTransport === "websocket-v1") {
@@ -4161,7 +4299,9 @@
           } catch (err) {
             lastError = err;
             recordLeIsaacTransportFailure(
-              attempt === 0 && status.video_datachannel_url ? "webrtc-negotiation" : "websocket-fallback",
+              attempt === 0 && (status.control_datachannel_url || status.video_datachannel_url)
+                ? "webrtc-negotiation"
+                : "websocket-fallback",
               attempt,
               err,
             );
@@ -4309,7 +4449,7 @@
         leisaacManualDisconnect = true;
         leisaacBundleRestartPending = false;
         const controlSocket = leisaacControlSocket;
-        if (controlSocket && controlSocket.readyState === WebSocket.OPEN && leisaacClientId) {
+        if (leisaacControlIsOpen(controlSocket) && leisaacClientId) {
           try {
             const released = new Promise((resolve) => { leisaacReleaseResolver = resolve; });
             controlSocket.send(JSON.stringify({

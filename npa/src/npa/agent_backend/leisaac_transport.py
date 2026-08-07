@@ -674,6 +674,8 @@ class TransportMetrics:
             "controls_duplicate",
             "controls_applied",
             "control_errors",
+            "control_datachannel_connections",
+            "control_datachannel_errors",
             "frames_published",
             "frames_relay_acked",
             "frames_browser_acked",

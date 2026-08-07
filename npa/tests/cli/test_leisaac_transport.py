@@ -749,6 +749,61 @@ def test_runtime_abrupt_client_close_durably_releases_every_held_control(
     ]
 
 
+def test_runtime_reliable_datachannel_uses_shared_ordering_and_disconnect_release(
+    monkeypatch, tmp_path: Path
+) -> None:
+    runtime = _prepare_runtime(monkeypatch, tmp_path)
+
+    class Channel:
+        readyState = "open"
+
+        def __init__(self) -> None:
+            self.callbacks = {}
+            self.sent: list[dict] = []
+
+        def on(self, name: str):
+            def register(callback):
+                self.callbacks[name] = callback
+                return callback
+
+            return register
+
+        def send(self, raw: str) -> None:
+            self.sent.append(json.loads(raw))
+
+        def close(self) -> None:
+            self.readyState = "closed"
+            callback = self.callbacks.get("close")
+            if callback:
+                callback()
+
+    async def exercise() -> Channel:
+        channel = Channel()
+        task = asyncio.create_task(runtime._serve_control_datachannel(channel))
+        await asyncio.sleep(0)
+        channel.callbacks["message"](json.dumps(_control()))
+        for _attempt in range(100):
+            if channel.sent:
+                break
+            await asyncio.sleep(0.001)
+        assert channel.sent[0]["phase"] == "accepted"
+        channel.close()
+        with pytest.raises(ConnectionError, match="control channel closed"):
+            await task
+        return channel
+
+    channel = asyncio.run(exercise())
+    assert channel.sent[0]["seq"] == 1
+    records = [
+        json.loads(line)
+        for line in runtime.INPUT_QUEUE_PATH.read_text(encoding="utf-8").splitlines()
+    ]
+    assert [(item["seq"], item["event"]) for item in records] == [
+        (1, "press"),
+        (2, "release"),
+    ]
+
+
 def test_runtime_client_exception_still_waits_for_disconnect_release(
     monkeypatch, tmp_path: Path
 ) -> None:

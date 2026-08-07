@@ -29,6 +29,7 @@ import urllib.request
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
+from collections.abc import Awaitable, Callable
 from typing import Any
 from urllib.parse import urlparse
 
@@ -125,12 +126,14 @@ except ImportError:  # Repository unit tests import the script directly.
 
 try:
     from leisaac_datachannel import (
+        ControlDataChannelPeerPool,
         VideoDataChannelError,
         VideoDataChannelPeerPool,
         parse_video_datachannel_offer,
     )
 except ImportError:  # Repository unit tests import the script directly.
     from npa.agent_backend.leisaac_datachannel import (
+        ControlDataChannelPeerPool,
         VideoDataChannelError,
         VideoDataChannelPeerPool,
         parse_video_datachannel_offer,
@@ -216,6 +219,7 @@ CONTROL_LEDGER = ControlLedger()
 TRANSPORT_METRICS = TransportMetrics()
 FRAME_LATEST = AsyncLatestByKey(("workspace", "overview"))
 VIDEO_DATACHANNEL_PEERS = VideoDataChannelPeerPool()
+CONTROL_DATACHANNEL_PEERS = ControlDataChannelPeerPool()
 APPLIED_ACK_OFFSET = 0
 
 
@@ -1021,6 +1025,202 @@ async def _wait_for_applied(
     return None
 
 
+async def _serve_control_protocol(
+    receive: Callable[[], Awaitable[str]],
+    emit: Callable[[dict[str, Any]], Awaitable[None]],
+) -> None:
+    """Serve the one control protocol over WebSocket or reliable SCTP."""
+
+    run_id = os.environ.get("NPA_LEISAAC_RUN_ID", "")
+    applied_queue: asyncio.Queue[tuple[str, int]] = asyncio.Queue(
+        maxsize=MAX_CLIENT_HISTORY
+    )
+    stop = threading.Event()
+    send_lock = asyncio.Lock()
+
+    async def send(payload: dict[str, Any]) -> None:
+        async with send_lock:
+            await asyncio.wait_for(emit(payload), timeout=2.0)
+
+    async def send_applied() -> None:
+        while True:
+            client_id, seq = await applied_queue.get()
+            payload = await _wait_for_applied(client_id, seq, stop)
+            if payload is None:
+                await send(
+                    {
+                        "v": 1,
+                        "type": "error",
+                        "code": "application_timeout",
+                        "run_id": run_id,
+                        "client_id": client_id,
+                        "seq": seq,
+                    }
+                )
+                continue
+            acknowledgement = dict(payload)
+            acknowledgement.update(v=1, type="ack", phase="applied", run_id=run_id)
+            await send(acknowledgement)
+
+    sender = asyncio.create_task(send_applied())
+    active_client_id = ""
+
+    def release_all(
+        client_id: str, client_mono_ns: int = 0, client_wall_ns: int = 0
+    ) -> int:
+        releases: list[tuple[int, dict[str, Any]]] = []
+        for key in CONTROL_LEDGER.keys_down(client_id):
+            next_seq = int(CONTROL_LEDGER.resume(client_id)["next_seq"])
+            message = {
+                "v": 1,
+                "type": "control",
+                "run_id": run_id,
+                "client_id": client_id,
+                "seq": next_seq,
+                "key": key,
+                "event": "release",
+                "client_mono_ns": client_mono_ns,
+                "client_wall_ns": client_wall_ns,
+            }
+            _accepted, queued = CONTROL_LEDGER.accept(message)
+            if queued is not None:
+                releases.append((next_seq, queued))
+        if not releases:
+            return 0
+        # This synchronous flush/fsync is the cancellation-safe safety boundary
+        # shared by WebSocket and SCTP disconnects.
+        _append_inputs([queued for _seq, queued in releases])
+        TRANSPORT_METRICS.increment("controls_accepted", len(releases))
+        for seq, _queued in releases:
+            applied_queue.put_nowait((client_id, seq))
+        return len(releases)
+
+    try:
+        while True:
+            raw = await receive()
+            try:
+                message = parse_control_message(raw, expected_run_id=run_id)
+                message_client_id = str(message["client_id"])
+                if active_client_id and message_client_id != active_client_id:
+                    raise TransportProtocolError(
+                        "client_mismatch",
+                        "one control transport may own only one client ID",
+                    )
+                active_client_id = message_client_id
+                if message["type"] == "ping":
+                    await send(
+                        {
+                            "v": 1,
+                            "type": "pong",
+                            "run_id": run_id,
+                            "client_id": message["client_id"],
+                            "nonce": message.get("nonce", ""),
+                            "client_mono_ns": str(message["client_mono_ns"]),
+                            "client_wall_ns": str(message["client_wall_ns"]),
+                            "runtime_mono_ns": str(time.monotonic_ns()),
+                            "runtime_wall_ns": str(time.time_ns()),
+                        }
+                    )
+                    continue
+                if message["type"] == "resume":
+                    response = CONTROL_LEDGER.resume(str(message["client_id"]))
+                    response["run_id"] = run_id
+                    response["client_mono_ns"] = str(message["client_mono_ns"])
+                    response["client_wall_ns"] = str(message["client_wall_ns"])
+                    TRANSPORT_METRICS.increment("reconnects")
+                    await send(response)
+                    continue
+                if message["type"] == "release-all":
+                    released = release_all(
+                        active_client_id,
+                        int(message["client_mono_ns"]),
+                        int(message["client_wall_ns"]),
+                    )
+                    await send(
+                        {
+                            "v": 1,
+                            "type": "released",
+                            "run_id": run_id,
+                            "client_id": message["client_id"],
+                            "runtime_mono_ns": str(time.monotonic_ns()),
+                            "released_count": released,
+                        }
+                    )
+                    continue
+                with STATE_LOCK:
+                    ready = STATE.get("state") == "ready"
+                if not ready:
+                    await send(
+                        {
+                            "v": 1,
+                            "type": "error",
+                            "code": "simulator_not_ready",
+                            "detail": "simulator not ready",
+                        }
+                    )
+                    continue
+                accepted, queued = CONTROL_LEDGER.accept(message)
+                if queued is not None:
+                    await asyncio.to_thread(_append_input, queued)
+                    TRANSPORT_METRICS.increment("controls_accepted")
+                else:
+                    TRANSPORT_METRICS.increment("controls_duplicate")
+                await send(accepted)
+                await applied_queue.put(
+                    (str(message["client_id"]), int(message["seq"]))
+                )
+            except TransportProtocolError as exc:
+                TRANSPORT_METRICS.increment("control_errors")
+                await send(exc.payload())
+    finally:
+        try:
+            if active_client_id:
+                release_all(active_client_id)
+        except Exception as exc:
+            _log_exception(
+                logging.CRITICAL,
+                "Failed to release LeIsaac controls during disconnect",
+                exc,
+            )
+        finally:
+            stop.set()
+            sender.cancel()
+            await asyncio.gather(sender, return_exceptions=True)
+
+
+async def _serve_control_datachannel(channel: Any) -> None:
+    """Adapt one bounded reliable RTCDataChannel to the shared control service."""
+
+    messages: asyncio.Queue[str | None] = asyncio.Queue(maxsize=MAX_CLIENT_HISTORY)
+
+    @channel.on("message")
+    def on_message(raw: Any) -> None:
+        if not isinstance(raw, str) or len(raw.encode("utf-8")) > MAX_CONTROL_MESSAGE_BYTES:
+            channel.close()
+            return
+        try:
+            messages.put_nowait(raw)
+        except asyncio.QueueFull:
+            channel.close()
+
+    @channel.on("close")
+    def on_close() -> None:
+        asyncio.create_task(messages.put(None))
+
+    async def receive_datachannel() -> str:
+        raw = await messages.get()
+        if raw is None:
+            raise ConnectionError("WebRTC control channel closed")
+        return raw
+
+    async def emit_datachannel(payload: dict[str, Any]) -> None:
+        if str(channel.readyState) != "open":
+            raise ConnectionError("WebRTC control channel is unavailable")
+        channel.send(json.dumps(payload, separators=(",", ":")))
+
+    await _serve_control_protocol(receive_datachannel, emit_datachannel)
+
+
 def _runtime_ws_authorized(websocket: WebSocket, subprotocol: str) -> bool:
     requested = {
         item.strip()
@@ -1237,6 +1437,54 @@ def build_app() -> FastAPI:
             content=PROVENANCE_PATH.read_bytes(), media_type="application/json"
         )
 
+    @application.post("/transport/control-webrtc")
+    async def transport_control_webrtc(request: Request) -> Response:
+        if (
+            not _authorized(request.headers)
+            or str(request.headers.get("x-npa-leisaac-run-id") or "")
+            != os.environ.get("NPA_LEISAAC_RUN_ID", "")
+        ):
+            return JSONResponse(status_code=403, content={"detail": "forbidden"})
+        try:
+            content_length = int(request.headers.get("content-length") or "0")
+        except ValueError:
+            content_length = 0
+        if content_length <= 0 or content_length > 131_072:
+            return JSONResponse(
+                status_code=400, content={"detail": "invalid WebRTC control offer"}
+            )
+        body = await request.body()
+        if len(body) != content_length:
+            return JSONResponse(
+                status_code=400, content={"detail": "invalid WebRTC control offer"}
+            )
+        try:
+            payload = json.loads(body)
+            offer_sdp = parse_video_datachannel_offer(
+                payload,
+                expected_run_id=os.environ.get("NPA_LEISAAC_RUN_ID", ""),
+            )
+            answer = await CONTROL_DATACHANNEL_PEERS.create_answer(
+                offer_sdp=offer_sdp,
+                ice_server=None,
+                channel_handler=_serve_control_datachannel,
+                metrics=TRANSPORT_METRICS,
+            )
+        except (UnicodeDecodeError, json.JSONDecodeError, VideoDataChannelError):
+            return JSONResponse(
+                status_code=400,
+                content={"detail": "invalid WebRTC control offer"},
+                headers={"Cache-Control": "no-store"},
+            )
+        return JSONResponse(
+            status_code=200,
+            content=answer,
+            headers={
+                "Cache-Control": "no-store",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+
     @application.post("/transport/video-webrtc")
     async def transport_video_webrtc(request: Request) -> Response:
         if (
@@ -1384,9 +1632,22 @@ def build_app() -> FastAPI:
         if not _runtime_ws_authorized(websocket, CONTROL_SUBPROTOCOL):
             await websocket.close(code=1008)
             return
-        run_id = os.environ.get("NPA_LEISAAC_RUN_ID", "")
         await websocket.accept(subprotocol=CONTROL_SUBPROTOCOL)
         TRANSPORT_METRICS.increment("control_connections")
+
+        async def receive_websocket() -> str:
+            return await websocket.receive_text()
+
+        async def emit_websocket(payload: dict[str, Any]) -> None:
+            await websocket.send_text(json.dumps(payload, separators=(",", ":")))
+
+        try:
+            await _serve_control_protocol(receive_websocket, emit_websocket)
+        except WebSocketDisconnect:
+            pass
+        return
+
+        run_id = os.environ.get("NPA_LEISAAC_RUN_ID", "")
         applied_queue: asyncio.Queue[tuple[str, int]] = asyncio.Queue(
             maxsize=MAX_CLIENT_HISTORY
         )

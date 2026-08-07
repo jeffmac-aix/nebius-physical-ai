@@ -596,7 +596,7 @@ describe("NPA agent LeIsaac capability tab", () => {
     cy.get("#leisaacDisconnect").click();
   });
 
-  it("negotiates authenticated partial-reliability WebRTC video with reliable WebSocket control", () => {
+  it("negotiates authenticated reliable WebRTC control with bounded WebSocket video", () => {
     const status = {
       available: true,
       run_id: "mock-datachannel",
@@ -605,10 +605,11 @@ describe("NPA agent LeIsaac capability tab", () => {
       environment_index: 2,
       seed: 47,
       stream_transport: "websocket-v1",
-      preferred_transport: "webrtc-datachannel-v1",
+      preferred_transport: "websocket-v1",
+      preferred_control_transport: "webrtc-datachannel-v1",
       control_ws_url: "/api/leisaac/transport/control?run_id=mock-datachannel",
+      control_datachannel_url: "/api/leisaac/transport/control-webrtc?run_id=mock-datachannel",
       video_ws_url: "/api/leisaac/transport/video?run_id=mock-datachannel",
-      video_datachannel_url: "/api/leisaac/transport/video-webrtc?run_id=mock-datachannel",
       ice_transport_policy: "relay",
       ice_servers: [{
         urls: ["turn:203.0.113.50:3478?transport=udp"],
@@ -626,7 +627,7 @@ describe("NPA agent LeIsaac capability tab", () => {
       statusCode: 200,
       body: { selected: true, run_id: "mock-datachannel", available: true },
     });
-    cy.intercept("POST", "/api/leisaac/transport/video-webrtc?run_id=mock-datachannel", (req) => {
+    cy.intercept("POST", "/api/leisaac/transport/control-webrtc?run_id=mock-datachannel", (req) => {
       expect(req.headers["x-npa-leisaac-control"]).to.equal("1");
       expect(req.body).to.have.all.keys("v", "run_id", "type", "sdp");
       expect(req.body).to.include({ v: 1, run_id: "mock-datachannel", type: "offer" });
@@ -675,6 +676,22 @@ describe("NPA agent LeIsaac capability tab", () => {
           this.options = options;
           this.readyState = "connecting";
           this.binaryType = "blob";
+          this.sent = [];
+        }
+        send(raw) {
+          const message = JSON.parse(String(raw));
+          this.sent.push(message);
+          if (message.type === "resume") {
+            win.setTimeout(() => this.onmessage && this.onmessage({ data: JSON.stringify({
+              v: 1,
+              type: "resumed",
+              run_id: message.run_id,
+              client_id: message.client_id,
+              next_seq: 1,
+              last_applied_seq: 0,
+              keys_down: [],
+            }) }), 0);
+          }
         }
         close() { this.readyState = "closed"; }
       }
@@ -719,17 +736,18 @@ describe("NPA agent LeIsaac capability tab", () => {
     cy.get("#leisaacConnect").click();
     cy.wait("@dcOffer");
     cy.get("#leisaacTransportStatus", { timeout: 10000 })
-      .should("contain.text", "WebSocket control + WebRTC video")
+      .should("contain.text", "WebRTC control + WebSocket video")
       .and("contain.text", "latest-frame-wins");
     cy.window().should((win) => {
       const peer = win.__LEISAAC_DC_PEER__;
       expect(peer.configuration.iceTransportPolicy).to.equal("relay");
       expect(peer.configuration.iceServers).to.deep.equal(status.ice_servers);
-      expect(peer.channel.label).to.equal("npa-leisaac-video");
-      expect(peer.channel.options).to.deep.include({ ordered: false, maxRetransmits: 0 });
-      expect(peer.channel.binaryType).to.equal("arraybuffer");
-      expect(win.__NPA_AGENT_TEST__.leisaacTransportEvidence().video)
-        .to.equal("webrtc-datachannel-v1");
+      expect(peer.channel.label).to.equal("npa-leisaac-control");
+      expect(peer.channel.options).to.deep.include({ ordered: true });
+      expect(peer.channel.sent.some((item) => item.type === "resume")).to.equal(true);
+      const evidence = win.__NPA_AGENT_TEST__.leisaacTransportEvidence();
+      expect(evidence.active).to.equal("webrtc-datachannel-v1");
+      expect(evidence.video).to.equal("websocket-v1");
     });
     cy.get("#leisaacDisconnect").click();
   });

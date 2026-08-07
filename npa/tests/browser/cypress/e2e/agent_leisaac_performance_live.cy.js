@@ -209,21 +209,31 @@ function frameStageSummary(frames) {
 
         const wireSamples = new Map();
         const nativeSend = win.WebSocket.prototype.send;
-        win.WebSocket.prototype.send = function instrumentedSend(data) {
+        const nativeDataChannelSend = win.RTCDataChannel && win.RTCDataChannel.prototype.send;
+        function recordWire(data, bufferedAmount) {
           try {
             const payload = typeof data === "string" ? JSON.parse(data) : null;
             if (payload && (payload.type === "control" || payload.type === "action")) {
               wireSamples.set(Number(payload.seq), {
                 mono_ms: win.performance.now(),
                 bytes: new win.TextEncoder().encode(data).byteLength,
-                buffered_before_bytes: Number(this.bufferedAmount || 0),
+                buffered_before_bytes: Number(bufferedAmount || 0),
               });
             }
           } catch (_error) {
             // Instrumentation is observational and must never alter the live path.
           }
+        }
+        win.WebSocket.prototype.send = function instrumentedSend(data) {
+          recordWire(data, this.bufferedAmount);
           return nativeSend.call(this, data);
         };
+        if (nativeDataChannelSend) {
+          win.RTCDataChannel.prototype.send = function instrumentedDataChannelSend(data) {
+            recordWire(data, this.bufferedAmount);
+            return nativeDataChannelSend.call(this, data);
+          };
+        }
 
         const startingEvidence = win.__NPA_AGENT_TEST__.leisaacTransportEvidence();
         win.document.getElementById("leisaacConnect").click();
@@ -232,7 +242,7 @@ function frameStageSummary(frames) {
           () => {
             const evidence = win.__NPA_AGENT_TEST__.leisaacTransportEvidence();
             const cameras = new Set(evidence.frames.map((frame) => frame.camera));
-            return evidence.active === "websocket-v1" &&
+            return ["websocket-v1", "webrtc-datachannel-v1"].includes(evidence.active) &&
               evidence.frames.length >= startingEvidence.frames.length + 2 &&
               cameras.has("workspace") && cameras.has("overview");
           },
@@ -421,9 +431,11 @@ function frameStageSummary(frames) {
           failures: Array.isArray(finalEvidence.failures)
             ? finalEvidence.failures.slice(-16)
             : [],
-          policy: finalEvidence.video === "webrtc-datachannel-v1"
-            ? "TURN-only unordered maxRetransmits=0; reliable ordered control WebSocket"
-            : "binary WebSocket latest-frame-wins fallback",
+          policy: finalEvidence.active === "webrtc-datachannel-v1"
+            ? "TURN-only reliable ordered control RTCDataChannel; binary WebSocket latest-frame-wins video"
+            : finalEvidence.video === "webrtc-datachannel-v1"
+              ? "TURN-only unordered maxRetransmits=0 video; reliable ordered control WebSocket"
+              : "binary WebSocket latest-frame-wins fallback",
         };
         benchmark.quality = {
           workspace: { width: 1280, height: 720, jpeg_quality: 82, variance: workspace.variance },
@@ -460,6 +472,7 @@ function frameStageSummary(frames) {
           action_samples: measured.length,
         };
         win.WebSocket.prototype.send = nativeSend;
+        if (nativeDataChannelSend) win.RTCDataChannel.prototype.send = nativeDataChannelSend;
 
         if (measured.length !== measuredCount) {
           throw new Error(`expected ${measuredCount} measured actions, got ${measured.length}`);
@@ -482,6 +495,11 @@ function frameStageSummary(frames) {
           if (benchmark.transport.video !== "websocket-v1") {
             throw new Error(
               `optimized benchmark requires the measured bounded WebSocket path, got ${benchmark.transport.video || "none"}`,
+            );
+          }
+          if (benchmark.transport.control !== "webrtc-datachannel-v1") {
+            throw new Error(
+              `optimized benchmark requires direct reliable WebRTC control, got ${benchmark.transport.control || "none"}`,
             );
           }
           if (!(baselineP50 > 0 && baselineP95 > 0)) {
