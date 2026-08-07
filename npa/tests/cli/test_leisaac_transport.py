@@ -383,6 +383,41 @@ async def test_camera_latest_values_are_bounded_and_serviced_fairly() -> None:
         await latest.wait_after(generations, next_index=next_index, timeout=0.001)
 
 
+@pytest.mark.anyio
+async def test_camera_latest_values_prefer_primary_once_without_starvation() -> None:
+    latest = AsyncLatestByKey(("workspace", "overview"))
+    await latest.publish("overview", "overview-1")
+    await latest.publish("workspace", "workspace-1")
+    generations: dict[str, int] = {}
+
+    camera, generation, value, skipped, next_index = await latest.wait_after(
+        generations,
+        next_index=1,
+        preferred_key="workspace",
+        timeout=0.1,
+    )
+    assert (camera, generation, value, skipped) == (
+        "workspace",
+        1,
+        "workspace-1",
+        0,
+    )
+    generations[camera] = generation
+
+    camera, generation, value, skipped, _ = await latest.wait_after(
+        generations,
+        next_index=next_index,
+        preferred_key="workspace",
+        timeout=0.1,
+    )
+    assert (camera, generation, value, skipped) == (
+        "overview",
+        1,
+        "overview-1",
+        0,
+    )
+
+
 def test_transport_metrics_are_low_cardinality() -> None:
     metrics = TransportMetrics()
     metrics.increment("frames_sent", 2)

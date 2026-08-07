@@ -633,8 +633,11 @@ class AsyncLatestByKey:
         generations: dict[str, int],
         *,
         next_index: int = 0,
+        preferred_key: str | None = None,
         timeout: float | None = None,
     ) -> tuple[str, int, Any, int, int]:
+        if preferred_key is not None and preferred_key not in self._keys:
+            raise ValueError("unknown preferred latest-value key")
         observed = {key: max(0, int(generations.get(key, 0))) for key in self._keys}
 
         def available() -> bool:
@@ -646,6 +649,22 @@ class AsyncLatestByKey:
 
         if not available():
             await asyncio.wait_for(wait(), timeout=timeout)
+        # Put the user-critical viewport on the wire first when both cameras are
+        # ready. Its generation is then observed, so the secondary value is
+        # selected on the immediately following dequeue rather than starved.
+        if (
+            preferred_key is not None
+            and self._generations[preferred_key] > observed[preferred_key]
+        ):
+            index = self._keys.index(preferred_key)
+            generation = self._generations[preferred_key]
+            return (
+                preferred_key,
+                generation,
+                self._values[preferred_key],
+                max(0, generation - observed[preferred_key] - 1),
+                (index + 1) % len(self._keys),
+            )
         start = max(0, int(next_index)) % len(self._keys)
         for offset in range(len(self._keys)):
             index = (start + offset) % len(self._keys)

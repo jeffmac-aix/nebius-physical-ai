@@ -1933,6 +1933,7 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
                         ) = await latest.wait_after(
                             generations,
                             next_index=next_camera_index,
+                            preferred_key="workspace",
                             timeout=20.0,
                         )
                         generations[camera] = generation

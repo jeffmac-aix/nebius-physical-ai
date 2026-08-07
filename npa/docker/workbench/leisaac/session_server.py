@@ -173,7 +173,7 @@ CLIENT_SOURCE_JS_SHA256 = (
 )
 CLIENT_JS_SHA256 = CLIENT_SOURCE_JS_SHA256
 UPSTREAM_OBSERVABILITY_PATCH_SHA256 = (
-    "207ed700116292af2610854b404d7e7e9253355b7b6fc4587c6489328fd0f772"
+    "a823d96c5f59693ae21bb60f9cd430d5ae8a4f08a81a68e61647da3eedcf8de0"
 )
 
 CACHE_ROOT = Path(os.environ.get("NPA_LEISAAC_CACHE_DIR", "/opt/leisaac-cache"))
@@ -1314,6 +1314,7 @@ async def _video_datachannel_frames():
         ) = await FRAME_LATEST.wait_after(
             generations,
             next_index=next_camera_index,
+            preferred_key="workspace",
             timeout=20.0,
         )
         generations[camera] = generation
@@ -1912,6 +1913,7 @@ def build_app() -> FastAPI:
                 ) = await FRAME_LATEST.wait_after(
                     generations,
                     next_index=next_camera_index,
+                    preferred_key="workspace",
                     timeout=20.0,
                 )
                 generations[camera] = generation
