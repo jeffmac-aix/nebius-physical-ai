@@ -50,6 +50,7 @@ try:  # agent VM: /opt/npa-agent is on sys.path
         validate_health,
     )
     from agent_backend.leisaac_transport import (
+        AsyncFrameCreditWindow,
         AsyncLatestByKey,
         CONTROL_SUBPROTOCOL,
         MAX_CONTROL_MESSAGE_BYTES,
@@ -86,6 +87,7 @@ except ImportError:  # repository tests
         validate_health,
     )
     from npa.agent_backend.leisaac_transport import (
+        AsyncFrameCreditWindow,
         AsyncLatestByKey,
         CONTROL_SUBPROTOCOL,
         MAX_CONTROL_MESSAGE_BYTES,
@@ -1706,6 +1708,7 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
             return
         run_id = str(manifest["run_id"])
         latest = AsyncLatestByKey(("workspace", "overview"))
+        browser_credits = AsyncFrameCreditWindow(limit=2)
         try:
             async with deps.websocket_connect(
                 _runtime_ws_uri(manifest, "/transport/video"),
@@ -1774,41 +1777,62 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
                                 "invalid_message",
                                 "video acknowledgements must be text",
                             )
-                        parse_video_ack(raw, expected_run_id=run_id)
+                        acknowledgement = parse_video_ack(
+                            raw, expected_run_id=run_id
+                        )
+                        browser_credits.acknowledge(
+                            int(acknowledgement["sequence"])
+                        )
                         transport_metrics.increment("frames_browser_acked")
 
                 async def send_browser() -> None:
                     generations: dict[str, int] = {}
                     next_camera_index = 0
                     while True:
-                        (
-                            camera,
-                            generation,
-                            item,
-                            skipped,
-                            next_camera_index,
-                        ) = await latest.wait_after(
-                            generations,
-                            next_index=next_camera_index,
-                            timeout=20.0,
-                        )
-                        generations[camera] = generation
-                        envelope, content, received_mono_ns = item
-                        if skipped:
-                            transport_metrics.increment("frames_coalesced", skipped)
-                        stamped = stamp_verified_frame(
-                            envelope,
-                            content,
-                            received_mono_ns=received_mono_ns,
-                            send_mono_ns=time.monotonic_ns(),
-                            additional_dropped=skipped,
-                        )
+                        await browser_credits.acquire()
+                        committed = False
                         try:
+                            (
+                                camera,
+                                generation,
+                                item,
+                                skipped,
+                                next_camera_index,
+                            ) = await latest.wait_after(
+                                generations,
+                                next_index=next_camera_index,
+                                timeout=20.0,
+                            )
+                            generations[camera] = generation
+                            envelope, content, received_mono_ns = item
+                            if skipped:
+                                transport_metrics.increment(
+                                    "frames_coalesced", skipped
+                                )
+                            stamped = stamp_verified_frame(
+                                envelope,
+                                content,
+                                received_mono_ns=received_mono_ns,
+                                send_mono_ns=time.monotonic_ns(),
+                                additional_dropped=skipped,
+                            )
+                            depth = browser_credits.commit(envelope.sequence)
+                            committed = True
+                            if depth == browser_credits.limit:
+                                transport_metrics.increment(
+                                    "video_window_saturated"
+                                )
                             await asyncio.wait_for(
                                 websocket.send_bytes(stamped), timeout=2.0
                             )
                         except asyncio.TimeoutError:
+                            if not committed:
+                                browser_credits.cancel_reservation()
                             transport_metrics.increment("slow_client_disconnects")
+                            raise
+                        except BaseException:
+                            if not committed:
+                                browser_credits.cancel_reservation()
                             raise
                         transport_metrics.increment("frames_sent")
 

@@ -334,6 +334,23 @@ async def test_video_credit_window_pipelines_but_never_grows_unbounded() -> None
 
 
 @pytest.mark.anyio
+async def test_video_credit_is_acquired_before_latest_selection_and_is_cancellable() -> None:
+    window = AsyncFrameCreditWindow(limit=1)
+    assert await window.acquire() == 1
+    assert window.depth == 0
+    assert window.cancel_reservation() == 0
+
+    assert await window.acquire() == 1
+    assert window.commit(11) == 1
+    blocked = asyncio.create_task(window.acquire())
+    await asyncio.sleep(0)
+    assert not blocked.done()
+    assert window.acknowledge(11) == 0
+    assert await asyncio.wait_for(blocked, timeout=0.1) == 1
+    assert window.cancel_reservation() == 0
+
+
+@pytest.mark.anyio
 async def test_latest_frame_wins_for_a_slow_consumer() -> None:
     latest = AsyncLatestValue()
     await latest.publish("frame-1")

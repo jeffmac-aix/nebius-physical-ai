@@ -69,18 +69,47 @@ class AsyncFrameCreditWindow:
         self.limit = limit
         self._credits = asyncio.Semaphore(limit)
         self._sequences: deque[int] = deque()
+        self._reservations = 0
         self.high_water = 0
 
     @property
     def depth(self) -> int:
         return len(self._sequences)
 
-    async def reserve(self, sequence: int) -> int:
-        normalized = _sequence(sequence, name="frame sequence")
+    async def acquire(self) -> int:
+        """Acquire capacity before selecting the latest frame to transmit."""
+
         await self._credits.acquire()
+        self._reservations += 1
+        return self.depth + self._reservations
+
+    def commit(self, sequence: int) -> int:
+        """Bind one acquired slot to the exact frame now being sent."""
+
+        normalized = _sequence(sequence, name="frame sequence")
+        if self._reservations < 1:
+            raise RuntimeError("video credit slot was not acquired")
+        self._reservations -= 1
         self._sequences.append(normalized)
         self.high_water = max(self.high_water, self.depth)
         return self.depth
+
+    def cancel_reservation(self) -> int:
+        """Return capacity when selection/packing fails before a frame is sent."""
+
+        if self._reservations < 1:
+            raise RuntimeError("video credit slot was not acquired")
+        self._reservations -= 1
+        self._credits.release()
+        return self.depth
+
+    async def reserve(self, sequence: int) -> int:
+        await self.acquire()
+        try:
+            return self.commit(sequence)
+        except BaseException:
+            self.cancel_reservation()
+            raise
 
     def acknowledge(self, sequence: int) -> int:
         normalized = _sequence(sequence, name="frame sequence")
