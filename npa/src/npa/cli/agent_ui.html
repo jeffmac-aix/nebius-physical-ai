@@ -3456,7 +3456,7 @@
         });
         return leisaacClientLoadPromise;
       }
-      function stopLeIsaacFrames() {
+      function stopLeIsaacFramePolling() {
         if (leisaacFrameTimer !== null) window.clearTimeout(leisaacFrameTimer);
         if (leisaacSecondaryFrameTimer !== null) window.clearTimeout(leisaacSecondaryFrameTimer);
         leisaacFrameTimer = null;
@@ -3468,8 +3468,6 @@
           frame.removeAttribute("src");
           frame.hidden = true;
         }
-        const canvas = document.getElementById("leisaacCanvas");
-        if (canvas) canvas.hidden = true;
         const secondaryFrame = document.getElementById("leisaacSecondaryFrame");
         if (secondaryFrame) {
           secondaryFrame.onload = null;
@@ -3477,6 +3475,11 @@
           secondaryFrame.removeAttribute("src");
           secondaryFrame.hidden = true;
         }
+      }
+      function stopLeIsaacFrames() {
+        stopLeIsaacFramePolling();
+        const canvas = document.getElementById("leisaacCanvas");
+        if (canvas) canvas.hidden = true;
         const secondaryCanvas = document.getElementById("leisaacSecondaryCanvas");
         if (secondaryCanvas) secondaryCanvas.hidden = true;
       }
@@ -4266,7 +4269,7 @@
             // tested JPEG fallback.  Stop its polling loops before accepting
             // binary frames so the two transports cannot contend or present
             // stale fallback images after recovery.
-            stopLeIsaacFrames();
+            if (recoveredFromPolling) stopLeIsaacFramePolling();
             leisaacReconnectAttempts = attempt;
             leisaacActiveTransport = "websocket-v1";
             const generation = leisaacSocketGeneration;

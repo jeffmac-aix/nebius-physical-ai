@@ -1548,6 +1548,25 @@ describe("NPA agent LeIsaac capability tab", () => {
     }).as("wsFallbackFrame");
     cy.window().then((win) => {
       let failuresRemaining = 6;
+      const preferredFrame = () => {
+        const jpeg = new win.Uint8Array([0xff, 0xd8, 1, 2, 3, 4, 0xff, 0xd9]);
+        const payload = new win.ArrayBuffer(128 + jpeg.length);
+        const view = new win.DataView(payload);
+        [0x4e, 0x50, 0x41, 0x46].forEach((value, index) => view.setUint8(index, value));
+        view.setUint8(4, 2);
+        view.setUint16(6, 128, false);
+        view.setBigUint64(8, 1n, false);
+        view.setBigUint64(16, BigInt(win.Date.now()) * 1000000n, false);
+        view.setBigUint64(24, 1n, false);
+        view.setBigUint64(32, BigInt(win.Date.now()) * 1000000n, false);
+        view.setBigUint64(40, 2n, false);
+        view.setBigUint64(48, 3n, false);
+        view.setBigUint64(56, 4n, false);
+        view.setBigUint64(64, 5n, false);
+        view.setUint32(88, jpeg.length, false);
+        new win.Uint8Array(payload, 128).set(jpeg);
+        return payload;
+      };
       class RecoveringWebSocket {
         static CONNECTING = 0;
         static OPEN = 1;
@@ -1563,12 +1582,21 @@ describe("NPA agent LeIsaac capability tab", () => {
           win.setTimeout(() => {
             this.readyState = RecoveringWebSocket.OPEN;
             if (this.onopen) this.onopen({ target: this });
-          }, 0);
+            if (this.url.includes("/video") && this.onmessage) {
+              this.onmessage({ data: preferredFrame() });
+            }
+          }, this.url.includes("/control") ? 50 : 0);
         }
         send() {}
         close() { this.readyState = RecoveringWebSocket.CLOSED; }
       }
       win.WebSocket = RecoveringWebSocket;
+      win.createImageBitmap = async () => ({ width: 1280, height: 720, close() {} });
+      const nativeGetContext = win.HTMLCanvasElement.prototype.getContext;
+      win.HTMLCanvasElement.prototype.getContext = function getContext(kind, ...args) {
+        if (this.id === "leisaacCanvas" && kind === "2d") return { drawImage() {} };
+        return nativeGetContext.call(this, kind, ...args);
+      };
     });
     cy.window().then((win) =>
       win.__NPA_AGENT_TEST__.refreshLeIsaacCapability("mock-ws-fallback"),
@@ -1585,6 +1613,7 @@ describe("NPA agent LeIsaac capability tab", () => {
       .should("contain.text", "WebSocket")
       .and("contain.text", "latest-frame-wins");
     cy.get("#leisaacFrame").should("not.be.visible");
+    cy.get("#leisaacCanvas").should("be.visible");
     cy.window().should((win) => {
       const evidence = win.__NPA_AGENT_TEST__.leisaacTransportEvidence();
       expect(evidence.active).to.equal("websocket-v1");
