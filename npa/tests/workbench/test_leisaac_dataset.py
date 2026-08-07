@@ -338,6 +338,73 @@ def test_recorder_command_ids_are_recoverable_and_idempotent(tmp_path: Path) -> 
     assert recovered.status()["command_revision"] == 2
 
 
+def test_recorder_command_publication_does_not_block_simulator_loop(
+    tmp_path: Path,
+) -> None:
+    publication_started = threading.Event()
+    release_publication = threading.Event()
+    reset_calls: list[str] = []
+
+    def publish(_path: Path, _metadata: dict) -> dict:
+        publication_started.set()
+        assert release_publication.wait(timeout=5)
+        return {
+            "episode_index": 0,
+            "completed_episode_count": 1,
+            "dataset_version_uri": "s3://bucket/demos/versions/v000001-async",
+            "episode_commit_uri": "s3://bucket/demos/episodes/episode-000000.json",
+        }
+
+    recorder = EpisodeRecorder(
+        root=tmp_path,
+        output_uri="s3://bucket/demos",
+        task="LeIsaac-SO101-PickOrange-v0",
+        environment_id="counter-a",
+        environment_index=0,
+        seed=7,
+        run_id="run-async-finalize",
+        source_commit="1" * 40,
+        publisher=publish,
+    )
+    recorder.start()
+    for index, color in ((1, (200, 10, 10)), (2, (10, 200, 10))):
+        recorder.observe(_step(index))
+        recorder.frame(_jpeg(color))
+    recorder.mark("success")
+    request_id = "async-finalize-1"
+    recorder.pending_command_path.write_text(
+        json.dumps({"request_id": request_id, "command": "finalize"}),
+        encoding="utf-8",
+    )
+    with recorder.control_path.open("a", encoding="utf-8") as handle:
+        handle.write(
+            json.dumps({"request_id": request_id, "command": "finalize"}) + "\n"
+        )
+
+    recorder.process_commands(reset=lambda: reset_calls.append("reset"))
+
+    assert publication_started.wait(timeout=2)
+    assert recorder.status()["state"] == "uploading"
+    assert recorder.status()["last_command_id"] == request_id
+    assert recorder.status()["pending_command_id"] == ""
+    assert reset_calls == []
+    # Polling commands while the object-store publisher is blocked must return;
+    # this is the same call site as Isaac's render/control loop.
+    recorder.process_commands(reset=lambda: reset_calls.append("unexpected"))
+    assert reset_calls == []
+
+    release_publication.set()
+    future = recorder._finalize_future
+    assert future is not None
+    future.result(timeout=2)
+    recorder.process_commands(reset=lambda: reset_calls.append("unexpected"))
+
+    assert reset_calls == ["reset"]
+    assert recorder.status()["state"] == "idle"
+    assert recorder.status()["completed_episode_count"] == 1
+    recorder.shutdown()
+
+
 class _FakeS3:
     def __init__(self) -> None:
         self.objects: dict[tuple[str, str], tuple[bytes, dict[str, str]]] = {}

@@ -522,6 +522,7 @@ def test_observability_patch_is_exact_and_records_real_upstream_input() -> None:
     assert 'capture_encoder.submit(\n+                encode_and_publish_capture' in source
     assert "def poll_encoded_capture():" in source
     assert "encode_and_publish_capture" in source
+    assert "recorder.shutdown(wait=True)" in source
     assert " env.reset()\n+    recorder = EpisodeRecorder(" in source
     assert 'str(applied.get("event") or "") == "release"' in source
     assert 'source_queue.pop(0)' in source
@@ -546,6 +547,7 @@ def test_observability_patch_is_exact_and_records_real_upstream_input() -> None:
     assert (
         "capture_encoder.shutdown(wait=True, cancel_futures=True)\n"
         "+        poll_encoded_capture()\n"
+        "+        recorder.shutdown(wait=True)\n"
         "         signal.signal(signal.SIGINT, original_sigint_handler)"
         in source
     )

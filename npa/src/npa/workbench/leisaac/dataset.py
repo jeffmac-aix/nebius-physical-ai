@@ -13,6 +13,7 @@ import tempfile
 import threading
 import time
 import uuid
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -305,6 +306,15 @@ class EpisodeRecorder:
         self._recovery_error = ""
         self._processed_commands: dict[str, str] = {}
         self._pending_camera_groups: dict[str, dict[str, Any]] = {}
+        # Publication performs MP4 assembly and immutable object-store writes.
+        # A single worker keeps that work off Isaac's render/control thread while
+        # preserving strict episode order and bounded resource use.
+        self._publication_executor = ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="leisaac-episode-publish",
+        )
+        self._finalize_future: Future[dict[str, Any]] | None = None
+        self._finalize_reset: Callable[[], Any] | None = None
         try:
             prior_status = json.loads(self.status_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -625,6 +635,21 @@ class EpisodeRecorder:
             return result
 
     def process_commands(self, reset: Callable[[], Any] | None = None) -> None:
+        finalize_future = self._finalize_future
+        if finalize_future is not None and finalize_future.done():
+            try:
+                finalize_future.result()
+            except Exception:
+                # finalize() already persisted a bounded, redacted failure in
+                # recorder status. The operator can retry with a new command ID.
+                pass
+            else:
+                finalize_reset = self._finalize_reset
+                if finalize_reset is not None:
+                    finalize_reset()
+            finally:
+                self._finalize_future = None
+                self._finalize_reset = None
         try:
             with self.control_path.open("r", encoding="utf-8") as handle:
                 handle.seek(self._control_offset)
@@ -655,9 +680,12 @@ class EpisodeRecorder:
                 elif command == "mark-failure":
                     self.mark("failure")
                 elif command == "finalize":
-                    self.finalize()
-                    if reset is not None:
-                        reset()
+                    if self._finalize_future is not None:
+                        raise DatasetError("episode publication is already active")
+                    self._finalize_reset = reset
+                    self._finalize_future = self._publication_executor.submit(
+                        self.finalize
+                    )
                 else:
                     raise DatasetError("unsupported recorder command")
             except Exception as exc:
@@ -675,6 +703,11 @@ class EpisodeRecorder:
                     self._clear_pending_command(request_id)
                     with self._lock:
                         self._write_status()
+
+    def shutdown(self, *, wait: bool = True) -> None:
+        """Drain the bounded publisher during an orderly simulator shutdown."""
+
+        self._publication_executor.shutdown(wait=wait, cancel_futures=not wait)
 
 
 def _load_records(path: Path) -> list[dict[str, Any]]:

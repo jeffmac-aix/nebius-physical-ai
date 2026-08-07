@@ -552,6 +552,7 @@ index a467482..d3bcad5 100644
 @@ -395 +920,3 @@ def main():  # noqa: C901
 +        capture_encoder.shutdown(wait=True, cancel_futures=True)
 +        poll_encoded_capture()
++        recorder.shutdown(wait=True)
          signal.signal(signal.SIGINT, original_sigint_handler)
 diff --git a/source/leisaac/leisaac/devices/keyboard/so101_keyboard.py b/source/leisaac/leisaac/devices/keyboard/so101_keyboard.py
 index 1ecc934..cb304f1 100644
