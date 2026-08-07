@@ -21,6 +21,7 @@ from npa.agent_backend.leisaac_routes import (
     _valid_ws_session,
 )
 from npa.agent_backend.leisaac_transport import (
+    AsyncFrameCreditWindow,
     AsyncLatestByKey,
     AsyncLatestValue,
     CONTROL_SUBPROTOCOL,
@@ -307,6 +308,29 @@ def test_video_receipt_ack_is_bounded_exact_and_run_scoped() -> None:
         )
     with pytest.raises(TransportProtocolError, match="size"):
         parse_video_ack("x" * 513, expected_run_id=RUN_ID)
+
+
+@pytest.mark.anyio
+async def test_video_credit_window_pipelines_but_never_grows_unbounded() -> None:
+    window = AsyncFrameCreditWindow(limit=2)
+    assert await window.reserve(7) == 1
+    assert await window.reserve(8) == 2
+    assert window.high_water == 2
+
+    blocked = asyncio.create_task(window.reserve(9))
+    await asyncio.sleep(0)
+    assert not blocked.done()
+    with pytest.raises(TransportProtocolError) as mismatch:
+        window.acknowledge(8)
+    assert mismatch.value.code == "out_of_order"
+    assert mismatch.value.expected_seq == 7
+
+    assert window.acknowledge(7) == 1
+    assert await asyncio.wait_for(blocked, timeout=0.1) == 2
+    assert window.acknowledge(8) == 1
+    assert window.acknowledge(9) == 0
+    with pytest.raises(TransportProtocolError, match="no in-flight"):
+        window.acknowledge(9)
 
 
 @pytest.mark.anyio
@@ -810,6 +834,33 @@ def test_runtime_rejects_bad_auth_and_preserves_polling_fallback(
         assert json.loads(runtime.INPUT_QUEUE_PATH.read_text())["key"] == "A"
 
 
+def test_runtime_fsyncs_safety_releases_but_not_transient_presses(
+    monkeypatch, tmp_path: Path
+) -> None:
+    runtime = _prepare_runtime(monkeypatch, tmp_path)
+    syncs: list[int] = []
+    monkeypatch.setattr(runtime.os, "fsync", syncs.append)
+
+    runtime._append_inputs([_control(1, event="press")])
+    assert syncs == []
+    runtime._append_inputs([_control(2, event="release")])
+    assert len(syncs) == 1
+    runtime._append_inputs(
+        [
+            {
+                "v": 1,
+                "type": "action",
+                "run_id": RUN_ID,
+                "client_id": "browser-test",
+                "seq": 3,
+                "device": "browser-gamepad",
+                "action": [0.0] * 8,
+            }
+        ]
+    )
+    assert len(syncs) == 2
+
+
 def test_runtime_video_envelope_is_binary_and_nonblank(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -862,12 +913,17 @@ def test_runtime_video_envelope_is_binary_and_nonblank(
                 "workspace",
                 ("workspace", next_metadata, next_jpeg),
             )
-            websocket.send_json(
-                {"v": 1, "type": "frame-ack", "run_id": RUN_ID, "sequence": 4}
-            )
+            # The bounded sliding window permits the next frame without waiting
+            # one full runtime-to-relay acknowledgement round trip.
             next_envelope, next_content = unpack_frame(websocket.receive_bytes())
             assert next_envelope.sequence == 5
             assert next_content == next_jpeg
+            websocket.send_json(
+                {"v": 1, "type": "frame-ack", "run_id": RUN_ID, "sequence": 4}
+            )
+            websocket.send_json(
+                {"v": 1, "type": "frame-ack", "run_id": RUN_ID, "sequence": 5}
+            )
 
 
 def test_runtime_frame_watcher_remains_live_across_both_cameras(

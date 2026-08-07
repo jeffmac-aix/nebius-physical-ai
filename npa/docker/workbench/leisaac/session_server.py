@@ -85,6 +85,7 @@ except ImportError:  # Repository unit tests import the script directly.
 try:
     from leisaac_transport import (
         AsyncLatestByKey,
+        AsyncFrameCreditWindow,
         CONTROL_SUBPROTOCOL,
         ControlLedger,
         FrameEnvelope,
@@ -102,6 +103,7 @@ try:
 except ImportError:  # Repository unit tests import the script directly.
     from npa.agent_backend.leisaac_transport import (
         AsyncLatestByKey,
+        AsyncFrameCreditWindow,
         CONTROL_SUBPROTOCOL,
         ControlLedger,
         FrameEnvelope,
@@ -891,11 +893,23 @@ def _append_inputs(records: list[dict[str, Any]]) -> list[int]:
         for record in records
     ]
     counts: list[int] = []
+    durable = any(
+        str(record.get("event") or "") == "release"
+        or (
+            record.get("type") == "action"
+            and all(float(value) == 0.0 for value in (record.get("action") or ()))
+        )
+        for record in records
+    )
     with INPUT_LOCK:
         with INPUT_QUEUE_PATH.open("a", encoding="utf-8") as queue:
             queue.writelines(serialized)
             queue.flush()
-            os.fsync(queue.fileno())
+            # Movement presses are transient and a simulator/host failure resets
+            # the robot state. Safety releases and neutral direct actions are the
+            # durable boundary: their fsync also commits every prior ordered press.
+            if durable:
+                os.fsync(queue.fileno())
         for _record in records:
             counts.append(_increment_input_counter())
     return counts
@@ -1440,7 +1454,17 @@ def build_app() -> FastAPI:
         generations: dict[str, int] = {}
         next_camera_index = 0
         previous_sequences = {camera: 0 for camera in CAMERA_PATHS}
-        try:
+        credits = AsyncFrameCreditWindow()
+
+        async def receive_credits() -> None:
+            while True:
+                acknowledgement = parse_video_ack(
+                    await websocket.receive_text(), expected_run_id=run_id
+                )
+                credits.acknowledge(int(acknowledgement["sequence"]))
+
+        async def send_frames() -> None:
+            nonlocal next_camera_index
             while True:
                 (
                     camera,
@@ -1482,6 +1506,9 @@ def build_app() -> FastAPI:
                 )
                 if dropped:
                     TRANSPORT_METRICS.increment("frames_coalesced", dropped)
+                depth = await credits.reserve(sequence)
+                if depth == credits.limit:
+                    TRANSPORT_METRICS.increment("video_window_saturated")
                 try:
                     await asyncio.wait_for(
                         websocket.send_bytes(pack_frame(envelope, jpeg)), timeout=2.0
@@ -1491,16 +1518,24 @@ def build_app() -> FastAPI:
                     await websocket.close(code=1013)
                     return
                 TRANSPORT_METRICS.increment("frames_sent")
-                acknowledgement = parse_video_ack(
-                    await asyncio.wait_for(websocket.receive_text(), timeout=10.0),
-                    expected_run_id=run_id,
-                )
-                if int(acknowledgement["sequence"]) != sequence:
-                    raise TransportProtocolError(
-                        "out_of_order",
-                        "video acknowledgement is not for the displayed frame",
-                        expected_seq=sequence,
-                    )
+
+        try:
+            tasks = {
+                asyncio.create_task(receive_credits()),
+                asyncio.create_task(send_frames()),
+            }
+            try:
+                await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+            for result in results:
+                if isinstance(result, Exception) and not isinstance(
+                    result, asyncio.CancelledError
+                ):
+                    raise result
         except TransportProtocolError:
             await websocket.close(code=1008)
             return

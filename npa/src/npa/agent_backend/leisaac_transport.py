@@ -8,7 +8,7 @@ frame envelopes, limits, and backpressure have one implementation.
 from __future__ import annotations
 
 import asyncio
-from collections import Counter, OrderedDict
+from collections import Counter, OrderedDict, deque
 from dataclasses import dataclass, field, replace
 import hashlib
 import json
@@ -28,6 +28,7 @@ MAX_CONTROL_MESSAGE_BYTES = 4096
 MAX_VIDEO_ACK_BYTES = 512
 MAX_FRAME_BYTES = 4 * 1024 * 1024
 MAX_CLIENT_HISTORY = 1024
+MAX_VIDEO_IN_FLIGHT = 4
 CLIENT_ID_PATTERN = re.compile(r"[A-Za-z0-9._:-]{1,96}")
 RUN_ID_PATTERN = re.compile(r"[A-Za-z0-9._:-]{1,128}")
 ALLOWED_KEYS = frozenset({"W", "S", "A", "D", "Q", "E", "J", "L", "I", "K", "U", "O"})
@@ -57,6 +58,46 @@ class TransportProtocolError(ValueError):
         if self.expected_seq is not None:
             result["expected_seq"] = self.expected_seq
         return result
+
+
+class AsyncFrameCreditWindow:
+    """Bound ordered video sends without imposing one network RTT per frame."""
+
+    def __init__(self, limit: int = MAX_VIDEO_IN_FLIGHT) -> None:
+        if limit < 1 or limit > 32:
+            raise ValueError("invalid video credit-window limit")
+        self.limit = limit
+        self._credits = asyncio.Semaphore(limit)
+        self._sequences: deque[int] = deque()
+        self.high_water = 0
+
+    @property
+    def depth(self) -> int:
+        return len(self._sequences)
+
+    async def reserve(self, sequence: int) -> int:
+        normalized = _sequence(sequence, name="frame sequence")
+        await self._credits.acquire()
+        self._sequences.append(normalized)
+        self.high_water = max(self.high_water, self.depth)
+        return self.depth
+
+    def acknowledge(self, sequence: int) -> int:
+        normalized = _sequence(sequence, name="frame sequence")
+        if not self._sequences:
+            raise TransportProtocolError(
+                "out_of_order", "video acknowledgement has no in-flight frame"
+            )
+        expected = self._sequences[0]
+        if normalized != expected:
+            raise TransportProtocolError(
+                "out_of_order",
+                "video acknowledgement is not for the oldest in-flight frame",
+                expected_seq=expected,
+            )
+        self._sequences.popleft()
+        self._credits.release()
+        return self.depth
 
 
 def _bounded_text(value: Any, *, pattern: re.Pattern[str], name: str) -> str:
@@ -638,6 +679,7 @@ class TransportMetrics:
             "frames_browser_acked",
             "frames_sent",
             "frames_coalesced",
+            "video_window_saturated",
             "slow_client_disconnects",
             "reconnects",
         }

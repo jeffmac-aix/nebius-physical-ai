@@ -3732,9 +3732,9 @@
         if (!(message.data instanceof ArrayBuffer)) return;
         try {
           const parsed = parseLeIsaacFrame(message.data);
-          // Receipt credit bounds the socket to one in-flight frame. The local
-          // decoder has one replaceable pending slot, so a slow paint cannot
-          // build a stale network or decode backlog.
+          // Receipt telemetry advances the runtime's bounded ordered send window.
+          // The relay and this per-camera decoder each retain only the latest
+          // frame, so a slow paint cannot build a stale decode backlog.
           const videoSocket = leisaacVideoSocket;
           if (videoSocket && videoSocket.readyState === WebSocket.OPEN) {
             videoSocket.send(JSON.stringify({
