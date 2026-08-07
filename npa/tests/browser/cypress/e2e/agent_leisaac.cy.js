@@ -1011,9 +1011,12 @@ describe("NPA agent LeIsaac capability tab", () => {
         }
       }
       win.WebSocket = FakeWebSocket;
+      // Deliver each camera every 24 ms while paint runs every 30 ms. A worker
+      // that discards its in-flight decode whenever a newer frame arrives will
+      // starve forever; the bounded worker must paint and then take the latest.
       win.requestAnimationFrame = (callback) => win.setTimeout(
         () => callback(win.performance.now()),
-        0,
+        30,
       );
       win.__LEISAAC_TEST_ERRORS__ = [];
       win.addEventListener("error", (event) => {

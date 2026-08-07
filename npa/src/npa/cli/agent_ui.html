@@ -3826,18 +3826,10 @@
             const decoded = await decodeLeIsaacJpeg(blob);
             let paintMonoMs = 0;
             try {
-              // Never present a decoded frame if a newer frame for this camera won
-              // while decode was running. Each camera has an independent worker so
-              // overview decode cannot hold up a causally urgent workspace frame.
-              if (
-                leisaacVideoPending[camera] &&
-                Number(leisaacVideoPending[camera].sequence || 0) > Number(frame.sequence || 0)
-              ) {
-                leisaacVideoPending[camera].browserDropped =
-                  Number(leisaacVideoPending[camera].browserDropped || 0) +
-                  Number(frame.browserDropped || 0) + 1;
-                continue;
-              }
+              // Paint the one bounded in-flight decode even when a newer frame
+              // arrived meanwhile, then consume only the newest pending frame.
+              // Re-checking freshness here or inside requestAnimationFrame can
+              // starve paint forever when arrival cadence exceeds paint cadence.
               const secondary = frame.camera === "overview";
               const canvas = document.getElementById(secondary ? "leisaacSecondaryCanvas" : "leisaacCanvas");
               const image = document.getElementById(secondary ? "leisaacSecondaryFrame" : "leisaacFrame");
@@ -3850,13 +3842,6 @@
               paintMonoMs = await new Promise((resolve, reject) => {
                 requestAnimationFrame(() => {
                   try {
-                    if (
-                      leisaacVideoPending[camera] &&
-                      Number(leisaacVideoPending[camera].sequence || 0) > Number(frame.sequence || 0)
-                    ) {
-                      resolve(0);
-                      return;
-                    }
                     context.drawImage(decoded.source, 0, 0);
                     canvas.hidden = false;
                     if (image) image.hidden = true;
