@@ -58,7 +58,7 @@ index a467482..d3bcad5 100644
 @@ -226,0 +272,2 @@ def main():  # noqa: C901
 +    if os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") == "1":
 +        env.cfg.sim.render_interval = 1_000_000_000
-@@ -314,0 +362,394 @@ def main():  # noqa: C901
+@@ -314,0 +362,395 @@ def main():  # noqa: C901
 +    recorder = EpisodeRecorder(
 +        root=Path(os.environ["NPA_LEISAAC_RECORDER_ROOT"]),
 +        output_uri=os.environ["NPA_LEISAAC_OUTPUT_PATH"],
