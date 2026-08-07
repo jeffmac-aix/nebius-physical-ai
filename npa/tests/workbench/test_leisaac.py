@@ -381,11 +381,13 @@ def test_observability_patch_is_exact_and_records_real_upstream_input() -> None:
     assert 'source_queue.pop(0)' in source
     assert 'if capture_state["active"]:' in source
     assert "Submit only after Kit reports the prior GPU capture fully complete" in source
-    assert "next_viewport_frame_async" not in source
-    assert "The helper is registered synchronously before env.render()" in source
+    assert "await next_viewport_frame_async(viewport, n_frames=1)" in source
+    assert "the latency-critical workspace path stays pre-settled" in source
     assert "await capture_helper.wait_for_result(completion_frames=0)" in source
+    assert source.count("viewport.camera_path = workspace_camera_path") == 2
     assert source.count("schedule_browser_capture()\n+        env.render()") == 1
     assert source.count("schedule_browser_capture()\n+                apply_view_command()") == 1
+    assert 'capture_state["queue"].clear()' in source
     assert 'capture_state["priority_queue"]' in source
     assert '"causal_action_sequence": causal_action_sequence' in source
     assert "mark_remote_step_applied(sim_step)" in source

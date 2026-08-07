@@ -1,5 +1,5 @@
 diff --git a/scripts/environments/teleoperation/teleop_se3_agent.py b/scripts/environments/teleoperation/teleop_se3_agent.py
-index a467482..b1b464e 100644
+index a467482..d3bcad5 100644
 --- a/scripts/environments/teleoperation/teleop_se3_agent.py
 +++ b/scripts/environments/teleoperation/teleop_se3_agent.py
 @@ -91,0 +92,4 @@ simulation_app = app_launcher.app
@@ -12,14 +12,15 @@ index a467482..b1b464e 100644
 +from pathlib import Path
 @@ -94,0 +101 @@ import time
 +from PIL import Image
-@@ -97,0 +105,6 @@ from isaaclab.envs import DirectRLEnv, ManagerBasedRLEnv
+@@ -97,0 +105,7 @@ from isaaclab.envs import DirectRLEnv, ManagerBasedRLEnv
 +from omni.kit.viewport.utility import (
 +    capture_viewport_to_buffer,
 +    get_active_viewport,
++    next_viewport_frame_async,
 +)
 +from isaacsim.core.utils.viewports import set_camera_view
 +from pxr import UsdGeom
-@@ -160,0 +174,29 @@ def main():  # noqa: C901
+@@ -160,0 +175,29 @@ def main():  # noqa: C901
 +    if os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") == "1":
 +        # Browser teleoperation renders the viewport and does not consume policy images.
 +        # Fabric cannot synchronize CPU PhysX reliably on the sm_120 renderer.
@@ -49,7 +50,7 @@ index a467482..b1b464e 100644
 +    if custom_scene_usd:
 +        # Custom scenes retain the task's expected object prim names and layout.
 +        env_cfg.scene.scene.spawn.usd_path = custom_scene_usd
-@@ -314,0 +357,330 @@ def main():  # noqa: C901
+@@ -314,0 +358,375 @@ def main():  # noqa: C901
 +    recorder = EpisodeRecorder(
 +        root=Path(os.environ["NPA_LEISAAC_RECORDER_ROOT"]),
 +        output_uri=os.environ["NPA_LEISAAC_OUTPUT_PATH"],
@@ -188,14 +189,40 @@ index a467482..b1b464e 100644
 +                )
 +        return captured
 +
-+    async def finish_capture(camera_id, capture_helper):
-+        """Await GPU retirement after a capture registered before render."""
++    async def finish_capture(
++        camera_id,
++        capture_helper,
++        destination,
++        metadata_destination,
++        capture_group,
++        causal_action_sequence,
++        causal_applied_monotonic_ns,
++        settle_first,
++    ):
++        """Await a safe copy and leave the shared viewport settled on workspace."""
 +        try:
-+            # The helper is registered synchronously before env.render(), so the
-+            # post-action render is the frame copied into the buffer. Await its
-+            # completion future before switching the shared viewport; extra
-+            # completion frames add latency after the buffer is already safe.
++            if settle_first:
++                # Camera-path changes need one viewport frame before the copied
++                # pixels reflect that camera. This branch is normally overview;
++                # the latency-critical workspace path stays pre-settled.
++                await next_viewport_frame_async(viewport, n_frames=1)
++                capture_helper = capture_viewport_to_buffer(
++                    viewport,
++                    on_viewport_captured(
++                        camera_id,
++                        destination,
++                        metadata_destination,
++                        capture_group,
++                        causal_action_sequence,
++                        causal_applied_monotonic_ns,
++                    ),
++                )
++            # Await GPU retirement before another capture may switch the shared
++            # viewport. Extra completion frames add latency after the copy is safe.
 +            await capture_helper.wait_for_result(completion_frames=0)
++            if camera_id == "overview":
++                viewport.camera_path = workspace_camera_path
++                await next_viewport_frame_async(viewport, n_frames=1)
 +        except Exception as exc:
 +            print(
 +                f"[WARN] Could not complete {camera_id} browser frame: "
@@ -245,19 +272,23 @@ index a467482..b1b464e 100644
 +        capture_state["active"] = True
 +        capture_state["active_group"] = capture_group
 +        capture_state["active_priority"] = selected_priority
++        same_camera = str(viewport.camera_path) == str(selected_camera_path)
 +        try:
-+            viewport.camera_path = selected_camera_path
-+            capture_helper = capture_viewport_to_buffer(
-+                viewport,
-+                on_viewport_captured(
-+                    camera_id,
-+                    destination,
-+                    metadata_destination,
-+                    capture_group,
-+                    causal_action_sequence,
-+                    causal_applied_monotonic_ns,
-+                ),
-+            )
++            if same_camera:
++                capture_helper = capture_viewport_to_buffer(
++                    viewport,
++                    on_viewport_captured(
++                        camera_id,
++                        destination,
++                        metadata_destination,
++                        capture_group,
++                        causal_action_sequence,
++                        causal_applied_monotonic_ns,
++                    ),
++                )
++            else:
++                viewport.camera_path = selected_camera_path
++                capture_helper = None
 +        except Exception:
 +            capture_state["active"] = False
 +            capture_state["active_group"] = ""
@@ -265,7 +296,16 @@ index a467482..b1b464e 100644
 +            capture_state["pending"].discard(camera_id)
 +            raise
 +        capture_state["task"] = asyncio.ensure_future(
-+            finish_capture(camera_id, capture_helper)
++            finish_capture(
++                camera_id,
++                capture_helper,
++                destination,
++                metadata_destination,
++                capture_group,
++                causal_action_sequence,
++                causal_applied_monotonic_ns,
++                not same_camera,
++            )
 +        )
 +
 +    def request_causal_capture(applied):
@@ -276,6 +316,10 @@ index a467482..b1b464e 100644
 +        applied_ns = int(applied.get("simulator_applied_mono_ns") or 0)
 +        if sequence <= 0 or applied_ns <= 0:
 +            return
++        # A causal pair supersedes background work that has not started. The
++        # active capture is never cancelled while Kit/GPU owns its buffer.
++        capture_state["queue"].clear()
++        capture_state["pending"].clear()
 +        if capture_state["active_priority"] or capture_state["priority_queue"]:
 +            capture_state["deferred_causal"] = applied
 +            return
@@ -378,13 +422,15 @@ index a467482..b1b464e 100644
 +    if frame_path:
 +        if viewport is None:
 +            raise RuntimeError("browser teleoperation requires an active RTX viewport")
++        viewport.camera_path = workspace_camera_path
++        env.render()
 +        schedule_browser_capture()
 +        env.render()
-@@ -375 +747,2 @@ def main():  # noqa: C901
+@@ -375 +793,2 @@ def main():  # noqa: C901
 -                    env.render()
 +                    if os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") != "1":
 +                        env.render()
-@@ -382 +755,17 @@ def main():  # noqa: C901
+@@ -382 +801,17 @@ def main():  # noqa: C901
 -                    env.step(actions)
 +                    step_result = env.step(actions)
 +                    sim_step += 1
