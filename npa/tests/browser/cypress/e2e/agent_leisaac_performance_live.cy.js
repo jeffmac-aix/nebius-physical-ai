@@ -558,10 +558,12 @@ function frameStageSummary(frames) {
             return benchmark;
           });
         });
-      cy.get(".leisaac-live-grid").scrollIntoView();
-      cy.screenshot(`leisaac-performance-proof-${phase}-trial-${trial + 1}`, {
-        capture: "viewport",
-      });
+      // Keep evidence bounded to the two viewports and latency proof. The page
+      // below the grid may contain immutable recorder URIs that are irrelevant
+      // to this benchmark and must not be copied into screenshots.
+      cy.get(".leisaac-live-grid")
+        .scrollIntoView()
+        .screenshot(`leisaac-performance-proof-${phase}-trial-${trial + 1}`);
     });
   },
 );
