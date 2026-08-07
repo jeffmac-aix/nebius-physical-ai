@@ -514,6 +514,8 @@ def test_observability_patch_is_exact_and_records_real_upstream_input() -> None:
     assert source.count("viewport.camera_path = workspace_camera_path") == 2
     assert source.count("schedule_browser_capture()\n+        env.render()") == 1
     assert source.count("schedule_browser_capture()\n+                apply_view_command()") == 1
+    assert "def browser_capture_needs_render():" in source
+    assert "and browser_capture_needs_render()" in source
     assert 'capture_state["queue"].clear()' in source
     assert 'capture_state["priority_queue"]' in source
     assert "background_capture_fps = 2.5" in source

@@ -51,7 +51,7 @@ index a467482..d3bcad5 100644
 +    if custom_scene_usd:
 +        # Custom scenes retain the task's expected object prim names and layout.
 +        env_cfg.scene.scene.spawn.usd_path = custom_scene_usd
-@@ -314,0 +359,385 @@ def main():  # noqa: C901
+@@ -314,0 +359,394 @@ def main():  # noqa: C901
 +    recorder = EpisodeRecorder(
 +        root=Path(os.environ["NPA_LEISAAC_RECORDER_ROOT"]),
 +        output_uri=os.environ["NPA_LEISAAC_OUTPUT_PATH"],
@@ -387,6 +387,15 @@ index a467482..d3bcad5 100644
 +        )
 +        capture_next()
 +
++    def browser_capture_needs_render():
++        """Keep physics/control cadence independent from background RTX work."""
++        return bool(
++            capture_state["active"]
++            or capture_state["priority_queue"]
++            or capture_state["queue"]
++            or time.monotonic() >= capture_state["next_at"]
++        )
++
 +    def apply_view_command():
 +        nonlocal last_view_sequence
 +        if not view_command_path or overview_viewport is None:
@@ -437,11 +446,11 @@ index a467482..d3bcad5 100644
 +        env.render()
 +        schedule_browser_capture()
 +        env.render()
-@@ -375 +794,2 @@ def main():  # noqa: C901
+@@ -375 +803,2 @@ def main():  # noqa: C901
 -                    env.render()
 +                    if os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") != "1":
 +                        env.render()
-@@ -382 +802,17 @@ def main():  # noqa: C901
+@@ -382 +811,20 @@ def main():  # noqa: C901
 -                    env.step(actions)
 +                    step_result = env.step(actions)
 +                    sim_step += 1
@@ -457,7 +466,10 @@ index a467482..d3bcad5 100644
 +                    )
 +                schedule_browser_capture()
 +                apply_view_command()
-+                if os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") == "1":
++                if (
++                    os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") == "1"
++                    and browser_capture_needs_render()
++                ):
 +                    env.render()
 +                recorder.process_commands(reset=env.reset)
 diff --git a/source/leisaac/leisaac/devices/keyboard/so101_keyboard.py b/source/leisaac/leisaac/devices/keyboard/so101_keyboard.py
