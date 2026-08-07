@@ -147,7 +147,9 @@ function frameStageSummary(frames) {
   () => {
     it("measures real input to causal frame paint and enforces the optimized gate", () => {
       Cypress.config("defaultCommandTimeout", 480000);
-      const runId = String(Cypress.env("NPA_AGENT_RUN_ID"));
+      const runId = String(
+        Cypress.env("NPA_LEISAAC_RUN_ID") || Cypress.env("NPA_AGENT_RUN_ID"),
+      );
       const output = String(Cypress.env("NPA_LEISAAC_BENCHMARK_OUTPUT"));
       const phase = String(Cypress.env("NPA_LEISAAC_BENCHMARK_PHASE") || "pilot");
       const trial = Math.floor(numberEnv("NPA_LEISAAC_BENCHMARK_TRIAL", 0));
@@ -162,7 +164,13 @@ function frameStageSummary(frames) {
 
       cy.viewport(1440, 1050);
       cy.visitLiveAgent();
-      cy.window().then((win) => win.__NPA_AGENT_TEST__.refreshLeIsaacCapability(runId));
+      cy.window().then((win) => {
+        // Capability refresh and the production periodic refresh share this
+        // source of truth. Pin it before the direct refresh so a generic active
+        // run cannot race the benchmark back to a non-LeIsaac selection.
+        win.__NPA_AGENT_TEST__.selectActiveRunId(runId);
+        return win.__NPA_AGENT_TEST__.refreshLeIsaacCapability(runId);
+      });
       cy.get("#tabLeIsaac", { timeout: 30000 }).should("be.visible").click();
 
       cy.window().then(async (win) => {
