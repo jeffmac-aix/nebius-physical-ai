@@ -20,13 +20,12 @@ index a467482..d3bcad5 100644
 +)
 +from isaacsim.core.utils.viewports import set_camera_view
 +from pxr import UsdGeom
-@@ -160,0 +175,31 @@ def main():  # noqa: C901
+@@ -160,0 +175,30 @@ def main():  # noqa: C901
 +    if os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") == "1":
 +        # Browser teleoperation renders the viewport and does not consume policy images.
 +        # CUDA PhysX + Fabric is the supported fast path; the renderer consumes
 +        # the same Fabric transforms used by the fixed-step task.
 +        env_cfg.sim.use_fabric = True
-+        env_cfg.sim.render_interval = 1_000_000_000
 +        env_cfg.observations.policy.wrist = None
 +        env_cfg.observations.policy.front = None
 +        env_cfg.scene.wrist = None
@@ -52,7 +51,10 @@ index a467482..d3bcad5 100644
 +    if custom_scene_usd:
 +        # Custom scenes retain the task's expected object prim names and layout.
 +        env_cfg.scene.scene.spawn.usd_path = custom_scene_usd
-@@ -314,0 +360,394 @@ def main():  # noqa: C901
+@@ -226,0 +271,2 @@ def main():  # noqa: C901
++    if os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") == "1":
++        env.cfg.sim.render_interval = 1_000_000_000
+@@ -314,0 +361,394 @@ def main():  # noqa: C901
 +    recorder = EpisodeRecorder(
 +        root=Path(os.environ["NPA_LEISAAC_RECORDER_ROOT"]),
 +        output_uri=os.environ["NPA_LEISAAC_OUTPUT_PATH"],
@@ -447,11 +449,11 @@ index a467482..d3bcad5 100644
 +        env.render()
 +        schedule_browser_capture()
 +        env.render()
-@@ -375 +804,2 @@ def main():  # noqa: C901
+@@ -375 +805,2 @@ def main():  # noqa: C901
 -                    env.render()
 +                    if os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") != "1":
 +                        env.render()
-@@ -382 +812,20 @@ def main():  # noqa: C901
+@@ -382 +813,20 @@ def main():  # noqa: C901
 -                    env.step(actions)
 +                    step_result = env.step(actions)
 +                    sim_step += 1
