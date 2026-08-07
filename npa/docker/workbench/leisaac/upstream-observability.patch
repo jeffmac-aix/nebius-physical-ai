@@ -20,7 +20,11 @@ index a467482..d3bcad5 100644
 +)
 +from isaacsim.core.utils.viewports import set_camera_view
 +from pxr import UsdGeom
-@@ -160,0 +175,30 @@ def main():  # noqa: C901
+@@ -122 +136,2 @@ class RateLimiter:
+-            env.sim.render()
++            if env is not None:
++                env.sim.render()
+@@ -160,0 +176,30 @@ def main():  # noqa: C901
 +    if os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") == "1":
 +        # Browser teleoperation renders the viewport and does not consume policy images.
 +        # CUDA PhysX + Fabric is the supported fast path; the renderer consumes
@@ -51,10 +55,10 @@ index a467482..d3bcad5 100644
 +    if custom_scene_usd:
 +        # Custom scenes retain the task's expected object prim names and layout.
 +        env_cfg.scene.scene.spawn.usd_path = custom_scene_usd
-@@ -226,0 +271,2 @@ def main():  # noqa: C901
+@@ -226,0 +272,2 @@ def main():  # noqa: C901
 +    if os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") == "1":
 +        env.cfg.sim.render_interval = 1_000_000_000
-@@ -314,0 +361,394 @@ def main():  # noqa: C901
+@@ -314,0 +362,394 @@ def main():  # noqa: C901
 +    recorder = EpisodeRecorder(
 +        root=Path(os.environ["NPA_LEISAAC_RECORDER_ROOT"]),
 +        output_uri=os.environ["NPA_LEISAAC_OUTPUT_PATH"],
@@ -449,11 +453,11 @@ index a467482..d3bcad5 100644
 +        env.render()
 +        schedule_browser_capture()
 +        env.render()
-@@ -375 +805,2 @@ def main():  # noqa: C901
+@@ -375 +806,2 @@ def main():  # noqa: C901
 -                    env.render()
 +                    if os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") != "1":
 +                        env.render()
-@@ -382 +813,20 @@ def main():  # noqa: C901
+@@ -382 +814,20 @@ def main():  # noqa: C901
 -                    env.step(actions)
 +                    step_result = env.step(actions)
 +                    sim_step += 1
@@ -475,6 +479,9 @@ index a467482..d3bcad5 100644
 +                ):
 +                    env.render()
 +                recorder.process_commands(reset=env.reset)
+@@ -384 +835 @@ def main():  # noqa: C901
+-                    rate_limiter.sleep(env)
++                    rate_limiter.sleep(None if os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") == "1" else env)
 diff --git a/source/leisaac/leisaac/devices/keyboard/so101_keyboard.py b/source/leisaac/leisaac/devices/keyboard/so101_keyboard.py
 index 1ecc934..cb304f1 100644
 --- a/source/leisaac/leisaac/devices/keyboard/so101_keyboard.py

@@ -536,6 +536,8 @@ def test_observability_patch_is_exact_and_records_real_upstream_input() -> None:
     assert "self._remote_pulses[key] = 8" in source
     assert "env_cfg.sim.use_fabric = True" in source
     assert "env.cfg.sim.render_interval = 1_000_000_000" in source
+    assert "if env is not None:" in source
+    assert "rate_limiter.sleep(None if os.environ.get" in source
     assert "env_cfg.observations.policy.wrist = None" in source
     assert "env_cfg.observations.policy.front = None" in source
     assert "env_cfg.scene.wrist = None" in source
