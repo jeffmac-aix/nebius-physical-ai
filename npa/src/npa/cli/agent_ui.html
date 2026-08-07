@@ -2318,7 +2318,7 @@
       const leisaacUnackedControls = new Map();
       const leisaacKeysDown = new Set();
       const leisaacPings = new Map();
-      const leisaacTransportEvidence = { controls: [], frames: [], failures: [], reconnects: 0, active: "disconnected", video: "disconnected", dropped_frames: 0 };
+      const leisaacTransportEvidence = { controls: [], frames: [], failures: [], reconnects: 0, active: "disconnected", video: "disconnected", dropped_frames: 0, decode_fallbacks: 0 };
       const LEISAAC_EVIDENCE_LIMIT = 4096;
       function recordLeIsaacEvidence(kind, value) {
         const collection = leisaacTransportEvidence[kind];
@@ -3652,6 +3652,68 @@
           receivedWallNs: Date.now() * 1000000,
         };
       }
+      async function decodeLeIsaacJpeg(blob) {
+        if (typeof window.createImageBitmap === "function") {
+          const bitmapPromise = window.createImageBitmap(blob);
+          let timeout = null;
+          let timedOut = false;
+          try {
+            const bitmap = await Promise.race([
+              bitmapPromise,
+              new Promise((_resolve, reject) => {
+                timeout = window.setTimeout(() => {
+                  timedOut = true;
+                  reject(new Error("bitmap decode timed out"));
+                }, 1000);
+              }),
+            ]);
+            return {
+              source: bitmap,
+              width: bitmap.width,
+              height: bitmap.height,
+              close: () => bitmap.close(),
+            };
+          } catch (_error) {
+            // Chromium compositor transitions can leave createImageBitmap
+            // pending forever. Dispose a late result and use the independent
+            // image-element decoder without copying the JPEG through base64.
+            if (timedOut) bitmapPromise.then((late) => late.close()).catch(() => null);
+          } finally {
+            if (timeout !== null) window.clearTimeout(timeout);
+          }
+        }
+        leisaacTransportEvidence.decode_fallbacks += 1;
+        const objectUrl = URL.createObjectURL(blob);
+        const image = new Image();
+        let timeout = null;
+        try {
+          await new Promise((resolve, reject) => {
+            let settled = false;
+            const finish = (error) => {
+              if (settled) return;
+              settled = true;
+              if (timeout !== null) window.clearTimeout(timeout);
+              if (error) reject(error); else resolve();
+            };
+            image.onload = () => finish();
+            image.onerror = () => finish(new Error("fallback image decode failed"));
+            timeout = window.setTimeout(
+              () => finish(new Error("fallback image decode timed out")),
+              2000,
+            );
+            image.src = objectUrl;
+          });
+          return {
+            source: image,
+            width: image.naturalWidth,
+            height: image.naturalHeight,
+            close: () => URL.revokeObjectURL(objectUrl),
+          };
+        } catch (error) {
+          URL.revokeObjectURL(objectUrl);
+          throw error;
+        }
+      }
       async function decodeLatestLeIsaacFrame(camera) {
         if (!Object.hasOwn(leisaacVideoPending, camera) || leisaacVideoDecoding[camera]) return;
         leisaacVideoDecoding[camera] = true;
@@ -3664,7 +3726,7 @@
               [jpeg],
               { type: "image/jpeg" },
             );
-            const bitmap = await createImageBitmap(blob);
+            const decoded = await decodeLeIsaacJpeg(blob);
             let paintMonoMs = 0;
             try {
               // Never present a decoded frame if a newer frame for this camera won
@@ -3684,8 +3746,8 @@
               const image = document.getElementById(secondary ? "leisaacSecondaryFrame" : "leisaacFrame");
               const video = secondary ? null : document.getElementById("leisaacVideo");
               if (!canvas) return;
-              if (canvas.width !== bitmap.width) canvas.width = bitmap.width;
-              if (canvas.height !== bitmap.height) canvas.height = bitmap.height;
+              if (canvas.width !== decoded.width) canvas.width = decoded.width;
+              if (canvas.height !== decoded.height) canvas.height = decoded.height;
               const context = canvas.getContext("2d", { alpha: false });
               if (!context) throw new Error("LeIsaac 2D canvas context is unavailable");
               paintMonoMs = await new Promise((resolve, reject) => {
@@ -3698,7 +3760,7 @@
                       resolve(0);
                       return;
                     }
-                    context.drawImage(bitmap, 0, 0);
+                    context.drawImage(decoded.source, 0, 0);
                     canvas.hidden = false;
                     if (image) image.hidden = true;
                     if (video) video.hidden = true;
@@ -3709,7 +3771,7 @@
                 });
               });
             } finally {
-              bitmap.close();
+              decoded.close();
             }
             if (!paintMonoMs) {
               if (leisaacVideoPending[camera]) {

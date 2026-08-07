@@ -955,6 +955,20 @@ describe("NPA agent LeIsaac capability tab", () => {
       };
       win.__LEISAAC_BITMAP_CLOSES__ = () => bitmapCloses;
       win.__LEISAAC_RELEASE_FIRST_BITMAP__ = () => releaseFirstBitmap();
+      class FallbackImage {
+        constructor() {
+          this.naturalWidth = 1280;
+          this.naturalHeight = 720;
+          this.onload = null;
+          this.onerror = null;
+        }
+        set src(_value) {
+          win.setTimeout(() => this.onload && this.onload(), 0);
+        }
+      }
+      win.Image = FallbackImage;
+      win.URL.createObjectURL = () => "blob:mock-leisaac-frame";
+      win.URL.revokeObjectURL = () => {};
       const nativeGetContext = win.HTMLCanvasElement.prototype.getContext;
       let canvasFailures = 0;
       win.__LEISAAC_SET_CANVAS_FAILURES__ = (count) => {
@@ -1006,6 +1020,13 @@ describe("NPA agent LeIsaac capability tab", () => {
         errors: win.__LEISAAC_TEST_ERRORS__,
         status: win.document.getElementById("leisaacStreamStatus")?.textContent,
       }));
+    });
+    cy.wait(1100);
+    cy.window().should((win) => {
+      expect(
+        win.__NPA_AGENT_TEST__.leisaacTransportEvidence().decode_fallbacks,
+        "bounded image-element fallback after a stuck bitmap decode",
+      ).to.be.greaterThan(0);
     });
     cy.window().then((win) => {
       win.__LEISAAC_SET_CANVAS_FAILURES__(2);
