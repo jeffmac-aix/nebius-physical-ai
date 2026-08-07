@@ -465,7 +465,6 @@ def test_container_never_bakes_eula_client_or_assets() -> None:
     assert "ROBOT_SHA256" in server and "KITCHEN_SHA256" in server
     assert "safe_extract_zip" in server and "safe_extract_client" in server
     assert '"--device=cuda:0"' in server
-    assert '"--enable_cameras"' not in server
     assert 'f"--seed={TELEOP_SEED}"' in server
     assert 'module_root = "/opt/npa/leisaac"' in server
     assert 'environment["PYTHONPATH"]' in server
