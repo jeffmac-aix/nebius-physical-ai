@@ -472,6 +472,7 @@ def test_authenticated_backend_routes_gate_status_and_proxy_client(monkeypatch) 
                     "source_commit": raw_manifest["source_commit"],
                     "session_nonce": raw_manifest["session_nonce"],
                     "signal_port": LEISAAC_SIGNAL_PORT,
+                    "stream_transport": "websocket-v1",
                     "pid": 42,
                     "input_events": 17,
                 }
@@ -484,6 +485,15 @@ def test_authenticated_backend_routes_gate_status_and_proxy_client(monkeypatch) 
 
     def http_post(url: str, **kwargs):
         posted.append((url, kwargs))
+        if url.endswith("/transport/video-webrtc"):
+            return FakeResponse(
+                {
+                    "v": 1,
+                    "type": "answer",
+                    "sdp": "v=0\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n",
+                },
+                status_code=200,
+            )
         return FakeResponse(status_code=202)
 
     existing_bundle_selection = {
@@ -639,6 +649,28 @@ def test_authenticated_backend_routes_gate_status_and_proxy_client(monkeypatch) 
         json={"v": 1, "run_id": raw_manifest["run_id"], "type": "offer", "sdp": "v=0"},
     )
     assert cross_site_video_offer.status_code == 403
+    video_offer = client.post(
+        "/leisaac/transport/video-webrtc",
+        headers={
+            **ws_session_headers,
+            "origin": "https://testserver",
+            "content-type": "application/json",
+        },
+        json={
+            "v": 1,
+            "run_id": raw_manifest["run_id"],
+            "type": "offer",
+            "sdp": "v=0\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n",
+        },
+    )
+    assert video_offer.status_code == 200
+    assert video_offer.json()["type"] == "answer"
+    video_post = next(item for item in posted if item[0].endswith("/transport/video-webrtc"))
+    assert video_post[1]["headers"] == {
+        "X-NPA-LeIsaac-Nonce": raw_manifest["session_nonce"],
+        "X-NPA-LeIsaac-Run-ID": raw_manifest["run_id"],
+    }
+    assert video_post[1]["follow_redirects"] is False
     state["sim_viz"] = {"active_run_id": "unrelated-artifact-run"}
     remembered = client.get("/leisaac/status", headers={"x-forwarded-proto": "https"})
     assert remembered.status_code == 200
@@ -668,9 +700,9 @@ def test_authenticated_backend_routes_gate_status_and_proxy_client(monkeypatch) 
         json={"key": "W", "event": "press"},
     )
     assert control.status_code == 202
-    assert posted[0][0].endswith("/input")
-    assert posted[0][1]["json"] == {"key": "W", "event": "press"}
-    assert posted[0][1]["headers"] == {
+    input_post = next(item for item in posted if item[0].endswith("/input"))
+    assert input_post[1]["json"] == {"key": "W", "event": "press"}
+    assert input_post[1]["headers"] == {
         "X-NPA-LeIsaac-Nonce": raw_manifest["session_nonce"]
     }
     recorder_control = client.post(
@@ -683,8 +715,8 @@ def test_authenticated_backend_routes_gate_status_and_proxy_client(monkeypatch) 
         json={"command": "mark-success", "request_id": "route-test-command"},
     )
     assert recorder_control.status_code == 202
-    assert posted[1][0].endswith("/recorder/control")
-    assert posted[1][1]["json"] == {
+    recorder_post = next(item for item in posted if item[0].endswith("/recorder/control"))
+    assert recorder_post[1]["json"] == {
         "command": "mark-success",
         "request_id": "route-test-command",
     }

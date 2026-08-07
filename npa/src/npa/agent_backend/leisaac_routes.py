@@ -65,7 +65,6 @@ try:  # agent VM: /opt/npa-agent is on sys.path
     )
     from agent_backend.leisaac_datachannel import (
         VideoDataChannelError,
-        VideoDataChannelPeerPool,
         parse_video_datachannel_offer,
     )
     from agent_backend.leisaac_episodes import (
@@ -107,7 +106,6 @@ except ImportError:  # repository tests
     )
     from npa.agent_backend.leisaac_datachannel import (
         VideoDataChannelError,
-        VideoDataChannelPeerPool,
         parse_video_datachannel_offer,
     )
     from npa.agent_backend.leisaac_episodes import (
@@ -376,7 +374,6 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
     manifest_cache: dict[str, tuple[float, dict | None, str]] = {}
     manifest_cache_lock = threading.Lock()
     transport_metrics = TransportMetrics()
-    video_datachannel_peers = VideoDataChannelPeerPool()
     ws_session_secret = secrets.token_bytes(32)
     consumed_ws_nonces: dict[str, int] = {}
     bundle_selection_lock = asyncio.Lock()
@@ -1255,9 +1252,7 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
                 media_type="application/json",
                 headers={"Cache-Control": "private, no-store"},
             )
-        safe_status = status_payload(manifest, health)
-        ice_servers = safe_status.get("ice_servers")
-        if not isinstance(ice_servers, list) or len(ice_servers) != 1:
+        if deps.http_post is None:
             return deps.response(
                 content=json.dumps({"detail": "WebRTC relay is unavailable"}),
                 status_code=503,
@@ -1265,34 +1260,50 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
                 headers={"Cache-Control": "private, no-store"},
             )
 
-        def open_runtime() -> Any:
-            return deps.websocket_connect(
-                _runtime_ws_uri(manifest, "/transport/video"),
-                subprotocols=[VIDEO_SUBPROTOCOL],
-                additional_headers={
+        try:
+            upstream = await asyncio.to_thread(
+                deps.http_post,
+                f"{manifest['service_url']}/transport/video-webrtc",
+                json={
+                    "v": 1,
+                    "run_id": str(manifest["run_id"]),
+                    "type": "offer",
+                    "sdp": offer_sdp,
+                },
+                headers={
                     "X-NPA-LeIsaac-Nonce": manifest["session_nonce"],
                     "X-NPA-LeIsaac-Run-ID": str(manifest["run_id"]),
                 },
-                open_timeout=5,
-                close_timeout=2,
-                max_size=MAX_FRAME_BYTES + 256,
-                max_queue=2,
-                ping_interval=10,
-                ping_timeout=10,
-                compression=None,
+                timeout=10.0,
+                follow_redirects=False,
             )
-
-        try:
-            answer = await video_datachannel_peers.create_answer(
-                offer_sdp=offer_sdp,
-                run_id=str(manifest["run_id"]),
-                ice_server=ice_servers[0],
-                open_runtime=open_runtime,
-                metrics=transport_metrics,
-            )
-        except VideoDataChannelError as exc:
+        except Exception as exc:
+            _log_exception(logging.WARNING, "LeIsaac WebRTC offer relay failed", exc)
+            upstream = None
+        if upstream is None or int(upstream.status_code) != 200:
             return deps.response(
-                content=json.dumps({"detail": str(exc)}),
+                content=json.dumps({"detail": "WebRTC video relay is unavailable"}),
+                status_code=503,
+                media_type="application/json",
+                headers={"Cache-Control": "private, no-store"},
+            )
+        try:
+            answer = upstream.json()
+        except Exception as exc:
+            _log_exception(logging.WARNING, "LeIsaac WebRTC answer was invalid", exc)
+            answer = None
+        if (
+            not isinstance(answer, dict)
+            or set(answer) != {"v", "type", "sdp"}
+            or answer.get("v") != 1
+            or answer.get("type") != "answer"
+            or not isinstance(answer.get("sdp"), str)
+            or not 1 <= len(answer["sdp"].encode("utf-8")) <= 65_536
+            or "m=application" not in answer["sdp"]
+            or "UDP/DTLS/SCTP" not in answer["sdp"]
+        ):
+            return deps.response(
+                content=json.dumps({"detail": "WebRTC video relay is unavailable"}),
                 status_code=503,
                 media_type="application/json",
                 headers={"Cache-Control": "private, no-store"},

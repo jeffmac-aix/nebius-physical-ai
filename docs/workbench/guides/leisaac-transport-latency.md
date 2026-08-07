@@ -46,7 +46,7 @@ monotonic stage timestamps and frame identity so its after trial is more precise
 
 ## Design
 
-The preferred path uses two authenticated, same-origin FastAPI WebSockets:
+The preferred path separates reliable control from partial-reliability video:
 
 - `control`: bounded JSON messages with a random per-page client ID, monotonic
   sequence, press/release event, client monotonic/wall timestamps, and separate
@@ -55,19 +55,22 @@ The preferred path uses two authenticated, same-origin FastAPI WebSockets:
   controls on disconnect. The same ledger accepts an exact eight-value direct
   SO-101 action for browser gamepads and the declarative custom-device contract;
   video and S3 work never share its socket or queue.
-- `video`: a 112-byte binary envelope followed by JPEG bytes. It carries frame
+- `video`: an unordered WebRTC data channel (`ordered: false`,
+  `maxRetransmits: 0`) carries a 128-byte binary envelope followed by JPEG
+  bytes. It carries frame
   sequence, capture/encode wall and monotonic timestamps, runtime/agent stage
-  timestamps, byte length, drop count, and SHA-256. One-slot publishers at the
-  runtime and agent implement latest-frame-wins. The browser grants the next
-  frame credit after receipt and validation, while retaining one replaceable
-  decode candidate per camera and skipping a decoded frame only if a newer
-  candidate for that same camera arrived before paint. These bounded boundaries
-  prevent kernel/WebSocket/decoder stale queues without allowing one viewport to
-  evict the other; controls still use an independent socket and task. A one-bit camera
-  flag routes workspace and overview JPEGs to separate canvases. The runtime
-  alternates their latest values, while their shared capture-group ID is kept in
-  metadata and the recorder, so a fast camera cannot starve or desynchronize the
-  other.
+  timestamps, byte length, drop count, and SHA-256. The authenticated offer is
+  relayed over the existing private HTTP backhaul to an aiortc peer inside the
+  simulator pod. The browser is TURN-only, so coturn relays to that private peer
+  without a new public port. Runtime one-slot publishers are pulled only when
+  the SCTP buffered amount has room; SCTP loss abandons a stale independently
+  decodable JPEG instead of head-of-line blocking a newer causal frame. The
+  browser retains one replaceable decode candidate per camera and skips a
+  decoded frame only if a newer candidate for that camera arrived before paint.
+  A one-bit flag routes workspace and overview to separate canvases, and fair
+  runtime selection prevents one viewport from starving the other. The binary
+  WebSocket video relay remains the first compatibility fallback and retains
+  its bounded credit/latest-value behavior.
 
 FastAPI routes remain adapters. Ordering, message/frame limits, binary framing,
 backpressure, and counters live in the shared `leisaac_transport` module shipped
@@ -75,11 +78,14 @@ to both the agent and runtime. File reads, simulator input writes, applied-ack
 scans, storage discovery, health calls, and recorder operations cross an async
 thread boundary instead of blocking an ASGI event loop.
 
-The browser tries the preferred pair three times with bounded exponential delay,
-resumes its sequence state, resends only idempotent unacknowledged controls, and
-uses application ping/pong samples to estimate clock offset and uncertainty. It
-then shows an explicit `JPEG polling · fallback` indicator if WebSockets cannot
-connect. The HTTP frame/input routes remain authenticated and tested.
+The browser first tries reliable WebSocket control plus WebRTC video. If the
+authenticated offer, TURN allocation, DTLS/SCTP association, or message-size
+contract fails, it reconnects the control ledger with binary WebSocket video;
+after bounded preferred retries it shows an explicit `JPEG polling · fallback`
+indicator. Reconnect retains sequence state, resends only idempotent
+unacknowledged controls, and uses application ping/pong samples to estimate
+clock offset and uncertainty. The HTTP frame/input routes remain authenticated
+and tested.
 
 Security properties:
 
@@ -90,11 +96,16 @@ Security properties:
   verifies its HMAC, expiry, run ID, and nginx-attested client address before
   resolving or contacting a runtime;
 - no password, nonce, or long-lived secret appears in a WebSocket URL;
+- the SDP offer is a bounded exact JSON object accepted only from the
+  Basic-authenticated same HTTPS origin with the explicit control/CSRF header;
+  neither SDP nor ICE credentials are logged;
 - the public adapter requires HTTPS, exact `Origin == Host`, one exact
   subprotocol, one bounded `run_id` query parameter, a valid selected manifest,
   and matching runtime health;
 - the runtime requires its per-session nonce, exact run ID, and exact
-  subprotocol; it is not an arbitrary upstream proxy;
+  subprotocol or offer schema; it is not an arbitrary upstream proxy;
+- WebRTC video is TURN-only in the browser, the peer stays in the private GPU
+  pod, and the image exposes no additional port;
 - Uvicorn and the shared parser bound message/frame size and queue depth;
 - metrics contain only fixed counter names and no run/client/secret labels.
 
@@ -131,11 +142,12 @@ Security properties:
   count presentation only in a paint callback. WebCodecs remains a future codec
   option because the current runtime produces independently decodable JPEGs and
   the measured change did not require a new browser codec dependency.
-- [MDN WebRTC](https://developer.mozilla.org/en-US/docs/Web/API/WebRTC_API) and
-  the [W3C WebRTC recommendation](https://www.w3.org/TR/webrtc/): retain the
-  existing hardware-encoded interactive stream as a compatibility fallback,
-  but do not couple ordered application acknowledgements or the recorder's two
-  explicit camera tracks to its congestion-control path.
+- [MDN `createDataChannel`](https://developer.mozilla.org/en-US/docs/Web/API/RTCPeerConnection/createDataChannel),
+  [`maxRetransmits`](https://developer.mozilla.org/en-US/docs/Web/API/RTCDataChannel/maxRetransmits),
+  [aiortc API](https://aiortc.readthedocs.io/en/latest/api.html), and the
+  [W3C WebRTC recommendation](https://www.w3.org/TR/webrtc/): use an unordered,
+  zero-retransmit video-only channel while keeping control acknowledgements on
+  the reliable ordered WebSocket and recorder tracks outside the media path.
 - [FFmpeg format options](https://ffmpeg.org/ffmpeg-formats.html) and
   [libjpeg-turbo documentation](https://libjpeg-turbo.org/Documentation/Documentation):
   use MP4 `+faststart` for Range-based episode playback and the system's
@@ -150,7 +162,7 @@ Security properties:
   calculate same-host intervals with monotonic clocks; report an explicit
   offset/RTT uncertainty when comparing wall clocks across machines.
 
-The bottleneck attribution and choice of two sockets are measured design
+The bottleneck attribution and split control/video transports are measured design
 inferences. The cited sources establish protocol/runtime behavior, not the
 performance of this deployment.
 

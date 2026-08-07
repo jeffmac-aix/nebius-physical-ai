@@ -1,6 +1,6 @@
 # LeIsaac browser teleoperation
 
-For the measured preferred WebSocket transport, fallback behavior, latency
+For the measured split control/video transport, fallback behavior, latency
 instrumentation, and security model, see
 [LeIsaac low-latency browser transport](guides/leisaac-transport-latency.md).
 
@@ -130,7 +130,10 @@ GPU pod are never publicly reachable.
   Both source and served hashes are recorded in provenance. The browser still
   requests `forceWSS` as defense in depth for clients that expose that option.
 
-The image bakes only Apache-2.0 LeIsaac source and OSS dependencies. The
+The image bakes only Apache-2.0 LeIsaac source and OSS dependencies. The live
+JPEG data-channel peer uses pinned `aiortc==1.15.0` (BSD-3-Clause); it adds no
+proprietary payload and does not change the runtime-fetch/EULA boundary or the
+built-image payload scan. The
 unlicensed optional Feetech SDK used by physical leader hardware is not
 redistributed; an explicit packaging-only patch removes that dependency edge,
 and this browser service uses upstream's software keyboard path with a narrow,

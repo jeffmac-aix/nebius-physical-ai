@@ -10,30 +10,16 @@ fallback when WebRTC negotiation is unavailable.
 from __future__ import annotations
 
 import asyncio
-import json
-import time
-from contextlib import AbstractAsyncContextManager
+from collections.abc import AsyncIterator
 from typing import Any, Callable
 
 try:  # agent VM: /opt/npa-agent is on sys.path
     from agent_backend.leisaac_transport import (
-        AsyncLatestByKey,
-        MAX_FRAME_BYTES,
         TransportMetrics,
-        TransportProtocolError,
-        VIDEO_SUBPROTOCOL,
-        stamp_verified_frame,
-        unpack_frame,
     )
 except ImportError:  # repository tests
     from npa.agent_backend.leisaac_transport import (
-        AsyncLatestByKey,
-        MAX_FRAME_BYTES,
         TransportMetrics,
-        TransportProtocolError,
-        VIDEO_SUBPROTOCOL,
-        stamp_verified_frame,
-        unpack_frame,
     )
 
 
@@ -108,9 +94,8 @@ class VideoDataChannelPeerPool:
         self,
         *,
         offer_sdp: str,
-        run_id: str,
-        ice_server: dict[str, Any],
-        open_runtime: Callable[[], AbstractAsyncContextManager[Any]],
+        ice_server: dict[str, Any] | None,
+        frame_source: Callable[[], AsyncIterator[bytes]],
         metrics: TransportMetrics,
     ) -> dict[str, Any]:
         """Negotiate and retain one peer; its relay starts when the channel opens."""
@@ -125,18 +110,19 @@ class VideoDataChannelPeerPool:
         except ImportError as exc:
             raise VideoDataChannelError("WebRTC video relay is unavailable") from exc
 
-        urls = ice_server.get("urls")
-        if not isinstance(urls, list) or len(urls) != 1:
-            raise VideoDataChannelError("WebRTC relay configuration is unavailable")
-        configuration = RTCConfiguration(
-            iceServers=[
+        ice_servers = []
+        if ice_server is not None:
+            urls = ice_server.get("urls")
+            if not isinstance(urls, list) or len(urls) != 1:
+                raise VideoDataChannelError("WebRTC relay configuration is unavailable")
+            ice_servers.append(
                 RTCIceServer(
                     urls=[str(urls[0])],
                     username=str(ice_server.get("username") or ""),
                     credential=str(ice_server.get("credential") or ""),
                 )
-            ]
-        )
+            )
+        configuration = RTCConfiguration(iceServers=ice_servers)
         peer = RTCPeerConnection(configuration=configuration)
         async with self._lock:
             closed = {
@@ -191,8 +177,7 @@ class VideoDataChannelPeerPool:
             self._serve(
                 peer=peer,
                 channel_ready=channel_ready,
-                open_runtime=open_runtime,
-                run_id=run_id,
+                frame_source=frame_source,
                 metrics=metrics,
             )
         )
@@ -206,100 +191,33 @@ class VideoDataChannelPeerPool:
         *,
         peer: Any,
         channel_ready: asyncio.Future[Any],
-        open_runtime: Callable[[], AbstractAsyncContextManager[Any]],
-        run_id: str,
+        frame_source: Callable[[], AsyncIterator[bytes]],
         metrics: TransportMetrics,
     ) -> None:
-        latest = AsyncLatestByKey(("workspace", "overview"))
         try:
             channel = await asyncio.wait_for(channel_ready, timeout=10.0)
-            async with open_runtime() as upstream:
-                if upstream.subprotocol != VIDEO_SUBPROTOCOL:
-                    raise TransportProtocolError(
-                        "subprotocol", "runtime rejected the video subprotocol"
+            source = frame_source().__aiter__()
+            while str(channel.readyState) == "open":
+                while (
+                    str(channel.readyState) == "open"
+                    and int(channel.bufferedAmount)
+                    > VIDEO_DATACHANNEL_BUFFER_LOW_BYTES
+                ):
+                    metrics.increment("datachannel_window_saturated")
+                    await asyncio.sleep(0.002)
+                if str(channel.readyState) != "open":
+                    break
+                # Pull from the runtime's latest-value source only after SCTP
+                # has room.  Frames that arrived during backpressure are then
+                # coalesced before serialization instead of becoming a local
+                # stale send queue.
+                frame = await anext(source)
+                if not isinstance(frame, bytes) or len(frame) > MAX_VIDEO_DATACHANNEL_FRAME_BYTES:
+                    raise VideoDataChannelError(
+                        "WebRTC video frame exceeds the bounded channel size"
                     )
-
-                async def read_runtime() -> None:
-                    async for raw in upstream:
-                        if not isinstance(raw, bytes) or len(raw) > MAX_FRAME_BYTES + 256:
-                            raise TransportProtocolError(
-                                "invalid_frame", "runtime video message is invalid"
-                            )
-                        envelope, content = await asyncio.to_thread(unpack_frame, raw)
-                        await upstream.send(
-                            json.dumps(
-                                {
-                                    "v": 1,
-                                    "type": "frame-ack",
-                                    "run_id": run_id,
-                                    "sequence": envelope.sequence,
-                                },
-                                separators=(",", ":"),
-                            )
-                        )
-                        metrics.increment("frames_relay_acked")
-                        camera = "overview" if envelope.flags & 1 else "workspace"
-                        await latest.publish(
-                            camera, (envelope, content, time.monotonic_ns())
-                        )
-
-                async def send_browser() -> None:
-                    generations: dict[str, int] = {}
-                    next_camera_index = 0
-                    while str(channel.readyState) == "open":
-                        while (
-                            str(channel.readyState) == "open"
-                            and int(channel.bufferedAmount)
-                            > VIDEO_DATACHANNEL_BUFFER_LOW_BYTES
-                        ):
-                            metrics.increment("datachannel_window_saturated")
-                            await asyncio.sleep(0.002)
-                        (
-                            camera,
-                            generation,
-                            item,
-                            skipped,
-                            next_camera_index,
-                        ) = await latest.wait_after(
-                            generations,
-                            next_index=next_camera_index,
-                            timeout=20.0,
-                        )
-                        generations[camera] = generation
-                        envelope, content, received_mono_ns = item
-                        if skipped:
-                            metrics.increment("frames_coalesced", skipped)
-                        stamped = stamp_verified_frame(
-                            envelope,
-                            content,
-                            received_mono_ns=received_mono_ns,
-                            send_mono_ns=time.monotonic_ns(),
-                            additional_dropped=skipped,
-                        )
-                        if len(stamped) > MAX_VIDEO_DATACHANNEL_FRAME_BYTES:
-                            raise VideoDataChannelError(
-                                "WebRTC video frame exceeds the bounded channel size"
-                            )
-                        channel.send(stamped)
-                        metrics.increment("datachannel_frames_sent")
-
-                tasks = {
-                    asyncio.create_task(read_runtime()),
-                    asyncio.create_task(send_browser()),
-                }
-                done, pending = await asyncio.wait(
-                    tasks, return_when=asyncio.FIRST_COMPLETED
-                )
-                for task in pending:
-                    task.cancel()
-                results = await asyncio.gather(
-                    *done, *pending, return_exceptions=True
-                )
-                for result in results:
-                    if isinstance(result, Exception) and not isinstance(
-                        result, asyncio.CancelledError
-                    ):
-                        raise result
+                channel.send(frame)
+                metrics.increment("datachannel_frames_sent")
         except asyncio.CancelledError:
             raise
         except Exception:

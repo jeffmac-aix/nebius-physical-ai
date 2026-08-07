@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from types import SimpleNamespace
 
 import pytest
@@ -18,7 +17,6 @@ from npa.agent_backend.leisaac_datachannel import (
 from npa.agent_backend.leisaac_transport import (
     FrameEnvelope,
     TransportMetrics,
-    VIDEO_SUBPROTOCOL,
     pack_frame,
     unpack_frame,
 )
@@ -81,7 +79,7 @@ def test_datachannel_peer_pool_is_bounded() -> None:
         VideoDataChannelPeerPool(limit=17)
 
 
-def test_datachannel_relay_acks_before_coalescing_and_preserves_causal_stamp() -> None:
+def test_datachannel_relay_is_bounded_and_preserves_causal_stamp() -> None:
     asyncio.run(_assert_datachannel_relay_contract())
 
 
@@ -98,39 +96,13 @@ async def _assert_datachannel_relay_contract() -> None:
                 runtime_send_monotonic_ns=500 + sequence,
                 causal_action_sequence=40 + sequence,
                 causal_applied_monotonic_ns=600 + sequence,
+                dropped_before=1,
             ),
             jpeg,
         )
 
-    class Runtime:
-        subprotocol = VIDEO_SUBPROTOCOL
-
-        def __init__(self) -> None:
-            self.frames = [frame(1), frame(2)]
-            self.acks: list[dict[str, object]] = []
-            self.wait_forever = asyncio.Event()
-
-        def __aiter__(self):
-            return self
-
-        async def __anext__(self) -> bytes:
-            if self.frames:
-                return self.frames.pop(0)
-            await self.wait_forever.wait()
-            raise StopAsyncIteration
-
-        async def send(self, raw: str) -> None:
-            self.acks.append(json.loads(raw))
-
-    class RuntimeContext:
-        def __init__(self, runtime: Runtime) -> None:
-            self.runtime = runtime
-
-        async def __aenter__(self) -> Runtime:
-            return self.runtime
-
-        async def __aexit__(self, *_args: object) -> None:
-            return None
+    async def frames():
+        yield frame(2)
 
     class Channel:
         readyState = "open"
@@ -152,7 +124,6 @@ async def _assert_datachannel_relay_contract() -> None:
         async def close(self) -> None:
             return None
 
-    runtime = Runtime()
     channel = Channel()
     ready = asyncio.get_running_loop().create_future()
     ready.set_result(channel)
@@ -160,13 +131,10 @@ async def _assert_datachannel_relay_contract() -> None:
     await VideoDataChannelPeerPool()._serve(
         peer=Peer(),
         channel_ready=ready,
-        open_runtime=lambda: RuntimeContext(runtime),
-        run_id=RUN_ID,
+        frame_source=lambda: frames(),
         metrics=metrics,
     )
 
-    assert [ack["sequence"] for ack in runtime.acks] == [1, 2]
-    assert all(ack["type"] == "frame-ack" for ack in runtime.acks)
     assert len(channel.frames) == 1
     envelope, content = unpack_frame(channel.frames[0])
     assert envelope.sequence == 2
@@ -175,6 +143,5 @@ async def _assert_datachannel_relay_contract() -> None:
     assert envelope.dropped_before == 1
     assert content == b"\xff\xd8" + bytes([2]) * 8 + b"\xff\xd9"
     snapshot = metrics.snapshot()
-    assert snapshot["frames_relay_acked"] == 2
-    assert snapshot["frames_coalesced"] == 1
+    assert snapshot["datachannel_window_saturated"] == 1
     assert snapshot["datachannel_frames_sent"] == 1

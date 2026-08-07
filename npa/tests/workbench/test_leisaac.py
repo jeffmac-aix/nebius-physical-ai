@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import importlib.util
 import io
@@ -15,8 +16,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 
 from npa.agent_backend.leisaac import LEISAAC_CLIENT_JS_SHA256
+from npa.agent_backend.leisaac_transport import AsyncLatestByKey, unpack_frame
 from npa.workbench.leisaac import (
     GPU_PRODUCT,
     MEDIA_PORT,
@@ -58,6 +61,85 @@ def _client_archive(path: Path, client_js: bytes) -> None:
             member = tarfile.TarInfo(name)
             member.size = len(content)
             bundle.addfile(member, io.BytesIO(content))
+
+
+def test_runtime_datachannel_offer_is_private_authenticated_and_run_bound(
+    monkeypatch,
+) -> None:
+    module = _session_server_module()
+    run_id = "live-datachannel"
+    nonce = "d" * 64
+    monkeypatch.setenv("NPA_LEISAAC_RUN_ID", run_id)
+    monkeypatch.setenv("NPA_LEISAAC_SESSION_NONCE", nonce)
+    observed = {}
+
+    async def create_answer(**kwargs):
+        observed.update(kwargs)
+        return {
+            "v": 1,
+            "type": "answer",
+            "sdp": "v=0\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n",
+        }
+
+    monkeypatch.setattr(module.VIDEO_DATACHANNEL_PEERS, "create_answer", create_answer)
+    client = TestClient(module.build_app())
+    payload = {
+        "v": 1,
+        "run_id": run_id,
+        "type": "offer",
+        "sdp": "v=0\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n",
+    }
+    forbidden = client.post("/transport/video-webrtc", json=payload)
+    assert forbidden.status_code == 403
+    response = client.post(
+        "/transport/video-webrtc",
+        headers={
+            "X-NPA-LeIsaac-Nonce": nonce,
+            "X-NPA-LeIsaac-Run-ID": run_id,
+        },
+        json=payload,
+    )
+    assert response.status_code == 200
+    assert response.json()["type"] == "answer"
+    assert observed["ice_server"] is None
+    assert observed["metrics"] is module.TRANSPORT_METRICS
+    assert hasattr(observed["frame_source"](), "__aiter__")
+
+
+def test_runtime_datachannel_source_coalesces_stale_causal_frames() -> None:
+    module = _session_server_module()
+    module.FRAME_LATEST = AsyncLatestByKey(("workspace", "overview"))
+
+    def item(sequence: int):
+        jpeg = b"\xff\xd8" + bytes([sequence]) * 8 + b"\xff\xd9"
+        metadata = {
+            "sequence": sequence,
+            "capture_wall_ns": 100 + sequence,
+            "capture_monotonic_ns": 200 + sequence,
+            "encoded_wall_ns": 300 + sequence,
+            "encoded_monotonic_ns": 400 + sequence,
+            "causal_action_sequence": 40 + sequence,
+            "causal_applied_monotonic_ns": 500 + sequence,
+            "sha256": hashlib.sha256(jpeg).hexdigest(),
+        }
+        return "workspace", metadata, jpeg
+
+    async def verify() -> None:
+        await module.FRAME_LATEST.publish("workspace", item(1))
+        source = module._video_datachannel_frames()
+        first, _content = unpack_frame(await anext(source))
+        assert first.sequence == 1
+        await module.FRAME_LATEST.publish("workspace", item(2))
+        await module.FRAME_LATEST.publish("workspace", item(3))
+        newest, content = unpack_frame(await anext(source))
+        assert newest.sequence == 3
+        assert newest.causal_action_sequence == 43
+        assert newest.causal_applied_monotonic_ns == 503
+        assert newest.dropped_before == 1
+        assert content == item(3)[2]
+        await source.aclose()
+
+    asyncio.run(verify())
 
 
 def test_service_manifests_source_restrict_tcp_and_udp_media() -> None:
@@ -358,6 +440,9 @@ def test_container_never_bakes_eula_client_or_assets() -> None:
     assert "NPA_LEISAAC_INPUT_QUEUE" in server
     assert "NPA_LEISAAC_FRAME_PATH" in server
     assert "pandas==2.3.3" in dockerfile
+    assert "aiortc==1.15.0" in dockerfile
+    assert "leisaac_datachannel.py /opt/npa/leisaac/leisaac_datachannel.py" in dockerfile
+    assert "EXPOSE 8080/tcp 49100/tcp 47998/udp" in dockerfile
     assert "feetech-servo-sdk" in dockerfile and "-m pip check" in dockerfile
     assert "git -C /opt/leisaac apply --check --unidiff-zero" in dockerfile
     assert os.access(ROOT / "npa/docker/workbench/leisaac/build.sh", os.X_OK)

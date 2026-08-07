@@ -123,6 +123,19 @@ try:
 except ImportError:  # Repository unit tests import the script directly.
     from npa.agent_backend.leisaac_bundles import BundleError, BundleStore
 
+try:
+    from leisaac_datachannel import (
+        VideoDataChannelError,
+        VideoDataChannelPeerPool,
+        parse_video_datachannel_offer,
+    )
+except ImportError:  # Repository unit tests import the script directly.
+    from npa.agent_backend.leisaac_datachannel import (
+        VideoDataChannelError,
+        VideoDataChannelPeerPool,
+        parse_video_datachannel_offer,
+    )
+
 SCHEMA = "npa.leisaac.health.v2"
 TASK = os.environ.get("NPA_LEISAAC_TASK", "LeIsaac-SO101-PickOrange-v0")
 ENVIRONMENT_ID = os.environ.get("NPA_LEISAAC_ENVIRONMENT_ID", "operator-0")
@@ -202,6 +215,7 @@ CHILD: subprocess.Popen[str] | None = None
 CONTROL_LEDGER = ControlLedger()
 TRANSPORT_METRICS = TransportMetrics()
 FRAME_LATEST = AsyncLatestByKey(("workspace", "overview"))
+VIDEO_DATACHANNEL_PEERS = VideoDataChannelPeerPool()
 APPLIED_ACK_OFFSET = 0
 
 
@@ -1023,6 +1037,59 @@ def _runtime_ws_authorized(websocket: WebSocket, subprotocol: str) -> bool:
     )
 
 
+async def _video_datachannel_frames():
+    """Yield only the newest independently decodable frame for each camera."""
+
+    generations: dict[str, int] = {}
+    previous_sequences = {camera: 0 for camera in CAMERA_PATHS}
+    next_camera_index = 0
+    while True:
+        (
+            camera,
+            generation,
+            item,
+            coalesced,
+            next_camera_index,
+        ) = await FRAME_LATEST.wait_after(
+            generations,
+            next_index=next_camera_index,
+            timeout=20.0,
+        )
+        generations[camera] = generation
+        camera, metadata, jpeg = item
+        sequence = int(metadata["sequence"])
+        previous_sequence = previous_sequences.get(camera, 0)
+        dropped = (
+            max(coalesced, max(0, sequence - previous_sequence - 1))
+            if previous_sequence
+            else 0
+        )
+        previous_sequences[camera] = sequence
+        relay_receive_ns = time.monotonic_ns()
+        envelope = FrameEnvelope(
+            sequence=sequence,
+            capture_wall_ns=int(metadata["capture_wall_ns"]),
+            capture_monotonic_ns=int(metadata["capture_monotonic_ns"]),
+            encoded_wall_ns=int(metadata["encoded_wall_ns"]),
+            encoded_monotonic_ns=int(metadata["encoded_monotonic_ns"]),
+            runtime_send_monotonic_ns=relay_receive_ns,
+            agent_receive_monotonic_ns=relay_receive_ns,
+            agent_send_monotonic_ns=time.monotonic_ns(),
+            causal_action_sequence=int(
+                metadata.get("causal_action_sequence") or 0
+            ),
+            causal_applied_monotonic_ns=int(
+                metadata.get("causal_applied_monotonic_ns") or 0
+            ),
+            dropped_before=dropped,
+            flags=1 if camera == "overview" else 0,
+            sha256=bytes.fromhex(str(metadata["sha256"])),
+        )
+        if dropped:
+            TRANSPORT_METRICS.increment("frames_coalesced", dropped)
+        yield pack_frame(envelope, jpeg)
+
+
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
     watcher = asyncio.create_task(_watch_frames())
@@ -1168,6 +1235,54 @@ def build_app() -> FastAPI:
     def provenance() -> Response:
         return Response(
             content=PROVENANCE_PATH.read_bytes(), media_type="application/json"
+        )
+
+    @application.post("/transport/video-webrtc")
+    async def transport_video_webrtc(request: Request) -> Response:
+        if (
+            not _authorized(request.headers)
+            or str(request.headers.get("x-npa-leisaac-run-id") or "")
+            != os.environ.get("NPA_LEISAAC_RUN_ID", "")
+        ):
+            return JSONResponse(status_code=403, content={"detail": "forbidden"})
+        try:
+            content_length = int(request.headers.get("content-length") or "0")
+        except ValueError:
+            content_length = 0
+        if content_length <= 0 or content_length > 131_072:
+            return JSONResponse(
+                status_code=400, content={"detail": "invalid WebRTC video offer"}
+            )
+        body = await request.body()
+        if len(body) != content_length:
+            return JSONResponse(
+                status_code=400, content={"detail": "invalid WebRTC video offer"}
+            )
+        try:
+            payload = json.loads(body)
+            offer_sdp = parse_video_datachannel_offer(
+                payload,
+                expected_run_id=os.environ.get("NPA_LEISAAC_RUN_ID", ""),
+            )
+            answer = await VIDEO_DATACHANNEL_PEERS.create_answer(
+                offer_sdp=offer_sdp,
+                ice_server=None,
+                frame_source=lambda: _video_datachannel_frames(),
+                metrics=TRANSPORT_METRICS,
+            )
+        except (UnicodeDecodeError, json.JSONDecodeError, VideoDataChannelError):
+            return JSONResponse(
+                status_code=400,
+                content={"detail": "invalid WebRTC video offer"},
+                headers={"Cache-Control": "no-store"},
+            )
+        return JSONResponse(
+            status_code=200,
+            content=answer,
+            headers={
+                "Cache-Control": "no-store",
+                "X-Content-Type-Options": "nosniff",
+            },
         )
 
     async def read_bounded_json(request: Request) -> dict[str, Any] | None:
