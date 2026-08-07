@@ -605,7 +605,7 @@ describe("NPA agent LeIsaac capability tab", () => {
       environment_index: 2,
       seed: 47,
       stream_transport: "websocket-v1",
-      preferred_transport: "websocket-v1",
+      preferred_transport: "webrtc-datachannel-v1",
       control_ws_url: "/api/leisaac/transport/control?run_id=mock-datachannel",
       video_ws_url: "/api/leisaac/transport/video?run_id=mock-datachannel",
       video_datachannel_url: "/api/leisaac/transport/video-webrtc?run_id=mock-datachannel",

@@ -479,9 +479,9 @@ function frameStageSummary(frames) {
         .its("__NPA_LEISAAC_PERFORMANCE__")
         .then((benchmark) => cy.writeFile(output, benchmark, { log: false }).then(() => {
           if (phase !== "optimized") return;
-          if (benchmark.transport.video !== "webrtc-datachannel-v1") {
+          if (benchmark.transport.video !== "websocket-v1") {
             throw new Error(
-              `optimized benchmark requires WebRTC video, got ${benchmark.transport.video || "none"}`,
+              `optimized benchmark requires the measured bounded WebSocket path, got ${benchmark.transport.video || "none"}`,
             );
           }
           if (!(baselineP50 > 0 && baselineP95 > 0)) {

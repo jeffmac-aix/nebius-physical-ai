@@ -4127,7 +4127,9 @@
           try {
             if (attempt) await new Promise((resolve) => window.setTimeout(resolve, 250 * (2 ** (attempt - 1))));
             await authorizeLeIsaacSocketPair(status);
-            const useDataChannel = attempt === 0 && Boolean(status.video_datachannel_url);
+            const useDataChannel = attempt === 0 &&
+              String(status.preferred_transport || "") === "webrtc-datachannel-v1" &&
+              Boolean(status.video_datachannel_url);
             await openLeIsaacSocketPair(status, useDataChannel);
             leisaacReconnectAttempts = attempt;
             leisaacActiveTransport = "websocket-v1";
