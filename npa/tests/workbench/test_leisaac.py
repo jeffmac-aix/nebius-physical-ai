@@ -535,6 +535,7 @@ def test_observability_patch_is_exact_and_records_real_upstream_input() -> None:
     assert "NPA_LEISAAC_FRAME_PATH" in source
     assert "self._remote_pulses[key] = 8" in source
     assert "env_cfg.sim.use_fabric = True" in source
+    assert "env_cfg.sim.render_interval = 1_000_000_000" in source
     assert "env_cfg.observations.policy.wrist = None" in source
     assert "env_cfg.observations.policy.front = None" in source
     assert "env_cfg.scene.wrist = None" in source
