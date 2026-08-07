@@ -2308,6 +2308,7 @@
       let leisaacClientRunId = "";
       let leisaacReconnectPromise = null;
       let leisaacManualDisconnect = false;
+      let leisaacBundleRestartPending = false;
       let leisaacReleaseResolver = null;
       const leisaacUnackedControls = new Map();
       const leisaacKeysDown = new Set();
@@ -3100,6 +3101,7 @@
         }
         if (label) label.textContent = "Selected " + kind + " bundle " + String(option.value).slice(0, 16) + "; checksum verified and simulator restart accepted.";
         setLeIsaacStreamState("Applying selected custom bundles; live controls reconnect when RTX rendering is ready", "loading");
+        leisaacBundleRestartPending = true;
         leisaacManualDisconnect = false;
         leisaacReconnectAttempts = 0;
         closeLeIsaacSockets();
@@ -4078,6 +4080,7 @@
       }
       async function disconnectLeIsaac() {
         leisaacManualDisconnect = true;
+        leisaacBundleRestartPending = false;
         const controlSocket = leisaacControlSocket;
         if (controlSocket && controlSocket.readyState === WebSocket.OPEN && leisaacClientId) {
           try {
@@ -4319,13 +4322,17 @@
       }
       async function refreshLeIsaacCapability(runId) {
         const target = String(runId || "").trim();
+        const mountedPanel = document.getElementById("panelLeIsaac");
+        const mountedRun = String(
+          (mountedPanel && mountedPanel.getAttribute("data-run-id")) || "",
+        );
         const generation = ++leisaacCapabilityGeneration;
         try {
           // Resolve the registered live capability first. An unrelated artifact
-          // run can require a slower bounded S3 miss; rendering that miss first
-          // lets the periodic poll repeatedly cancel the fallback and replace a
-          // healthy persistent tab. Keep the registered run mounted while an
-          // explicitly requested alternative is checked in the background.
+          // run can require a slower bounded S3 miss. A mounted explicit target
+          // remains authoritative while its runtime restarts: briefly rendering
+          // a different registered run would destroy the panel, clear selected
+          // bundle/recorder state, and interrupt safety-critical reconnects.
           let status = null;
           let registeredError = null;
           try {
@@ -4334,10 +4341,6 @@
             registeredError = err;
           }
           if (generation !== leisaacCapabilityGeneration) return null;
-          if (status && typeof status === "object") {
-            leisaacCapability = status;
-            ensureLeIsaacTab(status);
-          }
           if (target && String((status && status.run_id) || "") !== target) {
             const requested = await loadJson(
               "/api/leisaac/status?run_id=" + encodeURIComponent(target)
@@ -4346,15 +4349,30 @@
             if (
               requested &&
               typeof requested === "object" &&
-              (!status || (requested.available && String(requested.run_id || "") === target))
+              String(requested.run_id || target) === target &&
+              (!status || requested.available || mountedRun === target)
             ) {
-              status = requested;
+              status = Object.assign({}, requested, {
+                run_id: String(requested.run_id || target),
+              });
             }
           }
           if (!(status && typeof status === "object")) {
             throw registeredError || new Error("LeIsaac status is unavailable");
           }
           if (generation !== leisaacCapabilityGeneration) return null;
+          if (status.available) {
+            leisaacBundleRestartPending = false;
+          } else if (
+            mountedRun &&
+            String(status.run_id || "") === mountedRun &&
+            !leisaacBundleRestartPending
+          ) {
+            // A terminal capability loss must complete release/teardown before
+            // refresh resolves. Bundle-driven restarts already closed the live
+            // sockets and deliberately retain their reconnect loop.
+            await disconnectLeIsaac();
+          }
           leisaacCapability = status;
           ensureLeIsaacTab(status);
           if (target && status.available && String(status.run_id || "") === target) {

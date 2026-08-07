@@ -1247,6 +1247,29 @@ describe("NPA agent LeIsaac capability tab", () => {
     cy.get("#leisaacBundleStatus")
       .should("contain.text", "Selected device bundle")
       .and("contain.text", "restart accepted");
+
+    cy.intercept("GET", "/api/leisaac/status?run_id=mock-bundles", {
+      statusCode: 200,
+      body: {
+        available: false,
+        episodes_available: false,
+        reason: "selected runtime is restarting",
+      },
+    }).as("bundleRestartStatus");
+    cy.get("#panelLeIsaac").then(($mountedPanel) => {
+      cy.window().then((win) =>
+        win.__NPA_AGENT_TEST__.refreshLeIsaacCapability("mock-bundles"),
+      );
+      cy.wait("@bundleRestartStatus");
+      cy.get("#panelLeIsaac").then(($refreshedPanel) => {
+        expect($refreshedPanel[0], "mounted panel survives runtime restart").to.equal(
+          $mountedPanel[0],
+        );
+      });
+      cy.get("#leisaacBundleStatus")
+        .should("contain.text", "Selected device bundle")
+        .and("contain.text", "restart accepted");
+    });
   });
 
   it("falls back explicitly after bounded preferred-transport retries", () => {
