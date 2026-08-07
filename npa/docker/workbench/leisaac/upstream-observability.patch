@@ -58,7 +58,7 @@ index a467482..d3bcad5 100644
 @@ -226,0 +272,2 @@ def main():  # noqa: C901
 +    if os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") == "1":
 +        env.cfg.sim.render_interval = 1_000_000_000
-@@ -314,0 +362,398 @@ def main():  # noqa: C901
+@@ -314,0 +362,399 @@ def main():  # noqa: C901
 +    recorder = EpisodeRecorder(
 +        root=Path(os.environ["NPA_LEISAAC_RECORDER_ROOT"]),
 +        output_uri=os.environ["NPA_LEISAAC_OUTPUT_PATH"],
@@ -108,11 +108,15 @@ index a467482..d3bcad5 100644
 +        "group": 0,
 +        "causal_action_sequence": 0,
 +        "causal_applied_monotonic_ns": 0,
++        "last_causal_at": 0.0,
 +    }
 +    # Background frames must not monopolize the Isaac render/event loop. Causal
 +    # action pairs bypass this cadence and remain immediate at full quality.
-+    background_capture_fps = 2.5
-+    background_capture_interval = 1.0 / background_capture_fps
++    idle_background_capture_fps = 2.5
++    active_background_capture_fps = 2.0
++    def background_capture_interval():
++        active = time.monotonic() - capture_state["last_causal_at"] < 2.5
++        return 1.0 / (active_background_capture_fps if active else idle_background_capture_fps)
 +    viewport = get_active_viewport() if frame_path else None
 +    if viewport is not None:
 +        viewport.resolution = (1280, 720)
@@ -256,10 +260,6 @@ index a467482..d3bcad5 100644
 +                for item in capture_state["priority_queue"]
 +            )
 +            if completed_priority and not group_pending:
-+                capture_state["next_at"] = max(
-+                    capture_state["next_at"],
-+                    time.monotonic() + background_capture_interval,
-+                )
 +                deferred = capture_state["deferred_causal"]
 +                capture_state["deferred_causal"] = None
 +                if deferred:
@@ -337,6 +337,7 @@ index a467482..d3bcad5 100644
 +            return
 +        capture_state["causal_action_sequence"] = sequence
 +        capture_state["causal_applied_monotonic_ns"] = applied_ns
++        capture_state["last_causal_at"] = time.monotonic()
 +        # Safety releases update the next synchronized pair without adding stale GPU work.
 +        if str(applied.get("event") or "") == "release":
 +            return
@@ -376,7 +377,7 @@ index a467482..d3bcad5 100644
 +            return
 +        capture_state["group"] += 1
 +        capture_group = f"capture-{capture_state['group']}"
-+        capture_state["next_at"] = time.monotonic() + background_capture_interval
++        capture_state["next_at"] = time.monotonic() + background_capture_interval()
 +        cameras = (
 +            ("workspace", workspace_camera_path, frame_path, frame_meta_path),
 +            (
