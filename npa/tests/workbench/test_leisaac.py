@@ -571,7 +571,7 @@ def test_health_reads_upstream_keyboard_counter(tmp_path: Path) -> None:
     assert health["applied_inputs"] == 12
     assert health["stream_ready"] is True
     assert health["stream_transport"] == "websocket-v1"
-    assert health["physics_device"] == "cpu"
+    assert health["physics_device"] == "cuda:0"
     assert health["render_device"] == "cuda"
     assert health["seed"] == 42
 

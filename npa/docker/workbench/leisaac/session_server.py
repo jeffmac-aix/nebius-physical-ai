@@ -886,7 +886,7 @@ def health_document() -> dict[str, Any]:
         "secondary_frame_sequence": int(secondary_metadata.get("sequence") or 0),
         "view_orbit": True,
         "transport_metrics": TRANSPORT_METRICS.snapshot(),
-        "physics_device": "cpu",
+        "physics_device": "cuda:0",
         "render_device": "cuda",
         "recorder": recorder,
         **state,
