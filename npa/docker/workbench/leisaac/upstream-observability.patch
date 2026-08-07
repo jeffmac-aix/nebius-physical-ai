@@ -1,38 +1,25 @@
 diff --git a/scripts/environments/teleoperation/teleop_se3_agent.py b/scripts/environments/teleoperation/teleop_se3_agent.py
-index a467482..2ea7000 100644
+index a467482..b1b464e 100644
 --- a/scripts/environments/teleoperation/teleop_se3_agent.py
 +++ b/scripts/environments/teleoperation/teleop_se3_agent.py
-@@ -89,12 +89,26 @@ app_launcher_args = vars(args_cli)
- app_launcher = AppLauncher(app_launcher_args)
- simulation_app = app_launcher.app
-
+@@ -91,0 +92,4 @@ simulation_app = app_launcher.app
 +import asyncio
 +import ctypes
 +import hashlib
 +import json
- import os
+@@ -92,0 +97,2 @@ import os
 +from leisaac_dataset import FPS, EpisodeRecorder, extract_step
 +from pathlib import Path
- import time
-
+@@ -94,0 +101 @@ import time
 +from PIL import Image
- import gymnasium as gym
- import torch
- from isaaclab.envs import DirectRLEnv, ManagerBasedRLEnv
+@@ -97,0 +105,6 @@ from isaaclab.envs import DirectRLEnv, ManagerBasedRLEnv
 +from omni.kit.viewport.utility import (
 +    capture_viewport_to_buffer,
 +    get_active_viewport,
-+    next_viewport_frame_async,
 +)
 +from isaacsim.core.utils.viewports import set_camera_view
 +from pxr import UsdGeom
- from isaaclab.managers import DatasetExportMode, TerminationTermCfg
- from isaaclab_tasks.utils import parse_env_cfg
- from leisaac.enhance.managers import EnhanceDatasetExportMode, StreamingRecorderManager
-@@ -158,6 +172,35 @@ def main():  # noqa: C901
-
-     env_cfg = parse_env_cfg(args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs)
-     env_cfg.use_teleop_device(args_cli.teleop_device)
+@@ -160,0 +174,29 @@ def main():  # noqa: C901
 +    if os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") == "1":
 +        # Browser teleoperation renders the viewport and does not consume policy images.
 +        # Fabric cannot synchronize CPU PhysX reliably on the sm_120 renderer.
@@ -62,13 +49,7 @@ index a467482..2ea7000 100644
 +    if custom_scene_usd:
 +        # Custom scenes retain the task's expected object prim names and layout.
 +        env_cfg.scene.scene.spawn.usd_path = custom_scene_usd
-     env_cfg.seed = args_cli.seed if args_cli.seed is not None else int(time.time())
-     task_name = args_cli.task
-
-@@ -312,6 +355,347 @@ def main():  # noqa: C901
-         env.initialize()
-     env.reset()
-     teleop_interface.reset()
+@@ -314,0 +357,330 @@ def main():  # noqa: C901
 +    recorder = EpisodeRecorder(
 +        root=Path(os.environ["NPA_LEISAAC_RECORDER_ROOT"]),
 +        output_uri=os.environ["NPA_LEISAAC_OUTPUT_PATH"],
@@ -207,35 +188,13 @@ index a467482..2ea7000 100644
 +                )
 +        return captured
 +
-+    async def capture_one(
-+        camera_id,
-+        selected_camera_path,
-+        destination,
-+        metadata_destination,
-+        capture_group,
-+        causal_action_sequence,
-+        causal_applied_monotonic_ns,
-+    ):
-+        """Capture only between completed viewport frames and await GPU retirement."""
++    async def finish_capture(camera_id, capture_helper):
++        """Await GPU retirement after a capture registered before render."""
 +        try:
-+            viewport.camera_path = selected_camera_path
-+            # env.render() submits RTX work but returns before the viewport's GPU
-+            # command list retires.  The public utility provides the safe boundary.
-+            await next_viewport_frame_async(viewport, n_frames=1)
-+            capture_helper = capture_viewport_to_buffer(
-+                viewport,
-+                on_viewport_captured(
-+                    camera_id,
-+                    destination,
-+                    metadata_destination,
-+                    capture_group,
-+                    causal_action_sequence,
-+                    causal_applied_monotonic_ns,
-+                ),
-+            )
-+            # Await the utility's completion future before switching the shared
-+            # viewport. Extra completion frames add presentation latency after the
-+            # capture buffer is already safe and are not required by this API.
++            # The helper is registered synchronously before env.render(), so the
++            # post-action render is the frame copied into the buffer. Await its
++            # completion future before switching the shared viewport; extra
++            # completion frames add latency after the buffer is already safe.
 +            await capture_helper.wait_for_result(completion_frames=0)
 +        except Exception as exc:
 +            print(
@@ -286,16 +245,27 @@ index a467482..2ea7000 100644
 +        capture_state["active"] = True
 +        capture_state["active_group"] = capture_group
 +        capture_state["active_priority"] = selected_priority
-+        capture_state["task"] = asyncio.ensure_future(
-+            capture_one(
-+                camera_id,
-+                selected_camera_path,
-+                destination,
-+                metadata_destination,
-+                capture_group,
-+                causal_action_sequence,
-+                causal_applied_monotonic_ns,
++        try:
++            viewport.camera_path = selected_camera_path
++            capture_helper = capture_viewport_to_buffer(
++                viewport,
++                on_viewport_captured(
++                    camera_id,
++                    destination,
++                    metadata_destination,
++                    capture_group,
++                    causal_action_sequence,
++                    causal_applied_monotonic_ns,
++                ),
 +            )
++        except Exception:
++            capture_state["active"] = False
++            capture_state["active_group"] = ""
++            capture_state["active_priority"] = False
++            capture_state["pending"].discard(camera_id)
++            raise
++        capture_state["task"] = asyncio.ensure_future(
++            finish_capture(camera_id, capture_helper)
 +        )
 +
 +    def request_causal_capture(applied):
@@ -408,15 +378,13 @@ index a467482..2ea7000 100644
 +    if frame_path:
 +        if viewport is None:
 +            raise RuntimeError("browser teleoperation requires an active RTX viewport")
-+        env.render()
 +        schedule_browser_capture()
-
-     resume_recorded_demo_count = 0
-     if args_cli.record and args_cli.resume:
-@@ -379,7 +763,23 @@ def main():  # noqa: C901
-                         if args_cli.record:
-                             print("Start Recording!!!")
-                         start_record_state = True
++        env.render()
+@@ -375 +747,2 @@ def main():  # noqa: C901
+-                    env.render()
++                    if os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") != "1":
++                        env.render()
+@@ -382 +755,17 @@ def main():  # noqa: C901
 -                    env.step(actions)
 +                    step_result = env.step(actions)
 +                    sim_step += 1
@@ -430,31 +398,22 @@ index a467482..2ea7000 100644
 +                            sim_step=sim_step,
 +                        )
 +                    )
-+                    if os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") == "1":
-+                        env.render()
 +                schedule_browser_capture()
 +                apply_view_command()
++                if os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") == "1":
++                    env.render()
 +                recorder.process_commands(reset=env.reset)
-                 if rate_limiter:
-                     rate_limiter.sleep(env)
-             if interrupted:
 diff --git a/source/leisaac/leisaac/devices/keyboard/so101_keyboard.py b/source/leisaac/leisaac/devices/keyboard/so101_keyboard.py
 index 1ecc934..cb304f1 100644
 --- a/source/leisaac/leisaac/devices/keyboard/so101_keyboard.py
 +++ b/source/leisaac/leisaac/devices/keyboard/so101_keyboard.py
-@@ -1,3 +1,8 @@
+@@ -0,0 +1,5 @@
 +import json
 +import os
 +from pathlib import Path
 +import time
 +
- import carb
- import numpy as np
-
-@@ -34,6 +39,19 @@ class SO101Keyboard(Device):
-
-         # command buffers (dx, dy, dz, droll, dpitch, dyaw, d_shoulder_pan, d_gripper)
-         self._delta_action = np.zeros(8)
+@@ -36,0 +42,13 @@ class SO101Keyboard(Device):
 +        queue_name = os.environ.get("NPA_LEISAAC_INPUT_QUEUE", "")
 +        counter_name = os.environ.get("NPA_LEISAAC_APPLIED_COUNTER", "")
 +        ack_name = os.environ.get("NPA_LEISAAC_APPLIED_ACK_PATH", "")
@@ -468,18 +427,11 @@ index 1ecc934..cb304f1 100644
 +        self._remote_sim_step = 0
 +        if os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") == "1":
 +            self._started = True
-
-         # initialize the target frame
-         self.asset_name = "robot"
-@@ -57,11 +75,112 @@ class SO101Keyboard(Device):
-         self._display_controls_table.add_row(["U", "gripper_open"])
-         self._display_controls_table.add_row(["O", "gripper_close"])
-
+@@ -60,3 +77,0 @@ class SO101Keyboard(Device):
 -    def get_device_state(self):
 -        return self._convert_delta_from_frame(self._delta_action)
 -
-     def reset(self):
-         self._delta_action[:] = 0.0
+@@ -64,0 +80,104 @@ class SO101Keyboard(Device):
 +        self._remote_pulses.clear()
 +        self._remote_direct_action[:] = 0.0
 +        self._remote_pending_applied.clear()
@@ -584,13 +536,7 @@ index 1ecc934..cb304f1 100644
 +        remote_action += self._remote_direct_action
 +        self._remote_direct_action[:] = 0.0
 +        return self._convert_delta_from_frame(self._delta_action + remote_action)
-
-     def _on_keyboard_event(self, event, *args, **kwargs):
-         super()._on_keyboard_event(event, *args, **kwargs)
-@@ -69,6 +188,17 @@ class SO101Keyboard(Device):
-         if event.type == carb.input.KeyboardEventType.KEY_PRESS:
-             if event.input.name in self._INPUT_KEY_MAPPING.keys():
-                 self._delta_action += self._ACTION_DELTA_MAPPING[self._INPUT_KEY_MAPPING[event.input.name]]
+@@ -71,0 +191,11 @@ class SO101Keyboard(Device):
 +                counter_name = os.environ.get("NPA_LEISAAC_INPUT_COUNTER", "")
 +                if counter_name:
 +                    try:
@@ -602,6 +548,3 @@ index 1ecc934..cb304f1 100644
 +                    except (OSError, ValueError):
 +                        # Telemetry must never interfere with upstream controls.
 +                        pass
-         # remove the command when un-pressed
-         if event.type == carb.input.KeyboardEventType.KEY_RELEASE:
-             if event.input.name in self._INPUT_KEY_MAPPING.keys():

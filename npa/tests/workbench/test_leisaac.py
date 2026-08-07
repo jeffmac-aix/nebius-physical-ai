@@ -371,9 +371,9 @@ def test_observability_patch_is_exact_and_records_real_upstream_input() -> None:
         server.UPSTREAM_OBSERVABILITY_PATCH_SHA256
     )
     source = patch.read_text(encoding="utf-8")
-    assert "SO101Keyboard(Device)" in source
-    assert "KeyboardEventType.KEY_PRESS" in source
-    assert "self._delta_action +=" in source
+    assert "source/leisaac/leisaac/devices/keyboard/so101_keyboard.py" in source
+    assert "def get_device_state(self):" in source
+    assert "self._delta_action + remote_action" in source
     assert "NPA_LEISAAC_INPUT_COUNTER" in source
     assert "NPA_LEISAAC_READY_PATH" in source
     assert "NPA_LEISAAC_BROWSER_TELEOP" in source
@@ -381,8 +381,11 @@ def test_observability_patch_is_exact_and_records_real_upstream_input() -> None:
     assert 'source_queue.pop(0)' in source
     assert 'if capture_state["active"]:' in source
     assert "Submit only after Kit reports the prior GPU capture fully complete" in source
-    assert "await next_viewport_frame_async(viewport, n_frames=1)" in source
+    assert "next_viewport_frame_async" not in source
+    assert "The helper is registered synchronously before env.render()" in source
     assert "await capture_helper.wait_for_result(completion_frames=0)" in source
+    assert source.count("schedule_browser_capture()\n+        env.render()") == 1
+    assert source.count("schedule_browser_capture()\n+                apply_view_command()") == 1
     assert 'capture_state["priority_queue"]' in source
     assert '"causal_action_sequence": causal_action_sequence' in source
     assert "mark_remote_step_applied(sim_step)" in source
