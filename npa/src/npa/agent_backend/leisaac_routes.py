@@ -1923,6 +1923,7 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
                 async def send_browser() -> None:
                     generations: dict[str, int] = {}
                     next_camera_index = 0
+                    last_preferred_causal_sequence = 0
                     while True:
                         (
                             camera,
@@ -1934,10 +1935,18 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
                             generations,
                             next_index=next_camera_index,
                             preferred_key="workspace",
+                            preferred_predicate=lambda queued: int(
+                                queued[0].causal_action_sequence
+                            ) > last_preferred_causal_sequence,
                             timeout=20.0,
                         )
                         generations[camera] = generation
                         envelope, content, received_mono_ns = item
+                        if camera == "workspace":
+                            last_preferred_causal_sequence = max(
+                                last_preferred_causal_sequence,
+                                int(envelope.causal_action_sequence),
+                            )
                         if skipped:
                             transport_metrics.increment("frames_coalesced", skipped)
                         stamped = stamp_verified_frame(

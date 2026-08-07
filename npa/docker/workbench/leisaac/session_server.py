@@ -1308,6 +1308,7 @@ async def _video_datachannel_frames():
     generations: dict[str, int] = {}
     previous_sequences = {camera: 0 for camera in CAMERA_PATHS}
     next_camera_index = 0
+    last_preferred_causal_sequence = 0
     while True:
         (
             camera,
@@ -1319,10 +1320,18 @@ async def _video_datachannel_frames():
             generations,
             next_index=next_camera_index,
             preferred_key="workspace",
+            preferred_predicate=lambda queued: int(
+                queued[1].get("causal_action_sequence") or 0
+            ) > last_preferred_causal_sequence,
             timeout=20.0,
         )
         generations[camera] = generation
         camera, metadata, jpeg = item
+        if camera == "workspace":
+            last_preferred_causal_sequence = max(
+                last_preferred_causal_sequence,
+                int(metadata.get("causal_action_sequence") or 0),
+            )
         sequence = int(metadata["sequence"])
         previous_sequence = previous_sequences.get(camera, 0)
         dropped = (
@@ -1907,6 +1916,7 @@ def build_app() -> FastAPI:
 
         async def send_frames() -> None:
             nonlocal next_camera_index
+            last_preferred_causal_sequence = 0
             while True:
                 (
                     camera,
@@ -1918,10 +1928,18 @@ def build_app() -> FastAPI:
                     generations,
                     next_index=next_camera_index,
                     preferred_key="workspace",
+                    preferred_predicate=lambda queued: int(
+                        queued[1].get("causal_action_sequence") or 0
+                    ) > last_preferred_causal_sequence,
                     timeout=20.0,
                 )
                 generations[camera] = generation
                 camera, metadata, jpeg = item
+                if camera == "workspace":
+                    last_preferred_causal_sequence = max(
+                        last_preferred_causal_sequence,
+                        int(metadata.get("causal_action_sequence") or 0),
+                    )
                 sequence = int(metadata["sequence"])
                 previous_sequence = previous_sequences.get(camera, 0)
                 dropped = (

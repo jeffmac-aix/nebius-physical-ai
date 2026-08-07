@@ -17,7 +17,7 @@ import re
 import struct
 import threading
 import time
-from typing import Any
+from typing import Any, Callable
 
 
 PROTOCOL_VERSION = 1
@@ -634,6 +634,7 @@ class AsyncLatestByKey:
         *,
         next_index: int = 0,
         preferred_key: str | None = None,
+        preferred_predicate: Callable[[Any], bool] | None = None,
         timeout: float | None = None,
     ) -> tuple[str, int, Any, int, int]:
         if preferred_key is not None and preferred_key not in self._keys:
@@ -655,11 +656,15 @@ class AsyncLatestByKey:
         # pending secondary frame: that scheduling race can otherwise leave a
         # real overview viewport black indefinitely under continuous capture.
         start = max(0, int(next_index)) % len(self._keys)
-        if (
+        preferred_ready = (
             preferred_key is not None
-            and (not any(observed.values()) or self._keys[start] == preferred_key)
             and self._generations[preferred_key] > observed[preferred_key]
-        ):
+        )
+        if preferred_ready and preferred_predicate is not None:
+            prefer_now = bool(preferred_predicate(self._values[preferred_key]))
+        else:
+            prefer_now = not any(observed.values()) or self._keys[start] == preferred_key
+        if preferred_ready and prefer_now:
             index = self._keys.index(preferred_key)
             generation = self._generations[preferred_key]
             return (

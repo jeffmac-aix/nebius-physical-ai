@@ -435,6 +435,36 @@ async def test_camera_latest_values_prefer_primary_once_without_starvation() -> 
     )
 
 
+@pytest.mark.anyio
+async def test_new_causal_primary_preempts_once_then_services_secondary() -> None:
+    latest = AsyncLatestByKey(("workspace", "overview"))
+    await latest.publish("overview", {"causal": 0, "name": "overview-1"})
+    await latest.publish("workspace", {"causal": 7, "name": "workspace-1"})
+    generations: dict[str, int] = {}
+    last_causal = 0
+
+    camera, generation, value, skipped, next_index = await latest.wait_after(
+        generations,
+        next_index=1,
+        preferred_key="workspace",
+        preferred_predicate=lambda item: item["causal"] > last_causal,
+        timeout=0.1,
+    )
+    assert (camera, value["name"], skipped) == ("workspace", "workspace-1", 0)
+    generations[camera] = generation
+    last_causal = value["causal"]
+
+    await latest.publish("workspace", {"causal": 7, "name": "workspace-2"})
+    camera, generation, value, skipped, _ = await latest.wait_after(
+        generations,
+        next_index=next_index,
+        preferred_key="workspace",
+        preferred_predicate=lambda item: item["causal"] > last_causal,
+        timeout=0.1,
+    )
+    assert (camera, value["name"], skipped) == ("overview", "overview-1", 0)
+
+
 def test_transport_metrics_are_low_cardinality() -> None:
     metrics = TransportMetrics()
     metrics.increment("frames_sent", 2)
