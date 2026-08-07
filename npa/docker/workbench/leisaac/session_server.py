@@ -172,7 +172,7 @@ CLIENT_SOURCE_JS_SHA256 = (
 )
 CLIENT_JS_SHA256 = CLIENT_SOURCE_JS_SHA256
 UPSTREAM_OBSERVABILITY_PATCH_SHA256 = (
-    "29dc3d35cc73c6a6add825cbfbb6e88ea6d8a635b3cdb2795a3cf2a1639d3ad5"
+    "5b62e660c1dec4a9ac36c06588edb3d9f164c4490d248d1a4288538137a0d532"
 )
 
 CACHE_ROOT = Path(os.environ.get("NPA_LEISAAC_CACHE_DIR", "/opt/leisaac-cache"))
@@ -183,7 +183,6 @@ READY_PATH = Path("/tmp/npa-leisaac-ready")
 INPUT_COUNTER_PATH = Path("/tmp/npa-leisaac-input-events")
 APPLIED_COUNTER_PATH = Path("/tmp/npa-leisaac-applied-inputs")
 INPUT_QUEUE_PATH = Path("/tmp/npa-leisaac-input-queue.jsonl")
-INPUT_WAKEUP_PATH = Path("/tmp/npa-leisaac-input-wakeup.fifo")
 FRAME_PATH = Path("/tmp/npa-leisaac-frame.jpg")
 FRAME_META_PATH = Path("/tmp/npa-leisaac-frame.json")
 SECONDARY_FRAME_PATH = Path("/tmp/npa-leisaac-frame-overview.jpg")
@@ -662,7 +661,6 @@ def _simulation_launch() -> tuple[list[str], dict[str, str]]:
             "NPA_LEISAAC_INPUT_COUNTER": str(INPUT_COUNTER_PATH),
             "NPA_LEISAAC_APPLIED_COUNTER": str(APPLIED_COUNTER_PATH),
             "NPA_LEISAAC_INPUT_QUEUE": str(INPUT_QUEUE_PATH),
-            "NPA_LEISAAC_INPUT_WAKEUP": str(INPUT_WAKEUP_PATH),
             "NPA_LEISAAC_APPLIED_ACK_PATH": str(APPLIED_ACK_PATH),
             "NPA_LEISAAC_FRAME_PATH": str(FRAME_PATH),
             "NPA_LEISAAC_FRAME_META_PATH": str(FRAME_META_PATH),
@@ -683,8 +681,6 @@ def _reset_runtime_files() -> None:
     INPUT_COUNTER_PATH.write_text("0\n", encoding="utf-8")
     APPLIED_COUNTER_PATH.write_text("0\n", encoding="utf-8")
     INPUT_QUEUE_PATH.write_text("", encoding="utf-8")
-    INPUT_WAKEUP_PATH.unlink(missing_ok=True)
-    os.mkfifo(INPUT_WAKEUP_PATH, mode=0o600)
     # The simulator rewrites its acknowledgement stream on every restart. Keep
     # the reader offset in the same critical section as truncation; otherwise a
     # reconnect can apply controls successfully while their sequence-specific
@@ -934,18 +930,6 @@ def _append_inputs(records: list[dict[str, Any]]) -> list[int]:
                 os.fsync(queue.fileno())
         for _record in records:
             counts.append(_increment_input_counter())
-    # Wake the simulator's interruptible rate limiter after the ordered queue is
-    # visible. The FIFO is local to the private pod, carries no control data, and
-    # is only a latency hint: the durable queue remains the source of truth.
-    try:
-        descriptor = os.open(INPUT_WAKEUP_PATH, os.O_WRONLY | os.O_NONBLOCK)
-        try:
-            os.write(descriptor, b"\x01")
-        finally:
-            os.close(descriptor)
-    except OSError:
-        # Startup/restart races safely fall back to the ordinary 60 Hz poll.
-        pass
     return counts
 
 
