@@ -2315,7 +2315,7 @@
       const leisaacUnackedControls = new Map();
       const leisaacKeysDown = new Set();
       const leisaacPings = new Map();
-      const leisaacTransportEvidence = { controls: [], frames: [], reconnects: 0, active: "disconnected", video: "disconnected", dropped_frames: 0 };
+      const leisaacTransportEvidence = { controls: [], frames: [], failures: [], reconnects: 0, active: "disconnected", video: "disconnected", dropped_frames: 0 };
       const LEISAAC_EVIDENCE_LIMIT = 4096;
       function recordLeIsaacEvidence(kind, value) {
         const collection = leisaacTransportEvidence[kind];
@@ -3192,6 +3192,18 @@
         leisaacTransportEvidence.active = leisaacActiveTransport;
         leisaacTransportEvidence.video = leisaacVideoTransport;
         leisaacTransportEvidence.dropped_frames = leisaacDroppedFrames;
+      }
+      function recordLeIsaacTransportFailure(stage, attempt, error) {
+        const raw = String((error && error.message) || error || "transport failure");
+        const detail = raw.replace(/(?:https?|wss?):\/\/[^\s]+/gi, "[redacted-url]").slice(0, 160);
+        leisaacTransportEvidence.failures.push({
+          stage: String(stage || "transport").slice(0, 48),
+          attempt: Math.max(0, Number(attempt || 0)),
+          detail,
+        });
+        if (leisaacTransportEvidence.failures.length > 16) {
+          leisaacTransportEvidence.failures.splice(0, leisaacTransportEvidence.failures.length - 16);
+        }
       }
       function leisaacControlPayload(key, event) {
         const payload = {
@@ -4102,7 +4114,10 @@
             const generation = leisaacSocketGeneration;
             if (leisaacVideoDataChannel) {
               leisaacVideoDataChannel.onclose = () => {
-                if (generation === leisaacSocketGeneration && leisaacActiveTransport === "websocket-v1") recoverLeIsaacPreferred(status);
+                if (generation === leisaacSocketGeneration && leisaacActiveTransport === "websocket-v1") {
+                  recordLeIsaacTransportFailure("webrtc-video", attempt, new Error("data channel closed"));
+                  recoverLeIsaacPreferred(status);
+                }
               };
             }
             if (leisaacVideoPeer) {
@@ -4111,7 +4126,10 @@
                   ["failed", "closed"].includes(String(leisaacVideoPeer && leisaacVideoPeer.connectionState || "")) &&
                   generation === leisaacSocketGeneration &&
                   leisaacActiveTransport === "websocket-v1"
-                ) recoverLeIsaacPreferred(status);
+                ) {
+                  recordLeIsaacTransportFailure("webrtc-peer", attempt, new Error("peer connection failed"));
+                  recoverLeIsaacPreferred(status);
+                }
               };
             }
             leisaacTransportEvidence.reconnects += attempt;
@@ -4120,6 +4138,11 @@
             return true;
           } catch (err) {
             lastError = err;
+            recordLeIsaacTransportFailure(
+              attempt === 0 && status.video_datachannel_url ? "webrtc-negotiation" : "websocket-fallback",
+              attempt,
+              err,
+            );
             closeLeIsaacSockets();
           }
         }

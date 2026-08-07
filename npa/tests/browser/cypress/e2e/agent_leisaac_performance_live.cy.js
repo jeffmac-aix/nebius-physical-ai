@@ -410,6 +410,9 @@ function frameStageSummary(frames) {
         benchmark.transport = {
           control: String(finalEvidence.active || ""),
           video: String(finalEvidence.video || ""),
+          failures: Array.isArray(finalEvidence.failures)
+            ? finalEvidence.failures.slice(-16)
+            : [],
           policy: finalEvidence.video === "webrtc-datachannel-v1"
             ? "TURN-only unordered maxRetransmits=0; reliable ordered control WebSocket"
             : "binary WebSocket latest-frame-wins fallback",
@@ -462,17 +465,17 @@ function frameStageSummary(frames) {
         if (benchmark.quality.viewport_pixel_difference < 1) {
           throw new Error("the two camera canvases are not visually distinct");
         }
-        if (phase === "optimized" && benchmark.transport.video !== "webrtc-datachannel-v1") {
-          throw new Error(
-            `optimized benchmark requires WebRTC video, got ${benchmark.transport.video || "none"}`,
-          );
-        }
       });
 
       cy.window()
         .its("__NPA_LEISAAC_PERFORMANCE__")
         .then((benchmark) => cy.writeFile(output, benchmark, { log: false }).then(() => {
           if (phase !== "optimized") return;
+          if (benchmark.transport.video !== "webrtc-datachannel-v1") {
+            throw new Error(
+              `optimized benchmark requires WebRTC video, got ${benchmark.transport.video || "none"}`,
+            );
+          }
           if (!(baselineP50 > 0 && baselineP95 > 0)) {
             throw new Error("optimized gate requires aggregate baseline p50 and p95");
           }
