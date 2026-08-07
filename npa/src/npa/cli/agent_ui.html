@@ -3924,19 +3924,35 @@
           try { peer.close(); } catch (_err) { /* already closed */ }
         }
       }
-      function waitForLeIsaacIceGathering(peer) {
-        if (peer.iceGatheringState === "complete") return Promise.resolve();
+      function leisaacHasRelayCandidate(peer) {
+        const sdp = String((peer.localDescription && peer.localDescription.sdp) || "");
+        return /(?:^|\r?\n)a=candidate:[^\r\n]+\styp\srelay(?:\s|\r?$)/m.test(sdp);
+      }
+      function waitForLeIsaacRelayCandidate(peer) {
+        if (leisaacHasRelayCandidate(peer)) return Promise.resolve();
+        if (peer.iceGatheringState === "complete") {
+          return Promise.reject(new Error("WebRTC did not produce a relay candidate"));
+        }
         return new Promise((resolve, reject) => {
-          const timeout = window.setTimeout(() => finish(new Error("WebRTC ICE gathering timed out")), 8000);
-          const changed = () => {
-            if (peer.iceGatheringState === "complete") finish();
+          const timeout = window.setTimeout(
+            () => finish(new Error("WebRTC relay candidate gathering timed out")),
+            15000,
+          );
+          const candidate = (event) => {
+            if (
+              (event.candidate && String(event.candidate.type || "") === "relay") ||
+              leisaacHasRelayCandidate(peer)
+            ) finish();
+            else if (!event.candidate || peer.iceGatheringState === "complete") {
+              finish(new Error("WebRTC did not produce a relay candidate"));
+            }
           };
           const finish = (error) => {
             window.clearTimeout(timeout);
-            peer.removeEventListener("icegatheringstatechange", changed);
+            peer.removeEventListener("icecandidate", candidate);
             if (error) reject(error); else resolve();
           };
-          peer.addEventListener("icegatheringstatechange", changed);
+          peer.addEventListener("icecandidate", candidate);
         });
       }
       async function openLeIsaacVideoDataChannel(status, generation) {
@@ -3981,7 +3997,11 @@
         try {
           const offer = await peer.createOffer();
           await peer.setLocalDescription(offer);
-          await waitForLeIsaacIceGathering(peer);
+          // The browser is relay-only, so the first authenticated TURN relay
+          // candidate is sufficient for non-trickle SDP. Waiting for every ICE
+          // server transaction to finish delayed or stalled some Chromium
+          // clients even though their usable relay candidate was already in SDP.
+          await waitForLeIsaacRelayCandidate(peer);
           if (generation !== leisaacSocketGeneration) throw new Error("stale WebRTC negotiation");
           const response = await fetch(String(status.video_datachannel_url), {
             method: "POST",

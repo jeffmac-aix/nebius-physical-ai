@@ -691,7 +691,10 @@ describe("NPA agent LeIsaac capability tab", () => {
           return this.channel;
         }
         async createOffer() {
-          return { type: "offer", sdp: "v=0\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n" };
+          return {
+            type: "offer",
+            sdp: "v=0\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=candidate:1 1 udp 1 192.0.2.1 49152 typ relay\r\n",
+          };
         }
         async setLocalDescription(description) { this.localDescription = description; }
         async setRemoteDescription(description) {
