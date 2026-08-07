@@ -2,15 +2,16 @@ diff --git a/scripts/environments/teleoperation/teleop_se3_agent.py b/scripts/en
 index a467482..d3bcad5 100644
 --- a/scripts/environments/teleoperation/teleop_se3_agent.py
 +++ b/scripts/environments/teleoperation/teleop_se3_agent.py
-@@ -91,0 +92,4 @@ simulation_app = app_launcher.app
+@@ -91,0 +92,5 @@ simulation_app = app_launcher.app
 +import asyncio
 +import ctypes
 +import hashlib
 +import json
-@@ -92,0 +97,2 @@ import os
-+from leisaac_dataset import EpisodeRecorder, extract_step
++from io import BytesIO
+@@ -92,0 +98 @@ import os
 +from pathlib import Path
-@@ -94,0 +101 @@ import time
+@@ -94,0 +101,2 @@ import time
++from leisaac_dataset import EpisodeRecorder, extract_step
 +from PIL import Image
 @@ -97,0 +105,7 @@ from isaaclab.envs import DirectRLEnv, ManagerBasedRLEnv
 +from omni.kit.viewport.utility import (
@@ -58,7 +59,7 @@ index a467482..d3bcad5 100644
 @@ -226,0 +272,2 @@ def main():  # noqa: C901
 +    if os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") == "1":
 +        env.cfg.sim.render_interval = 1_000_000_000
-@@ -314,0 +362,402 @@ def main():  # noqa: C901
+@@ -314,0 +362,434 @@ def main():  # noqa: C901
 +    recorder = EpisodeRecorder(
 +        root=Path(os.environ["NPA_LEISAAC_RECORDER_ROOT"]),
 +        output_uri=os.environ["NPA_LEISAAC_OUTPUT_PATH"],
@@ -101,6 +102,7 @@ index a467482..d3bcad5 100644
 +        "active": False,
 +        "active_group": "",
 +        "active_priority": False,
++        "needs_render": False,
 +        "deferred_causal": None,
 +        "task": None,
 +        "next_at": 0.0,
@@ -113,7 +115,7 @@ index a467482..d3bcad5 100644
 +    # Background frames must not monopolize the Isaac render/event loop. Causal
 +    # action pairs bypass this cadence and remain immediate at full quality.
 +    idle_background_capture_fps = 2.5
-+    active_background_capture_fps = 2.0
++    active_background_capture_fps = 2.5
 +    def background_capture_interval():
 +        active = time.monotonic() - capture_state["last_causal_at"] < 2.5
 +        return 1.0 / (active_background_capture_fps if active else idle_background_capture_fps)
@@ -140,15 +142,14 @@ index a467482..d3bcad5 100644
 +    last_view_sequence = 0
 +
 +    def on_viewport_captured(
++        capture_result,
 +        camera_id,
-+        destination,
-+        metadata_destination,
 +        capture_group,
 +        causal_action_sequence,
 +        causal_applied_monotonic_ns,
 +    ):
 +        def captured(buffer, buffer_size, width, height, _byte_format):
-+            """Publish one real RTX frame without blocking another camera."""
++            """Copy the GPU-owned buffer before its callback lifetime ends."""
 +            try:
 +                capture_monotonic_ns = time.monotonic_ns()
 +                capture_wall_ns = time.time_ns()
@@ -159,47 +160,15 @@ index a467482..d3bcad5 100644
 +                    ctypes.c_char_p,
 +                ]
 +                content = ctypes.pythonapi.PyCapsule_GetPointer(buffer, None)
-+                image = Image.frombytes(
-+                    "RGBA", (width, height), content.contents
-+                ).convert("RGB")
-+                if image.width > 1280 or image.height > 720:
-+                    image.thumbnail((1280, 720), Image.Resampling.LANCZOS)
-+                temporary = destination + ".tmp"
-+                # Optimized Huffman tables preserve quality-82 quantization while
-+                # materially reducing bytes on the shared control/video link.
-+                image.save(temporary, format="JPEG", quality=82, optimize=True)
-+                frame_bytes = Path(temporary).read_bytes()
-+                encoded_monotonic_ns = time.monotonic_ns()
-+                encoded_wall_ns = time.time_ns()
-+                os.replace(temporary, destination)
-+                capture_state["sequences"][camera_id] += 1
-+                if metadata_destination:
-+                    metadata = {
-+                        "schema": "npa.leisaac.frame.v1",
-+                        "producer_pid": os.getpid(),
-+                        "camera": camera_id,
-+                        "capture_group": capture_group,
-+                        "sequence": capture_state["sequences"][camera_id],
-+                        "causal_action_sequence": causal_action_sequence,
-+                        "causal_applied_monotonic_ns": causal_applied_monotonic_ns,
-+                        "capture_monotonic_ns": capture_monotonic_ns,
-+                        "capture_wall_ns": capture_wall_ns,
-+                        "encoded_monotonic_ns": encoded_monotonic_ns,
-+                        "encoded_wall_ns": encoded_wall_ns,
-+                        "bytes": len(frame_bytes),
-+                        "sha256": hashlib.sha256(frame_bytes).hexdigest(),
-+                    }
-+                    metadata_temporary = metadata_destination + ".tmp"
-+                    Path(metadata_temporary).write_text(
-+                        json.dumps(
-+                            metadata, sort_keys=True, separators=(",", ":")
-+                        )
-+                        + "\n",
-+                        encoding="utf-8",
-+                    )
-+                    os.replace(metadata_temporary, metadata_destination)
-+                recorder.frame(
-+                    frame_bytes, camera_id=camera_id, capture_group=capture_group
++                capture_result.update(
++                    rgba=bytes(content.contents),
++                    width=width,
++                    height=height,
++                    capture_monotonic_ns=capture_monotonic_ns,
++                    capture_wall_ns=capture_wall_ns,
++                    capture_group=capture_group,
++                    causal_action_sequence=causal_action_sequence,
++                    causal_applied_monotonic_ns=causal_applied_monotonic_ns,
 +                )
 +            except Exception as exc:
 +                print(
@@ -207,6 +176,54 @@ index a467482..d3bcad5 100644
 +                    f"{type(exc).__name__}: {exc}"
 +                )
 +        return captured
++
++    def encode_and_publish_capture(
++        capture_result, camera_id, destination, metadata_destination
++    ):
++        """Encode and publish outside the latency-critical simulator loop."""
++        image = Image.frombytes(
++            "RGBA",
++            (capture_result["width"], capture_result["height"]),
++            capture_result["rgba"],
++        ).convert("RGB")
++        if image.width > 1280 or image.height > 720:
++            image.thumbnail((1280, 720), Image.Resampling.LANCZOS)
++        encoded = BytesIO()
++        # Optimized Huffman tables preserve quality-82 quantization while
++        # materially reducing bytes on the shared control/video link.
++        image.save(encoded, format="JPEG", quality=82, optimize=True)
++        frame_bytes = encoded.getvalue()
++        temporary = destination + ".tmp"
++        Path(temporary).write_bytes(frame_bytes)
++        encoded_monotonic_ns = time.monotonic_ns()
++        encoded_wall_ns = time.time_ns()
++        os.replace(temporary, destination)
++        capture_state["sequences"][camera_id] += 1
++        if metadata_destination:
++            metadata = {
++                "schema": "npa.leisaac.frame.v1",
++                "producer_pid": os.getpid(),
++                "camera": camera_id,
++                "capture_group": capture_result["capture_group"],
++                "sequence": capture_state["sequences"][camera_id],
++                "causal_action_sequence": capture_result["causal_action_sequence"],
++                "causal_applied_monotonic_ns": capture_result[
++                    "causal_applied_monotonic_ns"
++                ],
++                "capture_monotonic_ns": capture_result["capture_monotonic_ns"],
++                "capture_wall_ns": capture_result["capture_wall_ns"],
++                "encoded_monotonic_ns": encoded_monotonic_ns,
++                "encoded_wall_ns": encoded_wall_ns,
++                "bytes": len(frame_bytes),
++                "sha256": hashlib.sha256(frame_bytes).hexdigest(),
++            }
++            metadata_temporary = metadata_destination + ".tmp"
++            Path(metadata_temporary).write_text(
++                json.dumps(metadata, sort_keys=True, separators=(",", ":")) + "\n",
++                encoding="utf-8",
++            )
++            os.replace(metadata_temporary, metadata_destination)
++        return frame_bytes
 +
 +    async def finish_capture(
 +        camera_id,
@@ -217,6 +234,7 @@ index a467482..d3bcad5 100644
 +        causal_action_sequence,
 +        causal_applied_monotonic_ns,
 +        settle_first,
++        capture_result,
 +    ):
 +        """Await a safe copy and leave the shared viewport settled on workspace."""
 +        try:
@@ -228,9 +246,8 @@ index a467482..d3bcad5 100644
 +                capture_helper = capture_viewport_to_buffer(
 +                    viewport,
 +                    on_viewport_captured(
++                        capture_result,
 +                        camera_id,
-+                        destination,
-+                        metadata_destination,
 +                        capture_group,
 +                        causal_action_sequence,
 +                        causal_applied_monotonic_ns,
@@ -242,6 +259,17 @@ index a467482..d3bcad5 100644
 +            if camera_id == "overview":
 +                viewport.camera_path = workspace_camera_path
 +                await next_viewport_frame_async(viewport, n_frames=1)
++            capture_state["needs_render"] = False
++            frame_bytes = await asyncio.to_thread(
++                encode_and_publish_capture,
++                capture_result,
++                camera_id,
++                destination,
++                metadata_destination,
++            )
++            recorder.frame(
++                frame_bytes, camera_id=camera_id, capture_group=capture_group
++            )
 +        except Exception as exc:
 +            print(
 +                f"[WARN] Could not complete {camera_id} browser frame: "
@@ -253,6 +281,7 @@ index a467482..d3bcad5 100644
 +            capture_state["active"] = False
 +            capture_state["active_group"] = ""
 +            capture_state["active_priority"] = False
++            capture_state["needs_render"] = False
 +            capture_state["pending"].discard(camera_id)
 +            capture_state["task"] = None
 +            group_pending = any(
@@ -289,17 +318,18 @@ index a467482..d3bcad5 100644
 +            source_queue.pop(0)
 +        )
 +        capture_state["active"] = True
++        capture_state["needs_render"] = True
 +        capture_state["active_group"] = capture_group
 +        capture_state["active_priority"] = selected_priority
 +        same_camera = str(viewport.camera_path) == str(selected_camera_path)
++        capture_result = {}
 +        try:
 +            if same_camera:
 +                capture_helper = capture_viewport_to_buffer(
 +                    viewport,
 +                    on_viewport_captured(
++                        capture_result,
 +                        camera_id,
-+                        destination,
-+                        metadata_destination,
 +                        capture_group,
 +                        causal_action_sequence,
 +                        causal_applied_monotonic_ns,
@@ -324,6 +354,7 @@ index a467482..d3bcad5 100644
 +                causal_action_sequence,
 +                causal_applied_monotonic_ns,
 +                not same_camera,
++                capture_result,
 +            )
 +        )
 +
@@ -339,11 +370,12 @@ index a467482..d3bcad5 100644
 +        capture_state["causal_applied_monotonic_ns"] = applied_ns
 +        causal_at = time.monotonic()
 +        capture_state["last_causal_at"] = causal_at
-+        # Phase background work behind the safety release. The release also
-+        # receives its own priority pair, preserving 2.5 FPS while leaving the
-+        # next likely control boundary free for a causal press capture.
++        # Keep the background pair cadence phase-locked behind the safety
++        # release. This preserves 2.5 FPS while leaving the next likely control
++        # boundary free for its latency-critical causal capture.
 +        if str(applied.get("event") or "") == "release":
 +            capture_state["next_at"] = causal_at + background_capture_interval()
++            return
 +        # A causal pair supersedes background work that has not started. The
 +        # active capture is never cancelled while Kit/GPU owns its buffer.
 +        capture_state["queue"].clear()
@@ -404,9 +436,10 @@ index a467482..d3bcad5 100644
 +
 +    def browser_capture_needs_render():
 +        """Keep physics/control cadence independent from background RTX work."""
++        if capture_state["active"]:
++            return capture_state["needs_render"]
 +        return bool(
-+            capture_state["active"]
-+            or capture_state["priority_queue"]
++            capture_state["priority_queue"]
 +            or capture_state["queue"]
 +            or time.monotonic() >= capture_state["next_at"]
 +        )

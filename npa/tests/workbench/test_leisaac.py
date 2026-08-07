@@ -503,8 +503,11 @@ def test_observability_patch_is_exact_and_records_real_upstream_input() -> None:
     assert "NPA_LEISAAC_READY_PATH" in source
     assert "NPA_LEISAAC_BROWSER_TELEOP" in source
     assert "capture_viewport_to_buffer" in source
-    assert 'image.save(temporary, format="JPEG", quality=82, optimize=True)' in source
+    assert 'image.save(encoded, format="JPEG", quality=82, optimize=True)' in source
     assert "optimize=False" not in source
+    assert "rgba=bytes(content.contents)" in source
+    assert "await asyncio.to_thread(" in source
+    assert "encode_and_publish_capture" in source
     assert 'str(applied.get("event") or "") == "release"' in source
     assert 'source_queue.pop(0)' in source
     assert 'if capture_state["active"]:' in source
@@ -520,7 +523,7 @@ def test_observability_patch_is_exact_and_records_real_upstream_input() -> None:
     assert 'capture_state["queue"].clear()' in source
     assert 'capture_state["priority_queue"]' in source
     assert source.count("idle_background_capture_fps = 2.5") == 1
-    assert source.count("active_background_capture_fps = 2.0") == 1
+    assert source.count("active_background_capture_fps = 2.5") == 1
     assert 'capture_state["last_causal_at"] = causal_at' in source
     assert (
         'capture_state["next_at"] = causal_at + background_capture_interval()'
@@ -529,11 +532,12 @@ def test_observability_patch_is_exact_and_records_real_upstream_input() -> None:
     assert (
         'if str(applied.get("event") or "") == "release":\n'
         '+            capture_state["next_at"] = causal_at + background_capture_interval()\n'
+        '+            return\n'
         '+        # A causal pair supersedes background work'
         in source
     )
     assert "time.monotonic() + background_capture_interval()" in source
-    assert '"causal_action_sequence": causal_action_sequence' in source
+    assert '"causal_action_sequence": capture_result["causal_action_sequence"]' in source
     assert "mark_remote_step_applied(sim_step)" in source
     assert "asyncio.ensure_future" in source
     assert "create_viewport_window" not in source
