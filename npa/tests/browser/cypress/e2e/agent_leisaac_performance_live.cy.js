@@ -490,29 +490,78 @@ function frameStageSummary(frames) {
 
       cy.window()
         .its("__NPA_LEISAAC_PERFORMANCE__")
-        .then((benchmark) => cy.writeFile(output, benchmark, { log: false }).then(() => {
-          if (phase !== "optimized") return;
-          if (benchmark.transport.video !== "websocket-v1") {
-            throw new Error(
-              `optimized benchmark requires the measured bounded WebSocket path, got ${benchmark.transport.video || "none"}`,
-            );
+        .then((benchmark) => {
+          if (phase === "optimized") {
+            const primary = benchmark.summary.primary_input_to_causal_frame_painted_ms;
+            benchmark.comparison = {
+              baseline_p50_ms: baselineP50,
+              baseline_p95_ms: baselineP95,
+              optimized_p50_ms: primary.p50,
+              optimized_p95_ms: primary.p95,
+              p50_speedup: baselineP50 / primary.p50,
+              p95_speedup: baselineP95 / primary.p95,
+            };
           }
-          if (benchmark.transport.control !== "websocket-v1") {
-            throw new Error(
-              `optimized benchmark requires the measured same-origin WebSocket control path, got ${benchmark.transport.control || "none"}`,
-            );
-          }
-          if (!(baselineP50 > 0 && baselineP95 > 0)) {
-            throw new Error("optimized gate requires aggregate baseline p50 and p95");
-          }
+          return cy.writeFile(output, benchmark, { log: false }).then(() => {
+            if (phase !== "optimized") return benchmark;
+            if (benchmark.transport.video !== "websocket-v1") {
+              throw new Error(
+                `optimized benchmark requires the measured bounded WebSocket path, got ${benchmark.transport.video || "none"}`,
+              );
+            }
+            if (benchmark.transport.control !== "websocket-v1") {
+              throw new Error(
+                `optimized benchmark requires the measured same-origin WebSocket control path, got ${benchmark.transport.control || "none"}`,
+              );
+            }
+            if (!(baselineP50 > 0 && baselineP95 > 0)) {
+              throw new Error("optimized gate requires aggregate baseline p50 and p95");
+            }
+            const primary = benchmark.summary.primary_input_to_causal_frame_painted_ms;
+            if (!(primary.p50 <= baselineP50 / 2 && primary.p95 <= baselineP95 / 2)) {
+              throw new Error(
+                `2x gate failed: p50 ${primary.p50} > ${baselineP50 / 2} or ` +
+                `p95 ${primary.p95} > ${baselineP95 / 2}`,
+              );
+            }
+            return benchmark;
+          });
+        })
+        .then((benchmark) => {
           const primary = benchmark.summary.primary_input_to_causal_frame_painted_ms;
-          if (!(primary.p50 <= baselineP50 / 2 && primary.p95 <= baselineP95 / 2)) {
-            throw new Error(
-              `2x gate failed: p50 ${primary.p50} > ${baselineP50 / 2} or ` +
-              `p95 ${primary.p95} > ${baselineP95 / 2}`,
-            );
-          }
-        }));
+          const comparison = benchmark.comparison || {};
+          return cy.document().then((document) => {
+            const previous = document.getElementById("leisaacBenchmarkProof");
+            if (previous) previous.remove();
+            const proof = document.createElement("section");
+            proof.id = "leisaacBenchmarkProof";
+            proof.setAttribute("aria-label", "LeIsaac real-browser latency benchmark proof");
+            proof.style.cssText = [
+              "position:fixed", "right:18px", "bottom:18px", "z-index:2147483647",
+              "max-width:520px", "padding:14px 16px", "border:2px solid #3ddc97",
+              "border-radius:10px", "background:rgba(7,18,27,.96)", "color:#f4fbff",
+              "font:13px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace",
+              "box-shadow:0 10px 32px rgba(0,0,0,.45)",
+            ].join(";");
+            proof.textContent = phase === "optimized"
+              ? `Real RTX browser benchmark · trial ${trial + 1} · n=${primary.n}\n` +
+                `input→causal-frame-painted p50 ${primary.p50.toFixed(2)} ms ` +
+                `(${comparison.p50_speedup.toFixed(2)}×; baseline ${baselineP50.toFixed(2)} ms)\n` +
+                `p95 ${primary.p95.toFixed(2)} ms ` +
+                `(${comparison.p95_speedup.toFixed(2)}×; baseline ${baselineP95.toFixed(2)} ms)\n` +
+                `${benchmark.quality.workspace.width}×${benchmark.quality.workspace.height} q82 · ` +
+                `two distinct viewports · ${benchmark.transport.control}/${benchmark.transport.video}`
+              : `Real RTX browser profile · ${phase} · n=${primary.n}\n` +
+                `input→causal-frame-painted p50 ${primary.p50.toFixed(2)} ms · ` +
+                `p95 ${primary.p95.toFixed(2)} ms`;
+            document.body.appendChild(proof);
+            return benchmark;
+          });
+        });
+      cy.get(".leisaac-live-grid").scrollIntoView();
+      cy.screenshot(`leisaac-performance-proof-${phase}-trial-${trial + 1}`, {
+        capture: "viewport",
+      });
     });
   },
 );

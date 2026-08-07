@@ -50,16 +50,17 @@ the response through HTTPS. The service reports accepted inputs separately
 from inputs consumed by upstream `SO101Keyboard`, so live validation proves
 that controls reached the simulator rather than only the public API.
 
-The preferred control path is a TURN-only, reliable ordered WebRTC data channel
-negotiated by an authenticated same-origin no-store SDP POST. The existing
-control WebSocket remains the tested fallback; both terminate in the same
-runtime sequence ledger, applied-ack service, and cancellation-safe disconnect
-release transaction. Full-quality dual-camera JPEG stays on the independent
-bounded binary WebSocket because real profiling showed large SCTP messages
-were slower over TURN. Direct SO-101 actions for a real browser gamepad or a
-custom action source use the same control path. It is not a raw public device
-port: HTTPS authentication, a run/client-bound session, bounded messages,
-reconnect handling, and accepted/applied acknowledgements still apply. The
+The measured public profile uses an authenticated same-origin WebSocket for
+reliable ordered control and an independent bounded binary WebSocket for
+full-quality dual-camera JPEG. Real profiling rejected both full-quality JPEG
+and small reliable controls over this deployment's TURN route; those optional
+WebRTC data-channel endpoints remain compatibility surfaces, not the preferred
+path. Every control adapter terminates in the same runtime sequence ledger,
+applied-ack service, and cancellation-safe disconnect-release transaction.
+Direct SO-101 actions for a real browser gamepad or a custom action source use
+that same path. It is not a raw public device port: HTTPS authentication, a
+run/client-bound session, bounded messages, reconnect handling, and
+accepted/applied acknowledgements still apply. The
 exact action message is:
 
 ```json
@@ -83,7 +84,7 @@ are rejected. The simulator consumes a direct action once, clears it, and emits
 the existing simulator-step application acknowledgement. This keeps a lost
 release or disconnected custom source from leaving persistent motion.
 
-The older WebRTC path remains available as a compatibility transport. In that
+The NVIDIA livestream WebRTC path remains available as a compatibility transport. In that
 mode, the no-store status response includes one derived session-scoped TURN
 credential, signaling uses `/api/leisaac/signal`, and the hash-pinned NVIDIA
 browser client is proxied through an authenticated route.
@@ -149,18 +150,22 @@ inside upstream `SO101Keyboard`, applies each press for eight simulation steps,
 and records the consumed-input count separately. Browser teleoperation uses
 the RTX viewport rather than policy camera tensors, so the same patch removes
 the two unused tiled-camera sensors, their observation terms, and the now-unused
-front-camera randomizer to avoid Isaac's camera/DirectGpu interoperability fault on
-`sm_120`. Physics for this single interactive environment runs on CPU because
-Isaac Sim 5.1 does not ship `sm_120` PhysX kernels; the real environment, RTX
-rendering, viewport capture, and JPEG production remain active on the selected
-RT-core GPU. The browser path disables Isaac Lab Fabric so CPU PhysX synchronizes through the
-supported USD I/O path. It also disables Isaac Lab's texture-loading wait: the
+front-camera randomizer to avoid unnecessary camera/DirectGpu work on `sm_120`.
+Physics for this single interactive environment runs on `cuda:0` with Fabric,
+and RTX rendering, viewport capture, and JPEG production remain active on the
+selected RT-core GPU. After environment construction, browser mode raises Isaac
+Lab's steady-state render interval and makes the 60 Hz rate limiter sleep
+without its upstream unconditional render side effect. Explicit renders remain
+immediate whenever a background or causal capture is due, so control cadence is
+independent of idle rendering without changing physics cadence. The browser
+path also disables Isaac Lab's texture-loading wait: the
 headless session uses the active viewport rather than RTX camera observations,
 and the default asset-loading loop does not terminate reliably on this path.
 The pod requests 16 CPU cores and may use up to 32 so
 the USD-backed first reset is not throttled by the previous eight-core limit. The
-runtime creates a second labeled Kit viewport backed by a dedicated camera.
-Both callbacks use one capture-group identity, so the recorder commits a frame
+runtime alternates two camera paths through one fully awaited Kit viewport;
+this avoids unsafe concurrent shared-renderer capture while preserving two
+real, distinct views. Both callbacks use one capture-group identity, so the recorder commits a frame
 only after both camera JPEGs exist. The public binary envelope identifies the
 camera without base64, the relay alternates bounded latest values so one camera
 cannot starve the other, and drag/touch/wheel orbit commands update only the

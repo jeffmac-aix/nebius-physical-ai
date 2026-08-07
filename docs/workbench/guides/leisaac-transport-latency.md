@@ -46,7 +46,8 @@ monotonic stage timestamps and frame identity so its after trial is more precise
 
 ## Design
 
-The preferred path separates reliable control from partial-reliability video:
+The measured public RTX path uses two independent, authenticated, same-origin
+WebSockets so video backpressure cannot delay reliable controls:
 
 - `control`: bounded JSON messages with a random per-page client ID, monotonic
   sequence, press/release event, client monotonic/wall timestamps, and separate
@@ -55,22 +56,15 @@ The preferred path separates reliable control from partial-reliability video:
   controls on disconnect. The same ledger accepts an exact eight-value direct
   SO-101 action for browser gamepads and the declarative custom-device contract;
   video and S3 work never share its socket or queue.
-- `video`: an unordered WebRTC data channel (`ordered: false`,
-  `maxRetransmits: 0`) carries a 128-byte binary envelope followed by JPEG
-  bytes. It carries frame
+- `video`: a bounded binary WebSocket carries a 128-byte envelope followed by
+  JPEG bytes. It carries frame
   sequence, capture/encode wall and monotonic timestamps, runtime/agent stage
-  timestamps, byte length, drop count, and SHA-256. The authenticated offer is
-  relayed over the existing private HTTP backhaul to an aiortc peer inside the
-  simulator pod. The browser is TURN-only, so coturn relays to that private peer
-  without a new public port. Runtime one-slot publishers are pulled only when
-  the SCTP buffered amount has room; SCTP loss abandons a stale independently
-  decodable JPEG instead of head-of-line blocking a newer causal frame. The
-  browser retains one replaceable decode candidate per camera and skips a
-  decoded frame only if a newer candidate for that camera arrived before paint.
-  A one-bit flag routes workspace and overview to separate canvases, and fair
-  runtime selection prevents one viewport from starving the other. The binary
-  WebSocket video relay remains the first compatibility fallback and retains
-  its bounded credit/latest-value behavior.
+  timestamps, byte length, drop count, and SHA-256. Runtime and agent relays
+  each retain only the latest bounded value per camera and credit receipt before
+  accepting another frame. The browser retains one replaceable decode candidate
+  per camera and skips a decoded frame only if a newer candidate for that camera
+  arrived before paint. A one-bit flag routes workspace and overview to separate
+  canvases, and fair selection prevents one viewport from starving the other.
 
 FastAPI routes remain adapters. Ordering, message/frame limits, binary framing,
 backpressure, and counters live in the shared `leisaac_transport` module shipped
@@ -78,14 +72,23 @@ to both the agent and runtime. File reads, simulator input writes, applied-ack
 scans, storage discovery, health calls, and recorder operations cross an async
 thread boundary instead of blocking an ASGI event loop.
 
-The browser first tries reliable WebSocket control plus WebRTC video. If the
-authenticated offer, TURN allocation, DTLS/SCTP association, or message-size
-contract fails, it reconnects the control ledger with binary WebSocket video;
-after bounded preferred retries it shows an explicit `JPEG polling · fallback`
-indicator. Reconnect retains sequence state, resends only idempotent
+The browser uses reliable WebSocket control plus binary WebSocket video for the
+measured public profile. The optional authenticated WebRTC data-channel routes
+remain available for compatibility experiments, but real full-quality JPEG and
+control trials over this deployment's TURN path were slower. If the WebSocket
+contract fails, the UI uses an explicit `JPEG polling · fallback` indicator.
+Reconnect retains sequence state, resends only idempotent
 unacknowledged controls, and uses application ping/pong samples to estimate
 clock offset and uncertainty. The HTTP frame/input routes remain authenticated
 and tested.
+
+The simulator keeps the 60 Hz real-time limiter, CUDA PhysX, Fabric, full
+1280×720 quality-82 capture, and explicit rendering for every due background or
+causal frame. Browser mode removes the unused policy camera tensors, raises the
+steady-state Isaac Lab `render_interval` only after environment construction,
+and disables the rate limiter's redundant render side effect. Thus control and
+physics do not pay for an idle viewport render, while the first post-apply
+workspace/overview capture still advances the real renderer immediately.
 
 Security properties:
 
@@ -104,8 +107,8 @@ Security properties:
   and matching runtime health;
 - the runtime requires its per-session nonce, exact run ID, and exact
   subprotocol or offer schema; it is not an arbitrary upstream proxy;
-- WebRTC video is TURN-only in the browser, the peer stays in the private GPU
-  pod, and the image exposes no additional port;
+- compatibility WebRTC data channels are TURN-only in the browser, the peer
+  stays in the private GPU pod, and the image exposes no additional port;
 - Uvicorn and the shared parser bound message/frame size and queue depth;
 - metrics contain only fixed counter names and no run/client/secret labels.
 
@@ -145,9 +148,9 @@ Security properties:
 - [MDN `createDataChannel`](https://developer.mozilla.org/en-US/docs/Web/API/RTCPeerConnection/createDataChannel),
   [`maxRetransmits`](https://developer.mozilla.org/en-US/docs/Web/API/RTCDataChannel/maxRetransmits),
   [aiortc API](https://aiortc.readthedocs.io/en/latest/api.html), and the
-  [W3C WebRTC recommendation](https://www.w3.org/TR/webrtc/): use an unordered,
-  zero-retransmit video-only channel while keeping control acknowledgements on
-  the reliable ordered WebSocket and recorder tracks outside the media path.
+  [W3C WebRTC recommendation](https://www.w3.org/TR/webrtc/): the evaluated
+  compatibility route can bound SCTP reliability independently from control,
+  but the measured TURN path is not selected merely because it is UDP-based.
 - [FFmpeg format options](https://ffmpeg.org/ffmpeg-formats.html) and
   [libjpeg-turbo documentation](https://libjpeg-turbo.org/Documentation/Documentation):
   use MP4 `+faststart` for Range-based episode playback and the system's
@@ -161,6 +164,10 @@ Security properties:
   and [browser high-resolution time](https://developer.mozilla.org/en-US/docs/Web/API/Performance_API/High_precision_timing):
   calculate same-host intervals with monotonic clocks; report an explicit
   offset/RTT uncertainty when comparing wall clocks across machines.
+- [Isaac Lab `SimulationCfg`](https://isaac-sim.github.io/IsaacLab/main/source/api/lab/isaaclab.sim.html#isaaclab.sim.SimulationCfg)
+  and [AppLauncher](https://isaac-sim.github.io/IsaacLab/main/source/api/lab/isaaclab.app.html):
+  use the supported `cuda:0` device, preserve camera-enabled initialization,
+  and change the render interval only after the environment has initialized.
 
 The bottleneck attribution and split control/video transports are measured design
 inferences. The cited sources establish protocol/runtime behavior, not the
