@@ -172,7 +172,7 @@ CLIENT_SOURCE_JS_SHA256 = (
 )
 CLIENT_JS_SHA256 = CLIENT_SOURCE_JS_SHA256
 UPSTREAM_OBSERVABILITY_PATCH_SHA256 = (
-    "5b62e660c1dec4a9ac36c06588edb3d9f164c4490d248d1a4288538137a0d532"
+    "d6badbd64e9522c397ed52d163f35c5b873d4abf1b008c07283adca35fad7b9d"
 )
 
 CACHE_ROOT = Path(os.environ.get("NPA_LEISAAC_CACHE_DIR", "/opt/leisaac-cache"))
@@ -630,7 +630,7 @@ def _simulation_launch() -> tuple[list[str], dict[str, str]]:
         f"--teleop_device={TELEOP_DEVICE}",
         f"--num_envs={NUM_ENVS}",
         f"--seed={TELEOP_SEED}",
-        "--device=cpu",
+        "--device=cuda:0",
         "--enable_cameras",
         "--kit_args="
         + " ".join(

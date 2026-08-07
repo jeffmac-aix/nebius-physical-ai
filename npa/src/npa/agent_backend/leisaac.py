@@ -618,7 +618,9 @@ def status_payload(
         "client_module_url": f"{LEISAAC_CLIENT_MODULE_PATH}?run_id={run_id}",
         "stream_transport": health.get("stream_transport", "webrtc"),
         "preferred_transport": "websocket-v1",
-        "preferred_control_transport": "webrtc-datachannel-v1",
+        # Public RTX profiles put relay-only RTC control ingress behind the
+        # same-origin WebSocket relay. Keep RTC available, but select measured.
+        "preferred_control_transport": "websocket-v1",
         "control_ws_url": f"{LEISAAC_CONTROL_WS_PATH}?run_id={run_id}",
         "control_datachannel_url": LEISAAC_CONTROL_DATACHANNEL_PATH,
         "video_ws_url": f"{LEISAAC_VIDEO_WS_PATH}?run_id={run_id}",
