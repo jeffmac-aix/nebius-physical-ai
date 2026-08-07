@@ -1184,6 +1184,10 @@ async def _serve_control_protocol(
                     )
                     continue
                 if message["type"] == "resume":
+                    # Reconnects may follow a disconnect release whose simulator
+                    # acknowledgement landed after the prior socket's sender was
+                    # cancelled. Ingest the durable log before reporting state.
+                    await asyncio.to_thread(_scan_applied_acks)
                     response = CONTROL_LEDGER.resume(str(message["client_id"]))
                     response["run_id"] = run_id
                     response["client_mono_ns"] = str(message["client_mono_ns"])

@@ -782,6 +782,43 @@ def test_runtime_abrupt_client_close_durably_releases_every_held_control(
         (5, "D", "release"),
         (6, "W", "release"),
     ]
+    runtime.APPLIED_ACK_PATH.write_text(
+        "".join(
+            json.dumps(
+                {
+                    **record,
+                    "simulator_applied_mono_ns": str(700 + record["seq"]),
+                    "simulator_applied_wall_ns": str(800 + record["seq"]),
+                    "simulator_step": 9 + record["seq"],
+                }
+            )
+            + "\n"
+            for record in records
+        ),
+        encoding="utf-8",
+    )
+    with TestClient(runtime.build_app()) as client:
+        with client.websocket_connect(
+            "/transport/control",
+            headers=_runtime_headers(),
+            subprotocols=[CONTROL_SUBPROTOCOL],
+        ) as websocket:
+            websocket.send_json(
+                {
+                    "v": 1,
+                    "type": "resume",
+                    "run_id": RUN_ID,
+                    "client_id": "browser-test",
+                    "last_acked_seq": 3,
+                    "keys_down": ["W", "A", "D"],
+                    "client_mono_ns": 10,
+                    "client_wall_ns": 11,
+                }
+            )
+            resumed = websocket.receive_json()
+            assert resumed["next_seq"] == 7
+            assert resumed["last_applied_seq"] == 6
+            assert resumed["keys_down"] == []
 
 
 def test_runtime_reliable_datachannel_uses_shared_ordering_and_disconnect_release(
