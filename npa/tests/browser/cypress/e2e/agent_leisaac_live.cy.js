@@ -450,7 +450,9 @@ function recordEpisode(outcome, episodeNumber, completedBefore) {
         );
         expect(status.input_url).to.match(/^\/api\/leisaac\/input\?run_id=/);
         expect(status.gpu).to.contain("RTX PRO 6000");
-        expect(status.frame_bytes).to.be.greaterThan(10000);
+        expect(status.frame_bytes, "substantive JPEG payload").to.be.greaterThan(
+          1024,
+        );
         win.__LEISAAC_INITIAL_STATUS__ = status;
       });
 
@@ -472,6 +474,35 @@ function recordEpisode(outcome, episodeNumber, completedBefore) {
         .and(($canvas) => {
           expect($canvas[0].width, "decoded frame width").to.be.greaterThan(640);
           expect($canvas[0].height, "decoded frame height").to.be.greaterThan(360);
+          const context = $canvas[0].getContext("2d", {
+            willReadFrequently: true,
+          });
+          const pixels = context.getImageData(
+            0,
+            0,
+            $canvas[0].width,
+            $canvas[0].height,
+          ).data;
+          let minimum = 255;
+          let maximum = 0;
+          for (let index = 0; index < pixels.length; index += 16) {
+            minimum = Math.min(
+              minimum,
+              pixels[index],
+              pixels[index + 1],
+              pixels[index + 2],
+            );
+            maximum = Math.max(
+              maximum,
+              pixels[index],
+              pixels[index + 1],
+              pixels[index + 2],
+            );
+          }
+          expect(
+            maximum - minimum,
+            "nonblank real rendered pixels",
+          ).to.be.greaterThan(24);
         });
       cy.get("#leisaacSecondaryHost").should("not.be.visible");
       cy.window().then((win) => {
