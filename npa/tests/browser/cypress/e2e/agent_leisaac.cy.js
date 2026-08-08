@@ -23,6 +23,27 @@ const defaultLeIsaacConfiguration = () => ({
   custom_bundle_count: 0,
 });
 
+const leisaacModeStatus = (viewMode = "single_fast", recordingMode = "primary_only") => ({
+  view_mode_contract: {
+    default: "single_fast",
+    values: ["single_fast", "dual_slow"],
+    labels: { single_fast: "Fast single", dual_slow: "Dual view — slower" },
+  },
+  recording_camera_contract: {
+    default: "primary_only",
+    values: ["primary_only", "primary_and_secondary"],
+    labels: { primary_only: "Primary only", primary_and_secondary: "Primary + secondary" },
+  },
+  requested_view_mode: viewMode,
+  applied_view_mode: viewMode,
+  requested_recording_camera_mode: recordingMode,
+  applied_recording_camera_mode: recordingMode,
+  view_revision: 0,
+  applied_view_revision: 0,
+  recording_revision: 0,
+  applied_recording_revision: 0,
+});
+
 describe("NPA agent LeIsaac capability tab", () => {
   beforeEach(() => {
     cy.intercept("POST", "/api/leisaac/ws-session*", {
@@ -61,7 +82,8 @@ describe("NPA agent LeIsaac capability tab", () => {
       environment_index: 0,
       seed: 42,
       dataset_uri: "s3://bucket/datasets/leisaac",
-      cameras: ["workspace", "overview"],
+      ...leisaacModeStatus(),
+      cameras: ["workspace"],
       stream_transport: "websocket-v1",
       control_ws_url: "/api/leisaac/transport/control?run_id=mock-run",
       video_ws_url: "/api/leisaac/transport/video?run_id=mock-run",
@@ -86,12 +108,17 @@ describe("NPA agent LeIsaac capability tab", () => {
     cy.get("#leisaacConnect").should("not.be.disabled");
     cy.get("#leisaacSendNeutralAction").should("not.be.disabled");
     cy.get("#leisaacCanvas").should("exist");
-    cy.get("#leisaacSecondaryCanvas").should("exist");
+    cy.get("#leisaacViewMode").should("have.value", "single_fast");
+    cy.get("#leisaacLiveGrid").should("have.class", "is-single");
+    cy.get("#leisaacStreamHost").should("have.attr", "data-orbit-bound", "1");
+    cy.get("#leisaacSecondaryHost").should("not.be.visible");
+    cy.get("#leisaacSecondaryFrame").should("not.have.attr", "src");
+    cy.get("#leisaacModeWarning").should("contain.text", "no secondary capture");
     cy.get("#panelLeIsaac").then(($panel) => {
       cy.window().then((win) => win.__NPA_AGENT_TEST__.refreshLeIsaacCapability("mock-run"));
       cy.wait("@defaultStatus");
       cy.get("#panelLeIsaac").then(($refreshed) => {
-        expect($refreshed[0], "same dual-viewport panel survives polling").to.equal($panel[0]);
+        expect($refreshed[0], "same single-viewport panel survives polling").to.equal($panel[0]);
       });
     });
   });
@@ -685,6 +712,7 @@ describe("NPA agent LeIsaac capability tab", () => {
       environment_id: "latency-test",
       environment_index: 2,
       seed: 47,
+      ...leisaacModeStatus("dual_slow"),
       stream_transport: "websocket-v1",
       preferred_transport: "websocket-v1",
       preferred_control_transport: "webrtc-datachannel-v1",
@@ -842,6 +870,7 @@ describe("NPA agent LeIsaac capability tab", () => {
       environment_id: "latency-test",
       environment_index: 2,
       seed: 47,
+      ...leisaacModeStatus("dual_slow"),
       stream_transport: "websocket-v1",
       preferred_transport: "websocket-v1",
       control_ws_url: "/api/leisaac/transport/control?run_id=mock-websocket",
@@ -877,7 +906,7 @@ describe("NPA agent LeIsaac capability tab", () => {
     });
     cy.intercept("POST", "/api/leisaac/view?run_id=mock-websocket", (req) => {
       expect(req.headers["x-npa-leisaac-control"]).to.equal("1");
-      expect(req.body.camera).to.equal("overview");
+      expect(req.body.camera).to.equal("workspace");
       expect(req.body.sequence).to.be.greaterThan(0);
       expect(Math.abs(req.body.distance_delta)).to.be.at.most(1);
       req.reply({ statusCode: 202, body: { accepted: true, sequence: req.body.sequence } });
@@ -897,13 +926,13 @@ describe("NPA agent LeIsaac capability tab", () => {
       const sockets = [];
       const encodeFrame = () => {
         const jpeg = new win.Uint8Array([0xff, 0xd8, 1, 2, 3, 4, 0xff, 0xd9]);
-        const payload = new win.ArrayBuffer(128 + jpeg.length);
+        const payload = new win.ArrayBuffer(136 + jpeg.length);
         const view = new win.DataView(payload);
         [0x4e, 0x50, 0x41, 0x46].forEach((value, index) =>
           view.setUint8(index, value),
         );
-        view.setUint8(4, 2);
-        view.setUint16(6, 128, false);
+        view.setUint8(4, 3);
+        view.setUint16(6, 136, false);
         frameSequence += 1;
         view.setUint8(5, frameSequence % 2 === 0 ? 1 : 0);
         view.setBigUint64(8, BigInt(frameSequence), false);
@@ -916,9 +945,10 @@ describe("NPA agent LeIsaac capability tab", () => {
         view.setBigUint64(64, 700n, false);
         view.setBigUint64(72, BigInt(frameSequence), false);
         view.setBigUint64(80, 650n, false);
-        view.setUint32(88, jpeg.length, false);
-        view.setUint32(92, Math.max(0, frameSequence - 1), false);
-        new win.Uint8Array(payload, 128).set(jpeg);
+        view.setBigUint64(88, BigInt(frameSequence), false);
+        view.setUint32(96, jpeg.length, false);
+        view.setUint32(100, Math.max(0, frameSequence - 1), false);
+        new win.Uint8Array(payload, 136).set(jpeg);
         return payload;
       };
       class FakeWebSocket {
@@ -993,6 +1023,29 @@ describe("NPA agent LeIsaac capability tab", () => {
               client_id: message.client_id,
               released_count: 0,
             };
+          } else if (message.type === "view-mode" || message.type === "recording-cameras") {
+            response = { ...message, type: "ack", request_type: message.type, phase: "accepted" };
+            win.setTimeout(() => {
+              if (this.onmessage) this.onmessage({ data: JSON.stringify({
+                ...message,
+                type: "ack",
+                request_type: message.type,
+                phase: "applied",
+                mode_transition_ms: 2,
+              }) });
+            }, 2);
+            if (message.type === "view-mode" && message.mode === "single_fast") {
+              win.setTimeout(() => {
+                if (this.onmessage) this.onmessage({ data: JSON.stringify({
+                  ...message,
+                  type: "ack",
+                  request_type: message.type,
+                  phase: "applied",
+                  revision: message.revision - 1,
+                  mode: "dual_slow",
+                }) });
+              }, 5);
+            }
           }
           if (response)
             win.setTimeout(
@@ -1121,9 +1174,23 @@ describe("NPA agent LeIsaac capability tab", () => {
     cy.window().should((win) => {
       expect(win.__LEISAAC_BITMAP_CLOSES__()).to.be.at.least(3);
     });
-    cy.get("#leisaacSecondaryHost").trigger("wheel", { deltaY: 120 });
+    cy.get("#leisaacStreamHost").trigger("wheel", { deltaY: 120 });
     cy.wait("@viewOrbit");
-    cy.get("#leisaacSecondaryStatus").should("contain.text", "rotation");
+    cy.get("#leisaacStreamHost").should("have.attr", "data-orbit-bound", "1");
+    cy.get("#panelLeIsaac").then(($panel) => {
+      cy.get("#leisaacViewMode").select("single_fast");
+      cy.get("#leisaacLiveGrid").should("have.class", "is-single");
+      cy.get("#leisaacSecondaryHost").should("not.be.visible");
+      cy.get("#leisaacViewMode").should("have.value", "single_fast");
+      cy.get("#leisaacModeStatus", { timeout: 12000 })
+        .should("contain.text", "Applied view")
+        .and("contain.text", "Fast single");
+      cy.get("#panelLeIsaac").then(($samePanel) => {
+        expect($samePanel[0], "mode switch does not remount the tab").to.equal($panel[0]);
+      });
+      cy.get("#leisaacRecordingCameras").select("primary_and_secondary");
+      cy.get("#leisaacModeWarning").should("contain.text", "reduces Fast single performance");
+    });
     cy.get("#leisaacStreamStatus").should(
       "contain.text",
       "keyboard teleoperation active",
@@ -1164,6 +1231,7 @@ describe("NPA agent LeIsaac capability tab", () => {
       }, 0);
       expect(evidence.dropped_frames).to.equal(expectedDrops);
       expect(evidence.frames.some((frame) => frame.causal_action_sequence > 0)).to.equal(true);
+      expect(evidence.frames.some((frame) => frame.view_revision > 0)).to.equal(true);
     });
     cy.window().then((win) => {
       const host = win.document.getElementById("leisaacStreamHost");

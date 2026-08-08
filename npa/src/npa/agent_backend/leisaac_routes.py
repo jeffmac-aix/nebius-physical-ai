@@ -1632,7 +1632,7 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
         if (
             not exact
             or not isinstance(payload, dict)
-            or payload.get("camera") != "overview"
+            or payload.get("camera") != "workspace"
             or not 1 <= sequence <= 2**53 - 1
             or len(values) != 3
             or not all(math.isfinite(value) for value in values)
@@ -2092,6 +2092,7 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
                         )
                         transport_metrics.increment("frames_relay_acked")
                         camera = "overview" if envelope.flags & 1 else "workspace"
+                        transport_metrics.increment(f"{camera}_frames_relayed")
                         await latest.publish(
                             camera, (envelope, content, time.monotonic_ns())
                         )
@@ -2145,6 +2146,7 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
                             transport_metrics.increment("slow_client_disconnects")
                             raise
                         transport_metrics.increment("frames_sent")
+                        transport_metrics.increment(f"{camera}_frames_sent")
 
                 tasks = {
                     asyncio.create_task(read_runtime()),

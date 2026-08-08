@@ -26,11 +26,15 @@ from npa.agent_backend.leisaac_transport import (
     AsyncLatestValue,
     CONTROL_SUBPROTOCOL,
     ControlLedger,
+    DEFAULT_RECORDING_CAMERA_MODE,
+    DEFAULT_VIEW_MODE,
     FrameEnvelope,
     MAX_CONTROL_MESSAGE_BYTES,
     TransportMetrics,
     TransportProtocolError,
     VIDEO_SUBPROTOCOL,
+    RecordingCameraMode,
+    ViewMode,
     pack_frame,
     parse_control_message,
     parse_video_ack,
@@ -88,10 +92,182 @@ def test_control_messages_are_bounded_and_exactly_scoped() -> None:
             )
         assert exc_info.value.code == code
 
+
+def test_authoritative_view_mode_defaults_and_exact_parser() -> None:
+    assert DEFAULT_VIEW_MODE is ViewMode.SINGLE_FAST
+    assert DEFAULT_RECORDING_CAMERA_MODE is RecordingCameraMode.PRIMARY_ONLY
+    base = {
+        "v": 1,
+        "type": "view-mode",
+        "run_id": RUN_ID,
+        "client_id": "browser-test",
+        "revision": 7,
+        "mode": ViewMode.DUAL_SLOW.value,
+        "client_mono_ns": 100,
+        "client_wall_ns": 200,
+    }
+    parsed = parse_control_message(json.dumps(base), expected_run_id=RUN_ID)
+    assert parsed["mode"] == ViewMode.DUAL_SLOW.value
+    assert parsed["revision"] == 7
+    for mutation in (
+        {**base, "mode": "fast-ish"},
+        {**base, "observer": True},
+        {**base, "revision": -1},
+    ):
+        with pytest.raises(TransportProtocolError, match="invalid"):
+            parse_control_message(json.dumps(mutation), expected_run_id=RUN_ID)
+
+    recording = dict(base)
+    recording.update(
+        type="recording-cameras",
+        mode=RecordingCameraMode.PRIMARY_AND_SECONDARY.value,
+    )
+    assert parse_control_message(
+        json.dumps(recording), expected_run_id=RUN_ID
+    )["mode"] == RecordingCameraMode.PRIMARY_AND_SECONDARY.value
+
+
+def test_single_fast_reader_performs_zero_secondary_work(monkeypatch, tmp_path: Path) -> None:
+    runtime = _prepare_runtime(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        runtime, "_mode_state", lambda: {"applied_view_mode": "single_fast"}
+    )
+    reads: list[str] = []
+
+    def read(camera: str, *_args, **_kwargs):
+        reads.append(camera)
+        return ({"sequence": 1}, b"jpeg")
+
+    monkeypatch.setattr(runtime, "_read_consistent_frame", read)
+    frames = runtime._read_new_frames({}, {})
+    assert reads == ["workspace"]
+    assert [camera for camera, _metadata, _jpeg in frames] == ["workspace"]
+
+
+def test_mode_applied_ack_is_scheduler_bound_and_stale_requests_coalesce(
+    monkeypatch,
+) -> None:
+    runtime = _runtime_module()
+    requested = {
+        "v": 1,
+        "type": "view-mode",
+        "run_id": RUN_ID,
+        "client_id": "browser-test",
+        "revision": 8,
+        "mode": "dual_slow",
+    }
+    snapshots = iter(
+        [
+            {
+                "view_revision": 8,
+                "applied_view_revision": 7,
+                "applied_view_mode": "single_fast",
+            },
+            {
+                "view_revision": 8,
+                "applied_view_revision": 8,
+                "applied_view_mode": "dual_slow",
+                "mode_transition_latency_ms": 3.5,
+            },
+        ]
+    )
+    monkeypatch.setattr(runtime, "_mode_state", lambda: next(snapshots))
+    applied = asyncio.run(runtime._wait_for_mode_applied(requested))
+    assert applied["phase"] == "applied"
+    assert applied["mode_transition_latency_ms"] == 3.5
+
+    monkeypatch.setattr(
+        runtime,
+        "_mode_state",
+        lambda: {
+            "view_revision": 9,
+            "applied_view_revision": 7,
+            "applied_view_mode": "single_fast",
+        },
+    )
+    superseded = asyncio.run(runtime._wait_for_mode_applied(requested))
+    assert superseded["phase"] == "superseded"
+
     with pytest.raises(TransportProtocolError, match="size"):
         parse_control_message(
             b"{" + b"x" * MAX_CONTROL_MESSAGE_BYTES, expected_run_id=RUN_ID
         )
+
+
+def test_only_one_authenticated_control_transport_owns_mode_changes(
+    monkeypatch,
+) -> None:
+    runtime = _runtime_module()
+    monkeypatch.setenv("NPA_LEISAAC_RUN_ID", RUN_ID)
+    monkeypatch.setattr(runtime, "_queue_mode_request", lambda _message: None)
+    runtime.CONTROL_OWNER.update(token="", client_id="")
+
+    async def exercise() -> None:
+        first_queue: asyncio.Queue[str] = asyncio.Queue()
+        second_queue: asyncio.Queue[str] = asyncio.Queue()
+        first_emitted: list[dict[str, object]] = []
+        second_emitted: list[dict[str, object]] = []
+        first_ready = asyncio.Event()
+        second_ready = asyncio.Event()
+
+        async def first_receive() -> str:
+            return await first_queue.get()
+
+        async def second_receive() -> str:
+            return await second_queue.get()
+
+        async def first_emit(payload: dict[str, object]) -> None:
+            first_emitted.append(payload)
+            first_ready.set()
+
+        async def second_emit(payload: dict[str, object]) -> None:
+            second_emitted.append(payload)
+            second_ready.set()
+
+        first = asyncio.create_task(
+            runtime._serve_control_protocol(first_receive, first_emit)
+        )
+        await first_queue.put(
+            json.dumps(
+                {
+                    "v": 1,
+                    "type": "resume",
+                    "run_id": RUN_ID,
+                    "client_id": "active-controller",
+                    "last_acked_seq": 0,
+                    "client_mono_ns": 1,
+                    "client_wall_ns": 2,
+                }
+            )
+        )
+        await asyncio.wait_for(first_ready.wait(), timeout=1.0)
+        assert first_emitted[0]["type"] == "resumed"
+
+        second = asyncio.create_task(
+            runtime._serve_control_protocol(second_receive, second_emit)
+        )
+        await second_queue.put(
+            json.dumps(
+                {
+                    "v": 1,
+                    "type": "view-mode",
+                    "run_id": RUN_ID,
+                    "client_id": "observer",
+                    "revision": 1,
+                    "mode": "dual_slow",
+                    "client_mono_ns": 3,
+                    "client_wall_ns": 4,
+                }
+            )
+        )
+        await asyncio.wait_for(second_ready.wait(), timeout=1.0)
+        assert second_emitted[0]["code"] == "controller_busy"
+        assert runtime.CONTROL_OWNER["client_id"] == "active-controller"
+        first.cancel()
+        second.cancel()
+        await asyncio.gather(first, second, return_exceptions=True)
+
+    asyncio.run(exercise())
 
 
 def test_control_ledger_is_ordered_idempotent_and_recovers_state() -> None:
@@ -180,6 +356,7 @@ def test_binary_frame_envelope_round_trips_and_detects_tampering() -> None:
         runtime_send_monotonic_ns=104,
         causal_action_sequence=7,
         causal_applied_monotonic_ns=99,
+        view_revision=11,
         dropped_before=2,
     )
     packed = pack_frame(envelope, jpeg)
@@ -188,6 +365,7 @@ def test_binary_frame_envelope_round_trips_and_detects_tampering() -> None:
     assert decoded.sequence == 9
     assert decoded.causal_action_sequence == 7
     assert decoded.causal_applied_monotonic_ns == 99
+    assert decoded.view_revision == 11
     assert decoded.dropped_before == 2
     assert decoded.sha256 == hashlib.sha256(jpeg).digest()
 
@@ -238,7 +416,38 @@ def test_binary_frame_envelope_accepts_v1_as_zero_causal_compatibility() -> None
     assert envelope.sequence == 3
     assert envelope.causal_action_sequence == 0
     assert envelope.causal_applied_monotonic_ns == 0
+    assert envelope.view_revision == 0
     assert envelope.dropped_before == 2
+
+
+def test_binary_frame_envelope_accepts_v2_as_zero_view_revision() -> None:
+    jpeg = b"\xff\xd8v2-frame\xff\xd9"
+    legacy = struct.Struct("!4sBBHQQQQQQQQQQII32s").pack(
+        b"NPAF",
+        2,
+        0,
+        128,
+        4,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        len(jpeg),
+        0,
+        hashlib.sha256(jpeg).digest(),
+    ) + jpeg
+
+    envelope, content = unpack_frame(legacy)
+
+    assert content == jpeg
+    assert envelope.causal_action_sequence == 17
+    assert envelope.causal_applied_monotonic_ns == 18
+    assert envelope.view_revision == 0
 
 
 def test_verified_relay_stamps_a_frame_without_hashing_the_jpeg_twice(
@@ -555,6 +764,8 @@ def _prepare_runtime(monkeypatch, tmp_path: Path):
         "SECONDARY_FRAME_PATH": tmp_path / "frame-overview.jpg",
         "SECONDARY_FRAME_META_PATH": tmp_path / "frame-overview.json",
         "VIEW_COMMAND_PATH": tmp_path / "view-command.json",
+        "MODE_COMMAND_PATH": tmp_path / "mode-command.json",
+        "MODE_STATUS_PATH": tmp_path / "mode-status.json",
         "APPLIED_ACK_PATH": tmp_path / "applied.jsonl",
         "RECORDER_ROOT": tmp_path / "recorder",
         "RECORDER_STATUS_PATH": tmp_path / "recorder/status.json",
@@ -673,7 +884,10 @@ def test_runtime_control_ack_ordering_application_and_disconnect_cleanup(
                     "client_wall_ns": 2,
                 }
             )
-            assert websocket.receive_json()["next_seq"] == 1
+            resumed = websocket.receive_json()
+            assert resumed["next_seq"] == 1
+            assert resumed["view_revision"] == 0
+            assert resumed["recording_revision"] == 0
 
             websocket.send_json(_control(2))
             error = websocket.receive_json()
@@ -719,6 +933,9 @@ def test_runtime_control_ack_ordering_application_and_disconnect_cleanup(
         (4, "release"),
     ]
     assert [item["key"] for item in records] == ["W", "A", "A", "W"]
+    safe_mode = json.loads(runtime.MODE_COMMAND_PATH.read_text(encoding="utf-8"))
+    assert safe_mode["requested_view_mode"] == "single_fast"
+    assert safe_mode["view_revision"] == 1
 
 
 def test_runtime_disconnect_cleanup_is_idempotent_after_explicit_release_all(
@@ -1057,6 +1274,9 @@ def test_runtime_frame_watcher_remains_live_across_both_cameras(
     monkeypatch, tmp_path: Path
 ) -> None:
     runtime = _prepare_runtime(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        runtime, "_mode_state", lambda: {"applied_view_mode": "dual_slow"}
+    )
     publications: list[tuple[str, dict, bytes]] = []
     reads = [
         [("workspace", {"sequence": 1}, b"workspace-1")],
@@ -1090,7 +1310,10 @@ def test_runtime_frame_watcher_remains_live_across_both_cameras(
         "workspace",
         "overview",
     ]
-    assert runtime.TRANSPORT_METRICS.snapshot()["frames_published"] == 4
+    metrics = runtime.TRANSPORT_METRICS.snapshot()
+    assert metrics["frames_published"] == 4
+    assert metrics["workspace_frames_published"] == 2
+    assert metrics["overview_frames_published"] == 2
 
 
 def test_runtime_frame_reader_skips_unchanged_jpeg_integrity_work(
@@ -1158,13 +1381,16 @@ def test_runtime_secondary_camera_and_orbit_are_bounded_and_authenticated(
     monkeypatch, tmp_path: Path
 ) -> None:
     runtime = _prepare_runtime(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        runtime, "_mode_state", lambda: {"applied_view_mode": "dual_slow"}
+    )
     jpeg = b"\xff\xd8" + b"distinct-overview" * 30 + b"\xff\xd9"
     runtime.SECONDARY_FRAME_PATH.write_bytes(jpeg)
     runtime.SECONDARY_FRAME_META_PATH.write_text(
         json.dumps(
             {
                 "schema": "npa.leisaac.frame.v1",
-                "camera": "overview",
+                "camera": "workspace",
                 "sequence": 8,
                 "capture_wall_ns": 200,
                 "capture_monotonic_ns": 201,
@@ -1180,7 +1406,7 @@ def test_runtime_secondary_camera_and_orbit_are_bounded_and_authenticated(
         forbidden = client.post(
             "/view",
             json={
-                "camera": "overview",
+                "camera": "workspace",
                 "sequence": 1,
                 "yaw_delta": 0.1,
                 "pitch_delta": 0.1,
@@ -1192,7 +1418,7 @@ def test_runtime_secondary_camera_and_orbit_are_bounded_and_authenticated(
             "/view",
             headers={"x-npa-leisaac-nonce": NONCE},
             json={
-                "camera": "overview",
+                "camera": "workspace",
                 "sequence": 1,
                 "yaw_delta": 4,
                 "pitch_delta": 0,
@@ -1204,7 +1430,7 @@ def test_runtime_secondary_camera_and_orbit_are_bounded_and_authenticated(
             "/view",
             headers={"x-npa-leisaac-nonce": NONCE},
             json={
-                "camera": "overview",
+                "camera": "workspace",
                 "sequence": 2,
                 "yaw_delta": 0.1,
                 "pitch_delta": -0.2,

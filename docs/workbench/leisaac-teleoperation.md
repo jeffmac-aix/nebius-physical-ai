@@ -22,6 +22,27 @@ and upstream `SO101Keyboard` driven by the browser keyboard. The tab shows all
 four choices before any upload and labels the keyboard as the default test
 device. Built-ins are reported as runtime assets, never as uploaded S3 bundles.
 
+## Live view and recording modes
+
+The authoritative live-view modes are `single_fast` and `dual_slow`. A fresh
+session uses **Fast single**: one full-width, rotatable primary viewport on a
+stable Kit camera path. With the default **Primary only** recording schema this
+does not schedule, read back, encode, relay, decode, or paint secondary frames.
+**Dual view — slower** is an explicit opt-in. It serializes a distinct overview
+camera through the same fully awaited viewport, keeps causal primary work at
+higher priority, and bounds overview capture to 2.5 FPS. Mode requests are
+latest-value/coalesced and are acknowledged as applied only after active GPU
+capture and encoder work reach a safe boundary; changing modes does not restart
+Isaac, reset the task, alter camera orientation, or remount the tab.
+
+Display mode and episode schema are intentionally independent. Episodes may use
+`primary_only` or `primary_and_secondary`. The latter can keep overview capture
+active while Fast single remains displayed and is therefore labeled as a
+performance cost. Camera membership and both mode values are frozen in episode
+provenance when recording starts; changes take effect only while the recorder
+is idle. A primary-only episode contains one real track and never fabricates an
+overview track.
+
 Inspect the machine-readable source of truth with
 `npa workbench leisaac list-tasks --output json`. A session runs one environment
 at a time. `--num-envs` is intentionally restricted to `1`; collect named
@@ -151,7 +172,8 @@ unlicensed optional Feetech SDK used by physical leader hardware is not
 redistributed; an explicit packaging-only patch removes that dependency edge,
 and this browser service uses upstream's software keyboard path with a narrow,
 fail-safe integration patch that publishes readiness only after the real task
-reset and non-empty workspace and overview RTX frames. It drains a bounded, validated input queue
+reset and a non-empty primary RTX frame. Overview readiness is required only
+while the applied display or recording mode schedules that camera. It drains a bounded, validated input queue
 inside upstream `SO101Keyboard`, applies each press for eight simulation steps,
 and records the consumed-input count separately. Browser teleoperation uses
 the RTX viewport rather than policy camera tensors, so the same patch removes
@@ -169,20 +191,21 @@ headless session uses the active viewport rather than RTX camera observations,
 and the default asset-loading loop does not terminate reliably on this path.
 The pod requests 16 CPU cores and may use up to 32 so
 the USD-backed first reset is not throttled by the previous eight-core limit. The
-runtime alternates two camera paths through one fully awaited Kit viewport;
-this avoids unsafe concurrent shared-renderer capture while preserving two
-real, distinct views. Both callbacks use one capture-group identity, so the recorder commits a frame
-only after both camera JPEGs exist. The public binary envelope identifies the
-camera without base64, the relay alternates bounded latest values so one camera
-cannot starve the other, and drag/touch/wheel orbit commands update only the
-overview camera. Robot keys remain scoped to workspace focus. The
+runtime uses one stable primary camera and, only when requested, alternates the
+distinct overview path through the same fully awaited Kit viewport; this avoids
+unsafe concurrent shared-renderer capture while preserving two real views.
+Recorder capture groups wait only for the cameras frozen into that episode's
+schema. The public binary envelope identifies the camera without base64, and
+bounded latest values coalesce obsolete work. Drag/touch/wheel orbit commands
+update the interactive primary camera; robot keys remain scoped to its focus and
+orbit gestures never become robot actions. The
 session supervisor starts Kit in an isolated process session with closed stdin
 so HTTP-service signal handling cannot interfere with upstream teleoperation.
 The browser service uses the explicit launch seed (default `42`) and reports it
 with the stable environment identity in `/status` and every recorded frame.
 On a cold pod, liveness remains healthy while the supervised simulator process
 is alive, including during the licensed runtime fetch and first reset. Readiness
-and `/status` remain unavailable until the real reset and both non-empty captured
+and `/status` remain unavailable until the real reset and required non-empty
 camera frames are ready; a failed or exited simulator still fails liveness so
 Kubernetes can
 restart it while preserving the pod-local `emptyDir` caches.

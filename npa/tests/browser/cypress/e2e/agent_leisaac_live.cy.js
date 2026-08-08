@@ -110,14 +110,13 @@ function uploadAndApplyBundle(kind, name, fileName, contents) {
       status.available === true &&
       Array.isArray(status.cameras) &&
       status.cameras.includes("workspace") &&
-      status.cameras.includes("overview") &&
       status.selected_bundles &&
       status.selected_bundles[kind] &&
       status.selected_bundles[kind].name === name,
   );
 }
 
-function verifyExactUploadedEpisode() {
+function verifyExactUploadedEpisode(expectSecondary = true) {
   cy.get("#leisaacViewUploadedEpisode").should("be.visible").click();
   cy.get("#leisaacEpisodePlayer", { timeout: 30000 }).should("be.visible");
   cy.get("#leisaacEpisodePlayerTitle").invoke("text").should(
@@ -130,16 +129,24 @@ function verifyExactUploadedEpisode() {
     .and("contain.text", "v000");
   cy.get("#leisaacEpisodeChecksum")
     .should("contain.text", "verified")
-    .and("contain.text", "workspace=")
-    .and("contain.text", "overview=");
-  cy.get("#leisaacEpisodeSecondaryPane").should("be.visible");
-  cy.get("#leisaacEpisodeSingleCamera").should("not.be.visible");
+    .and("contain.text", "workspace=");
+  if (expectSecondary) {
+    cy.get("#leisaacEpisodeChecksum").should("contain.text", "overview=");
+    cy.get("#leisaacEpisodeSecondaryPane").should("be.visible");
+    cy.get("#leisaacEpisodeSingleCamera").should("not.be.visible");
+  } else {
+    cy.get("#leisaacEpisodeChecksum").should("not.contain.text", "overview=");
+    cy.get("#leisaacEpisodeSecondaryPane").should("not.be.visible");
+    cy.get("#leisaacEpisodeSingleCamera").should("be.visible");
+  }
   cy.get("#leisaacEpisodePrimaryVideo", { timeout: 30000 }).should(($video) => {
     expect(Number($video[0].duration), "primary video duration").to.be.greaterThan(0);
   });
-  cy.get("#leisaacEpisodeSecondaryVideo", { timeout: 30000 }).should(($video) => {
-    expect(Number($video[0].duration), "secondary video duration").to.be.greaterThan(0);
-  });
+  if (expectSecondary) {
+    cy.get("#leisaacEpisodeSecondaryVideo", { timeout: 30000 }).should(($video) => {
+      expect(Number($video[0].duration), "secondary video duration").to.be.greaterThan(0);
+    });
+  }
   cy.get("#leisaacEpisodeTimeline").should(($timeline) => {
     expect(Number($timeline.attr("max")), "timeline rows").to.be.greaterThan(1);
   });
@@ -155,9 +162,11 @@ function verifyExactUploadedEpisode() {
   cy.get("#leisaacEpisodePrimaryVideo").should(($video) => {
     expect($video[0].playbackRate).to.equal(2);
   });
-  cy.get("#leisaacEpisodeSecondaryVideo").should(($video) => {
-    expect($video[0].playbackRate).to.equal(2);
-  });
+  if (expectSecondary) {
+    cy.get("#leisaacEpisodeSecondaryVideo").should(($video) => {
+      expect($video[0].playbackRate).to.equal(2);
+    });
+  }
   cy.get("#leisaacEpisodeRecordsExport")
     .should("have.attr", "href")
     .and("include", "/download/records");
@@ -198,10 +207,12 @@ function verifyExactUploadedEpisode() {
     primary.currentTime = duration * 0.5;
     primary.dispatchEvent(new win.Event("seeking"));
     await new Promise((resolve) => win.setTimeout(resolve, 250));
-    expect(
-      Math.abs(Number(primary.currentTime) - Number(secondary.currentTime)),
-      "synchronized camera seek",
-    ).to.be.lessThan(0.12);
+    if (expectSecondary) {
+      expect(
+        Math.abs(Number(primary.currentTime) - Number(secondary.currentTime)),
+        "synchronized camera seek",
+      ).to.be.lessThan(0.12);
+    }
   });
   cy.get("#leisaacEpisodePlayer").focus().trigger("keydown", { key: "ArrowRight" });
   cy.get("#leisaacEpisodeDescribe").click();
@@ -209,7 +220,9 @@ function verifyExactUploadedEpisode() {
     "contain.text",
     "Describe this",
   );
-  cy.screenshot("11-exact-uploaded-episode-two-camera-timeline", {
+  cy.screenshot(expectSecondary
+    ? "07-two-camera-episode-playback"
+    : "06-primary-only-episode-playback", {
     capture: "fullPage",
   });
 }
@@ -226,6 +239,45 @@ function dispatchTeleoperation(keys) {
           new KeyboardEvent("keyup", { key, bubbles: true }),
         );
       }
+    });
+}
+
+function redactLiveEvidenceIdentifiers() {
+  cy.document().then((doc) => {
+    const style = doc.createElement("style");
+    style.setAttribute("data-leisaac-evidence-redaction", "true");
+    style.textContent = `
+      #panelLeIsaac .leisaac-head > div:first-child > .hint:first-of-type strong,
+      #panelLeIsaac .leisaac-head > div:first-child > .hint:nth-of-type(2) code,
+      #leisaacRecorderArtifact,
+      #leisaacEpisodeVersion,
+      #leisaacEpisodeList,
+      #leisaacEpisodeMetadata {
+        visibility: hidden !important;
+      }
+    `;
+    doc.head.appendChild(style);
+  });
+}
+
+function waitForPaintedOrbitRevision() {
+  return cy.get("#leisaacStreamStatus")
+    .invoke("text")
+    .then((text) => {
+      const match = String(text).match(/orbit revision (\d+) accepted/);
+      expect(match, "accepted orbit revision").not.to.equal(null);
+      const revision = Number(match[1]);
+      return cy.window().then(async (win) => {
+        const deadline = win.performance.now() + 30000;
+        while (win.performance.now() < deadline) {
+          const frames = win.__NPA_AGENT_TEST__.leisaacTransportEvidence().frames;
+          if (frames.some((frame) =>
+            frame.camera === "workspace" && Number(frame.view_revision || 0) >= revision
+          )) return revision;
+          await new Promise((resolve) => win.setTimeout(resolve, 100));
+        }
+        throw new Error(`orbit revision ${revision} was not painted`);
+      });
     });
 }
 
@@ -360,14 +412,16 @@ function recordEpisode(outcome, episodeNumber, completedBefore) {
         .should("contain.text", selectedTask)
         .and("contain.text", selectedEnvironment)
         .and("contain.text", "RTX PRO 6000");
+      redactLiveEvidenceIdentifiers();
+      cy.get("#leisaacViewMode").should("have.value", "single_fast");
+      cy.get("#leisaacRecordingCameras").should("have.value", "primary_only");
+      cy.get("#leisaacLiveGrid").should("have.class", "is-single");
       cy.get("#leisaacRecorderStatus").should("contain.text", "State: idle");
       if (completedEpisodes > 0) {
         cy.get("#leisaacRecorderStatus")
           .should("contain.text", `completed: ${completedEpisodes}`)
           .and("contain.text", "uploaded");
       }
-      cy.screenshot("01-public-leisaac-capability", { capture: "viewport" });
-
       cy.window().then(async (win) => {
         const response = await win.fetch(
           "/api/leisaac/status?run_id=" + encodeURIComponent(selectedRun),
@@ -419,20 +473,14 @@ function recordEpisode(outcome, episodeNumber, completedBefore) {
           expect($canvas[0].width, "decoded frame width").to.be.greaterThan(640);
           expect($canvas[0].height, "decoded frame height").to.be.greaterThan(360);
         });
-      cy.get("#leisaacSecondaryCanvas", { timeout: 120000 })
-        .should("be.visible")
-        .and(($canvas) => {
-          expect($canvas[0].width, "overview frame width").to.be.greaterThan(640);
-          expect($canvas[0].height, "overview frame height").to.be.greaterThan(360);
-        });
+      cy.get("#leisaacSecondaryHost").should("not.be.visible");
       cy.window().then((win) => {
-        const primary = win.document.getElementById("leisaacCanvas");
-        const overview = win.document.getElementById("leisaacSecondaryCanvas");
-        expect(primary.toDataURL("image/png"), "distinct real camera pixels").not.to.equal(
-          overview.toDataURL("image/png"),
-        );
+        win.__LEISAAC_CONTROLS_BEFORE_ORBIT__ =
+          win.__NPA_AGENT_TEST__.leisaacTransportEvidence().controls.length;
       });
-      cy.get("#leisaacSecondaryHost")
+      cy.screenshot("01-fast-single-selector-one-large-viewport", { capture: "viewport" });
+      cy.screenshot("02-fast-single-horizontal-orbit-before", { capture: "viewport" });
+      cy.get("#leisaacStreamHost")
         .trigger("pointerdown", {
           pointerId: 41,
           pointerType: "mouse",
@@ -442,29 +490,60 @@ function recordEpisode(outcome, episodeNumber, completedBefore) {
         .trigger("pointermove", {
           pointerId: 41,
           pointerType: "mouse",
-          clientX: 340,
-          clientY: 260,
+          clientX: 380,
+          clientY: 240,
         })
         .trigger("pointerup", { pointerId: 41, pointerType: "mouse" });
-      cy.get("#leisaacSecondaryStatus").should("contain.text", "rotation");
-      cy.get("#leisaacSecondaryHost")
+      cy.get("#leisaacStreamStatus").should("contain.text", "orbit revision");
+      waitForPaintedOrbitRevision();
+      cy.screenshot("02-fast-single-horizontal-orbit-after", { capture: "viewport" });
+      cy.screenshot("03-fast-single-touch-vertical-orbit-before", { capture: "viewport" });
+      cy.get("#leisaacStreamHost")
         .trigger("pointerdown", {
           pointerId: 42,
           pointerType: "touch",
           clientX: 340,
-          clientY: 260,
+          clientY: 280,
         })
         .trigger("pointermove", {
           pointerId: 42,
           pointerType: "touch",
-          clientX: 310,
-          clientY: 225,
+          clientX: 340,
+          clientY: 205,
         })
-        .trigger("pointerup", { pointerId: 42, pointerType: "touch" })
-        .trigger("wheel", { deltaY: 80 });
-      cy.get("#leisaacSecondaryStatus")
-        .invoke("text")
-        .should("match", /rotation [2-9]\d* applied/);
+        .trigger("pointerup", { pointerId: 42, pointerType: "touch" });
+      waitForPaintedOrbitRevision();
+      cy.screenshot("03-fast-single-touch-vertical-orbit-after", { capture: "viewport" });
+      cy.window().then((win) => {
+        expect(
+          win.__NPA_AGENT_TEST__.leisaacTransportEvidence().controls.length,
+          "orbit gestures emit no robot controls",
+        ).to.equal(win.__LEISAAC_CONTROLS_BEFORE_ORBIT__);
+      });
+
+      cy.get("#panelLeIsaac").then(($panel) => {
+        cy.get("#leisaacViewMode").select("dual_slow");
+        cy.get("#leisaacModeStatus", { timeout: 30000 })
+          .should("contain.text", "Applied view")
+          .and("contain.text", "Dual view");
+        cy.get("#panelLeIsaac").then(($same) => {
+          expect($same[0], "mode transition keeps the panel mounted").to.equal($panel[0]);
+        });
+      });
+      cy.get("#leisaacSecondaryCanvas", { timeout: 120000 })
+        .should("be.visible")
+        .and(($canvas) => {
+          expect($canvas[0].width, "overview frame width").to.be.greaterThan(640);
+          expect($canvas[0].height, "overview frame height").to.be.greaterThan(360);
+        });
+      cy.screenshot("04-dual-slow-two-distinct-viewports", { capture: "viewport" });
+      cy.window().then((win) => {
+        const primary = win.document.getElementById("leisaacCanvas");
+        const overview = win.document.getElementById("leisaacSecondaryCanvas");
+        expect(primary.toDataURL("image/png"), "distinct real camera pixels").not.to.equal(
+          overview.toDataURL("image/png"),
+        );
+      });
 
       cy.window().then(async (win) => {
         const status = win.__LEISAAC_INITIAL_STATUS__;
@@ -515,7 +594,7 @@ function recordEpisode(outcome, episodeNumber, completedBefore) {
           "rendered frame mean luma",
         ).to.be.greaterThan(3);
       });
-      cy.screenshot("02-public-leisaac-live-stream", { capture: "viewport" });
+      cy.screenshot("04-dual-slow-live-detail", { capture: "viewport" });
 
       const controls = [
         "W",
@@ -585,7 +664,7 @@ function recordEpisode(outcome, episodeNumber, completedBefore) {
         expect($canvas[0].width, "post-input decoded frame").to.be.greaterThan(640);
         expect($canvas[0].height).to.be.greaterThan(360);
       });
-      cy.screenshot("03-public-leisaac-after-keyboard-input", {
+      cy.screenshot("05-successful-manipulation", {
         capture: "viewport",
       });
 
@@ -603,9 +682,26 @@ function recordEpisode(outcome, episodeNumber, completedBefore) {
         .should("match", /Start (?:an )?episode/i);
       cy.screenshot("04-recorder-idle-start-enabled", { capture: "viewport" });
 
+      cy.get("#leisaacViewMode").select("single_fast");
+      cy.get("#leisaacRecordingCameras").select("primary_only");
+      cy.get("#leisaacModeStatus", { timeout: 30000 })
+        .should("contain.text", "Applied view: Fast single")
+        .and("contain.text", "recording: Primary only");
       recordEpisode("success", 0, completedEpisodes)
+        .then(() => verifyExactUploadedEpisode(false))
+        .then(() => {
+          cy.get("#leisaacRecordingCameras").select("primary_and_secondary");
+          cy.get("#leisaacModeWarning").should(
+            "contain.text",
+            "Two-camera episode recording reduces Fast single performance",
+          );
+          cy.get("#leisaacViewMode").select("dual_slow");
+          cy.get("#leisaacModeStatus", { timeout: 30000 })
+            .should("contain.text", "Applied view: Dual view")
+            .and("contain.text", "recording: Primary + secondary");
+        })
         .then(() => recordEpisode("failure", 1, completedEpisodes + 1))
-        .then(() => verifyExactUploadedEpisode());
+        .then(() => verifyExactUploadedEpisode(true));
     });
 
     it("applies checksum-verified SO-101, scene, and device bundles and records their provenance", () => {
@@ -644,6 +740,7 @@ def Xform "Scene" (
       });
 
       cy.get("#tabLeIsaac", { timeout: 30000 }).should("be.visible").click();
+      redactLiveEvidenceIdentifiers();
       cy.window().then((win) =>
         win.__NPA_AGENT_TEST__.refreshLeIsaacCapability(selectedRun),
       );
@@ -660,10 +757,18 @@ def Xform "Scene" (
           ),
         )
         .then(() => {
+          cy.get("#leisaacConnect").then(($button) => {
+            if (!$button.prop("disabled")) cy.wrap($button).click();
+          });
           cy.get("#leisaacStreamStatus", { timeout: 180000 }).should(
             "contain.text",
             "keyboard teleoperation active",
           );
+          cy.get("#leisaacRecordingCameras").select("primary_and_secondary");
+          cy.get("#leisaacViewMode").select("dual_slow");
+          cy.get("#leisaacModeStatus", { timeout: 30000 })
+            .should("contain.text", "Applied view: Dual view")
+            .and("contain.text", "recording: Primary + secondary");
           cy.get("#leisaacInputDevice").select("custom-so101");
           return loadRecorderStatus().then((before) => {
             completedBefore = Number(

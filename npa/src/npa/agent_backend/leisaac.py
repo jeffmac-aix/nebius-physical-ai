@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import ipaddress
 import json
+import math
 import re
 from datetime import datetime, timezone
 from typing import Any, Callable
@@ -33,6 +34,12 @@ try:  # Shipped agent modules use the top-level package name.
         validate_seed,
         validate_task,
     )
+    from agent_backend.leisaac_transport import (
+        RECORDING_CAMERA_CONTRACT,
+        VIEW_MODE_CONTRACT,
+        RecordingCameraMode,
+        ViewMode,
+    )
 except ImportError:  # Repository package imports use the npa namespace.
     from npa.agent_backend.leisaac_registry import (
         DEFAULT_ENVIRONMENT_ID,
@@ -44,6 +51,12 @@ except ImportError:  # Repository package imports use the npa namespace.
         validate_environment_index,
         validate_seed,
         validate_task,
+    )
+    from npa.agent_backend.leisaac_transport import (
+        RECORDING_CAMERA_CONTRACT,
+        VIEW_MODE_CONTRACT,
+        RecordingCameraMode,
+        ViewMode,
     )
 
 LEISAAC_SESSION_SCHEMA = "npa.leisaac.session.v2"
@@ -531,8 +544,38 @@ def validate_health(manifest: dict, payload: dict | None) -> tuple[dict | None, 
             "last_command_id",
             "last_command",
             "command_revision",
+            "cameras",
+            "display_view_mode",
+            "recording_camera_mode",
         )
     }
+    try:
+        requested_view_mode = ViewMode(
+            str(data.get("requested_view_mode") or VIEW_MODE_CONTRACT["default"])
+        )
+        applied_view_mode = ViewMode(
+            str(data.get("applied_view_mode") or VIEW_MODE_CONTRACT["default"])
+        )
+        requested_recording_mode = RecordingCameraMode(
+            str(
+                data.get("requested_recording_camera_mode")
+                or RECORDING_CAMERA_CONTRACT["default"]
+            )
+        )
+        applied_recording_mode = RecordingCameraMode(
+            str(
+                data.get("applied_recording_camera_mode")
+                or RECORDING_CAMERA_CONTRACT["default"]
+            )
+        )
+    except ValueError:
+        return None, "LeIsaac service returned an invalid view-mode contract"
+    try:
+        transition_latency_ms = float(data.get("mode_transition_latency_ms") or 0.0)
+    except (TypeError, ValueError):
+        return None, "LeIsaac service returned invalid mode-transition telemetry"
+    if not math.isfinite(transition_latency_ms) or transition_latency_ms < 0:
+        return None, "LeIsaac service returned invalid mode-transition telemetry"
     if health_schema == LEISAAC_HEALTH_SCHEMA and (
         safe_recorder.get("task") != manifest.get("task")
         or safe_recorder.get("environment_id") != manifest.get("environment_id")
@@ -558,7 +601,20 @@ def validate_health(manifest: dict, payload: dict | None) -> tuple[dict | None, 
         "cameras": cameras,
         "secondary_frame_bytes": _integer(data.get("secondary_frame_bytes")) or 0,
         "secondary_frame_sequence": _integer(data.get("secondary_frame_sequence")) or 0,
-        "view_orbit": bool(data.get("view_orbit")) and "overview" in cameras,
+        "view_orbit": bool(data.get("view_orbit")),
+        "view_mode_contract": VIEW_MODE_CONTRACT,
+        "recording_camera_contract": RECORDING_CAMERA_CONTRACT,
+        "requested_view_mode": requested_view_mode.value,
+        "applied_view_mode": applied_view_mode.value,
+        "requested_recording_camera_mode": requested_recording_mode.value,
+        "applied_recording_camera_mode": applied_recording_mode.value,
+        "view_revision": _integer(data.get("view_revision")) or 0,
+        "applied_view_revision": _integer(data.get("applied_view_revision")) or 0,
+        "recording_revision": _integer(data.get("recording_revision")) or 0,
+        "applied_recording_revision": _integer(
+            data.get("applied_recording_revision")
+        ) or 0,
+        "mode_transition_latency_ms": transition_latency_ms,
         "selected_bundles": selected_bundles,
         "configuration": configuration,
         "transport_metrics": (
@@ -668,6 +724,23 @@ def status_payload(
         "secondary_frame_bytes": health.get("secondary_frame_bytes", 0),
         "secondary_frame_sequence": health.get("secondary_frame_sequence", 0),
         "view_orbit": health.get("view_orbit", False),
+        "view_mode_contract": health.get("view_mode_contract", VIEW_MODE_CONTRACT),
+        "recording_camera_contract": health.get(
+            "recording_camera_contract", RECORDING_CAMERA_CONTRACT
+        ),
+        "requested_view_mode": health.get("requested_view_mode"),
+        "applied_view_mode": health.get("applied_view_mode"),
+        "requested_recording_camera_mode": health.get(
+            "requested_recording_camera_mode"
+        ),
+        "applied_recording_camera_mode": health.get(
+            "applied_recording_camera_mode"
+        ),
+        "view_revision": health.get("view_revision", 0),
+        "applied_view_revision": health.get("applied_view_revision", 0),
+        "recording_revision": health.get("recording_revision", 0),
+        "applied_recording_revision": health.get("applied_recording_revision", 0),
+        "mode_transition_latency_ms": health.get("mode_transition_latency_ms", 0.0),
         "selected_bundles": health.get("selected_bundles", {}),
         "transport_metrics": health.get("transport_metrics", {}),
         "controls": {

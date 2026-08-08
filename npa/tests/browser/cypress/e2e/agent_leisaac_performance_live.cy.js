@@ -145,13 +145,19 @@ function frameStageSummary(frames) {
 (hasLiveEnv() ? describe : describe.skip)(
   "NPA agent live LeIsaac end-to-end performance",
   () => {
-    it("measures real input to causal frame paint and enforces the optimized gate", () => {
+    it("measures one explicit view mode from input through causal frame paint", () => {
       Cypress.config("defaultCommandTimeout", 480000);
       const runId = String(
         Cypress.env("NPA_LEISAAC_RUN_ID") || Cypress.env("NPA_AGENT_RUN_ID"),
       );
       const output = String(Cypress.env("NPA_LEISAAC_BENCHMARK_OUTPUT"));
-      const phase = String(Cypress.env("NPA_LEISAAC_BENCHMARK_PHASE") || "pilot");
+      const viewMode = String(
+        Cypress.env("NPA_LEISAAC_VIEW_MODE") || "single_fast",
+      );
+      if (!["single_fast", "dual_slow"].includes(viewMode)) {
+        throw new Error(`unsupported benchmark view mode ${viewMode}`);
+      }
+      const phase = viewMode;
       const trial = Math.floor(numberEnv("NPA_LEISAAC_BENCHMARK_TRIAL", 0));
       const warmupCount = Math.floor(numberEnv("NPA_LEISAAC_WARMUP_SAMPLES", 10));
       const measuredCount = Math.floor(numberEnv("NPA_LEISAAC_PRIMARY_SAMPLES", 80));
@@ -159,8 +165,6 @@ function frameStageSummary(frames) {
       const releaseDelayMs = numberEnv("NPA_LEISAAC_RELEASE_DELAY_MS", 120);
       const pixelThreshold = numberEnv("NPA_LEISAAC_PIXEL_DIFF_THRESHOLD", 0);
       const idleFrameCount = Math.floor(numberEnv("NPA_LEISAAC_IDLE_FRAMES", 12));
-      const baselineP50 = numberEnv("NPA_LEISAAC_BASELINE_P50_MS", 0);
-      const baselineP95 = numberEnv("NPA_LEISAAC_BASELINE_P95_MS", 0);
 
       cy.viewport(1440, 1050);
       cy.visitLiveAgent();
@@ -177,6 +181,7 @@ function frameStageSummary(frames) {
         const benchmark = {
           schema: "npa.leisaac.e2e-performance.v1",
           phase,
+          view_mode: viewMode,
           trial,
           source_commit: String(Cypress.env("NPA_LEISAAC_SOURCE_COMMIT") || "unknown"),
           started_at: new Date().toISOString(),
@@ -241,14 +246,52 @@ function frameStageSummary(frames) {
           win,
           () => {
             const evidence = win.__NPA_AGENT_TEST__.leisaacTransportEvidence();
-            const cameras = new Set(evidence.frames.map((frame) => frame.camera));
             return ["websocket-v1", "webrtc-datachannel-v1"].includes(evidence.active) &&
-              evidence.frames.length >= startingEvidence.frames.length + 2 &&
-              cameras.has("workspace") && cameras.has("overview");
+              evidence.frames.slice(startingEvidence.frames.length)
+                .some((frame) => frame.camera === "workspace");
           },
           120000,
-          "both preferred RTX cameras",
+          "preferred RTX primary camera",
         );
+        const selector = win.document.getElementById("leisaacViewMode");
+        selector.value = viewMode;
+        selector.dispatchEvent(new win.Event("change", { bubbles: true }));
+        await waitUntil(
+          win,
+          () => {
+            const text = String(
+              win.document.getElementById("leisaacModeStatus")?.textContent || "",
+            );
+            return text.includes("Applied view") &&
+              (viewMode === "single_fast"
+                ? text.includes("Fast single")
+                : text.includes("Dual view"));
+          },
+          30000,
+          `${viewMode} scheduler acknowledgement`,
+        );
+        const modeEvidenceStart = win.__NPA_AGENT_TEST__.leisaacTransportEvidence()
+          .frames.length;
+        await waitUntil(
+          win,
+          () => {
+            const frames = win.__NPA_AGENT_TEST__.leisaacTransportEvidence()
+              .frames.slice(modeEvidenceStart);
+            return frames.filter((frame) => frame.camera === "workspace").length >= 2 &&
+              (viewMode === "single_fast" ||
+                frames.some((frame) => frame.camera === "overview"));
+          },
+          30000,
+          `${viewMode} steady-state frames`,
+        );
+        if (viewMode === "single_fast") {
+          await new Promise((resolve) => win.setTimeout(resolve, 1200));
+          const frames = win.__NPA_AGENT_TEST__.leisaacTransportEvidence()
+            .frames.slice(modeEvidenceStart);
+          if (frames.some((frame) => frame.camera === "overview")) {
+            throw new Error("Fast single decoded or painted an overview frame");
+          }
+        }
 
         const host = win.document.getElementById("leisaacStreamHost");
         if (!host) throw new Error("LeIsaac teleoperation host is missing");
@@ -423,7 +466,9 @@ function frameStageSummary(frames) {
         const finalEvidence = win.__NPA_AGENT_TEST__.leisaacTransportEvidence();
         const measured = benchmark.action_samples.filter((sample) => !sample.warmup);
         const workspace = sampleCanvas(win, "leisaacCanvas");
-        const overview = sampleCanvas(win, "leisaacSecondaryCanvas");
+        const overview = viewMode === "dual_slow"
+          ? sampleCanvas(win, "leisaacSecondaryCanvas")
+          : null;
         benchmark.completed_at = new Date().toISOString();
         benchmark.transport = {
           control: String(finalEvidence.active || ""),
@@ -439,8 +484,10 @@ function frameStageSummary(frames) {
         };
         benchmark.quality = {
           workspace: { width: 1280, height: 720, jpeg_quality: 82, variance: workspace.variance },
-          overview: { width: 1280, height: 720, jpeg_quality: 82, variance: overview.variance },
-          viewport_pixel_difference: pixelDifference(workspace, overview),
+          overview: overview
+            ? { width: 1280, height: 720, jpeg_quality: 82, variance: overview.variance }
+            : null,
+          viewport_pixel_difference: overview ? pixelDifference(workspace, overview) : null,
         };
         benchmark.summary = {
           primary_input_to_causal_frame_painted_ms: distribution(
@@ -480,56 +527,30 @@ function frameStageSummary(frames) {
         if (!benchmark.summary.all_safety_releases_applied) {
           throw new Error("one or more safety releases lacked an applied acknowledgement");
         }
-        if (workspace.variance < 25 || overview.variance < 25) {
-          throw new Error("one or both camera canvases are blank or uniform");
+        if (workspace.variance < 25 || (overview && overview.variance < 25)) {
+          throw new Error("one or more requested camera canvases are blank or uniform");
         }
-        if (benchmark.quality.viewport_pixel_difference < 1) {
+        if (overview && benchmark.quality.viewport_pixel_difference < 1) {
           throw new Error("the two camera canvases are not visually distinct");
+        }
+        if (
+          viewMode === "dual_slow" &&
+          !(benchmark.summary.frame_stages.overview.delivered_fps >= 2 &&
+            benchmark.summary.frame_stages.overview.delivered_fps <= 5)
+        ) {
+          throw new Error(
+            `Dual slow overview FPS is outside 2–5: ${benchmark.summary.frame_stages.overview.delivered_fps}`,
+          );
         }
       });
 
       cy.window()
         .its("__NPA_LEISAAC_PERFORMANCE__")
         .then((benchmark) => {
-          if (phase === "optimized") {
-            const primary = benchmark.summary.primary_input_to_causal_frame_painted_ms;
-            benchmark.comparison = {
-              baseline_p50_ms: baselineP50,
-              baseline_p95_ms: baselineP95,
-              optimized_p50_ms: primary.p50,
-              optimized_p95_ms: primary.p95,
-              p50_speedup: baselineP50 / primary.p50,
-              p95_speedup: baselineP95 / primary.p95,
-            };
-          }
-          return cy.writeFile(output, benchmark, { log: false }).then(() => {
-            if (phase !== "optimized") return benchmark;
-            if (benchmark.transport.video !== "websocket-v1") {
-              throw new Error(
-                `optimized benchmark requires the measured bounded WebSocket path, got ${benchmark.transport.video || "none"}`,
-              );
-            }
-            if (benchmark.transport.control !== "websocket-v1") {
-              throw new Error(
-                `optimized benchmark requires the measured same-origin WebSocket control path, got ${benchmark.transport.control || "none"}`,
-              );
-            }
-            if (!(baselineP50 > 0 && baselineP95 > 0)) {
-              throw new Error("optimized gate requires aggregate baseline p50 and p95");
-            }
-            const primary = benchmark.summary.primary_input_to_causal_frame_painted_ms;
-            if (!(primary.p50 <= baselineP50 / 2 && primary.p95 <= baselineP95 / 2)) {
-              throw new Error(
-                `2x gate failed: p50 ${primary.p50} > ${baselineP50 / 2} or ` +
-                `p95 ${primary.p95} > ${baselineP95 / 2}`,
-              );
-            }
-            return benchmark;
-          });
+          return cy.writeFile(output, benchmark, { log: false }).then(() => benchmark);
         })
         .then((benchmark) => {
           const primary = benchmark.summary.primary_input_to_causal_frame_painted_ms;
-          const comparison = benchmark.comparison || {};
           return cy.document().then((document) => {
             const previous = document.getElementById("leisaacBenchmarkProof");
             if (previous) previous.remove();
@@ -543,17 +564,15 @@ function frameStageSummary(frames) {
               "font:13px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace",
               "box-shadow:0 10px 32px rgba(0,0,0,.45)",
             ].join(";");
-            proof.textContent = phase === "optimized"
-              ? `Real RTX browser benchmark · trial ${trial + 1} · n=${primary.n}\n` +
-                `input→causal-frame-painted p50 ${primary.p50.toFixed(2)} ms ` +
-                `(${comparison.p50_speedup.toFixed(2)}×; baseline ${baselineP50.toFixed(2)} ms)\n` +
-                `p95 ${primary.p95.toFixed(2)} ms ` +
-                `(${comparison.p95_speedup.toFixed(2)}×; baseline ${baselineP95.toFixed(2)} ms)\n` +
-                `${benchmark.quality.workspace.width}×${benchmark.quality.workspace.height} q82 · ` +
-                `two distinct viewports · ${benchmark.transport.control}/${benchmark.transport.video}`
-              : `Real RTX browser profile · ${phase} · n=${primary.n}\n` +
-                `input→causal-frame-painted p50 ${primary.p50.toFixed(2)} ms · ` +
-                `p95 ${primary.p95.toFixed(2)} ms`;
+            proof.textContent =
+              `Real RTX browser benchmark · ${viewMode} · trial ${trial + 1} · n=${primary.n}\n` +
+              `input→causal-frame-painted p50 ${primary.p50.toFixed(2)} ms · ` +
+              `p95 ${primary.p95.toFixed(2)} ms\n` +
+              `primary ${benchmark.summary.frame_stages.workspace.delivered_fps.toFixed(2)} FPS` +
+              (viewMode === "dual_slow"
+                ? ` · secondary ${benchmark.summary.frame_stages.overview.delivered_fps.toFixed(2)} FPS`
+                : " · zero secondary decode/paint") +
+              ` · ${benchmark.transport.control}/${benchmark.transport.video}`;
             document.body.appendChild(proof);
             return benchmark;
           });

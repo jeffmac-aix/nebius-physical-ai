@@ -17,11 +17,12 @@ import re
 import struct
 import threading
 import time
+from enum import Enum
 from typing import Any
 
 
 PROTOCOL_VERSION = 1
-FRAME_PROTOCOL_VERSION = 2
+FRAME_PROTOCOL_VERSION = 3
 CONTROL_SUBPROTOCOL = "npa.leisaac.control.v1"
 VIDEO_SUBPROTOCOL = "npa.leisaac.video.v1"
 MAX_CONTROL_MESSAGE_BYTES = 4096
@@ -36,7 +37,42 @@ ALLOWED_EVENTS = frozenset({"press", "release"})
 ALLOWED_ACTION_DEVICES = frozenset({"browser-gamepad", "custom-so101"})
 FRAME_MAGIC = b"NPAF"
 FRAME_HEADER_V1 = struct.Struct("!4sBBHQQQQQQQQII32s")
-FRAME_HEADER = struct.Struct("!4sBBHQQQQQQQQQQII32s")
+FRAME_HEADER_V2 = struct.Struct("!4sBBHQQQQQQQQQQII32s")
+FRAME_HEADER = struct.Struct("!4sBBHQQQQQQQQQQQII32s")
+
+
+class ViewMode(str, Enum):
+    """Authoritative display-mode values used by every LeIsaac layer."""
+
+    SINGLE_FAST = "single_fast"
+    DUAL_SLOW = "dual_slow"
+
+
+class RecordingCameraMode(str, Enum):
+    """Authoritative episode camera-schema choices."""
+
+    PRIMARY_ONLY = "primary_only"
+    PRIMARY_AND_SECONDARY = "primary_and_secondary"
+
+
+DEFAULT_VIEW_MODE = ViewMode.SINGLE_FAST
+DEFAULT_RECORDING_CAMERA_MODE = RecordingCameraMode.PRIMARY_ONLY
+VIEW_MODE_CONTRACT = {
+    "default": DEFAULT_VIEW_MODE.value,
+    "values": [mode.value for mode in ViewMode],
+    "labels": {
+        ViewMode.SINGLE_FAST.value: "Fast single",
+        ViewMode.DUAL_SLOW.value: "Dual view — slower",
+    },
+}
+RECORDING_CAMERA_CONTRACT = {
+    "default": DEFAULT_RECORDING_CAMERA_MODE.value,
+    "values": [mode.value for mode in RecordingCameraMode],
+    "labels": {
+        RecordingCameraMode.PRIMARY_ONLY.value: "Primary only",
+        RecordingCameraMode.PRIMARY_AND_SECONDARY.value: "Primary + secondary",
+    },
+}
 
 
 class TransportProtocolError(ValueError):
@@ -138,7 +174,15 @@ def parse_control_message(raw: str | bytes, *, expected_run_id: str) -> dict[str
             "invalid_message", "unsupported control protocol version"
         )
     message_type = str(payload.get("type") or "")
-    if message_type not in {"control", "action", "resume", "ping", "release-all"}:
+    if message_type not in {
+        "control",
+        "action",
+        "resume",
+        "ping",
+        "release-all",
+        "view-mode",
+        "recording-cameras",
+    }:
         raise TransportProtocolError(
             "invalid_message", "unsupported control message type"
         )
@@ -221,6 +265,28 @@ def parse_control_message(raw: str | bytes, *, expected_run_id: str) -> dict[str
         if len(nonce) > 64 or any(character in nonce for character in "\r\n"):
             raise TransportProtocolError("invalid_message", "invalid ping nonce")
         result["nonce"] = nonce
+    elif message_type in {"view-mode", "recording-cameras"}:
+        expected = {
+            "v",
+            "type",
+            "run_id",
+            "client_id",
+            "revision",
+            "mode",
+            "client_mono_ns",
+            "client_wall_ns",
+        }
+        if set(payload) != expected:
+            raise TransportProtocolError("invalid_message", "invalid mode request")
+        enum_type = ViewMode if message_type == "view-mode" else RecordingCameraMode
+        try:
+            mode = enum_type(str(payload.get("mode") or ""))
+        except ValueError as exc:
+            raise TransportProtocolError("invalid_message", "invalid mode request") from exc
+        result.update(
+            revision=_sequence(payload.get("revision"), name="mode revision"),
+            mode=mode.value,
+        )
     return result
 
 
@@ -448,6 +514,7 @@ class FrameEnvelope:
     agent_send_monotonic_ns: int = 0
     causal_action_sequence: int = 0
     causal_applied_monotonic_ns: int = 0
+    view_revision: int = 0
     dropped_before: int = 0
     flags: int = 0
     sha256: bytes = b""
@@ -479,6 +546,7 @@ def pack_frame(envelope: FrameEnvelope, jpeg: bytes) -> bytes:
         envelope.agent_send_monotonic_ns,
         envelope.causal_action_sequence,
         envelope.causal_applied_monotonic_ns,
+        envelope.view_revision,
         len(content),
         envelope.dropped_before,
         digest,
@@ -495,14 +563,21 @@ def unpack_frame(
     magic, version, flags, header_size = prefix
     if magic != FRAME_MAGIC or (version, header_size) not in {
         (PROTOCOL_VERSION, FRAME_HEADER_V1.size),
+        (2, FRAME_HEADER_V2.size),
         (FRAME_PROTOCOL_VERSION, FRAME_HEADER.size),
     }:
         raise TransportProtocolError(
             "invalid_frame", "frame envelope header is invalid"
         )
-    header = FRAME_HEADER if version == FRAME_PROTOCOL_VERSION else FRAME_HEADER_V1
+    header = {
+        PROTOCOL_VERSION: FRAME_HEADER_V1,
+        2: FRAME_HEADER_V2,
+        FRAME_PROTOCOL_VERSION: FRAME_HEADER,
+    }[version]
     unpacked = header.unpack(payload[:header_size])
-    jpeg_size_index = 14 if version == FRAME_PROTOCOL_VERSION else 12
+    jpeg_size_index = (
+        15 if version == FRAME_PROTOCOL_VERSION else (14 if version == 2 else 12)
+    )
     dropped_index = jpeg_size_index + 1
     digest_index = jpeg_size_index + 2
     jpeg_size = unpacked[jpeg_size_index]
@@ -523,10 +598,11 @@ def unpack_frame(
         runtime_send_monotonic_ns=unpacked[9],
         agent_receive_monotonic_ns=unpacked[10],
         agent_send_monotonic_ns=unpacked[11],
-        causal_action_sequence=(unpacked[12] if version == FRAME_PROTOCOL_VERSION else 0),
+        causal_action_sequence=(unpacked[12] if version >= 2 else 0),
         causal_applied_monotonic_ns=(
-            unpacked[13] if version == FRAME_PROTOCOL_VERSION else 0
+            unpacked[13] if version >= 2 else 0
         ),
+        view_revision=(unpacked[14] if version == FRAME_PROTOCOL_VERSION else 0),
         dropped_before=unpacked[dropped_index],
         flags=flags,
         sha256=digest,
@@ -696,9 +772,15 @@ class TransportMetrics:
             "control_datachannel_connections",
             "control_datachannel_errors",
             "frames_published",
+            "workspace_frames_published",
+            "overview_frames_published",
             "frames_relay_acked",
+            "workspace_frames_relayed",
+            "overview_frames_relayed",
             "frames_browser_acked",
             "frames_sent",
+            "workspace_frames_sent",
+            "overview_frames_sent",
             "frames_coalesced",
             "datachannel_connections",
             "datachannel_frames_sent",
@@ -707,6 +789,10 @@ class TransportMetrics:
             "video_window_saturated",
             "slow_client_disconnects",
             "reconnects",
+            "mode_requests",
+            "mode_requests_coalesced",
+            "mode_transitions_applied",
+            "mode_transition_errors",
         }
     )
 

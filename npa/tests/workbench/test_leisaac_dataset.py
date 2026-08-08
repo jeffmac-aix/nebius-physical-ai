@@ -51,6 +51,46 @@ def _step(index: int) -> dict:
     }
 
 
+def test_recording_camera_schema_changes_only_at_episode_boundaries(
+    tmp_path: Path,
+) -> None:
+    recorder = EpisodeRecorder(
+        root=tmp_path / "recorder",
+        output_uri="s3://bucket/datasets/modes",
+        task=DEFAULT_TASK,
+        environment_id="operator-0",
+        environment_index=0,
+        seed=42,
+        run_id="mode-schema",
+        source_commit="a" * 40,
+        camera_ids=("workspace",),
+        publisher=lambda *_args: {},
+    )
+    recorder.configure_capture_schema(
+        ("workspace",),
+        provenance={
+            "display_view_mode": "single_fast",
+            "recording_camera_mode": "primary_only",
+        },
+    )
+    persisted = json.loads(recorder.status_path.read_text(encoding="utf-8"))
+    assert persisted["cameras"] == ["workspace"]
+    assert persisted["recording_camera_mode"] == "primary_only"
+    recorder.start()
+    assert recorder.status()["cameras"] == ["workspace"]
+    assert recorder.status()["recording_camera_mode"] == "primary_only"
+    with pytest.raises(DatasetError, match="episode boundaries"):
+        recorder.configure_capture_schema(
+            ("workspace", "overview"),
+            provenance={
+                "display_view_mode": "dual_slow",
+                "recording_camera_mode": "primary_and_secondary",
+            },
+        )
+    assert recorder.status()["cameras"] == ["workspace"]
+    recorder.shutdown()
+
+
 def test_registry_is_the_honest_two_task_sequential_contract() -> None:
     payload = registry_payload()
     assert payload["fingerprint"] == REGISTRY_FINGERPRINT

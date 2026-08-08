@@ -238,6 +238,8 @@
         grid-template-columns: repeat(2, minmax(0, 1fr));
         gap: 12px;
       }
+      .leisaac-live-grid.is-single { grid-template-columns: minmax(0, 1fr); }
+      .leisaac-live-grid.is-single .leisaac-secondary-shell { display: none; }
       .leisaac-viewport-shell { min-width: 0; }
       .leisaac-viewport-label {
         display: flex;
@@ -260,8 +262,8 @@
         border-radius: 12px;
       }
       .leisaac-secondary-empty[hidden] { display: none; }
-      .leisaac-secondary-stage { cursor: grab; touch-action: none; }
-      .leisaac-secondary-stage.is-orbiting { cursor: grabbing; }
+      .leisaac-primary-stage { cursor: grab; touch-action: none; }
+      .leisaac-primary-stage.is-orbiting { cursor: grabbing; }
       .leisaac-episodes {
         border-top: 1px solid #293244;
         padding-top: 16px;
@@ -2350,10 +2352,31 @@
       let leisaacViewSequence = 0;
       let leisaacViewInFlight = false;
       let leisaacPendingViewDelta = null;
+      let leisaacModeRevision = 0;
+      let leisaacRecordingRevision = 0;
+      let leisaacRequestedViewMode = "";
+      let leisaacRequestedRecordingMode = "";
       let leisaacGamepadTimer = null;
       let leisaacLastGamepadAction = "";
       let leisaacBundles = [];
       const LEISAAC_KEYS = new Set(["W", "S", "A", "D", "Q", "E", "J", "L", "I", "K", "U", "O"]);
+      function leisaacContract(status, name) {
+        const contract = status && status[name];
+        return contract && Array.isArray(contract.values) && contract.values.length === 2
+          ? contract
+          : { default: "", values: [], labels: {} };
+      }
+      function leisaacDualMode(status) {
+        const contract = leisaacContract(status, "view_mode_contract");
+        return contract.values.length === 2
+          && String(status && status.applied_view_mode || contract.default) === String(contract.values[1]);
+      }
+      function leisaacModeOptions(contract) {
+        return contract.values.map((value) => (
+          '<option value="' + escapeHtml(String(value)) + '">' +
+          escapeHtml(String((contract.labels || {})[value] || value)) + '</option>'
+        )).join("");
+      }
       function leisaacConfiguration(status) {
         const value = status && typeof status.configuration === "object" ? status.configuration : {};
         return value || {};
@@ -2371,6 +2394,9 @@
         const reason = escapeHtml(String(status.reason || ""));
         const liveDisabled = liveAvailable ? "" : " disabled";
         const secondaryAvailable = Array.isArray(status.cameras) && status.cameras.includes("overview");
+        const viewContract = leisaacContract(status, "view_mode_contract");
+        const recordingContract = leisaacContract(status, "recording_camera_contract");
+        const dualMode = leisaacDualMode(status);
         return `
           <section class="panel leisaac-panel">
             <div class="leisaac-head">
@@ -2420,10 +2446,22 @@
                 <button id="leisaacBundleRefresh" class="btn" type="button">Refresh bundles</button>
               </div>
             </section>
-            <div class="leisaac-live-grid" aria-label="LeIsaac live viewports">
+            <section class="leisaac-episodes" aria-label="LeIsaac display and recording camera modes">
+              <div class="leisaac-filters">
+                <label>View mode:
+                  <select id="leisaacViewMode" aria-label="View mode"${liveDisabled}>${leisaacModeOptions(viewContract)}</select>
+                </label>
+                <label>Episode cameras:
+                  <select id="leisaacRecordingCameras" aria-label="Episode recording cameras"${liveDisabled}>${leisaacModeOptions(recordingContract)}</select>
+                </label>
+              </div>
+              <p id="leisaacModeStatus" class="hint" aria-live="polite"></p>
+              <p id="leisaacModeWarning" class="hint" role="status"></p>
+            </section>
+            <div id="leisaacLiveGrid" class="leisaac-live-grid${dualMode ? "" : " is-single"}" aria-label="LeIsaac live viewports">
               <div class="leisaac-viewport-shell">
-                <p class="leisaac-viewport-label"><strong>Workspace camera</strong><span>Robot controls require focus</span></p>
-                <div id="leisaacStreamHost" class="leisaac-stage" tabindex="0" aria-label="Interactive LeIsaac workspace simulation stream">
+                <p class="leisaac-viewport-label"><strong>Interactive primary</strong><span>Drag/touch orbit; robot controls require focus</span></p>
+                <div id="leisaacStreamHost" class="leisaac-stage leisaac-primary-stage" tabindex="0" aria-label="Interactive LeIsaac workspace simulation stream">
                   <video id="leisaacVideo" autoplay playsinline></video>
                   <img id="leisaacFrame" alt="Live RTX-rendered LeIsaac workspace simulation" hidden>
                   <canvas id="leisaacCanvas" width="1280" height="720" aria-label="Low-latency LeIsaac workspace simulation" hidden></canvas>
@@ -2444,12 +2482,12 @@
                   </div>
                 </div>
               </div>
-              <div class="leisaac-viewport-shell">
-                <p class="leisaac-viewport-label"><strong>Secondary camera</strong><span>Drag/touch orbit does not send robot keys</span></p>
+              <div class="leisaac-viewport-shell leisaac-secondary-shell">
+                <p class="leisaac-viewport-label"><strong>Secondary — slower</strong><span>Performance-intensive · 2–5 FPS</span></p>
                 <div id="leisaacSecondaryHost" class="${secondaryAvailable ? "leisaac-stage leisaac-secondary-stage" : "leisaac-secondary-empty"}" tabindex="0" aria-label="LeIsaac secondary camera">
                   <img id="leisaacSecondaryFrame" alt="Live RTX-rendered LeIsaac overview camera" hidden>
                   <canvas id="leisaacSecondaryCanvas" width="1280" height="720" aria-label="Orbitable LeIsaac overview camera" hidden></canvas>
-                  <div class="leisaac-overlay"><div id="leisaacSecondaryStatus" class="leisaac-overlay-card">${secondaryAvailable ? "Overview camera · drag or touch to orbit" : "This session exposes one honest live viewport. A second view is shown only when the runtime publishes a distinct camera track."}</div></div>
+                  <div class="leisaac-overlay"><div id="leisaacSecondaryStatus" class="leisaac-overlay-card">${secondaryAvailable ? "Overview camera · bounded slower cadence" : "Waiting for the distinct slower viewport."}</div></div>
                 </div>
               </div>
             </div>
@@ -3611,7 +3649,7 @@
         };
         refresh();
         const secondary = document.getElementById("leisaacSecondaryFrame");
-        if (secondary && Array.isArray(status.cameras) && status.cameras.includes("overview")) {
+        if (secondary && leisaacDualMode(status) && Array.isArray(status.cameras) && status.cameras.includes("overview")) {
           secondary.hidden = false;
           const refreshSecondary = () => {
             leisaacFrameSequence += 1;
@@ -3629,6 +3667,77 @@
           refreshSecondary();
         }
       }
+      function updateLeIsaacModeUi(status) {
+        if (!status) return;
+        const viewContract = leisaacContract(status, "view_mode_contract");
+        const recordingContract = leisaacContract(status, "recording_camera_contract");
+        const requestedView = String(status.requested_view_mode || viewContract.default || "");
+        const appliedView = String(status.applied_view_mode || viewContract.default || "");
+        const requestedRecording = String(status.requested_recording_camera_mode || recordingContract.default || "");
+        const appliedRecording = String(status.applied_recording_camera_mode || recordingContract.default || "");
+        leisaacRequestedViewMode = leisaacRequestedViewMode || requestedView;
+        leisaacRequestedRecordingMode = leisaacRequestedRecordingMode || requestedRecording;
+        leisaacModeRevision = Math.max(leisaacModeRevision, Number(status.view_revision || 0));
+        leisaacRecordingRevision = Math.max(leisaacRecordingRevision, Number(status.recording_revision || 0));
+        const viewSelect = document.getElementById("leisaacViewMode");
+        const recordingSelect = document.getElementById("leisaacRecordingCameras");
+        if (viewSelect && viewContract.values.includes(leisaacRequestedViewMode)) viewSelect.value = leisaacRequestedViewMode;
+        if (recordingSelect && recordingContract.values.includes(leisaacRequestedRecordingMode)) recordingSelect.value = leisaacRequestedRecordingMode;
+        const dual = viewContract.values.length === 2 && appliedView === viewContract.values[1];
+        const grid = document.getElementById("leisaacLiveGrid");
+        if (grid) grid.classList.toggle("is-single", !dual);
+        if (!dual) {
+          leisaacVideoPending.overview = null;
+          const secondaryCanvas = document.getElementById("leisaacSecondaryCanvas");
+          const secondaryFrame = document.getElementById("leisaacSecondaryFrame");
+          if (secondaryCanvas) secondaryCanvas.hidden = true;
+          if (secondaryFrame) {
+            secondaryFrame.onload = null;
+            secondaryFrame.onerror = null;
+            secondaryFrame.removeAttribute("src");
+            secondaryFrame.hidden = true;
+          }
+          if (leisaacSecondaryFrameTimer !== null) window.clearTimeout(leisaacSecondaryFrameTimer);
+          leisaacSecondaryFrameTimer = null;
+        }
+        const label = (contract, value) => String((contract.labels || {})[value] || value);
+        const statusNode = document.getElementById("leisaacModeStatus");
+        if (statusNode) statusNode.textContent = requestedView === appliedView
+          ? "Applied view: " + label(viewContract, appliedView) + " · recording: " + label(recordingContract, appliedRecording)
+          : "Requested: " + label(viewContract, requestedView) + " · applied: " + label(viewContract, appliedView) + " (transition pending)";
+        const warning = document.getElementById("leisaacModeWarning");
+        const recordingBoth = recordingContract.values.length === 2 && leisaacRequestedRecordingMode === recordingContract.values[1];
+        if (warning) warning.textContent = dual
+          ? "Dual view is slower and performance-intensive; the secondary is bounded to 2–5 FPS."
+          : (recordingBoth
+            ? "Two-camera episode recording reduces Fast single performance; the secondary remains hidden."
+            : "Fast single performs no secondary capture, relay, decode, or paint work.");
+      }
+      function sendLeIsaacModeRequest(requestType, mode) {
+        const socket = leisaacControlSocket;
+        if (!leisaacControlIsOpen(socket) || !leisaacClientId) {
+          throw new Error("Connect teleoperation before changing controller-owned modes");
+        }
+        const isView = requestType === "view-mode";
+        const revision = isView ? ++leisaacModeRevision : ++leisaacRecordingRevision;
+        if (isView) leisaacRequestedViewMode = String(mode);
+        else leisaacRequestedRecordingMode = String(mode);
+        socket.send(JSON.stringify({
+          v: 1,
+          type: requestType,
+          run_id: String((leisaacCapability && leisaacCapability.run_id) || ""),
+          client_id: leisaacClientId,
+          revision: revision,
+          mode: String(mode),
+          client_mono_ns: leisaacMonoNs(),
+          client_wall_ns: leisaacWallNs(),
+        }));
+        if (leisaacCapability) {
+          if (isView) leisaacCapability.requested_view_mode = String(mode);
+          else leisaacCapability.requested_recording_camera_mode = String(mode);
+          updateLeIsaacModeUi(leisaacCapability);
+        }
+      }
       function handleLeIsaacControlMessage(message) {
         let payload;
         try { payload = JSON.parse(String(message.data || "")); } catch (_err) { return; }
@@ -3636,6 +3745,14 @@
         if (payload.type === "resumed") {
           const expected = Number(payload.next_seq || 1);
           const lastApplied = Number(payload.last_applied_seq || 0);
+          leisaacModeRevision = Math.max(
+            leisaacModeRevision,
+            Number(payload.view_revision || 0),
+          );
+          leisaacRecordingRevision = Math.max(
+            leisaacRecordingRevision,
+            Number(payload.recording_revision || 0),
+          );
           for (const seq of Array.from(leisaacUnackedControls.keys())) {
             if (seq <= lastApplied) {
               const pending = leisaacUnackedControls.get(seq);
@@ -3665,6 +3782,12 @@
           // the runtime then supplies their simulator-applied acknowledgement.
           for (const item of leisaacUnackedControls.values()) item.sentGeneration = 0;
           sendQueuedWebSocketControls();
+          window.setTimeout(() => {
+            try {
+              if (leisaacRequestedViewMode) sendLeIsaacModeRequest("view-mode", leisaacRequestedViewMode);
+              if (leisaacRequestedRecordingMode) sendLeIsaacModeRequest("recording-cameras", leisaacRequestedRecordingMode);
+            } catch (_err) {}
+          }, 0);
           return;
         }
         if (payload.type === "pong") {
@@ -3693,6 +3816,26 @@
           return;
         }
         if (payload.type !== "ack") return;
+        if (payload.request_type === "view-mode" || payload.request_type === "recording-cameras") {
+          const isView = payload.request_type === "view-mode";
+          const latest = isView ? leisaacModeRevision : leisaacRecordingRevision;
+          if (Number(payload.revision || 0) !== latest) return;
+          if (payload.phase === "applied" && leisaacCapability) {
+            if (isView) {
+              leisaacCapability.requested_view_mode = String(payload.mode || "");
+              leisaacCapability.applied_view_mode = String(payload.mode || "");
+              leisaacCapability.view_revision = latest;
+              leisaacCapability.applied_view_revision = latest;
+            } else {
+              leisaacCapability.requested_recording_camera_mode = String(payload.mode || "");
+              leisaacCapability.applied_recording_camera_mode = String(payload.mode || "");
+              leisaacCapability.recording_revision = latest;
+              leisaacCapability.applied_recording_revision = latest;
+            }
+            updateLeIsaacModeUi(leisaacCapability);
+          }
+          return;
+        }
         const seq = Number(payload.seq || 0);
         const pending = leisaacUnackedControls.get(seq);
         if (!pending) return;
@@ -3723,14 +3866,14 @@
           buffer.byteLength < 112 ||
           view.getUint8(0) !== 0x4e || view.getUint8(1) !== 0x50 ||
           view.getUint8(2) !== 0x41 || view.getUint8(3) !== 0x46 ||
-          ![1, 2].includes(view.getUint8(4))
+          ![1, 2, 3].includes(view.getUint8(4))
         ) throw new Error("invalid LeIsaac frame envelope");
         const version = view.getUint8(4);
         const headerSize = view.getUint16(6, false);
-        const jpegSizeOffset = version === 2 ? 88 : 72;
-        const droppedOffset = version === 2 ? 92 : 76;
+        const jpegSizeOffset = version === 3 ? 96 : (version === 2 ? 88 : 72);
+        const droppedOffset = version === 3 ? 100 : (version === 2 ? 92 : 76);
         const jpegSize = view.getUint32(jpegSizeOffset, false);
-        if (!((version === 1 && headerSize === 112) || (version === 2 && headerSize === 128)) ||
+        if (!((version === 1 && headerSize === 112) || (version === 2 && headerSize === 128) || (version === 3 && headerSize === 136)) ||
             jpegSize <= 0 || headerSize + jpegSize !== buffer.byteLength || jpegSize > 4194304) {
           throw new Error("invalid LeIsaac frame size");
         }
@@ -3746,8 +3889,9 @@
           runtimeSendMonoNs: String(view.getBigUint64(48, false)),
           agentReceiveMonoNs: String(view.getBigUint64(56, false)),
           agentSendMonoNs: String(view.getBigUint64(64, false)),
-          causalActionSequence: version === 2 ? Number(view.getBigUint64(72, false)) : 0,
-          causalAppliedMonoNs: version === 2 ? String(view.getBigUint64(80, false)) : "0",
+          causalActionSequence: version >= 2 ? Number(view.getBigUint64(72, false)) : 0,
+          causalAppliedMonoNs: version >= 2 ? String(view.getBigUint64(80, false)) : "0",
+          viewRevision: version === 3 ? Number(view.getBigUint64(88, false)) : 0,
           droppedBefore: view.getUint32(droppedOffset, false),
           receivedMonoMs: performance.now(),
           receivedWallNs: Date.now() * 1000000,
@@ -3822,6 +3966,7 @@
           while (leisaacVideoPending[camera]) {
             const frame = leisaacVideoPending[camera];
             leisaacVideoPending[camera] = null;
+            if (frame.camera === "overview" && !leisaacDualMode(leisaacCapability)) continue;
             const jpeg = new Uint8Array(frame.buffer, frame.headerSize, frame.jpegSize);
             const blob = new Blob(
               [jpeg],
@@ -3892,6 +4037,7 @@
               agent_send_mono_ns: frame.agentSendMonoNs,
               causal_action_sequence: frame.causalActionSequence,
               causal_applied_mono_ns: frame.causalAppliedMonoNs,
+              view_revision: frame.viewRevision,
               received_mono_ms: frame.receivedMonoMs,
               painted_mono_ms: paintMonoMs,
               frame_age_ms: frameAgeMs,
@@ -3935,6 +4081,9 @@
               sequence: parsed.sequence,
             }));
           }
+          if (parsed.camera === "overview" && !leisaacDualMode(leisaacCapability)) {
+            return;
+          }
           if (leisaacVideoPending[parsed.camera]) {
             parsed.browserDropped = Number(leisaacVideoPending[parsed.camera].browserDropped || 0) + 1;
           } else {
@@ -3964,7 +4113,7 @@
               "X-NPA-LeIsaac-Control": "1",
             },
             body: JSON.stringify({
-              camera: "overview",
+              camera: "workspace",
               sequence: sequence,
               yaw_delta: Math.max(-0.5, Math.min(0.5, Number(delta.yaw || 0))),
               pitch_delta: Math.max(-0.5, Math.min(0.5, Number(delta.pitch || 0))),
@@ -3972,11 +4121,11 @@
             }),
           });
           if (response.status !== 202) throw new Error("view control HTTP " + response.status);
-          const label = document.getElementById("leisaacSecondaryStatus");
-          if (label) label.textContent = "Overview camera · rotation " + sequence + " applied";
+          const label = document.getElementById("leisaacStreamStatus");
+          if (label) label.textContent = "Interactive primary · orbit revision " + sequence + " accepted";
         } catch (err) {
-          const label = document.getElementById("leisaacSecondaryStatus");
-          if (label) label.textContent = "Overview rotation failed: " + String((err && err.message) || err);
+          const label = document.getElementById("leisaacStreamStatus");
+          if (label) label.textContent = "Primary orbit failed: " + String((err && err.message) || err);
         } finally {
           leisaacViewInFlight = false;
           if (leisaacPendingViewDelta) flushLeIsaacViewDelta();
@@ -4690,6 +4839,10 @@
           leisaacRecorderPending = null;
           leisaacRecorderUiError = "";
           disconnectLeIsaac().catch(() => {});
+          leisaacRequestedViewMode = "";
+          leisaacRequestedRecordingMode = "";
+          leisaacModeRevision = 0;
+          leisaacRecordingRevision = 0;
           panel.remove();
           panel = null;
         }
@@ -4719,13 +4872,22 @@
           const connectBtn = panel.querySelector("#leisaacConnect");
           const disconnectBtn = panel.querySelector("#leisaacDisconnect");
           const host = panel.querySelector("#leisaacStreamHost");
-          const secondaryHost = panel.querySelector("#leisaacSecondaryHost");
           if (connectBtn) connectBtn.addEventListener("click", () => connectLeIsaac().catch((err) => showToast(String(err), "error")));
           if (disconnectBtn) disconnectBtn.addEventListener("click", () => disconnectLeIsaac());
           if (host) {
             host.addEventListener("click", () => host.focus());
           }
-          bindLeIsaacOrbit(secondaryHost);
+          bindLeIsaacOrbit(host);
+          const viewMode = panel.querySelector("#leisaacViewMode");
+          const recordingCameras = panel.querySelector("#leisaacRecordingCameras");
+          if (viewMode) viewMode.addEventListener("change", () => {
+            try { sendLeIsaacModeRequest("view-mode", viewMode.value); }
+            catch (err) { updateLeIsaacModeUi(leisaacCapability); showToast(String(err), "error"); }
+          });
+          if (recordingCameras) recordingCameras.addEventListener("change", () => {
+            try { sendLeIsaacModeRequest("recording-cameras", recordingCameras.value); }
+            catch (err) { updateLeIsaacModeUi(leisaacCapability); showToast(String(err), "error"); }
+          });
           const inputDevice = panel.querySelector("#leisaacInputDevice");
           if (inputDevice) inputDevice.addEventListener("change", () => {
             stopLeIsaacGamepad();
@@ -4842,6 +5004,7 @@
         const availability = panel.querySelector("#leisaacAvailability");
         const connectBtn = panel.querySelector("#leisaacConnect");
         renderLeIsaacConfiguration(status);
+        updateLeIsaacModeUi(status);
         if (availability) availability.textContent = status.available
           ? "Live simulation is ready."
           : String(status.reason || "Live simulation is unavailable; Episodes remains usable when an S3 dataset is selected.");

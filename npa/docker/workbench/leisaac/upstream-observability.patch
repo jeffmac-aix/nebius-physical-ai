@@ -11,10 +11,16 @@ index a467482..d3bcad5 100644
 +from io import BytesIO
 @@ -92,0 +98 @@ import os
 +from pathlib import Path
-@@ -94,0 +101,2 @@ import time
+@@ -94,0 +101,8 @@ import time
 +from leisaac_dataset import EpisodeRecorder, extract_step
++from leisaac_transport import (
++    DEFAULT_RECORDING_CAMERA_MODE,
++    DEFAULT_VIEW_MODE,
++    RecordingCameraMode,
++    ViewMode,
++)
 +from PIL import Image
-@@ -97,0 +105,7 @@ from isaaclab.envs import DirectRLEnv, ManagerBasedRLEnv
+@@ -97,0 +112,7 @@ from isaaclab.envs import DirectRLEnv, ManagerBasedRLEnv
 +from omni.kit.viewport.utility import (
 +    capture_viewport_to_buffer,
 +    get_active_viewport,
@@ -22,11 +28,11 @@ index a467482..d3bcad5 100644
 +)
 +from isaacsim.core.utils.viewports import set_camera_view
 +from pxr import UsdGeom
-@@ -122 +136,2 @@ class RateLimiter:
+@@ -122 +144,2 @@ class RateLimiter:
 -            env.sim.render()
 +            if env is not None:
 +                env.sim.render()
-@@ -159 +175,31 @@ def main():  # noqa: C901
+@@ -159 +182,31 @@ def main():  # noqa: C901
      env_cfg = parse_env_cfg(args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs)
 +    if os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") == "1":
 +        # Browser teleoperation renders the viewport and does not consume policy images.
@@ -58,11 +64,11 @@ index a467482..d3bcad5 100644
 +    if custom_scene_usd:
 +        # Custom scenes retain the task's expected object prim names and layout.
 +        env_cfg.scene.scene.spawn.usd_path = custom_scene_usd
-@@ -226 +273,3 @@ def main():  # noqa: C901
+@@ -226 +279,3 @@ def main():  # noqa: C901
      env: ManagerBasedRLEnv | DirectRLEnv = gym.make(task_name, cfg=env_cfg).unwrapped
 +    if os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") == "1":
 +        env.cfg.sim.render_interval = 1_000_000_000
-@@ -313 +362,458 @@ def main():  # noqa: C901
+@@ -313 +368,640 @@ def main():  # noqa: C901
      env.reset()
 +    recorder = EpisodeRecorder(
 +        root=Path(os.environ["NPA_LEISAAC_RECORDER_ROOT"]),
@@ -78,13 +84,15 @@ index a467482..d3bcad5 100644
 +        isaac_lab_version=os.environ["NPA_LEISAAC_ISAAC_LAB_VERSION"],
 +        image=os.environ["NPA_LEISAAC_IMAGE"],
 +        registry_fingerprint=os.environ["NPA_LEISAAC_REGISTRY_FINGERPRINT"],
-+        camera_ids=("workspace", "overview"),
++        camera_ids=("workspace",),
 +        provenance={
 +            "robot": os.environ.get("NPA_LEISAAC_ROBOT", "stock-so101"),
 +            "scene": os.environ.get("NPA_LEISAAC_SCENE", args_cli.task),
 +            "device": os.environ.get("NPA_LEISAAC_DEVICE", args_cli.teleop_device),
 +            "task": args_cli.task,
 +            "bundle": os.environ.get("NPA_LEISAAC_BUNDLE", "stock"),
++            "display_view_mode": DEFAULT_VIEW_MODE.value,
++            "recording_camera_mode": DEFAULT_RECORDING_CAMERA_MODE.value,
 +        },
 +    )
 +    sim_step = 0
@@ -100,6 +108,25 @@ index a467482..d3bcad5 100644
 +        "NPA_LEISAAC_SECONDARY_FRAME_META_PATH", ""
 +    )
 +    view_command_path = os.environ.get("NPA_LEISAAC_VIEW_COMMAND_PATH", "")
++    mode_command_path = os.environ.get("NPA_LEISAAC_MODE_COMMAND_PATH", "")
++    mode_status_path = os.environ.get("NPA_LEISAAC_MODE_STATUS_PATH", "")
++    mode_state = {
++        "schema": "npa.leisaac.view-mode.v1",
++        "requested_view_mode": DEFAULT_VIEW_MODE.value,
++        "applied_view_mode": DEFAULT_VIEW_MODE.value,
++        "requested_recording_camera_mode": DEFAULT_RECORDING_CAMERA_MODE.value,
++        "applied_recording_camera_mode": DEFAULT_RECORDING_CAMERA_MODE.value,
++        "view_revision": 0,
++        "applied_view_revision": 0,
++        "recording_revision": 0,
++        "applied_recording_revision": 0,
++        "mode_transition_latency_ms": 0.0,
++        "camera_switches": 0,
++        "capture_counts": {"workspace": 0, "overview": 0},
++        "capture_started_monotonic_ns": time.monotonic_ns(),
++        "capture_coalesced": 0,
++        "view_revision_applied": 0,
++    }
 +    capture_state = {
 +        "pending": set(),
 +        "queue": [],
@@ -111,7 +138,7 @@ index a467482..d3bcad5 100644
 +        "encode_context": None,
 +        "deferred_causal": None,
 +        "task": None,
-+        "next_at": 0.0,
++        "next_at": {"workspace": 0.0, "overview": 0.0},
 +        "sequences": {"workspace": 0, "overview": 0},
 +        "group": 0,
 +        "causal_action_sequence": 0,
@@ -120,16 +147,31 @@ index a467482..d3bcad5 100644
 +    }
 +    # Background frames must not monopolize the Isaac render/event loop. Causal
 +    # action pairs bypass this cadence and remain immediate at full quality.
-+    idle_background_capture_fps = 2.5
-+    active_background_capture_fps = 2.5
++    single_primary_capture_fps = 30.0
++    dual_primary_capture_fps = 20.0
++    secondary_capture_fps = 2.5
 +    capture_encoder = ThreadPoolExecutor(max_workers=1, thread_name_prefix="leisaac-jpeg")
-+    def background_capture_interval():
-+        active = time.monotonic() - capture_state["last_causal_at"] < 2.5
-+        return 1.0 / (active_background_capture_fps if active else idle_background_capture_fps)
++    def primary_capture_interval():
++        fps = (
++            single_primary_capture_fps
++            if mode_state["applied_view_mode"] == ViewMode.SINGLE_FAST.value
++            else dual_primary_capture_fps
++        )
++        return 1.0 / fps
 +    viewport = get_active_viewport() if frame_path else None
 +    if viewport is not None:
 +        viewport.resolution = (1280, 720)
-+    workspace_camera_path = viewport.camera_path if viewport is not None else ""
++    workspace_camera_path = "/OmniverseKit_NPA_Interactive"
++    workspace_eye = [1.25, -1.25, 0.95]
++    workspace_target = [0.0, 0.0, 0.45]
++    if viewport is not None:
++        UsdGeom.Camera.Define(viewport.stage, workspace_camera_path)
++        set_camera_view(
++            workspace_eye,
++            workspace_target,
++            camera_prim_path=workspace_camera_path,
++            viewport_api=viewport,
++        )
 +    # A second Kit viewport races the renderer's shared GPU command list on RTX
 +    # PRO 6000.  Alternate two camera paths on one fully-awaited viewport instead.
 +    overview_viewport = viewport
@@ -179,6 +221,7 @@ index a467482..d3bcad5 100644
 +                    capture_group=capture_group,
 +                    causal_action_sequence=causal_action_sequence,
 +                    causal_applied_monotonic_ns=causal_applied_monotonic_ns,
++                    view_revision=mode_state["view_revision_applied"],
 +                )
 +            except Exception as exc:
 +                print(
@@ -214,6 +257,7 @@ index a467482..d3bcad5 100644
 +                "causal_applied_monotonic_ns": capture_result[
 +                    "causal_applied_monotonic_ns"
 +                ],
++                "view_revision": capture_result["view_revision"],
 +                "capture_monotonic_ns": capture_result["capture_monotonic_ns"],
 +                "capture_wall_ns": capture_result["capture_wall_ns"],
 +                "encoded_monotonic_ns": encoded_monotonic_ns,
@@ -227,6 +271,7 @@ index a467482..d3bcad5 100644
 +                encoding="utf-8",
 +            )
 +            os.replace(metadata_temporary, metadata_destination)
++        mode_state["capture_counts"][camera_id] += 1
 +        return frame_bytes
 +
 +    def complete_capture(camera_id):
@@ -300,7 +345,7 @@ index a467482..d3bcad5 100644
 +            # viewport. Extra completion frames add latency after the copy is safe.
 +            await capture_helper.wait_for_result(completion_frames=0)
 +            if camera_id == "overview":
-+                viewport.camera_path = workspace_camera_path
++                setattr(viewport, "camera_path", workspace_camera_path)
 +                await next_viewport_frame_async(viewport, n_frames=1)
 +            capture_state["encode_future"] = capture_encoder.submit(
 +                encode_and_publish_capture,
@@ -362,6 +407,7 @@ index a467482..d3bcad5 100644
 +                )
 +            else:
 +                viewport.camera_path = selected_camera_path
++                mode_state["camera_switches"] += 1
 +                capture_helper = None
 +        except Exception:
 +            capture_state["active"] = False
@@ -395,14 +441,13 @@ index a467482..d3bcad5 100644
 +        capture_state["causal_applied_monotonic_ns"] = applied_ns
 +        causal_at = time.monotonic()
 +        capture_state["last_causal_at"] = causal_at
-+        # Keep the background pair cadence phase-locked behind the safety
-+        # release. This preserves 2.5 FPS while leaving the next likely control
-+        # boundary free for its latency-critical causal capture.
 +        if str(applied.get("event") or "") == "release":
-+            capture_state["next_at"] = causal_at + background_capture_interval()
-+            return
-+        # A causal pair supersedes background work that has not started. The
++            # Releases remain causal primary work; they never wait for the
++            # slower secondary cadence or a stale background request.
++            capture_state["next_at"]["workspace"] = causal_at
++        # A causal primary supersedes background work that has not started. The
 +        # active capture is never cancelled while Kit/GPU owns its buffer.
++        mode_state["capture_coalesced"] += len(capture_state["queue"])
 +        capture_state["queue"].clear()
 +        capture_state["pending"].clear()
 +        if capture_state["active_priority"] or capture_state["priority_queue"]:
@@ -410,17 +455,16 @@ index a467482..d3bcad5 100644
 +            return
 +        capture_state["group"] += 1
 +        capture_group = f"causal-{capture_state['group']}"
-+        cameras = (
-+            ("workspace", workspace_camera_path, frame_path, frame_meta_path),
-+            (
-+                "overview",
-+                overview_camera_path,
-+                secondary_frame_path,
-+                secondary_frame_meta_path,
-+            ),
-+        )
 +        capture_state["priority_queue"][:] = [
-+            (*camera, capture_group, sequence, applied_ns) for camera in cameras
++            (
++                "workspace",
++                workspace_camera_path,
++                frame_path,
++                frame_meta_path,
++                capture_group,
++                sequence,
++                applied_ns,
++            )
 +        ]
 +    def schedule_browser_capture():
 +        poll_encoded_capture()
@@ -433,21 +477,38 @@ index a467482..d3bcad5 100644
 +            viewport is None
 +            or overview_viewport is None
 +            or capture_state["pending"]
-+            or time.monotonic() < capture_state["next_at"]
 +        ):
++            return
++        now = time.monotonic()
++        recording_both = (
++            mode_state["applied_recording_camera_mode"]
++            == RecordingCameraMode.PRIMARY_AND_SECONDARY.value
++            and recorder.status()["state"] in {"recording", "outcome-pending"}
++        )
++        secondary_enabled = (
++            mode_state["applied_view_mode"] == ViewMode.DUAL_SLOW.value
++            or recording_both
++        )
++        primary_due = now >= capture_state["next_at"]["workspace"]
++        secondary_due = secondary_enabled and now >= capture_state["next_at"]["overview"]
++        if not primary_due and not secondary_due:
 +            return
 +        capture_state["group"] += 1
 +        capture_group = f"capture-{capture_state['group']}"
-+        capture_state["next_at"] = time.monotonic() + background_capture_interval()
-+        cameras = (
-+            ("workspace", workspace_camera_path, frame_path, frame_meta_path),
-+            (
++        cameras = []
++        if primary_due or secondary_due:
++            cameras.append(
++                ("workspace", workspace_camera_path, frame_path, frame_meta_path)
++            )
++            capture_state["next_at"]["workspace"] = now + primary_capture_interval()
++        if secondary_due:
++            cameras.append((
 +                "overview",
 +                overview_camera_path,
 +                secondary_frame_path,
 +                secondary_frame_meta_path,
-+            ),
-+        )
++            ))
++            capture_state["next_at"]["overview"] = now + 1.0 / secondary_capture_fps
 +        capture_state["pending"].update(camera[0] for camera in cameras)
 +        capture_state["queue"].extend(
 +            (
@@ -468,12 +529,122 @@ index a467482..d3bcad5 100644
 +            capture_state["active"]
 +            or capture_state["priority_queue"]
 +            or capture_state["queue"]
-+            or time.monotonic() >= capture_state["next_at"]
++            or time.monotonic() >= capture_state["next_at"]["workspace"]
++            or (
++                mode_state["applied_view_mode"] == ViewMode.DUAL_SLOW.value
++                and time.monotonic() >= capture_state["next_at"]["overview"]
++            )
 +        )
++
++    def write_mode_status():
++        if not mode_status_path:
++            return
++        destination = Path(mode_status_path)
++        temporary = destination.with_suffix(".tmp")
++        elapsed = max(
++            0.001,
++            (time.monotonic_ns() - mode_state["capture_started_monotonic_ns"])
++            / 1_000_000_000.0,
++        )
++        snapshot = dict(mode_state)
++        snapshot["capture_fps"] = {
++            camera: count / elapsed
++            for camera, count in mode_state["capture_counts"].items()
++        }
++        snapshot["queue_depths"] = {
++            "active": int(bool(capture_state["active"])),
++            "priority": len(capture_state["priority_queue"]),
++            "background": len(capture_state["queue"]),
++            "encode": int(capture_state["encode_future"] is not None),
++        }
++        temporary.write_text(
++            json.dumps(snapshot, sort_keys=True, separators=(",", ":")) + "\n",
++            encoding="utf-8",
++        )
++        os.replace(temporary, destination)
++
++    def episode_provenance():
++        return {
++            "robot": os.environ.get("NPA_LEISAAC_ROBOT", "stock-so101"),
++            "scene": os.environ.get("NPA_LEISAAC_SCENE", args_cli.task),
++            "device": os.environ.get("NPA_LEISAAC_DEVICE", args_cli.teleop_device),
++            "task": args_cli.task,
++            "bundle": os.environ.get("NPA_LEISAAC_BUNDLE", "stock"),
++            "display_view_mode": mode_state["applied_view_mode"],
++            "recording_camera_mode": mode_state[
++                "applied_recording_camera_mode"
++            ],
++        }
++
++    def apply_mode_command():
++        if not mode_command_path:
++            return
++        try:
++            command = json.loads(Path(mode_command_path).read_text(encoding="utf-8"))
++            requested_view = ViewMode(command["requested_view_mode"])
++            requested_recording = RecordingCameraMode(
++                command["requested_recording_camera_mode"]
++            )
++            view_revision = int(command.get("view_revision") or 0)
++            recording_revision = int(command.get("recording_revision") or 0)
++            requested_ns = int(command.get("requested_monotonic_ns") or 0)
++        except (OSError, ValueError, KeyError, TypeError):
++            return
++        mode_state["requested_view_mode"] = requested_view.value
++        mode_state["requested_recording_camera_mode"] = requested_recording.value
++        mode_state["view_revision"] = view_revision
++        mode_state["recording_revision"] = recording_revision
++        changed = False
++        # Switching camera scheduling waits until Kit has retired the active GPU
++        # readback and the single bounded encoder has completed.
++        if (
++            mode_state["applied_view_revision"] != view_revision
++            and not capture_state["active"]
++            and capture_state["encode_future"] is None
++        ):
++            if requested_view is ViewMode.SINGLE_FAST:
++                mode_state["capture_coalesced"] += sum(
++                    1 for item in capture_state["queue"] if item[0] == "overview"
++                )
++                capture_state["queue"][:] = [
++                    item for item in capture_state["queue"] if item[0] == "workspace"
++                ]
++                capture_state["priority_queue"][:] = [
++                    item
++                    for item in capture_state["priority_queue"]
++                    if item[0] == "workspace"
++                ]
++                capture_state["pending"].discard("overview")
++                viewport.camera_path = workspace_camera_path
++            mode_state["applied_view_mode"] = requested_view.value
++            mode_state["applied_view_revision"] = view_revision
++            changed = True
++        if (
++            mode_state["applied_recording_revision"] != recording_revision
++            and recorder.status()["state"] == "idle"
++        ):
++            mode_state["applied_recording_camera_mode"] = requested_recording.value
++            mode_state["applied_recording_revision"] = recording_revision
++            camera_ids = (
++                ("workspace", "overview")
++                if requested_recording is RecordingCameraMode.PRIMARY_AND_SECONDARY
++                else ("workspace",)
++            )
++            recorder.configure_capture_schema(
++                camera_ids,
++                provenance=episode_provenance(),
++            )
++            changed = True
++        if changed:
++            mode_state["mode_transition_latency_ms"] = max(
++                0.0,
++                (time.monotonic_ns() - requested_ns) / 1_000_000.0,
++            ) if requested_ns else 0.0
++        write_mode_status()
 +
 +    def apply_view_command():
 +        nonlocal last_view_sequence
-+        if not view_command_path or overview_viewport is None:
++        if not view_command_path or viewport is None:
 +            return
 +        try:
 +            command = json.loads(Path(view_command_path).read_text(encoding="utf-8"))
@@ -483,9 +654,11 @@ index a467482..d3bcad5 100644
 +            yaw = float(command["yaw_delta"])
 +            pitch = float(command["pitch_delta"])
 +            distance = float(command["distance_delta"])
++            if command.get("camera") != "workspace":
++                return
 +        except (OSError, ValueError, KeyError, TypeError):
 +            return
-+        offset = [overview_eye[index] - overview_target[index] for index in range(3)]
++        offset = [workspace_eye[index] - workspace_target[index] for index in range(3)]
 +        radius = max(
 +            0.5,
 +            min(5.0, (sum(value * value for value in offset) ** 0.5) + distance),
@@ -495,37 +668,52 @@ index a467482..d3bcad5 100644
 +            -1.2,
 +            min(1.2, __import__("math").asin(offset[2] / max(radius, 0.001)) + pitch),
 +        )
-+        overview_eye[:] = [
-+            overview_target[0]
++        workspace_eye[:] = [
++            workspace_target[0]
 +            + radius
 +            * __import__("math").cos(elevation)
 +            * __import__("math").cos(azimuth),
-+            overview_target[1]
++            workspace_target[1]
 +            + radius
 +            * __import__("math").cos(elevation)
 +            * __import__("math").sin(azimuth),
-+            overview_target[2] + radius * __import__("math").sin(elevation),
++            workspace_target[2] + radius * __import__("math").sin(elevation),
 +        ]
 +        set_camera_view(
-+            overview_eye,
-+            overview_target,
-+            camera_prim_path=overview_camera_path,
-+            viewport_api=overview_viewport,
++            workspace_eye,
++            workspace_target,
++            camera_prim_path=workspace_camera_path,
++            viewport_api=viewport,
 +        )
 +        last_view_sequence = sequence
++        mode_state["view_revision_applied"] = sequence
++        capture_state["group"] += 1
++        capture_state["priority_queue"][:] = [
++            (
++                "workspace",
++                workspace_camera_path,
++                frame_path,
++                frame_meta_path,
++                f"orbit-{sequence}",
++                capture_state["causal_action_sequence"],
++                capture_state["causal_applied_monotonic_ns"],
++            )
++        ]
++        write_mode_status()
 +
 +    if frame_path:
 +        if viewport is None:
 +            raise RuntimeError("browser teleoperation requires an active RTX viewport")
 +        viewport.camera_path = workspace_camera_path
 +        env.render()
++        apply_mode_command()
 +        schedule_browser_capture()
 +        env.render()
-@@ -375 +807,2 @@ def main():  # noqa: C901
+@@ -375 +1069,2 @@ def main():  # noqa: C901
 -                    env.render()
 +                    if os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") != "1":
 +                        env.render()
-@@ -382 +815,20 @@ def main():  # noqa: C901
+@@ -382 +1077,21 @@ def main():  # noqa: C901
 -                    env.step(actions)
 +                    step_result = env.step(actions)
 +                    sim_step += 1
@@ -539,18 +727,19 @@ index a467482..d3bcad5 100644
 +                            sim_step=sim_step,
 +                        )
 +                    )
-+                schedule_browser_capture()
++                apply_mode_command()
 +                apply_view_command()
++                schedule_browser_capture()
 +                if (
 +                    os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") == "1"
 +                    and browser_capture_needs_render()
 +                ):
 +                    env.render()
 +                recorder.process_commands(reset=env.reset)
-@@ -384 +836 @@ def main():  # noqa: C901
+@@ -384 +1099 @@ def main():  # noqa: C901
 -                    rate_limiter.sleep(env)
 +                    rate_limiter.sleep(None if os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") == "1" else env)
-@@ -395 +921,4 @@ def main():  # noqa: C901
+@@ -395 +1110,4 @@ def main():  # noqa: C901
 +        capture_encoder.shutdown(wait=True, cancel_futures=True)
 +        poll_encoded_capture()
 +        recorder.shutdown(wait=True)

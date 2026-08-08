@@ -261,18 +261,7 @@ class EpisodeRecorder:
         self.isaac_lab_version = isaac_lab_version
         self.image = image
         self.registry_fingerprint = registry_fingerprint
-        normalized_cameras = tuple(str(item or "").strip() for item in camera_ids)
-        if (
-            not normalized_cameras
-            or len(normalized_cameras) > 4
-            or len(set(normalized_cameras)) != len(normalized_cameras)
-            or any(
-                not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", item)
-                for item in normalized_cameras
-            )
-        ):
-            raise DatasetError("camera IDs must be one to four unique safe names")
-        self.camera_ids = normalized_cameras
+        self.camera_ids = self._validated_camera_ids(camera_ids)
         self.provenance = dict(provenance) if isinstance(provenance, dict) else {}
         self.publisher: Callable[[Path, dict[str, Any]], dict[str, Any]]
         self._status_loader: Callable[[], dict[str, Any]] | None
@@ -342,6 +331,43 @@ class EpisodeRecorder:
         self._recover_dataset_status()
         self._write_status()
 
+    @staticmethod
+    def _validated_camera_ids(camera_ids: tuple[str, ...]) -> tuple[str, ...]:
+        normalized = tuple(str(item or "").strip() for item in camera_ids)
+        if (
+            not normalized
+            or len(normalized) > 4
+            or len(set(normalized)) != len(normalized)
+            or any(
+                not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", item)
+                for item in normalized
+            )
+        ):
+            raise DatasetError("camera IDs must be one to four unique safe names")
+        return normalized
+
+    def configure_capture_schema(
+        self,
+        camera_ids: tuple[str, ...],
+        *,
+        provenance: dict[str, Any] | None = None,
+    ) -> None:
+        """Configure the next episode without mutating an active schema."""
+
+        normalized = self._validated_camera_ids(camera_ids)
+        with self._lock:
+            if self._state != "idle":
+                if normalized != self.camera_ids:
+                    raise DatasetError(
+                        "recording camera changes apply only at episode boundaries"
+                    )
+                return
+            self.camera_ids = normalized
+            if provenance is not None:
+                self.provenance = dict(provenance)
+            self._write_status()
+            self._write_status()
+
     def _recover_dataset_status(self) -> None:
         if self._status_loader is None:
             return
@@ -389,6 +415,11 @@ class EpisodeRecorder:
                 "last_command_id": self._last_command_id,
                 "last_command": self._last_command,
                 "command_revision": self._command_revision,
+                "cameras": list(self.camera_ids),
+                "display_view_mode": str(self.provenance.get("display_view_mode") or ""),
+                "recording_camera_mode": str(
+                    self.provenance.get("recording_camera_mode") or ""
+                ),
                 # The session server consumes this durable ledger directly. The
                 # public agent status allowlist deliberately omits it.
                 "processed_commands": dict(self._processed_commands),

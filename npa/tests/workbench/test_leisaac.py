@@ -538,7 +538,9 @@ def test_observability_patch_is_exact_and_records_real_upstream_input() -> None:
     assert "await capture_helper.wait_for_result(completion_frames=0)" in source
     assert source.count("viewport.camera_path = workspace_camera_path") == 2
     assert source.count("schedule_browser_capture()\n+        env.render()") == 1
-    assert source.count("schedule_browser_capture()\n+                apply_view_command()") == 1
+    assert source.count("apply_view_command()\n+                schedule_browser_capture()") == 1
+    assert "def apply_mode_command():" in source
+    assert "RecordingCameraMode.PRIMARY_AND_SECONDARY" in source
     assert "def browser_capture_needs_render():" in source
     assert (
         "def browser_capture_needs_render():\n"
@@ -559,21 +561,20 @@ def test_observability_patch_is_exact_and_records_real_upstream_input() -> None:
     assert "and browser_capture_needs_render()" in source
     assert 'capture_state["queue"].clear()' in source
     assert 'capture_state["priority_queue"]' in source
-    assert source.count("idle_background_capture_fps = 2.5") == 1
-    assert source.count("active_background_capture_fps = 2.5") == 1
+    assert source.count("secondary_capture_fps = 2.5") == 1
     assert 'capture_state["last_causal_at"] = causal_at' in source
     assert (
-        'capture_state["next_at"] = causal_at + background_capture_interval()'
+        'capture_state["next_at"]["workspace"] = causal_at'
         in source
     )
     assert (
         'if str(applied.get("event") or "") == "release":\n'
-        '+            capture_state["next_at"] = causal_at + background_capture_interval()\n'
-        '+            return\n'
-        '+        # A causal pair supersedes background work'
+        '+            # Releases remain causal primary work; they never wait for the\n'
+        '+            # slower secondary cadence or a stale background request.'
         in source
     )
-    assert "time.monotonic() + background_capture_interval()" in source
+    assert 'time.monotonic() >= capture_state["next_at"]["workspace"]' in source
+    assert 'mode_state["applied_view_mode"] == ViewMode.DUAL_SLOW.value' in source
     assert '"causal_action_sequence": capture_result["causal_action_sequence"]' in source
     assert "mark_remote_step_applied(sim_step)" in source
     assert "asyncio.ensure_future" in source
@@ -582,7 +583,7 @@ def test_observability_patch_is_exact_and_records_real_upstream_input() -> None:
     assert (
         "UsdGeom.Camera.Define(overview_viewport.stage, overview_camera_path)" in source
     )
-    assert source.count("viewport_api=overview_viewport") == 2
+    assert source.count("viewport_api=overview_viewport") == 1
     assert "NPA_LEISAAC_INPUT_QUEUE" in source
     assert "NPA_LEISAAC_APPLIED_COUNTER" in source
     assert "NPA_LEISAAC_FRAME_PATH" in source

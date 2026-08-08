@@ -88,7 +88,13 @@ causal frame. Browser mode removes the unused policy camera tensors, raises the
 steady-state Isaac Lab `render_interval` only after environment construction,
 and disables the rate limiter's redundant render side effect. Thus control and
 physics do not pay for an idle viewport render, while the first post-apply
-workspace/overview capture still advances the real renderer immediately.
+primary capture still advances the real renderer immediately. `single_fast` is
+the default and uses only the stable interactive primary camera unless the
+episode schema explicitly requests both cameras. `dual_slow` serializes the
+overview camera at 2.5 FPS only after higher-priority causal and final-orbit
+primary work. Runtime, relay, and browser queues retain bounded latest values;
+the requested and scheduler-applied mode revisions remain separate until the
+GPU/readback/encoder boundary is safe.
 
 Security properties:
 

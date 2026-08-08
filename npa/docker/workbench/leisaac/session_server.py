@@ -93,6 +93,8 @@ try:
         AsyncFrameCreditWindow,
         CONTROL_SUBPROTOCOL,
         ControlLedger,
+        DEFAULT_RECORDING_CAMERA_MODE,
+        DEFAULT_VIEW_MODE,
         FrameEnvelope,
         MAX_CLIENT_HISTORY,
         MAX_CONTROL_MESSAGE_BYTES,
@@ -100,6 +102,8 @@ try:
         TransportMetrics,
         TransportProtocolError,
         VIDEO_SUBPROTOCOL,
+        RECORDING_CAMERA_CONTRACT,
+        VIEW_MODE_CONTRACT,
         pack_frame,
         parse_control_message,
         parse_video_ack,
@@ -111,6 +115,8 @@ except ImportError:  # Repository unit tests import the script directly.
         AsyncFrameCreditWindow,
         CONTROL_SUBPROTOCOL,
         ControlLedger,
+        DEFAULT_RECORDING_CAMERA_MODE,
+        DEFAULT_VIEW_MODE,
         FrameEnvelope,
         MAX_CLIENT_HISTORY,
         MAX_CONTROL_MESSAGE_BYTES,
@@ -118,6 +124,8 @@ except ImportError:  # Repository unit tests import the script directly.
         TransportMetrics,
         TransportProtocolError,
         VIDEO_SUBPROTOCOL,
+        RECORDING_CAMERA_CONTRACT,
+        VIEW_MODE_CONTRACT,
         pack_frame,
         parse_control_message,
         parse_video_ack,
@@ -177,7 +185,7 @@ CLIENT_SOURCE_JS_SHA256 = (
 )
 CLIENT_JS_SHA256 = CLIENT_SOURCE_JS_SHA256
 UPSTREAM_OBSERVABILITY_PATCH_SHA256 = (
-    "cc73e19a991ea88ff086023d67e32e260556536d7502ace3db15fc6f47959bf2"
+    "c78f0668b2d30ee3255fdba0988d9b7815261c036b9586ca19e282b1aa94e430"
 )
 
 CACHE_ROOT = Path(os.environ.get("NPA_LEISAAC_CACHE_DIR", "/opt/leisaac-cache"))
@@ -193,6 +201,8 @@ FRAME_META_PATH = Path("/tmp/npa-leisaac-frame.json")
 SECONDARY_FRAME_PATH = Path("/tmp/npa-leisaac-frame-overview.jpg")
 SECONDARY_FRAME_META_PATH = Path("/tmp/npa-leisaac-frame-overview.json")
 VIEW_COMMAND_PATH = Path("/tmp/npa-leisaac-view-command.json")
+MODE_COMMAND_PATH = Path("/tmp/npa-leisaac-mode-command.json")
+MODE_STATUS_PATH = Path("/tmp/npa-leisaac-mode-status.json")
 CUSTOM_BUNDLE_ROOT = CACHE_ROOT / "custom"
 CAMERA_PATHS = {
     "workspace": (FRAME_PATH, FRAME_META_PATH),
@@ -208,6 +218,9 @@ INPUT_LOCK = threading.Lock()
 RECORDER_COMMAND_LOCK = threading.Lock()
 APPLIED_ACK_LOCK = threading.Lock()
 BUNDLE_APPLY_LOCK = threading.Lock()
+MODE_COMMAND_LOCK = threading.Lock()
+CONTROL_OWNER_LOCK = threading.Lock()
+CONTROL_OWNER: dict[str, str] = {"token": "", "client_id": ""}
 BUNDLE_RESTART = threading.Event()
 SERVER_STOP = threading.Event()
 BUNDLE_SELECTION: dict[str, dict[str, Any]] = {}
@@ -226,6 +239,74 @@ FRAME_LATEST = AsyncLatestByKey(("workspace", "overview"))
 VIDEO_DATACHANNEL_PEERS = VideoDataChannelPeerPool()
 CONTROL_DATACHANNEL_PEERS = ControlDataChannelPeerPool()
 APPLIED_ACK_OFFSET = 0
+
+
+def _default_mode_state() -> dict[str, Any]:
+    return {
+        "schema": "npa.leisaac.view-mode.v1",
+        "requested_view_mode": DEFAULT_VIEW_MODE.value,
+        "applied_view_mode": DEFAULT_VIEW_MODE.value,
+        "requested_recording_camera_mode": DEFAULT_RECORDING_CAMERA_MODE.value,
+        "applied_recording_camera_mode": DEFAULT_RECORDING_CAMERA_MODE.value,
+        "view_revision": 0,
+        "applied_view_revision": 0,
+        "recording_revision": 0,
+        "applied_recording_revision": 0,
+        "mode_transition_latency_ms": 0.0,
+        "camera_switches": 0,
+        "capture_counts": {"workspace": 0, "overview": 0},
+        "capture_fps": {"workspace": 0.0, "overview": 0.0},
+        "capture_coalesced": 0,
+        "queue_depths": {
+            "active": 0,
+            "priority": 0,
+            "background": 0,
+            "encode": 0,
+        },
+    }
+
+
+def _mode_state() -> dict[str, Any]:
+    try:
+        payload = json.loads(MODE_STATUS_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return _default_mode_state()
+    return payload if isinstance(payload, dict) else _default_mode_state()
+
+
+def _mode_request_state() -> dict[str, Any]:
+    """Read the latest request, which may be newer than scheduler status."""
+
+    try:
+        payload = json.loads(MODE_COMMAND_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return _mode_state()
+    return payload if isinstance(payload, dict) else _mode_state()
+
+
+def _queue_mode_request(message: dict[str, Any]) -> None:
+    """Atomically publish the latest controller-owned scheduler request."""
+
+    with MODE_COMMAND_LOCK:
+        try:
+            command = json.loads(MODE_COMMAND_PATH.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            command = _default_mode_state()
+        if not isinstance(command, dict):
+            command = _default_mode_state()
+        revision = int(message["revision"])
+        if message["type"] == "view-mode":
+            command["requested_view_mode"] = str(message["mode"])
+            command["view_revision"] = revision
+        else:
+            command["requested_recording_camera_mode"] = str(message["mode"])
+            command["recording_revision"] = revision
+        command.update(
+            schema="npa.leisaac.view-mode-command.v1",
+            owner_client_id=str(message["client_id"]),
+            requested_monotonic_ns=time.monotonic_ns(),
+        )
+        _write_json_atomic(MODE_COMMAND_PATH, command)
 
 
 def utc_now() -> str:
@@ -690,6 +771,8 @@ def _simulation_launch() -> tuple[list[str], dict[str, str]]:
             "NPA_LEISAAC_SECONDARY_FRAME_PATH": str(SECONDARY_FRAME_PATH),
             "NPA_LEISAAC_SECONDARY_FRAME_META_PATH": str(SECONDARY_FRAME_META_PATH),
             "NPA_LEISAAC_VIEW_COMMAND_PATH": str(VIEW_COMMAND_PATH),
+            "NPA_LEISAAC_MODE_COMMAND_PATH": str(MODE_COMMAND_PATH),
+            "NPA_LEISAAC_MODE_STATUS_PATH": str(MODE_STATUS_PATH),
             "NPA_LEISAAC_RECORDER_ROOT": str(RECORDER_ROOT),
             "NPA_LEISAAC_CUSTOM_ROOT": str(CUSTOM_BUNDLE_ROOT),
         }
@@ -717,17 +800,22 @@ def _reset_runtime_files() -> None:
         SECONDARY_FRAME_PATH,
         SECONDARY_FRAME_META_PATH,
         VIEW_COMMAND_PATH,
+        MODE_COMMAND_PATH,
+        MODE_STATUS_PATH,
     ):
         path.unlink(missing_ok=True)
+    initial_mode = _default_mode_state()
+    _write_json_atomic(MODE_COMMAND_PATH, initial_mode)
+    _write_json_atomic(MODE_STATUS_PATH, initial_mode)
     shutil.rmtree(RECORDER_ROOT, ignore_errors=True)
     RECORDER_ROOT.mkdir(parents=True, exist_ok=True)
 
 
 def _frame_stream_stalled(now: float | None = None) -> bool:
-    """Detect a live child whose two-camera publisher stopped making progress."""
+    """Detect a live child whose prioritized primary publisher stopped."""
 
     try:
-        oldest = min(FRAME_PATH.stat().st_mtime, SECONDARY_FRAME_PATH.stat().st_mtime)
+        oldest = FRAME_PATH.stat().st_mtime
     except OSError:
         return False
     return (time.time() if now is None else now) - oldest > FRAME_STALL_SECONDS
@@ -762,13 +850,11 @@ def run_simulation() -> None:
                     READY_PATH.is_file()
                     and FRAME_PATH.is_file()
                     and FRAME_PATH.stat().st_size > 0
-                    and SECONDARY_FRAME_PATH.is_file()
-                    and SECONDARY_FRAME_PATH.stat().st_size > 0
                 ):
                     if _frame_stream_stalled():
                         update_state(
                             state="restarting",
-                            detail="recovering stalled two-camera frame publisher",
+                            detail="recovering stalled primary frame publisher",
                             webrtc_ready=False,
                             stream_ready=False,
                         )
@@ -880,6 +966,8 @@ def health_document() -> dict[str, Any]:
     if not isinstance(selected_bundles, dict):
         selected_bundles = {}
     configuration = resolve_configuration(TASK, selected_bundles)
+    mode = _mode_state()
+    dual_applied = mode.get("applied_view_mode") == "dual_slow"
     return {
         "schema": SCHEMA,
         "run_id": os.environ.get("NPA_LEISAAC_RUN_ID", ""),
@@ -910,12 +998,17 @@ def health_document() -> dict[str, Any]:
         "frame_bytes": frame_bytes,
         "frame_updated_at": frame_updated_at,
         "frame_sequence": frame_sequence,
-        "cameras": ["workspace", "overview"]
-        if secondary is not None
-        else ["workspace"],
-        "secondary_frame_bytes": len(secondary[1]) if secondary is not None else 0,
-        "secondary_frame_sequence": int(secondary_metadata.get("sequence") or 0),
+        "cameras": ["workspace", "overview"] if dual_applied else ["workspace"],
+        "secondary_frame_bytes": (
+            len(secondary[1]) if dual_applied and secondary is not None else 0
+        ),
+        "secondary_frame_sequence": (
+            int(secondary_metadata.get("sequence") or 0) if dual_applied else 0
+        ),
         "view_orbit": True,
+        "view_mode_contract": VIEW_MODE_CONTRACT,
+        "recording_camera_contract": RECORDING_CAMERA_CONTRACT,
+        **mode,
         "transport_metrics": TRANSPORT_METRICS.snapshot(),
         "physics_device": "cuda:0",
         "render_device": "cuda",
@@ -1034,7 +1127,10 @@ def _read_new_frames(
     """Read and authenticate only frames newer than the watcher snapshot."""
 
     frames: list[tuple[str, dict[str, Any], bytes]] = []
+    applied_mode = str(_mode_state().get("applied_view_mode") or "")
     for camera in CAMERA_PATHS:
+        if camera == "overview" and applied_mode != "dual_slow":
+            continue
         item = _read_consistent_frame(
             camera,
             sequences.get(camera, 0),
@@ -1070,6 +1166,8 @@ async def _watch_frames() -> None:
             if observed > sequences[camera]:
                 sequences[camera] = observed
                 pending[camera] = (metadata, jpeg)
+        if _mode_state().get("applied_view_mode") != "dual_slow":
+            pending.pop("overview", None)
         selected = next_camera if next_camera in pending else next(iter(pending), "")
         if selected:
             metadata, jpeg = pending.pop(selected)
@@ -1078,6 +1176,7 @@ async def _watch_frames() -> None:
             # of TransportMetrics.ALLOWED and used to terminate this long-lived
             # watcher immediately after its first publication.
             TRANSPORT_METRICS.increment("frames_published")
+            TRANSPORT_METRICS.increment(f"{selected}_frames_published")
             next_camera = "overview" if selected == "workspace" else "workspace"
         await asyncio.sleep(0.001)
 
@@ -1115,6 +1214,53 @@ async def _wait_for_applied(
             return applied
         await asyncio.sleep(0.002)
     return None
+
+
+async def _wait_for_mode_applied(message: dict[str, Any]) -> dict[str, Any]:
+    """Wait for the simulator scheduler, never merely the HTTP relay."""
+
+    revision_key = (
+        "applied_view_revision"
+        if message["type"] == "view-mode"
+        else "applied_recording_revision"
+    )
+    mode_key = (
+        "applied_view_mode"
+        if message["type"] == "view-mode"
+        else "applied_recording_camera_mode"
+    )
+    requested_revision_key = (
+        "view_revision" if message["type"] == "view-mode" else "recording_revision"
+    )
+    while True:
+        state = await asyncio.to_thread(_mode_state)
+        applied_revision = int(state.get(revision_key) or 0)
+        if applied_revision == int(message["revision"]) and state.get(mode_key) == message["mode"]:
+            return {
+                "v": 1,
+                "type": "ack",
+                "phase": "applied",
+                "request_type": message["type"],
+                "run_id": message["run_id"],
+                "client_id": message["client_id"],
+                "revision": message["revision"],
+                "mode": message["mode"],
+                "mode_transition_latency_ms": float(
+                    state.get("mode_transition_latency_ms") or 0.0
+                ),
+            }
+        if int(state.get(requested_revision_key) or 0) > int(message["revision"]):
+            return {
+                "v": 1,
+                "type": "ack",
+                "phase": "superseded",
+                "request_type": message["type"],
+                "run_id": message["run_id"],
+                "client_id": message["client_id"],
+                "revision": message["revision"],
+                "mode": message["mode"],
+            }
+        await asyncio.sleep(0.002)
 
 
 async def _serve_control_protocol(
@@ -1155,7 +1301,40 @@ async def _serve_control_protocol(
             await send(acknowledgement)
 
     sender = asyncio.create_task(send_applied())
+    mode_ack_tasks: set[asyncio.Task[None]] = set()
     active_client_id = ""
+    owner_token = secrets.token_hex(16)
+
+    def claim_controller(client_id: str) -> None:
+        """Permit one authenticated control transport to own mutable runtime state."""
+
+        with CONTROL_OWNER_LOCK:
+            current = CONTROL_OWNER["token"]
+            if current and current != owner_token:
+                raise TransportProtocolError(
+                    "controller_busy",
+                    "another authenticated control transport owns this session",
+                )
+            CONTROL_OWNER.update(token=owner_token, client_id=client_id)
+
+    async def send_mode_applied(message: dict[str, Any]) -> None:
+        try:
+            acknowledgement = await _wait_for_mode_applied(message)
+        except TransportProtocolError as exc:
+            TRANSPORT_METRICS.increment("mode_transition_errors")
+            acknowledgement = exc.payload()
+            acknowledgement.update(
+                run_id=run_id,
+                client_id=message["client_id"],
+                request_type=message["type"],
+                revision=message["revision"],
+            )
+        else:
+            if acknowledgement["phase"] == "applied":
+                TRANSPORT_METRICS.increment("mode_transitions_applied")
+            else:
+                TRANSPORT_METRICS.increment("mode_requests_coalesced")
+        await send(acknowledgement)
 
     def release_all(
         client_id: str, client_mono_ns: int = 0, client_wall_ns: int = 0
@@ -1193,6 +1372,7 @@ async def _serve_control_protocol(
             try:
                 message = parse_control_message(raw, expected_run_id=run_id)
                 message_client_id = str(message["client_id"])
+                claim_controller(message_client_id)
                 if active_client_id and message_client_id != active_client_id:
                     raise TransportProtocolError(
                         "client_mismatch",
@@ -1223,6 +1403,11 @@ async def _serve_control_protocol(
                     response["run_id"] = run_id
                     response["client_mono_ns"] = str(message["client_mono_ns"])
                     response["client_wall_ns"] = str(message["client_wall_ns"])
+                    mode = await asyncio.to_thread(_mode_request_state)
+                    response["view_revision"] = int(mode.get("view_revision") or 0)
+                    response["recording_revision"] = int(
+                        mode.get("recording_revision") or 0
+                    )
                     TRANSPORT_METRICS.increment("reconnects")
                     await send(response)
                     continue
@@ -1242,6 +1427,37 @@ async def _serve_control_protocol(
                             "released_count": released,
                         }
                     )
+                    continue
+                if message["type"] in {"view-mode", "recording-cameras"}:
+                    with STATE_LOCK:
+                        ready = STATE.get("state") == "ready"
+                    if not ready:
+                        await send(
+                            {
+                                "v": 1,
+                                "type": "error",
+                                "code": "simulator_not_ready",
+                                "detail": "simulator not ready",
+                            }
+                        )
+                        continue
+                    await asyncio.to_thread(_queue_mode_request, message)
+                    TRANSPORT_METRICS.increment("mode_requests")
+                    await send(
+                        {
+                            "v": 1,
+                            "type": "ack",
+                            "phase": "accepted",
+                            "request_type": message["type"],
+                            "run_id": run_id,
+                            "client_id": message["client_id"],
+                            "revision": message["revision"],
+                            "mode": message["mode"],
+                        }
+                    )
+                    task = asyncio.create_task(send_mode_applied(dict(message)))
+                    mode_ack_tasks.add(task)
+                    task.add_done_callback(mode_ack_tasks.discard)
                     continue
                 with STATE_LOCK:
                     ready = STATE.get("state") == "ready"
@@ -1272,6 +1488,20 @@ async def _serve_control_protocol(
         try:
             if active_client_id:
                 release_all(active_client_id)
+                # A disconnected controller cannot leave hidden secondary GPU
+                # work enabled. The same client may reassert its latest choice
+                # after its ordered resume handshake. Like release_all(), this
+                # tiny local atomic write is intentionally synchronous: ASGI
+                # teardown cancellation must not strand secondary GPU work.
+                mode = _mode_request_state()
+                _queue_mode_request(
+                    {
+                        "type": "view-mode",
+                        "mode": DEFAULT_VIEW_MODE.value,
+                        "revision": int(mode.get("view_revision") or 0) + 1,
+                        "client_id": active_client_id,
+                    }
+                )
         except Exception as exc:
             _log_exception(
                 logging.CRITICAL,
@@ -1281,7 +1511,12 @@ async def _serve_control_protocol(
         finally:
             stop.set()
             sender.cancel()
-            await asyncio.gather(sender, return_exceptions=True)
+            for task in mode_ack_tasks:
+                task.cancel()
+            with CONTROL_OWNER_LOCK:
+                if CONTROL_OWNER["token"] == owner_token:
+                    CONTROL_OWNER.update(token="", client_id="")
+            await asyncio.gather(sender, *mode_ack_tasks, return_exceptions=True)
 
 
 async def _serve_control_datachannel(channel: Any) -> None:
@@ -1354,6 +1589,8 @@ async def _video_datachannel_frames():
         )
         generations[camera] = generation
         camera, metadata, jpeg = item
+        if camera == "overview" and _mode_state().get("applied_view_mode") != "dual_slow":
+            continue
         sequence = int(metadata["sequence"])
         previous_sequence = previous_sequences.get(camera, 0)
         dropped = (
@@ -1420,6 +1657,11 @@ def build_app() -> FastAPI:
             return JSONResponse(status_code=403, content={"detail": "forbidden"})
         if camera not in CAMERA_PATHS:
             return JSONResponse(status_code=400, content={"detail": "invalid camera"})
+        if camera == "overview" and _mode_state().get("applied_view_mode") != "dual_slow":
+            return JSONResponse(
+                status_code=409,
+                content={"detail": "secondary camera is disabled in Fast single"},
+            )
         item = _read_consistent_frame(camera)
         if item is None:
             return JSONResponse(
@@ -1465,7 +1707,7 @@ def build_app() -> FastAPI:
                 status_code=400, content={"detail": "invalid view command"}
             )
         if (
-            camera != "overview"
+            camera != "workspace"
             or not 1 <= sequence <= 2**53 - 1
             or not math.isfinite(yaw_delta)
             or not math.isfinite(pitch_delta)
@@ -1953,6 +2195,8 @@ def build_app() -> FastAPI:
                 )
                 generations[camera] = generation
                 camera, metadata, jpeg = item
+                if camera == "overview" and _mode_state().get("applied_view_mode") != "dual_slow":
+                    continue
                 sequence = int(metadata["sequence"])
                 previous_sequence = previous_sequences.get(camera, 0)
                 dropped = (
@@ -1974,6 +2218,7 @@ def build_app() -> FastAPI:
                     causal_applied_monotonic_ns=int(
                         metadata.get("causal_applied_monotonic_ns") or 0
                     ),
+                    view_revision=int(metadata.get("view_revision") or 0),
                     dropped_before=dropped,
                     flags=1 if camera == "overview" else 0,
                     sha256=bytes.fromhex(str(metadata["sha256"])),
@@ -1992,6 +2237,7 @@ def build_app() -> FastAPI:
                     await websocket.close(code=1013)
                     return
                 TRANSPORT_METRICS.increment("frames_sent")
+                TRANSPORT_METRICS.increment(f"{camera}_frames_sent")
 
         try:
             tasks = {
