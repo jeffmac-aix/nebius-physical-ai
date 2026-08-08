@@ -220,7 +220,11 @@ APPLIED_ACK_LOCK = threading.Lock()
 BUNDLE_APPLY_LOCK = threading.Lock()
 MODE_COMMAND_LOCK = threading.Lock()
 CONTROL_OWNER_LOCK = threading.Lock()
-CONTROL_OWNER: dict[str, str] = {"token": "", "client_id": ""}
+CONTROL_OWNER: dict[str, str | int] = {
+    "token": "",
+    "client_id": "",
+    "resumed_wall_ns": 0,
+}
 BUNDLE_RESTART = threading.Event()
 SERVER_STOP = threading.Event()
 BUNDLE_SELECTION: dict[str, dict[str, Any]] = {}
@@ -1312,17 +1316,34 @@ async def _serve_control_protocol(
     active_client_id = ""
     owner_token = secrets.token_hex(16)
 
-    def claim_controller(client_id: str) -> None:
+    def claim_controller(
+        client_id: str,
+        *,
+        resume: bool = False,
+        resumed_wall_ns: int = 0,
+    ) -> None:
         """Permit one authenticated control transport to own mutable runtime state."""
 
         with CONTROL_OWNER_LOCK:
             current = CONTROL_OWNER["token"]
             if current and current != owner_token:
-                raise TransportProtocolError(
-                    "controller_busy",
-                    "another authenticated control transport owns this session",
-                )
+                # A recovery socket presents the stable random browser identity
+                # and wall-clock epoch in its ordered resume handshake. A newer
+                # authenticated browser page may replace a half-open predecessor,
+                # while a late buffered resume from the old socket cannot steal
+                # control back.
+                if not (
+                    resume
+                    and resumed_wall_ns
+                    > int(CONTROL_OWNER.get("resumed_wall_ns") or 0)
+                ):
+                    raise TransportProtocolError(
+                        "controller_busy",
+                        "another authenticated control transport owns this session",
+                    )
             CONTROL_OWNER.update(token=owner_token, client_id=client_id)
+            if resume:
+                CONTROL_OWNER["resumed_wall_ns"] = resumed_wall_ns
 
     async def send_mode_applied(message: dict[str, Any]) -> None:
         try:
@@ -1379,7 +1400,11 @@ async def _serve_control_protocol(
             try:
                 message = parse_control_message(raw, expected_run_id=run_id)
                 message_client_id = str(message["client_id"])
-                claim_controller(message_client_id)
+                claim_controller(
+                    message_client_id,
+                    resume=message["type"] == "resume",
+                    resumed_wall_ns=int(message["client_wall_ns"]),
+                )
                 if active_client_id and message_client_id != active_client_id:
                     raise TransportProtocolError(
                         "client_mismatch",
@@ -1493,7 +1518,9 @@ async def _serve_control_protocol(
                 await send(exc.payload())
     finally:
         try:
-            if active_client_id:
+            with CONTROL_OWNER_LOCK:
+                still_owner = CONTROL_OWNER["token"] == owner_token
+            if active_client_id and still_owner:
                 release_all(active_client_id)
                 # A disconnected controller cannot leave hidden secondary GPU
                 # work enabled. The same client may reassert its latest choice
@@ -1522,7 +1549,11 @@ async def _serve_control_protocol(
                 task.cancel()
             with CONTROL_OWNER_LOCK:
                 if CONTROL_OWNER["token"] == owner_token:
-                    CONTROL_OWNER.update(token="", client_id="")
+                    CONTROL_OWNER.update(
+                        token="",
+                        client_id="",
+                        resumed_wall_ns=0,
+                    )
             await asyncio.gather(sender, *mode_ack_tasks, return_exceptions=True)
 
 
@@ -2271,6 +2302,13 @@ def build_app() -> FastAPI:
             await websocket.close(code=1013)
             return
         except WebSocketDisconnect:
+            return
+        except asyncio.CancelledError:
+            # ASGI servers may cancel a handler instead of delivering a final
+            # WebSocketDisconnect while the peer is closing. Both protocol
+            # workers have already been cancelled and gathered above, so this
+            # is normal bounded disconnect cleanup rather than an application
+            # failure that should escape through the server task.
             return
 
     return application

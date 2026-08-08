@@ -2314,6 +2314,8 @@
       let leisaacNextControlSequence = 1;
       let leisaacClientId = "";
       let leisaacClientRunId = "";
+      let leisaacClientResumeEpochMs = "";
+      let leisaacClientResumeGeneration = 0;
       let leisaacReconnectPromise = null;
       let leisaacManualDisconnect = false;
       let leisaacBundleRestartPending = false;
@@ -2863,6 +2865,10 @@
           leisaacEpisodeCursor = "";
           leisaacEpisodeNextCursor = "";
           leisaacEpisodeCursorHistory.splice(0);
+          const previous = document.getElementById("leisaacEpisodesPreviousPage");
+          const next = document.getElementById("leisaacEpisodesNextPage");
+          if (previous) previous.disabled = true;
+          if (next) next.disabled = true;
         }
         if (leisaacEpisodeListAbort) leisaacEpisodeListAbort.abort();
         const controller = new AbortController();
@@ -3303,6 +3309,11 @@
         crypto.getRandomValues(random);
         leisaacClientId = "browser-" + Array.from(random, (item) => item.toString(16).padStart(2, "0")).join("");
         leisaacClientRunId = runId;
+        // Keep the lease epoch stable across every reconnect made by this page.
+        // A later page may supersede a half-open predecessor, but a delayed
+        // reconnect from that predecessor must never steal the lease back.
+        leisaacClientResumeEpochMs = String(Date.now());
+        leisaacClientResumeGeneration = 0;
       }
       function updateLeIsaacTransportIndicator() {
         const transport = document.getElementById("leisaacTransportStatus");
@@ -3681,6 +3692,22 @@
         leisaacRecordingRevision = Math.max(leisaacRecordingRevision, Number(status.recording_revision || 0));
         const viewSelect = document.getElementById("leisaacViewMode");
         const recordingSelect = document.getElementById("leisaacRecordingCameras");
+        const reconcileOptions = (select, contract) => {
+          if (!select) return;
+          const current = Array.from(select.options).map((option) => option.value);
+          if (
+            current.length !== contract.values.length ||
+            current.some((value, index) => value !== String(contract.values[index]))
+          ) {
+            select.innerHTML = leisaacModeOptions(contract);
+          }
+          select.disabled = !Boolean(status.available);
+        };
+        // The tab may first mount from a cheap run summary while the registered
+        // live capability request is still in flight. Reconcile the option set
+        // as well as the selected value when that authoritative response lands.
+        reconcileOptions(viewSelect, viewContract);
+        reconcileOptions(recordingSelect, recordingContract);
         if (viewSelect && viewContract.values.includes(leisaacRequestedViewMode)) viewSelect.value = leisaacRequestedViewMode;
         if (recordingSelect && recordingContract.values.includes(leisaacRequestedRecordingMode)) recordingSelect.value = leisaacRequestedRecordingMode;
         const dual = viewContract.values.length === 2 && appliedView === viewContract.values[1];
@@ -3731,10 +3758,13 @@
             "Mode change queued; reconnecting authenticated live controls…",
             "pending",
           );
+          if (!leisaacManualDisconnect && !leisaacReconnectPromise) {
+            scheduleLeIsaacReconnect(250);
+          }
           return false;
         }
         const revision = isView ? ++leisaacModeRevision : ++leisaacRecordingRevision;
-        socket.send(JSON.stringify({
+        const payload = {
           v: 1,
           type: requestType,
           run_id: String((leisaacCapability && leisaacCapability.run_id) || ""),
@@ -3743,7 +3773,29 @@
           mode: String(mode),
           client_mono_ns: leisaacMonoNs(),
           client_wall_ns: leisaacWallNs(),
-        }));
+        };
+        socket.send(JSON.stringify(payload));
+        // Mode commands are idempotent at a revision, but unlike robot inputs
+        // they do not live in the ordered control ledger. Retransmit the same
+        // revision across the short recovery window so a socket replacement
+        // cannot silently lose a selector change. A newer user request or an
+        // applied acknowledgement makes every older timer a no-op.
+        for (const delay of [500, 1500, 4000, 8000, 16000]) {
+          window.setTimeout(() => {
+            const latestRevision = isView ? leisaacModeRevision : leisaacRecordingRevision;
+            const latestMode = isView ? leisaacRequestedViewMode : leisaacRequestedRecordingMode;
+            const appliedMode = String(isView
+              ? ((leisaacCapability || {}).applied_view_mode || "")
+              : ((leisaacCapability || {}).applied_recording_camera_mode || ""));
+            if (latestRevision !== revision || latestMode !== String(mode) || appliedMode === String(mode)) return;
+            const current = leisaacControlSocket;
+            if (leisaacControlIsOpen(current) && leisaacClientId === payload.client_id) {
+              current.send(JSON.stringify(payload));
+            } else if (!leisaacManualDisconnect && !leisaacReconnectPromise) {
+              scheduleLeIsaacReconnect(250);
+            }
+          }, delay);
+        }
         return true;
       }
       function handleLeIsaacControlMessage(message) {
@@ -4489,6 +4541,15 @@
           const resume = (transport) => {
             if (generation !== leisaacSocketGeneration) return;
             controlOpen = true;
+            leisaacClientResumeGeneration += 1;
+            // Reserve six decimal digits for reconnect ordering. A page opened
+            // one millisecond later still outranks every practical reconnect
+            // generation from its predecessor, and delayed resumes from this
+            // page remain strictly older than the current socket.
+            const leaseEpoch = (
+              BigInt(leisaacClientResumeEpochMs) * 1000000n +
+              BigInt(leisaacClientResumeGeneration)
+            ).toString();
             transport.send(JSON.stringify({
               v: 1,
               type: "resume",
@@ -4497,7 +4558,7 @@
               last_acked_seq: Math.max(0, leisaacNextControlSequence - 1),
               keys_down: Array.from(leisaacKeysDown),
               client_mono_ns: leisaacMonoNs(),
-              client_wall_ns: leisaacWallNs(),
+              client_wall_ns: leaseEpoch,
             }));
             finish();
           };
@@ -4986,8 +5047,14 @@
           const rate = panel.querySelector("#leisaacEpisodeRate");
           if (rate) rate.addEventListener("change", () => {
             const value = Number(rate.value || 1);
-            if (primaryVideo) primaryVideo.playbackRate = value;
-            if (secondaryVideo) secondaryVideo.playbackRate = value;
+            for (const video of [primaryVideo, secondaryVideo]) {
+              if (!video) continue;
+              // A media load may reset playbackRate to defaultPlaybackRate.
+              // Persist the operator's selection across that asynchronous
+              // boundary, then apply it to the current resource immediately.
+              video.defaultPlaybackRate = value;
+              video.playbackRate = value;
+            }
           });
           const timeline = panel.querySelector("#leisaacEpisodeTimeline");
           if (timeline) timeline.addEventListener("input", () => {

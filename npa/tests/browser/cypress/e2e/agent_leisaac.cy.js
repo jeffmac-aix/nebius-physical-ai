@@ -123,6 +123,46 @@ describe("NPA agent LeIsaac capability tab", () => {
     });
   });
 
+  it("reconciles mode options when an authoritative refresh follows a summary mount", () => {
+    const status = {
+      available: true,
+      episodes_available: false,
+      run_id: "mock-mode-refresh",
+      task: "LeIsaac-SO101-LiftCube-v0",
+      environment_id: "operator-0",
+      environment_index: 0,
+      seed: 42,
+      configuration: defaultLeIsaacConfiguration(),
+      ...leisaacModeStatus(),
+      cameras: ["workspace"],
+      stream_transport: "websocket-v1",
+      recorder: { state: "idle", completed_episode_count: 0 },
+      gpu: "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+    };
+    cy.intercept("GET", "/api/leisaac/status*", { statusCode: 200, body: status }).as("modeRefresh");
+    cy.window().then((win) => win.__NPA_AGENT_TEST__.refreshLeIsaacCapability(status.run_id));
+    cy.wait("@modeRefresh");
+    cy.get("#tabLeIsaac").click();
+    cy.get("#leisaacViewMode").then(($select) => {
+      $select.empty().prop("disabled", true);
+    });
+    cy.get("#leisaacRecordingCameras").then(($select) => {
+      $select.empty().prop("disabled", true);
+    });
+    cy.window().then((win) => win.__NPA_AGENT_TEST__.refreshLeIsaacCapability(status.run_id));
+    cy.wait("@modeRefresh");
+    cy.get("#leisaacViewMode")
+      .should("not.be.disabled")
+      .and("have.value", "single_fast")
+      .find("option")
+      .should("have.length", 2);
+    cy.get("#leisaacRecordingCameras")
+      .should("not.be.disabled")
+      .and("have.value", "primary_only")
+      .find("option")
+      .should("have.length", 2);
+  });
+
   it("shows task/environment metadata and enforces recorder transitions", () => {
     let recorderState = "idle";
     let pendingOutcome = "";
@@ -1024,6 +1064,14 @@ describe("NPA agent LeIsaac capability tab", () => {
               released_count: 0,
             };
           } else if (message.type === "view-mode" || message.type === "recording-cameras") {
+            if (
+              message.type === "view-mode" &&
+              message.mode === "dual_slow" &&
+              win.__LEISAAC_DROP_NEXT_MODE_REQUEST__
+            ) {
+              win.__LEISAAC_DROP_NEXT_MODE_REQUEST__ = false;
+              return;
+            }
             response = { ...message, type: "ack", request_type: message.type, phase: "accepted" };
             win.setTimeout(() => {
               if (this.onmessage) this.onmessage({ data: JSON.stringify({
@@ -1258,6 +1306,7 @@ describe("NPA agent LeIsaac capability tab", () => {
       );
       video.fail();
     });
+    cy.window().then((win) => { win.__LEISAAC_DROP_NEXT_MODE_REQUEST__ = true; });
     cy.get("#leisaacViewMode").select("dual_slow");
     cy.get("#leisaacModeStatus", { timeout: 10000 })
       .should("contain.text", "Applied view")
@@ -1274,6 +1323,16 @@ describe("NPA agent LeIsaac capability tab", () => {
         ),
       ).to.equal(true);
       expect(evidence.reconnects).to.be.greaterThan(0);
+      const resumeEpochs = win.__LEISAAC_FAKE_SOCKETS__
+        .filter((socket) => socket.url.includes("/control"))
+        .flatMap((socket) => socket.sent.map((raw) => JSON.parse(raw)))
+        .filter((item) => item.type === "resume")
+        .map((item) => BigInt(item.client_wall_ns));
+      expect(resumeEpochs).to.have.length.greaterThan(1);
+      expect(
+        resumeEpochs.every((epoch, index) => index === 0 || epoch > resumeEpochs[index - 1]),
+      ).to.equal(true);
+      expect(new Set(resumeEpochs.map((epoch) => epoch / 1000000n)).size).to.equal(1);
     });
     cy.get("#leisaacInputDevice").select("custom-so101");
     cy.get("#leisaacSendNeutralAction").click();
@@ -1524,6 +1583,7 @@ describe("NPA agent LeIsaac capability tab", () => {
     cy.get("#leisaacEpisodeRate").select("2");
     cy.get("#leisaacEpisodePrimaryVideo").should(($video) => {
       expect($video[0].playbackRate).to.equal(2);
+      expect($video[0].defaultPlaybackRate).to.equal(2);
     });
     cy.get("#leisaacEpisodeDescribe").click();
     cy.get("#panelLeIsaac").should("have.class", "is-active");

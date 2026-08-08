@@ -128,14 +128,15 @@ function verifyExactUploadedEpisode(expectSecondary = true) {
     .and("contain.text", expectedEnvironment())
     .and("contain.text", "v000");
   cy.get("#leisaacEpisodeChecksum")
-    .should("contain.text", "verified")
-    .and("contain.text", "workspace=");
+    .invoke("text")
+    .should("contain", "verified")
+    .and("match", /(?:primary|workspace)=/);
   if (expectSecondary) {
-    cy.get("#leisaacEpisodeChecksum").should("contain.text", "overview=");
+    cy.get("#leisaacEpisodeChecksum").invoke("text").should("match", /(?:secondary|overview)=/);
     cy.get("#leisaacEpisodeSecondaryPane").should("be.visible");
     cy.get("#leisaacEpisodeSingleCamera").should("not.be.visible");
   } else {
-    cy.get("#leisaacEpisodeChecksum").should("not.contain.text", "overview=");
+    cy.get("#leisaacEpisodeChecksum").invoke("text").should("not.match", /(?:secondary|overview)=/);
     cy.get("#leisaacEpisodeSecondaryPane").should("not.be.visible");
     cy.get("#leisaacEpisodeSingleCamera").should("be.visible");
   }

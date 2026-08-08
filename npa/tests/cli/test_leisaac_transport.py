@@ -200,7 +200,7 @@ def test_only_one_authenticated_control_transport_owns_mode_changes(
     runtime = _runtime_module()
     monkeypatch.setenv("NPA_LEISAAC_RUN_ID", RUN_ID)
     monkeypatch.setattr(runtime, "_queue_mode_request", lambda _message: None)
-    runtime.CONTROL_OWNER.update(token="", client_id="")
+    runtime.CONTROL_OWNER.update(token="", client_id="", resumed_wall_ns=0)
 
     async def exercise() -> None:
         first_queue: asyncio.Queue[str] = asyncio.Queue()
@@ -266,6 +266,95 @@ def test_only_one_authenticated_control_transport_owns_mode_changes(
         first.cancel()
         second.cancel()
         await asyncio.gather(first, second, return_exceptions=True)
+
+    asyncio.run(exercise())
+
+
+def test_newer_resume_supersedes_half_open_control_transport(
+    monkeypatch,
+) -> None:
+    runtime = _runtime_module()
+    monkeypatch.setenv("NPA_LEISAAC_RUN_ID", RUN_ID)
+    runtime.CONTROL_OWNER.update(token="", client_id="", resumed_wall_ns=0)
+    released: list[dict[str, object]] = []
+    monkeypatch.setattr(runtime, "_append_inputs", lambda rows: released.extend(rows))
+
+    async def exercise() -> None:
+        first_queue: asyncio.Queue[str] = asyncio.Queue()
+        replacement_queue: asyncio.Queue[str] = asyncio.Queue()
+        first_emitted: list[dict[str, object]] = []
+        replacement_emitted: list[dict[str, object]] = []
+        first_ready = asyncio.Event()
+        replacement_ready = asyncio.Event()
+
+        async def first_receive() -> str:
+            return await first_queue.get()
+
+        async def replacement_receive() -> str:
+            return await replacement_queue.get()
+
+        async def first_emit(payload: dict[str, object]) -> None:
+            first_emitted.append(payload)
+            first_ready.set()
+
+        async def replacement_emit(payload: dict[str, object]) -> None:
+            replacement_emitted.append(payload)
+            replacement_ready.set()
+
+        first = asyncio.create_task(
+            runtime._serve_control_protocol(first_receive, first_emit)
+        )
+        replacement = asyncio.create_task(
+            runtime._serve_control_protocol(replacement_receive, replacement_emit)
+        )
+        resume = {
+            "v": 1,
+            "type": "resume",
+            "run_id": RUN_ID,
+            "client_id": "stable-browser-controller",
+            "last_acked_seq": 0,
+            "client_mono_ns": 1,
+            "client_wall_ns": 2,
+        }
+        await first_queue.put(json.dumps(resume))
+        await asyncio.wait_for(first_ready.wait(), timeout=1.0)
+        assert first_emitted[0]["type"] == "resumed"
+
+        replacement_resume = dict(resume)
+        replacement_resume.update(
+            client_id="replacement-browser-controller",
+            client_mono_ns=3,
+            client_wall_ns=4,
+        )
+        await replacement_queue.put(json.dumps(replacement_resume))
+        await asyncio.wait_for(replacement_ready.wait(), timeout=1.0)
+        assert replacement_emitted[0]["type"] == "resumed"
+
+        first_ready.clear()
+        await first_queue.put(json.dumps(resume))
+        await asyncio.wait_for(first_ready.wait(), timeout=1.0)
+        assert first_emitted[-1]["code"] == "controller_busy"
+
+        first_ready.clear()
+        equal_epoch_resume = dict(resume)
+        equal_epoch_resume["client_wall_ns"] = 4
+        await first_queue.put(json.dumps(equal_epoch_resume))
+        await asyncio.wait_for(first_ready.wait(), timeout=1.0)
+        assert first_emitted[-1]["code"] == "controller_busy"
+        assert runtime.CONTROL_OWNER["client_id"] == "replacement-browser-controller"
+
+        first.cancel()
+        await asyncio.gather(first, return_exceptions=True)
+        assert runtime.CONTROL_OWNER["client_id"] == "replacement-browser-controller"
+        assert released == []
+
+        replacement.cancel()
+        await asyncio.gather(replacement, return_exceptions=True)
+        assert runtime.CONTROL_OWNER == {
+            "token": "",
+            "client_id": "",
+            "resumed_wall_ns": 0,
+        }
 
     asyncio.run(exercise())
 
