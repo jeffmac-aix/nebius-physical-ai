@@ -519,6 +519,9 @@ def test_observability_patch_is_exact_and_records_real_upstream_input() -> None:
         in source
     )
     assert "capture_viewport_to_buffer" in source
+    assert 'workspace_camera_path = "/OmniverseKit_Persp"' in source
+    assert '"viewport_camera_id": "workspace"' in source
+    assert "UsdGeom.Camera.Define" not in source
     assert 'image.save(encoded, format="JPEG", quality=82, optimize=True)' in source
     assert "optimize=False" not in source
     assert "image=image" in source
@@ -579,11 +582,9 @@ def test_observability_patch_is_exact_and_records_real_upstream_input() -> None:
     assert "mark_remote_step_applied(sim_step)" in source
     assert "asyncio.ensure_future" in source
     assert "create_viewport_window" not in source
-    assert "Alternate two camera paths on one fully-awaited viewport" in source
-    assert (
-        "UsdGeom.Camera.Define(overview_viewport.stage, overview_camera_path)" in source
-    )
-    assert source.count("viewport_api=overview_viewport") == 1
+    assert "Move one renderer-owned camera on one fully-awaited viewport" in source
+    assert "overview_camera_path = workspace_camera_path" in source
+    assert 'capture_state["viewport_camera_id"] == camera_id' in source
     assert "NPA_LEISAAC_INPUT_QUEUE" in source
     assert "NPA_LEISAAC_APPLIED_COUNTER" in source
     assert "NPA_LEISAAC_FRAME_PATH" in source

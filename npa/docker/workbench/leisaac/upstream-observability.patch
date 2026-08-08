@@ -20,19 +20,18 @@ index a467482..d3bcad5 100644
 +    ViewMode,
 +)
 +from PIL import Image
-@@ -97,0 +112,7 @@ from isaaclab.envs import DirectRLEnv, ManagerBasedRLEnv
+@@ -97,0 +112,6 @@ from isaaclab.envs import DirectRLEnv, ManagerBasedRLEnv
 +from omni.kit.viewport.utility import (
 +    capture_viewport_to_buffer,
 +    get_active_viewport,
 +    next_viewport_frame_async,
 +)
 +from isaacsim.core.utils.viewports import set_camera_view
-+from pxr import UsdGeom
-@@ -122 +144,2 @@ class RateLimiter:
+@@ -122 +143,2 @@ class RateLimiter:
 -            env.sim.render()
 +            if env is not None:
 +                env.sim.render()
-@@ -159 +182,31 @@ def main():  # noqa: C901
+@@ -159 +181,31 @@ def main():  # noqa: C901
      env_cfg = parse_env_cfg(args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs)
 +    if os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") == "1":
 +        # Browser teleoperation renders the viewport and does not consume policy images.
@@ -64,11 +63,11 @@ index a467482..d3bcad5 100644
 +    if custom_scene_usd:
 +        # Custom scenes retain the task's expected object prim names and layout.
 +        env_cfg.scene.scene.spawn.usd_path = custom_scene_usd
-@@ -226 +279,3 @@ def main():  # noqa: C901
+@@ -226 +278,3 @@ def main():  # noqa: C901
      env: ManagerBasedRLEnv | DirectRLEnv = gym.make(task_name, cfg=env_cfg).unwrapped
 +    if os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") == "1":
 +        env.cfg.sim.render_interval = 1_000_000_000
-@@ -313 +368,640 @@ def main():  # noqa: C901
+@@ -313 +367,660 @@ def main():  # noqa: C901
      env.reset()
 +    recorder = EpisodeRecorder(
 +        root=Path(os.environ["NPA_LEISAAC_RECORDER_ROOT"]),
@@ -144,6 +143,7 @@ index a467482..d3bcad5 100644
 +        "causal_action_sequence": 0,
 +        "causal_applied_monotonic_ns": 0,
 +        "last_causal_at": 0.0,
++        "viewport_camera_id": "workspace",
 +    }
 +    # Background frames must not monopolize the Isaac render/event loop. Causal
 +    # action pairs bypass this cadence and remain immediate at full quality.
@@ -161,11 +161,15 @@ index a467482..d3bcad5 100644
 +    viewport = get_active_viewport() if frame_path else None
 +    if viewport is not None:
 +        viewport.resolution = (1280, 720)
-+    workspace_camera_path = "/OmniverseKit_NPA_Interactive"
++    # The stock Kit perspective camera is renderer-owned and remains valid in
++    # true headless mode. Root-level cameras defined from Python can exist on
++    # the USD stage while the no-window viewport still renders only its clear
++    # color, so reuse this camera and move it between the two operator views.
++    workspace_camera_path = "/OmniverseKit_Persp"
 +    workspace_eye = [1.25, -1.25, 0.95]
 +    workspace_target = [0.0, 0.0, 0.45]
 +    if viewport is not None:
-+        UsdGeom.Camera.Define(viewport.stage, workspace_camera_path)
++        viewport.camera_path = workspace_camera_path
 +        set_camera_view(
 +            workspace_eye,
 +            workspace_target,
@@ -173,20 +177,12 @@ index a467482..d3bcad5 100644
 +            viewport_api=viewport,
 +        )
 +    # A second Kit viewport races the renderer's shared GPU command list on RTX
-+    # PRO 6000.  Alternate two camera paths on one fully-awaited viewport instead.
++    # PRO 6000. Move one renderer-owned camera on one fully-awaited viewport.
 +    overview_viewport = viewport
-+    overview_camera_path = "/OmniverseKit_NPA_Overview"
++    overview_camera_path = workspace_camera_path
 +    overview_eye = [1.8, 1.8, 1.5]
 +    overview_target = [0.0, 0.0, 0.45]
 +    if overview_viewport is not None:
-+        UsdGeom.Camera.Define(overview_viewport.stage, overview_camera_path)
-+        overview_viewport.camera_path = overview_camera_path
-+        set_camera_view(
-+            overview_eye,
-+            overview_target,
-+            camera_prim_path=overview_camera_path,
-+            viewport_api=overview_viewport,
-+        )
 +        overview_viewport.resolution = (1280, 720)
 +    last_view_sequence = 0
 +
@@ -345,7 +341,13 @@ index a467482..d3bcad5 100644
 +            # viewport. Extra completion frames add latency after the copy is safe.
 +            await capture_helper.wait_for_result(completion_frames=0)
 +            if camera_id == "overview":
-+                setattr(viewport, "camera_path", workspace_camera_path)
++                set_camera_view(
++                    workspace_eye,
++                    workspace_target,
++                    camera_prim_path=workspace_camera_path,
++                    viewport_api=viewport,
++                )
++                capture_state["viewport_camera_id"] = "workspace"
 +                await next_viewport_frame_async(viewport, n_frames=1)
 +            capture_state["encode_future"] = capture_encoder.submit(
 +                encode_and_publish_capture,
@@ -391,7 +393,7 @@ index a467482..d3bcad5 100644
 +        capture_state["active"] = True
 +        capture_state["active_group"] = capture_group
 +        capture_state["active_priority"] = selected_priority
-+        same_camera = str(viewport.camera_path) == str(selected_camera_path)
++        same_camera = capture_state["viewport_camera_id"] == camera_id
 +        capture_result = {}
 +        try:
 +            if same_camera:
@@ -406,7 +408,17 @@ index a467482..d3bcad5 100644
 +                    ),
 +                )
 +            else:
-+                viewport.camera_path = selected_camera_path
++                eye = overview_eye if camera_id == "overview" else workspace_eye
++                target = (
++                    overview_target if camera_id == "overview" else workspace_target
++                )
++                set_camera_view(
++                    eye,
++                    target,
++                    camera_prim_path=selected_camera_path,
++                    viewport_api=viewport,
++                )
++                capture_state["viewport_camera_id"] = camera_id
 +                mode_state["camera_switches"] += 1
 +                capture_helper = None
 +        except Exception:
@@ -615,7 +627,13 @@ index a467482..d3bcad5 100644
 +                    if item[0] == "workspace"
 +                ]
 +                capture_state["pending"].discard("overview")
-+                viewport.camera_path = workspace_camera_path
++                set_camera_view(
++                    workspace_eye,
++                    workspace_target,
++                    camera_prim_path=workspace_camera_path,
++                    viewport_api=viewport,
++                )
++                capture_state["viewport_camera_id"] = "workspace"
 +            mode_state["applied_view_mode"] = requested_view.value
 +            mode_state["applied_view_revision"] = view_revision
 +            changed = True
@@ -685,6 +703,7 @@ index a467482..d3bcad5 100644
 +            camera_prim_path=workspace_camera_path,
 +            viewport_api=viewport,
 +        )
++        capture_state["viewport_camera_id"] = "workspace"
 +        last_view_sequence = sequence
 +        mode_state["view_revision_applied"] = sequence
 +        capture_state["group"] += 1
@@ -709,11 +728,11 @@ index a467482..d3bcad5 100644
 +        apply_mode_command()
 +        schedule_browser_capture()
 +        env.render()
-@@ -375 +1069,2 @@ def main():  # noqa: C901
+@@ -375 +1088,2 @@ def main():  # noqa: C901
 -                    env.render()
 +                    if os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") != "1":
 +                        env.render()
-@@ -382 +1077,21 @@ def main():  # noqa: C901
+@@ -382 +1096,21 @@ def main():  # noqa: C901
 -                    env.step(actions)
 +                    step_result = env.step(actions)
 +                    sim_step += 1
@@ -736,10 +755,10 @@ index a467482..d3bcad5 100644
 +                ):
 +                    env.render()
 +                recorder.process_commands(reset=env.reset)
-@@ -384 +1099 @@ def main():  # noqa: C901
+@@ -384 +1118 @@ def main():  # noqa: C901
 -                    rate_limiter.sleep(env)
 +                    rate_limiter.sleep(None if os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") == "1" else env)
-@@ -395 +1110,4 @@ def main():  # noqa: C901
+@@ -395 +1129,4 @@ def main():  # noqa: C901
 +        capture_encoder.shutdown(wait=True, cancel_futures=True)
 +        poll_encoded_capture()
 +        recorder.shutdown(wait=True)
