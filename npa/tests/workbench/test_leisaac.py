@@ -607,7 +607,9 @@ def test_observability_patch_is_exact_and_records_real_upstream_input() -> None:
     assert "env.render()" in source
 
 
-def test_health_reads_upstream_keyboard_counter(tmp_path: Path) -> None:
+def test_health_reads_upstream_keyboard_counter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     server = _session_server_module()
     counter = tmp_path / "input-events"
     counter.write_text("13\n", encoding="utf-8")
@@ -618,9 +620,23 @@ def test_health_reads_upstream_keyboard_counter(tmp_path: Path) -> None:
     server.INPUT_COUNTER_PATH = counter
     server.APPLIED_COUNTER_PATH = applied
     server.FRAME_PATH = frame
+    mode_status = tmp_path / "view-mode-status.json"
+    mode_status.write_text(
+        json.dumps(
+            {
+                **server._default_mode_state(),
+                "schema": "npa.leisaac.view-mode.v1",
+                "applied_view_mode": "dual_slow",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(server, "MODE_STATUS_PATH", mode_status)
 
     health = server.health_document()
 
+    assert health["schema"] == "npa.leisaac.health.v2"
+    assert health["mode_schema"] == "npa.leisaac.view-mode.v1"
     assert health["input_events"] == 13
     assert health["applied_inputs"] == 12
     assert health["stream_ready"] is True

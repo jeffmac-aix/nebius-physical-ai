@@ -243,7 +243,7 @@ APPLIED_ACK_OFFSET = 0
 
 def _default_mode_state() -> dict[str, Any]:
     return {
-        "schema": "npa.leisaac.view-mode.v1",
+        "mode_schema": "npa.leisaac.view-mode.v1",
         "requested_view_mode": DEFAULT_VIEW_MODE.value,
         "applied_view_mode": DEFAULT_VIEW_MODE.value,
         "requested_recording_camera_mode": DEFAULT_RECORDING_CAMERA_MODE.value,
@@ -271,7 +271,14 @@ def _mode_state() -> dict[str, Any]:
         payload = json.loads(MODE_STATUS_PATH.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return _default_mode_state()
-    return payload if isinstance(payload, dict) else _default_mode_state()
+    if not isinstance(payload, dict):
+        return _default_mode_state()
+    normalized = _default_mode_state()
+    normalized.update(payload)
+    normalized["mode_schema"] = str(
+        normalized.pop("schema", "") or "npa.leisaac.view-mode.v1"
+    )
+    return normalized
 
 
 def _mode_request_state() -> dict[str, Any]:
