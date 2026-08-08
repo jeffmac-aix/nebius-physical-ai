@@ -261,12 +261,14 @@ function redactLiveEvidenceIdentifiers() {
 }
 
 function waitForPaintedOrbitRevision() {
+  let revision = 0;
   return cy.get("#leisaacStreamStatus")
-    .invoke("text")
-    .then((text) => {
-      const match = String(text).match(/orbit revision (\d+) accepted/);
+    .should(($status) => {
+      const match = String($status.text()).match(/orbit revision (\d+) accepted/);
       expect(match, "accepted orbit revision").not.to.equal(null);
-      const revision = Number(match[1]);
+      revision = Number(match[1]);
+    })
+    .then(() => {
       return cy.window().then(async (win) => {
         const deadline = win.performance.now() + 30000;
         while (win.performance.now() < deadline) {
@@ -714,6 +716,10 @@ function recordEpisode(outcome, episodeNumber, completedBefore) {
       cy.screenshot("04-recorder-idle-start-enabled", { capture: "viewport" });
 
       cy.get("#leisaacViewMode").select("single_fast");
+      cy.get("#leisaacModeStatus", { timeout: 30000 }).should(
+        "contain.text",
+        "Applied view: Fast single",
+      );
       cy.get("#leisaacRecordingCameras").select("primary_only");
       cy.get("#leisaacModeStatus", { timeout: 30000 })
         .should("contain.text", "Applied view: Fast single")
@@ -722,6 +728,10 @@ function recordEpisode(outcome, episodeNumber, completedBefore) {
         .then(() => verifyExactUploadedEpisode(false))
         .then(() => {
           cy.get("#leisaacRecordingCameras").select("primary_and_secondary");
+          cy.get("#leisaacModeStatus", { timeout: 30000 }).should(
+            "contain.text",
+            "recording: Primary + secondary",
+          );
           cy.get("#leisaacModeWarning").should(
             "contain.text",
             "Two-camera episode recording reduces Fast single performance",
@@ -796,6 +806,10 @@ def Xform "Scene" (
             "keyboard teleoperation active",
           );
           cy.get("#leisaacRecordingCameras").select("primary_and_secondary");
+          cy.get("#leisaacModeStatus", { timeout: 30000 }).should(
+            "contain.text",
+            "recording: Primary + secondary",
+          );
           cy.get("#leisaacViewMode").select("dual_slow");
           cy.get("#leisaacModeStatus", { timeout: 30000 })
             .should("contain.text", "Applied view: Dual view")

@@ -3715,13 +3715,25 @@
       }
       function sendLeIsaacModeRequest(requestType, mode) {
         const socket = leisaacControlSocket;
-        if (!leisaacControlIsOpen(socket) || !leisaacClientId) {
-          throw new Error("Connect teleoperation before changing controller-owned modes");
-        }
         const isView = requestType === "view-mode";
-        const revision = isView ? ++leisaacModeRevision : ++leisaacRecordingRevision;
         if (isView) leisaacRequestedViewMode = String(mode);
         else leisaacRequestedRecordingMode = String(mode);
+        if (leisaacCapability) {
+          if (isView) leisaacCapability.requested_view_mode = String(mode);
+          else leisaacCapability.requested_recording_camera_mode = String(mode);
+          updateLeIsaacModeUi(leisaacCapability);
+        }
+        // A preferred video recovery replaces the paired control socket too.
+        // Preserve a user change made during that bounded gap; the ordered
+        // resumed handshake below reissues the latest requested values.
+        if (!leisaacControlIsOpen(socket) || !leisaacClientId) {
+          setLeIsaacStreamState(
+            "Mode change queued; reconnecting authenticated live controls…",
+            "pending",
+          );
+          return false;
+        }
+        const revision = isView ? ++leisaacModeRevision : ++leisaacRecordingRevision;
         socket.send(JSON.stringify({
           v: 1,
           type: requestType,
@@ -3732,11 +3744,7 @@
           client_mono_ns: leisaacMonoNs(),
           client_wall_ns: leisaacWallNs(),
         }));
-        if (leisaacCapability) {
-          if (isView) leisaacCapability.requested_view_mode = String(mode);
-          else leisaacCapability.requested_recording_camera_mode = String(mode);
-          updateLeIsaacModeUi(leisaacCapability);
-        }
+        return true;
       }
       function handleLeIsaacControlMessage(message) {
         let payload;

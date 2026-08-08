@@ -1258,6 +1258,10 @@ describe("NPA agent LeIsaac capability tab", () => {
       );
       video.fail();
     });
+    cy.get("#leisaacViewMode").select("dual_slow");
+    cy.get("#leisaacModeStatus", { timeout: 10000 })
+      .should("contain.text", "Applied view")
+      .and("contain.text", "Dual view");
     cy.window().should((win) => {
       const evidence = win.__NPA_AGENT_TEST__.leisaacTransportEvidence();
       expect(
