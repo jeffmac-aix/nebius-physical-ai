@@ -694,18 +694,22 @@ def apply_bundle_selection(selection: Any) -> dict[str, dict[str, Any]]:
     with BUNDLE_APPLY_LOCK:
         BUNDLE_SELECTION.clear()
         BUNDLE_SELECTION.update(materialized)
-    update_state(
-        state="restarting",
-        detail=(
-            "applying checksum-verified custom bundles"
-            if public_selection
-            else "restoring built-in defaults"
-        ),
-        selected_bundles=public_selection,
-        webrtc_ready=False,
-        stream_ready=False,
-    )
-    BUNDLE_RESTART.set()
+    # Publish the restart event and unavailable health state atomically. The
+    # child monitor must never overwrite this with a final `ready` update from
+    # the old simulator iteration after a bundle apply has been accepted.
+    with STATE_LOCK:
+        STATE.update(
+            state="restarting",
+            detail=(
+                "applying checksum-verified custom bundles"
+                if public_selection
+                else "restoring built-in defaults"
+            ),
+            selected_bundles=public_selection,
+            webrtc_ready=False,
+            stream_ready=False,
+        )
+        BUNDLE_RESTART.set()
     return public_selection
 
 
@@ -844,6 +848,22 @@ def _frame_stream_stalled(now: float | None = None) -> bool:
     return (time.time() if now is None else now) - oldest > FRAME_STALL_SECONDS
 
 
+def _mark_runtime_ready() -> bool:
+    """Publish readiness only while no accepted restart is pending."""
+
+    with STATE_LOCK:
+        if BUNDLE_RESTART.is_set():
+            return False
+        STATE.update(
+            state="ready",
+            detail="live",
+            webrtc_ready=True,
+            stream_ready=True,
+            stream_transport="websocket-v1",
+        )
+        return True
+
+
 def run_simulation() -> None:
     global CHILD
     try:
@@ -884,13 +904,7 @@ def run_simulation() -> None:
                         CHILD.terminate()
                         BUNDLE_RESTART.wait(1)
                         continue
-                    update_state(
-                        state="ready",
-                        detail="live",
-                        webrtc_ready=True,
-                        stream_ready=True,
-                        stream_transport="websocket-v1",
-                    )
+                    _mark_runtime_ready()
                 else:
                     with STATE_LOCK:
                         ready = STATE.get("state") == "ready"

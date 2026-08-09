@@ -807,6 +807,11 @@ def test_custom_bundle_apply_is_mocked_at_s3_call_site_and_restart_safe(
     assert calls == [(digest, tmp_path / "custom" / digest)]
     assert server.BUNDLE_RESTART.is_set()
     assert server.STATE["state"] == "restarting"
+    assert server._mark_runtime_ready() is False
+    assert server.STATE["state"] == "restarting"
+    server.BUNDLE_RESTART.clear()
+    assert server._mark_runtime_ready() is True
+    assert server.STATE["state"] == "ready"
     recorder.write_text('{"state":"idle"}\n', encoding="utf-8")
     reset = server.apply_bundle_selection({})
     assert reset == {}
