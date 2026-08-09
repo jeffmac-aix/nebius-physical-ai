@@ -3799,7 +3799,8 @@
         }
         return true;
       }
-      function handleLeIsaacControlMessage(message) {
+      function handleLeIsaacControlMessage(message, generation = leisaacSocketGeneration) {
+        if (generation !== leisaacSocketGeneration) return;
         let payload;
         try { payload = JSON.parse(String(message.data || "")); } catch (_err) { return; }
         if (!payload || Number(payload.v || 0) !== 1) return;
@@ -3875,14 +3876,7 @@
             // resume handshake owns the lease, then replay them idempotently.
             leisaacControlLeaseReady = false;
             setLeIsaacStreamState("Reacquiring authenticated control lease…", "pending");
-            const status = leisaacCapability;
-            window.setTimeout(() => {
-              if (
-                !leisaacManualDisconnect &&
-                !leisaacReconnectPromise &&
-                status && status.available
-              ) recoverLeIsaacPreferred(status);
-            }, 0);
+            if (!leisaacManualDisconnect) scheduleLeIsaacReconnect(250);
             return;
           }
           if (payload.code === "out_of_order" && Number(payload.expected_seq || 0) > 0) {
@@ -4389,7 +4383,7 @@
           ordered: true,
           protocol: "npa.leisaac.control.v1",
         });
-        channel.onmessage = handleLeIsaacControlMessage;
+        channel.onmessage = (message) => handleLeIsaacControlMessage(message, generation);
         leisaacControlPeer = peer;
         leisaacControlDataChannel = channel;
         let cancelOpenWait = () => {};
@@ -4584,7 +4578,7 @@
           if (control) {
             leisaacControlTransport = "websocket-v1";
             control.onopen = () => resume(control);
-            control.onmessage = handleLeIsaacControlMessage;
+            control.onmessage = (message) => handleLeIsaacControlMessage(message, generation);
           } else {
             openLeIsaacControlDataChannel(status, generation)
               .then((channel) => resume(channel))
@@ -4741,6 +4735,15 @@
         leisaacReconnectTimer = window.setTimeout(async () => {
           leisaacReconnectTimer = null;
           if (leisaacManualDisconnect) return;
+          if (leisaacReconnectPromise) {
+            const pending = leisaacReconnectPromise;
+            pending.finally(() => {
+              if (!leisaacManualDisconnect && !leisaacControlLeaseReady) {
+                scheduleLeIsaacReconnect(250);
+              }
+            });
+            return;
+          }
           const runId = String((leisaacCapability && leisaacCapability.run_id) || "");
           const status = await refreshLeIsaacCapability(runId);
           if (leisaacManualDisconnect) return;
