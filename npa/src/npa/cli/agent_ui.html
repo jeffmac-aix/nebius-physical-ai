@@ -10366,10 +10366,24 @@
         }
       }
       let refreshTimer = null;
+      function leisaacPeriodicRefreshRunId() {
+        const panel = document.getElementById("panelLeIsaac");
+        const mountedRunId = String(
+          (panel && panel.getAttribute("data-run-id")) || "",
+        ).trim();
+        return mountedRunId || String(
+          (leisaacCapability && leisaacCapability.run_id) || activeRunId || "",
+        ).trim();
+      }
       function startPeriodicRefresh() {
         if (refreshTimer !== null) return;
         refreshTimer = window.setInterval(() => {
-          refreshLeIsaacCapability(activeRunId).catch(() => null);
+          // The shared Rerun/artifact selection can be changed by another
+          // browser using this agent. Once a live teleoperation panel is
+          // mounted, keep its safety-critical capability, controller lease,
+          // and mode requests pinned to that run until the operator explicitly
+          // mounts a different LeIsaac run.
+          refreshLeIsaacCapability(leisaacPeriodicRefreshRunId()).catch(() => null);
           // Skip only while the Rerun panel is the active (visible) tab — do not
           // kill chat/stages/model refresh for the rest of the session just because
           // the iframe was mounted in the background.
@@ -10410,6 +10424,7 @@
           markLichtblickLayoutSeeded,
           LICHTBLICK_LAYOUT_SEED_KEY,
           refreshLeIsaacCapability,
+          leisaacPeriodicRefreshRunId,
           pollLeIsaacRecorder,
           sendLeIsaacRecorder,
           ensureLeIsaacTab,

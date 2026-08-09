@@ -585,6 +585,14 @@ describe("NPA agent LeIsaac capability tab", () => {
       expect(win.__NPA_AGENT_TEST__.activeRunId()).to.equal("mock-run");
     });
     cy.get("#tabLeIsaac").should("exist");
+    cy.window().then((win) => {
+      win.__NPA_AGENT_TEST__.selectActiveRunId("older-rerun-only-run");
+      expect(
+        win.__NPA_AGENT_TEST__.leisaacPeriodicRefreshRunId(),
+        "periodic refresh stays pinned to the mounted teleoperation run",
+      ).to.equal("mock-run");
+      win.__NPA_AGENT_TEST__.selectActiveRunId("mock-run");
+    });
     cy.window().then((win) =>
       win.__NPA_AGENT_TEST__.refreshLeIsaacCapability("older-rerun-only-run"),
     );
