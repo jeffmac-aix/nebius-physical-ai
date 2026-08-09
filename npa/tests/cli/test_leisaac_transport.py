@@ -965,9 +965,27 @@ def test_runtime_restart_retains_only_the_controller_for_mode_fallback(
         "client_wall_ns": 2,
     }
     assert runtime._queue_mode_request(first) is True
+    second = {
+        **first,
+        "type": "recording-cameras",
+        "revision": 3,
+        "mode": "primary_and_secondary",
+    }
+    assert runtime._queue_mode_request(second) is True
 
     runtime._reset_runtime_files()
     runtime.CONTROL_OWNER.update(token="", client_id="", resumed_wall_ns=0)
+
+    restarted = json.loads(runtime.MODE_COMMAND_PATH.read_text(encoding="utf-8"))
+    assert restarted["requested_view_mode"] == "dual_slow"
+    assert restarted["view_revision"] == 4
+    assert restarted["requested_recording_camera_mode"] == "primary_and_secondary"
+    assert restarted["recording_revision"] == 3
+    assert restarted["applied_view_mode"] == "single_fast"
+    assert restarted["applied_view_revision"] == 0
+    assert restarted["applied_recording_camera_mode"] == "primary_only"
+    assert restarted["applied_recording_revision"] == 0
+    assert restarted["owner_client_id"] == "bundle-restart-controller"
 
     with TestClient(runtime.build_app()) as client:
         retained = client.post(
@@ -976,7 +994,7 @@ def test_runtime_restart_retains_only_the_controller_for_mode_fallback(
             json={
                 **first,
                 "type": "recording-cameras",
-                "revision": 1,
+                "revision": 4,
                 "mode": "primary_and_secondary",
             },
         )

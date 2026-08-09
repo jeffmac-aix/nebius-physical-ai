@@ -828,6 +828,41 @@ def _simulation_launch() -> tuple[list[str], dict[str, str]]:
 
 def _reset_runtime_files() -> None:
     global APPLIED_ACK_OFFSET
+    # A bundle selection restarts only the simulator child. Preserve the
+    # surrounding authenticated session's latest revisioned mode command so
+    # the replacement child converges without depending on a browser polling
+    # cycle or a preferred-transport reconnect. Applied state remains at the
+    # safe defaults until the replacement scheduler acknowledges the command.
+    with MODE_COMMAND_LOCK:
+        try:
+            prior_mode = json.loads(MODE_COMMAND_PATH.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            prior_mode = {}
+        restart_mode = _default_mode_state()
+        if isinstance(prior_mode, dict):
+            requested_view = str(prior_mode.get("requested_view_mode") or "")
+            requested_recording = str(
+                prior_mode.get("requested_recording_camera_mode") or ""
+            )
+            if requested_view in VIEW_MODE_CONTRACT["values"]:
+                restart_mode["requested_view_mode"] = requested_view
+                restart_mode["view_revision"] = max(
+                    0, int(prior_mode.get("view_revision") or 0)
+                )
+            if requested_recording in RECORDING_CAMERA_CONTRACT["values"]:
+                restart_mode["requested_recording_camera_mode"] = requested_recording
+                restart_mode["recording_revision"] = max(
+                    0, int(prior_mode.get("recording_revision") or 0)
+                )
+            owner_client_id = str(prior_mode.get("owner_client_id") or "")
+            if owner_client_id:
+                restart_mode.update(
+                    schema="npa.leisaac.view-mode-command.v1",
+                    owner_client_id=owner_client_id,
+                    requested_monotonic_ns=int(
+                        prior_mode.get("requested_monotonic_ns") or 0
+                    ),
+                )
     READY_PATH.unlink(missing_ok=True)
     INPUT_COUNTER_PATH.write_text("0\n", encoding="utf-8")
     APPLIED_COUNTER_PATH.write_text("0\n", encoding="utf-8")
@@ -845,13 +880,12 @@ def _reset_runtime_files() -> None:
         SECONDARY_FRAME_PATH,
         SECONDARY_FRAME_META_PATH,
         VIEW_COMMAND_PATH,
-        MODE_COMMAND_PATH,
         MODE_STATUS_PATH,
     ):
         path.unlink(missing_ok=True)
-    initial_mode = _default_mode_state()
-    _write_json_atomic(MODE_COMMAND_PATH, initial_mode)
-    _write_json_atomic(MODE_STATUS_PATH, initial_mode)
+    with MODE_COMMAND_LOCK:
+        _write_json_atomic(MODE_COMMAND_PATH, restart_mode)
+    _write_json_atomic(MODE_STATUS_PATH, _default_mode_state())
     shutil.rmtree(RECORDER_ROOT, ignore_errors=True)
     RECORDER_ROOT.mkdir(parents=True, exist_ok=True)
 
