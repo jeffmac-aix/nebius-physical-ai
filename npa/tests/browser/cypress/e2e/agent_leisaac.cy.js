@@ -1105,11 +1105,21 @@ describe("NPA agent LeIsaac capability tab", () => {
               }, 5);
             }
           }
-          if (response)
-            win.setTimeout(
-              () => this.onmessage && this.onmessage({ data: JSON.stringify(response) }),
-              0,
+          if (response) {
+            const dispatch = () =>
+              this.onmessage && this.onmessage({ data: JSON.stringify(response) });
+            if (
+              message.type === "resume" &&
+              response.type === "error" &&
+              win.__LEISAAC_SYNC_BUSY_RESUME__
+            ) dispatch();
+            else win.setTimeout(
+              dispatch,
+              response.type === "resumed"
+                ? Number(win.__LEISAAC_RESUME_ACK_DELAY_MS__ || 0)
+                : 0,
             );
+          }
         }
         close() {
           if (this.timer) win.clearInterval(this.timer);
@@ -1308,6 +1318,11 @@ describe("NPA agent LeIsaac capability tab", () => {
     cy.window().then((win) => {
       win.__LEISAAC_DROP_NEXT_CONTROL_ACKS__ = true;
       win.__LEISAAC_REJECT_NEXT_RESUME__ = true;
+      // Reproduce the live open/resume gap: the contended lease rejects while
+      // recovery is still pending, then the replacement socket opens well
+      // before its authoritative resumed acknowledgement arrives.
+      win.__LEISAAC_SYNC_BUSY_RESUME__ = true;
+      win.__LEISAAC_RESUME_ACK_DELAY_MS__ = 400;
       const host = win.document.getElementById("leisaacStreamHost");
       host.dispatchEvent(
         new win.KeyboardEvent("keyup", { key: "A", code: "KeyA", bubbles: true }),
@@ -1880,7 +1895,22 @@ describe("NPA agent LeIsaac capability tab", () => {
             }
           }, this.url.includes("/control") ? 50 : 0);
         }
-        send() {}
+        send(raw) {
+          if (!this.url.includes("/control")) return;
+          const message = JSON.parse(String(raw));
+          if (message.type !== "resume") return;
+          win.setTimeout(() => {
+            if (this.onmessage) this.onmessage({ data: JSON.stringify({
+              v: 1,
+              type: "resumed",
+              run_id: message.run_id,
+              client_id: message.client_id,
+              next_seq: 1,
+              last_applied_seq: 0,
+              keys_down: [],
+            }) });
+          }, 0);
+        }
         close() { this.readyState = RecoveringWebSocket.CLOSED; }
       }
       win.WebSocket = RecoveringWebSocket;

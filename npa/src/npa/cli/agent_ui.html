@@ -3851,7 +3851,7 @@
               if (leisaacRequestedRecordingMode) sendLeIsaacModeRequest("recording-cameras", leisaacRequestedRecordingMode);
             } catch (_err) {}
           }, 0);
-          return;
+          return true;
         }
         if (payload.type === "pong") {
           const ping = leisaacPings.get(String(payload.nonce || ""));
@@ -3877,7 +3877,7 @@
             leisaacControlLeaseReady = false;
             setLeIsaacStreamState("Reacquiring authenticated control lease…", "pending");
             if (!leisaacManualDisconnect) scheduleLeIsaacReconnect(250);
-            return;
+            return "controller_busy";
           }
           if (payload.code === "out_of_order" && Number(payload.expected_seq || 0) > 0) {
             leisaacNextControlSequence = Number(payload.expected_seq);
@@ -4551,9 +4551,20 @@
             window.clearTimeout(timeout);
             if (error) reject(error); else resolve();
           };
+          const receiveControl = (message) => {
+            const result = handleLeIsaacControlMessage(message, generation);
+            if (result === "controller_busy") {
+              finish(new Error("authenticated control lease is busy"));
+            } else if (result === true) {
+              // An open socket is not yet an owned control lease. Waiting for
+              // the runtime's resumed acknowledgement prevents a recovery
+              // timer from replacing this socket in the small open/resume gap.
+              controlOpen = true;
+              finish();
+            }
+          };
           const resume = (transport) => {
             if (generation !== leisaacSocketGeneration) return;
-            controlOpen = true;
             leisaacClientResumeGeneration += 1;
             // Reserve six decimal digits for reconnect ordering. A page opened
             // one millisecond later still outranks every practical reconnect
@@ -4578,10 +4589,13 @@
           if (control) {
             leisaacControlTransport = "websocket-v1";
             control.onopen = () => resume(control);
-            control.onmessage = (message) => handleLeIsaacControlMessage(message, generation);
+            control.onmessage = receiveControl;
           } else {
             openLeIsaacControlDataChannel(status, generation)
-              .then((channel) => resume(channel))
+              .then((channel) => {
+                channel.onmessage = receiveControl;
+                resume(channel);
+              })
               .catch(finish);
           }
           if (video) {
