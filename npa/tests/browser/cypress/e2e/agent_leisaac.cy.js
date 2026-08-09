@@ -1983,13 +1983,13 @@ describe("NPA agent LeIsaac capability tab", () => {
     );
     cy.wait("@wsFallbackStatus");
     cy.get("#tabLeIsaac").click();
+    cy.get("#leisaacRecordingCameras").select("primary_and_secondary");
+    cy.wait("@fallbackModeControl");
     cy.get("#leisaacConnect").click();
     cy.wait("@wsFallbackFrame");
     cy.get("#leisaacTransportStatus", { timeout: 10000 })
       .should("contain.text", "JPEG polling")
       .and("contain.text", "fallback");
-    cy.get("#leisaacRecordingCameras").select("primary_and_secondary");
-    cy.wait("@fallbackModeControl");
     cy.get("#leisaacFrame").should("be.visible");
     cy.get("#leisaacTransportStatus", { timeout: 10000 })
       .should("contain.text", "WebSocket")
