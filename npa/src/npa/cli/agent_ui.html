@@ -3790,7 +3790,11 @@
               : ((leisaacCapability || {}).applied_recording_camera_mode || ""));
             if (latestRevision !== revision || latestMode !== String(mode) || appliedMode === String(mode)) return;
             const current = leisaacControlSocket;
-            if (leisaacControlIsOpen(current) && leisaacClientId === payload.client_id) {
+            if (
+              leisaacControlIsOpen(current) &&
+              leisaacControlLeaseReady &&
+              leisaacClientId === payload.client_id
+            ) {
               current.send(JSON.stringify(payload));
             } else if (!leisaacManualDisconnect && !leisaacReconnectPromise) {
               scheduleLeIsaacReconnect(250);
@@ -4749,6 +4753,11 @@
         leisaacReconnectTimer = window.setTimeout(async () => {
           leisaacReconnectTimer = null;
           if (leisaacManualDisconnect) return;
+          if (
+            leisaacControlLeaseReady &&
+            leisaacActiveTransport === "websocket-v1" &&
+            leisaacControlIsOpen(leisaacControlSocket)
+          ) return;
           if (leisaacReconnectPromise) {
             const pending = leisaacReconnectPromise;
             pending.finally(() => {
@@ -4767,7 +4776,10 @@
             return;
           }
           try {
-            const connected = await connectLeIsaac();
+            // Timer, close, and transport-error recovery all share this one
+            // promise. Calling connectLeIsaac() directly here allowed close
+            // callbacks to start a second socket pair during bundle restarts.
+            const connected = await recoverLeIsaacPreferred(status);
             // connectLeIsaacPreferred schedules the next bounded retry when it
             // returns false.  Preserve its backoff counter and timer.
             if (connected !== false || leisaacActiveTransport !== "jpeg-poll") {

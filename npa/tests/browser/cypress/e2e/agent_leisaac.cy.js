@@ -1355,6 +1355,7 @@ describe("NPA agent LeIsaac capability tab", () => {
         .filter((item) => item.type === "resume")
         .map((item) => BigInt(item.client_wall_ns));
       expect(resumeEpochs).to.have.length.greaterThan(2);
+      expect(resumeEpochs).to.have.length.at.most(4);
       expect(
         resumeEpochs.every((epoch, index) => index === 0 || epoch > resumeEpochs[index - 1]),
       ).to.equal(true);
