@@ -551,7 +551,7 @@ describe("NPA agent LeIsaac capability tab", () => {
       statusCode: 200,
       body: { available: false, reason: "selected run is not LeIsaac" },
     }).as("unrelatedLeisaacStatus");
-    cy.intercept("GET", "/api/leisaac/status", {
+    cy.intercept("GET", /\/api\/leisaac\/status$/, {
       statusCode: 200,
       body: {
         available: true,
@@ -1834,6 +1834,7 @@ describe("NPA agent LeIsaac capability tab", () => {
     };
     let authoritativeRecordingRevision = 0;
     let authoritativeViewRevision = 0;
+    const recordingRevisions = [];
     cy.intercept("GET", "/api/leisaac/status?run_id=mock-ws-fallback", (request) => {
       request.reply({
         statusCode: 200,
@@ -1898,6 +1899,7 @@ describe("NPA agent LeIsaac capability tab", () => {
         mode: "primary_and_secondary",
       });
       expect(request.body.revision).to.be.greaterThan(0);
+      recordingRevisions.push(request.body.revision);
       authoritativeRecordingRevision = request.body.revision;
       request.reply({
         statusCode: 202,
@@ -1974,6 +1976,7 @@ describe("NPA agent LeIsaac capability tab", () => {
             return;
           }
           if (message.type === "recording-cameras") {
+            recordingRevisions.push(message.revision);
             authoritativeRecordingRevision = message.revision;
             return;
           }
@@ -2035,6 +2038,10 @@ describe("NPA agent LeIsaac capability tab", () => {
       expect(evidence.active).to.equal("websocket-v1");
       expect(evidence.video).to.equal("websocket-v1");
       expect(evidence.reconnects).to.be.greaterThan(0);
+    });
+    cy.then(() => {
+      expect(recordingRevisions.length, "recording mode retransmissions").to.be.greaterThan(1);
+      expect(new Set(recordingRevisions).size, "stable recording revision across reconnects").to.equal(1);
     });
     cy.get("#leisaacDisconnect").click();
   });

@@ -3769,9 +3769,12 @@
             ? "Two-camera episode recording reduces Fast single performance; the secondary remains hidden."
             : "Fast single performs no secondary capture, relay, decode, or paint work.");
       }
-      function sendLeIsaacModeRequest(requestType, mode) {
+      function sendLeIsaacModeRequest(requestType, mode, reuseLatestRevision = false) {
         const socket = leisaacControlSocket;
         const isView = requestType === "view-mode";
+        const previousRequestedMode = isView
+          ? leisaacRequestedViewMode
+          : leisaacRequestedRecordingMode;
         if (isView) leisaacRequestedViewMode = String(mode);
         else leisaacRequestedRecordingMode = String(mode);
         if (leisaacCapability) {
@@ -3796,7 +3799,11 @@
           }
           return false;
         }
-        const revision = isView ? ++leisaacModeRevision : ++leisaacRecordingRevision;
+        const currentRevision = isView ? leisaacModeRevision : leisaacRecordingRevision;
+        const reuseRevision = reuseLatestRevision && currentRevision > 0 && previousRequestedMode === String(mode);
+        const revision = reuseRevision
+          ? currentRevision
+          : (isView ? ++leisaacModeRevision : ++leisaacRecordingRevision);
         const payload = {
           v: 1,
           type: requestType,
@@ -3959,8 +3966,8 @@
           sendQueuedWebSocketControls();
           window.setTimeout(() => {
             try {
-              if (leisaacRequestedViewMode) sendLeIsaacModeRequest("view-mode", leisaacRequestedViewMode);
-              if (leisaacRequestedRecordingMode) sendLeIsaacModeRequest("recording-cameras", leisaacRequestedRecordingMode);
+              if (leisaacRequestedViewMode) sendLeIsaacModeRequest("view-mode", leisaacRequestedViewMode, true);
+              if (leisaacRequestedRecordingMode) sendLeIsaacModeRequest("recording-cameras", leisaacRequestedRecordingMode, true);
             } catch (_err) {}
           }, 0);
           return true;
