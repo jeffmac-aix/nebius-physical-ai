@@ -3815,10 +3815,7 @@
             return true;
           }
           const status = leisaacCapability;
-          if (
-            leisaacActiveTransport === "jpeg-poll" &&
-            status && status.input_url
-          ) {
+          if (status && status.input_url) {
             fetch(String(status.input_url), {
               method: "POST",
               credentials: "include",
@@ -3844,7 +3841,7 @@
         const sent = transmit();
         if (!leisaacControlIsOpen(socket) || !leisaacControlLeaseReady) {
           setLeIsaacStreamState(
-            sent && leisaacActiveTransport === "jpeg-poll"
+            sent
               ? "Mode change sent through authenticated fallback controls…"
               : "Mode change queued; reconnecting authenticated live controls…",
             "pending",

@@ -1891,6 +1891,20 @@ describe("NPA agent LeIsaac capability tab", () => {
         body: { v: 1, type: "ack", phase: "accepted" },
       });
     }).as("fallbackModeControl");
+    cy.intercept("POST", "/api/leisaac/input?run_id=mock-ws-fallback", (request) => {
+      if (request.body.type !== "view-mode") return;
+      expect(request.headers["x-npa-leisaac-control"]).to.equal("1");
+      expect(request.body).to.include({
+        v: 1,
+        type: "view-mode",
+        mode: "dual_slow",
+      });
+      expect(request.body.revision).to.be.greaterThan(0);
+      request.reply({
+        statusCode: 202,
+        body: { v: 1, type: "ack", phase: "accepted" },
+      });
+    }).as("preferredGapModeControl");
     cy.intercept("GET", "/api/leisaac/frame.jpg?run_id=mock-ws-fallback&frame=*", {
       statusCode: 200,
       headers: { "content-type": "image/svg+xml" },
@@ -1931,6 +1945,7 @@ describe("NPA agent LeIsaac capability tab", () => {
           }
           win.setTimeout(() => {
             this.readyState = RecoveringWebSocket.OPEN;
+            if (this.url.includes("/control")) win.__mockLeIsaacRecoveredControl = this;
             if (this.onopen) this.onopen({ target: this });
             if (this.url.includes("/video") && this.onmessage) {
               this.onmessage({ data: preferredFrame() });
@@ -1981,6 +1996,14 @@ describe("NPA agent LeIsaac capability tab", () => {
       .and("contain.text", "latest-frame-wins");
     cy.get("#leisaacFrame").should("not.be.visible");
     cy.get("#leisaacCanvas").should("be.visible");
+    cy.window().then((win) => {
+      const control = win.__mockLeIsaacRecoveredControl;
+      expect(control, "recovered preferred control socket").to.exist;
+      control.readyState = win.WebSocket.CLOSED;
+      if (control.onclose) control.onclose({ target: control });
+    });
+    cy.get("#leisaacViewMode").select("dual_slow");
+    cy.wait("@preferredGapModeControl");
     cy.window().should((win) => {
       const evidence = win.__NPA_AGENT_TEST__.leisaacTransportEvidence();
       expect(evidence.active).to.equal("websocket-v1");
