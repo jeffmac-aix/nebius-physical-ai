@@ -10388,6 +10388,12 @@
           connectLeIsaac,
           disconnectLeIsaac,
           leisaacTransportEvidence: snapshotLeIsaacTransportEvidence,
+          // Performance probes poll every few milliseconds on the browser
+          // event loop. They are read-only and must not allocate/copy the
+          // bounded evidence arrays on each poll, because that observer work
+          // competes directly with decode and paint. Normal callers retain the
+          // isolated snapshot API above.
+          leisaacTransportEvidenceLive: () => leisaacTransportEvidence,
           leisaacActiveTransport: () => leisaacActiveTransport,
           refresh,
           activeRunId: () => activeRunId,

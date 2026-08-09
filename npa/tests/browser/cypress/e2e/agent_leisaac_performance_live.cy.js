@@ -15,6 +15,14 @@ function numberEnv(name, fallback) {
   return Number.isFinite(value) && value >= 0 ? value : fallback;
 }
 
+function liveTransportEvidence(win) {
+  const accessor = win.__NPA_AGENT_TEST__?.leisaacTransportEvidenceLive;
+  if (typeof accessor !== "function") {
+    throw new Error("zero-copy LeIsaac performance evidence accessor is unavailable");
+  }
+  return accessor();
+}
+
 function percentile(values, fraction) {
   if (!values.length) return null;
   const sorted = values.slice().sort((left, right) => left - right);
@@ -240,14 +248,14 @@ function frameStageSummary(frames) {
           };
         }
 
-        const startingEvidence = win.__NPA_AGENT_TEST__.leisaacTransportEvidence();
+        const startingFrameCount = liveTransportEvidence(win).frames.length;
         win.document.getElementById("leisaacConnect").click();
         await waitUntil(
           win,
           () => {
-            const evidence = win.__NPA_AGENT_TEST__.leisaacTransportEvidence();
+            const evidence = liveTransportEvidence(win);
             return ["websocket-v1", "webrtc-datachannel-v1"].includes(evidence.active) &&
-              evidence.frames.slice(startingEvidence.frames.length)
+              evidence.frames.slice(startingFrameCount)
                 .some((frame) => frame.camera === "workspace");
           },
           120000,
@@ -270,13 +278,11 @@ function frameStageSummary(frames) {
           30000,
           `${viewMode} scheduler acknowledgement`,
         );
-        const modeEvidenceStart = win.__NPA_AGENT_TEST__.leisaacTransportEvidence()
-          .frames.length;
+        const modeEvidenceStart = liveTransportEvidence(win).frames.length;
         await waitUntil(
           win,
           () => {
-            const frames = win.__NPA_AGENT_TEST__.leisaacTransportEvidence()
-              .frames.slice(modeEvidenceStart);
+            const frames = liveTransportEvidence(win).frames.slice(modeEvidenceStart);
             return frames.filter((frame) => frame.camera === "workspace").length >= 2 &&
               (viewMode === "single_fast" ||
                 frames.some((frame) => frame.camera === "overview"));
@@ -286,8 +292,7 @@ function frameStageSummary(frames) {
         );
         if (viewMode === "single_fast") {
           await new Promise((resolve) => win.setTimeout(resolve, 1200));
-          const frames = win.__NPA_AGENT_TEST__.leisaacTransportEvidence()
-            .frames.slice(modeEvidenceStart);
+          const frames = liveTransportEvidence(win).frames.slice(modeEvidenceStart);
           if (frames.some((frame) => frame.camera === "overview")) {
             throw new Error("Fast single decoded or painted an overview frame");
           }
@@ -297,14 +302,14 @@ function frameStageSummary(frames) {
         if (!host) throw new Error("LeIsaac teleoperation host is missing");
         host.focus();
 
-        let observedFrames = win.__NPA_AGENT_TEST__.leisaacTransportEvidence().frames.length;
+        let observedFrames = liveTransportEvidence(win).frames.length;
         let previousIdle = sampleCanvas(win, "leisaacCanvas");
         const workspaceIdleFrames = [];
         while (workspaceIdleFrames.length < idleFrameCount) {
           const next = await waitUntil(
             win,
             () => {
-              const frames = win.__NPA_AGENT_TEST__.leisaacTransportEvidence().frames;
+              const frames = liveTransportEvidence(win).frames;
               for (let index = observedFrames; index < frames.length; index += 1) {
                 if (frames[index].camera === "workspace") return { frame: frames[index], end: frames.length };
               }
@@ -330,7 +335,7 @@ function frameStageSummary(frames) {
             await new Promise((resolve) => win.setTimeout(resolve, remaining));
           }
           const key = keys[ordinal % keys.length];
-          const beforeControls = win.__NPA_AGENT_TEST__.leisaacTransportEvidence().controls.length;
+          const beforeControls = liveTransportEvidence(win).controls.length;
           const beforePixels = sampleCanvas(win, "leisaacCanvas");
           const eventMonoMs = win.performance.now();
           host.dispatchEvent(new win.KeyboardEvent("keydown", {
@@ -353,7 +358,7 @@ function frameStageSummary(frames) {
 
           const accepted = await waitUntil(
             win,
-            () => win.__NPA_AGENT_TEST__.leisaacTransportEvidence().controls
+            () => liveTransportEvidence(win).controls
               .slice(beforeControls)
               .find((item) => item.phase === "accepted" && item.event === "press" && item.key === key),
             10000,
@@ -361,7 +366,7 @@ function frameStageSummary(frames) {
           );
           const applied = await waitUntil(
             win,
-            () => win.__NPA_AGENT_TEST__.leisaacTransportEvidence().controls
+            () => liveTransportEvidence(win).controls
               .slice(beforeControls)
               .find((item) => item.phase === "applied" && item.seq === accepted.seq),
             10000,
@@ -370,7 +375,7 @@ function frameStageSummary(frames) {
           await releaseDispatched;
           const releaseAccepted = await waitUntil(
             win,
-            () => win.__NPA_AGENT_TEST__.leisaacTransportEvidence().controls
+            () => liveTransportEvidence(win).controls
               .slice(beforeControls)
               .find((item) => item.phase === "accepted" && item.event === "release" && item.key === key),
             10000,
@@ -378,7 +383,7 @@ function frameStageSummary(frames) {
           );
           const releaseApplied = await waitUntil(
             win,
-            () => win.__NPA_AGENT_TEST__.leisaacTransportEvidence().controls
+            () => liveTransportEvidence(win).controls
               .slice(beforeControls)
               .find((item) => item.phase === "applied" && item.seq === releaseAccepted.seq),
             10000,
@@ -391,7 +396,7 @@ function frameStageSummary(frames) {
           const causal = await waitUntil(
             win,
             () => {
-              const frames = win.__NPA_AGENT_TEST__.leisaacTransportEvidence().frames;
+              const frames = liveTransportEvidence(win).frames;
               for (let index = cursor; index < frames.length; index += 1) {
                 const frame = frames[index];
                 if (frame.camera !== "workspace") continue;
