@@ -613,22 +613,33 @@ def test_cumulative_bundle_selection_uses_atomic_backend_state_mutation() -> Non
     assert uploaded.status_code == 201
     block_next_apply = True
     before_replacement = len(applied)
+
+    def select_replacement():
+        # Starlette's TestClient owns an anyio portal and is not safe to share
+        # across OS threads.  Give each concurrent request its own portal so
+        # this test exercises the backend transaction instead of occasionally
+        # deadlocking inside the test harness.
+        with TestClient(app) as concurrent_client:
+            return concurrent_client.post(
+                "/leisaac/bundles/select?run_id=bundle-atomic-run",
+                headers=headers,
+                json={
+                    "kind": "scene",
+                    "bundle_sha256": uploaded.json()["bundle_sha256"],
+                },
+            )
+
+    def fetch_concurrent_status():
+        with TestClient(app) as concurrent_client:
+            return concurrent_client.get(
+                "/leisaac/status?run_id=bundle-atomic-run",
+                headers={"x-forwarded-proto": "https"},
+            )
+
     with ThreadPoolExecutor(max_workers=2) as executor:
-        selection_future = executor.submit(
-            client.post,
-            "/leisaac/bundles/select?run_id=bundle-atomic-run",
-            headers=headers,
-            json={
-                "kind": "scene",
-                "bundle_sha256": uploaded.json()["bundle_sha256"],
-            },
-        )
+        selection_future = executor.submit(select_replacement)
         assert apply_entered.wait(5), "bundle apply did not start"
-        status_future = executor.submit(
-            client.get,
-            "/leisaac/status?run_id=bundle-atomic-run",
-            headers={"x-forwarded-proto": "https"},
-        )
+        status_future = executor.submit(fetch_concurrent_status)
         assert not status_future.done(), "status bypassed the bundle transaction"
         release_apply.set()
         selected = selection_future.result(timeout=5)
