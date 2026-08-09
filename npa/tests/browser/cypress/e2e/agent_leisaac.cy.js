@@ -1300,6 +1300,12 @@ describe("NPA agent LeIsaac capability tab", () => {
       expect(evidence.dropped_frames).to.equal(expectedDrops);
       expect(evidence.frames.some((frame) => frame.causal_action_sequence > 0)).to.equal(true);
       expect(evidence.frames.some((frame) => frame.view_revision > 0)).to.equal(true);
+      const recordedFrameCount = evidence.frames.length;
+      evidence.frames.length = 0;
+      expect(
+        win.__NPA_AGENT_TEST__.leisaacTransportEvidence().frames,
+        "diagnostic snapshots isolate their bounded arrays",
+      ).to.have.length(recordedFrameCount);
     });
     cy.window().then((win) => {
       const host = win.document.getElementById("leisaacStreamHost");

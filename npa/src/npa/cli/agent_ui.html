@@ -2334,6 +2334,20 @@
           collection.splice(0, collection.length - LEISAAC_EVIDENCE_LIMIT);
         }
       }
+      function snapshotLeIsaacTransportEvidence() {
+        // Benchmark polling runs on the same browser event loop as JPEG decode
+        // and paint. JSON round-tripping thousands of already immutable scalar
+        // evidence records on every poll made the diagnostic observer itself a
+        // source of long paint stalls, disproportionately penalizing Fast single
+        // because it delivers more frames. Isolate the mutable bounded arrays
+        // while retaining their immutable record objects.
+        return {
+          ...leisaacTransportEvidence,
+          controls: leisaacTransportEvidence.controls.slice(),
+          frames: leisaacTransportEvidence.frames.slice(),
+          failures: leisaacTransportEvidence.failures.slice(),
+        };
+      }
       let leisaacRecorderTimer = null;
       let leisaacRecorderPollInFlight = false;
       let leisaacRecorderPending = null;
@@ -10373,7 +10387,7 @@
           removeLeIsaacTab,
           connectLeIsaac,
           disconnectLeIsaac,
-          leisaacTransportEvidence: () => JSON.parse(JSON.stringify(leisaacTransportEvidence)),
+          leisaacTransportEvidence: snapshotLeIsaacTransportEvidence,
           leisaacActiveTransport: () => leisaacActiveTransport,
           refresh,
           activeRunId: () => activeRunId,
