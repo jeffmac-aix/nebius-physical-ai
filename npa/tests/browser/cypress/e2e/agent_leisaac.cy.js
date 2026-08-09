@@ -1020,15 +1020,25 @@ describe("NPA agent LeIsaac capability tab", () => {
           const message = JSON.parse(String(raw));
           let response = null;
           if (message.type === "resume") {
-            response = {
-              v: 1,
-              type: "resumed",
-              run_id: message.run_id,
-              client_id: message.client_id,
-              next_seq: nextExpected,
-              last_applied_seq: nextExpected - 1,
-              keys_down: [],
-            };
+            if (win.__LEISAAC_REJECT_NEXT_RESUME__) {
+              win.__LEISAAC_REJECT_NEXT_RESUME__ = false;
+              response = {
+                v: 1,
+                type: "error",
+                code: "controller_busy",
+                detail: "another authenticated control transport owns this session",
+              };
+            } else {
+              response = {
+                v: 1,
+                type: "resumed",
+                run_id: message.run_id,
+                client_id: message.client_id,
+                next_seq: nextExpected,
+                last_applied_seq: nextExpected - 1,
+                keys_down: [],
+              };
+            }
           } else if (message.type === "ping") {
             response = {
               ...message,
@@ -1297,6 +1307,7 @@ describe("NPA agent LeIsaac capability tab", () => {
     });
     cy.window().then((win) => {
       win.__LEISAAC_DROP_NEXT_CONTROL_ACKS__ = true;
+      win.__LEISAAC_REJECT_NEXT_RESUME__ = true;
       const host = win.document.getElementById("leisaacStreamHost");
       host.dispatchEvent(
         new win.KeyboardEvent("keyup", { key: "A", code: "KeyA", bubbles: true }),
@@ -1328,7 +1339,7 @@ describe("NPA agent LeIsaac capability tab", () => {
         .flatMap((socket) => socket.sent.map((raw) => JSON.parse(raw)))
         .filter((item) => item.type === "resume")
         .map((item) => BigInt(item.client_wall_ns));
-      expect(resumeEpochs).to.have.length.greaterThan(1);
+      expect(resumeEpochs).to.have.length.greaterThan(2);
       expect(
         resumeEpochs.every((epoch, index) => index === 0 || epoch > resumeEpochs[index - 1]),
       ).to.equal(true);

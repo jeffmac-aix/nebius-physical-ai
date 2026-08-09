@@ -2316,6 +2316,7 @@
       let leisaacClientRunId = "";
       let leisaacClientResumeEpochMs = "";
       let leisaacClientResumeGeneration = 0;
+      let leisaacControlLeaseReady = false;
       let leisaacReconnectPromise = null;
       let leisaacManualDisconnect = false;
       let leisaacBundleRestartPending = false;
@@ -3397,7 +3398,7 @@
       }
       function sendQueuedWebSocketControls() {
         const socket = leisaacControlSocket;
-        if (!leisaacControlIsOpen(socket)) return;
+        if (!leisaacControlIsOpen(socket) || !leisaacControlLeaseReady) return;
         for (const item of Array.from(leisaacUnackedControls.values()).sort((left, right) => left.payload.seq - right.payload.seq)) {
           if (item.sentGeneration === leisaacSocketGeneration) continue;
           socket.send(JSON.stringify(item.payload));
@@ -3753,7 +3754,7 @@
         // A preferred video recovery replaces the paired control socket too.
         // Preserve a user change made during that bounded gap; the ordered
         // resumed handshake below reissues the latest requested values.
-        if (!leisaacControlIsOpen(socket) || !leisaacClientId) {
+        if (!leisaacControlIsOpen(socket) || !leisaacControlLeaseReady || !leisaacClientId) {
           setLeIsaacStreamState(
             "Mode change queued; reconnecting authenticated live controls…",
             "pending",
@@ -3803,6 +3804,7 @@
         try { payload = JSON.parse(String(message.data || "")); } catch (_err) { return; }
         if (!payload || Number(payload.v || 0) !== 1) return;
         if (payload.type === "resumed") {
+          leisaacControlLeaseReady = true;
           const expected = Number(payload.next_seq || 1);
           const lastApplied = Number(payload.last_applied_seq || 0);
           leisaacModeRevision = Math.max(
@@ -3867,6 +3869,22 @@
           return;
         }
         if (payload.type === "error") {
+          if (payload.code === "controller_busy") {
+            // A half-open predecessor can briefly win during a bundle-driven
+            // reconnect. Keep ordered controls queued until a strictly newer
+            // resume handshake owns the lease, then replay them idempotently.
+            leisaacControlLeaseReady = false;
+            setLeIsaacStreamState("Reacquiring authenticated control lease…", "pending");
+            const status = leisaacCapability;
+            window.setTimeout(() => {
+              if (
+                !leisaacManualDisconnect &&
+                !leisaacReconnectPromise &&
+                status && status.available
+              ) recoverLeIsaacPreferred(status);
+            }, 0);
+            return;
+          }
           if (payload.code === "out_of_order" && Number(payload.expected_seq || 0) > 0) {
             leisaacNextControlSequence = Number(payload.expected_seq);
             leisaacUnackedControls.clear();
@@ -4262,7 +4280,7 @@
             return;
           }
           const socket = leisaacControlSocket;
-          if (!leisaacControlIsOpen(socket)) return;
+          if (!leisaacControlIsOpen(socket) || !leisaacControlLeaseReady) return;
           const nonce = String(Date.now()) + "-" + String(Math.random()).slice(2);
           const wallNs = Date.now() * 1000000;
           leisaacPings.set(nonce, { wallNs: wallNs, monoMs: performance.now() });
@@ -4281,6 +4299,7 @@
       }
       function closeLeIsaacSockets() {
         leisaacSocketGeneration += 1;
+        leisaacControlLeaseReady = false;
         stopLeIsaacHeartbeat();
         if (leisaacReconnectTimer !== null) window.clearTimeout(leisaacReconnectTimer);
         leisaacReconnectTimer = null;
