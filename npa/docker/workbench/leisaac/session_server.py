@@ -295,7 +295,7 @@ def _mode_request_state() -> dict[str, Any]:
     return payload if isinstance(payload, dict) else _mode_state()
 
 
-def _queue_mode_request(message: dict[str, Any]) -> None:
+def _queue_mode_request(message: dict[str, Any]) -> bool:
     """Atomically publish the latest controller-owned scheduler request."""
 
     with MODE_COMMAND_LOCK:
@@ -306,6 +306,17 @@ def _queue_mode_request(message: dict[str, Any]) -> None:
         if not isinstance(command, dict):
             command = _default_mode_state()
         revision = int(message["revision"])
+        revision_key = (
+            "view_revision"
+            if message["type"] == "view-mode"
+            else "recording_revision"
+        )
+        # Fallback requests use independent HTTP exchanges and can complete out
+        # of order. Never let an older revision replace the latest scheduler
+        # request; equal revisions remain idempotently replayable after the
+        # disconnect safety reset.
+        if revision < int(command.get(revision_key) or 0):
+            return False
         if message["type"] == "view-mode":
             command["requested_view_mode"] = str(message["mode"])
             command["view_revision"] = revision
@@ -318,6 +329,7 @@ def _queue_mode_request(message: dict[str, Any]) -> None:
             requested_monotonic_ns=time.monotonic_ns(),
         )
         _write_json_atomic(MODE_COMMAND_PATH, command)
+        return True
 
 
 def utc_now() -> str:
@@ -1967,6 +1979,44 @@ def build_app() -> FastAPI:
         if not ready:
             return JSONResponse(
                 status_code=503, content={"detail": "simulator not ready"}
+            )
+        if message["type"] in {"view-mode", "recording-cameras"}:
+            client_id = str(message["client_id"])
+            with CONTROL_OWNER_LOCK:
+                active_owner = str(CONTROL_OWNER.get("client_id") or "")
+            mode_owner = str(_mode_request_state().get("owner_client_id") or "")
+            # The polling fallback may outlive its preferred socket, but it may
+            # not turn every authenticated observer into a mode controller.
+            # Admit only the active lease client or that same client's retained
+            # ownership after the socket's deterministic safety teardown.
+            if active_owner != client_id and not (
+                not active_owner and mode_owner == client_id
+            ):
+                return JSONResponse(
+                    status_code=409,
+                    content={
+                        "v": 1,
+                        "type": "error",
+                        "code": "controller_busy",
+                        "detail": "another authenticated controller owns mode changes",
+                    },
+                    headers={"Cache-Control": "no-store"},
+                )
+            queued = await asyncio.to_thread(_queue_mode_request, message)
+            TRANSPORT_METRICS.increment("mode_requests")
+            return JSONResponse(
+                status_code=202,
+                content={
+                    "v": 1,
+                    "type": "ack",
+                    "phase": "accepted" if queued else "superseded",
+                    "request_type": message["type"],
+                    "run_id": run_id,
+                    "client_id": message["client_id"],
+                    "revision": message["revision"],
+                    "mode": message["mode"],
+                },
+                headers={"Cache-Control": "no-store"},
             )
         try:
             accepted, queued = CONTROL_LEDGER.accept(message)

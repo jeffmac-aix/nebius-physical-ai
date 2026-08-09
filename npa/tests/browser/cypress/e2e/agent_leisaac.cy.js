@@ -1807,6 +1807,27 @@ describe("NPA agent LeIsaac capability tab", () => {
   });
 
   it("falls back explicitly and self-heals after bounded preferred-transport retries", () => {
+    const modeFields = {
+      view_mode_contract: {
+        default: "single_fast",
+        values: ["single_fast", "dual_slow"],
+        labels: { single_fast: "Fast single", dual_slow: "Slower dual" },
+      },
+      recording_camera_contract: {
+        default: "primary_only",
+        values: ["primary_only", "primary_and_secondary"],
+        labels: {
+          primary_only: "Primary only",
+          primary_and_secondary: "Primary + secondary",
+        },
+      },
+      requested_view_mode: "single_fast",
+      applied_view_mode: "single_fast",
+      view_revision: 0,
+      requested_recording_camera_mode: "primary_only",
+      applied_recording_camera_mode: "primary_only",
+      recording_revision: 0,
+    };
     cy.intercept("GET", "/api/leisaac/status?run_id=mock-ws-fallback", {
       statusCode: 200,
       body: {
@@ -1818,6 +1839,7 @@ describe("NPA agent LeIsaac capability tab", () => {
         video_ws_url: "/api/leisaac/transport/video?run_id=mock-ws-fallback",
         frame_url: "/api/leisaac/frame.jpg?run_id=mock-ws-fallback",
         input_url: "/api/leisaac/input?run_id=mock-ws-fallback",
+        ...modeFields,
       },
     }).as("wsFallbackStatus");
     cy.intercept("GET", "/api/leisaac/status?run_id=mock-run", {
@@ -1831,6 +1853,7 @@ describe("NPA agent LeIsaac capability tab", () => {
         video_ws_url: "/api/leisaac/transport/video?run_id=mock-ws-fallback",
         frame_url: "/api/leisaac/frame.jpg?run_id=mock-ws-fallback",
         input_url: "/api/leisaac/input?run_id=mock-ws-fallback",
+        ...modeFields,
       },
     });
     cy.intercept("GET", "/api/leisaac/status", {
@@ -1844,12 +1867,26 @@ describe("NPA agent LeIsaac capability tab", () => {
         video_ws_url: "/api/leisaac/transport/video?run_id=mock-ws-fallback",
         frame_url: "/api/leisaac/frame.jpg?run_id=mock-ws-fallback",
         input_url: "/api/leisaac/input?run_id=mock-ws-fallback",
+        ...modeFields,
       },
     });
     cy.intercept("POST", "/api/leisaac/select", {
       statusCode: 200,
       body: { selected: true },
     });
+    cy.intercept("POST", "/api/leisaac/input?run_id=mock-ws-fallback", (request) => {
+      expect(request.headers["x-npa-leisaac-control"]).to.equal("1");
+      expect(request.body).to.include({
+        v: 1,
+        type: "recording-cameras",
+        mode: "primary_and_secondary",
+      });
+      expect(request.body.revision).to.be.greaterThan(0);
+      request.reply({
+        statusCode: 202,
+        body: { v: 1, type: "ack", phase: "accepted" },
+      });
+    }).as("fallbackModeControl");
     cy.intercept("GET", "/api/leisaac/frame.jpg?run_id=mock-ws-fallback&frame=*", {
       statusCode: 200,
       headers: { "content-type": "image/svg+xml" },
@@ -1932,6 +1969,8 @@ describe("NPA agent LeIsaac capability tab", () => {
     cy.get("#leisaacTransportStatus", { timeout: 10000 })
       .should("contain.text", "JPEG polling")
       .and("contain.text", "fallback");
+    cy.get("#leisaacRecordingCameras").select("primary_and_secondary");
+    cy.wait("@fallbackModeControl");
     cy.get("#leisaacFrame").should("be.visible");
     cy.get("#leisaacTransportStatus", { timeout: 10000 })
       .should("contain.text", "WebSocket")

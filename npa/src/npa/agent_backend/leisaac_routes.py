@@ -1714,9 +1714,14 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
             and payload.get("v") == 1
             and payload.get("type") == "action"
         )
+        direct_mode = (
+            isinstance(payload, dict)
+            and payload.get("v") == 1
+            and payload.get("type") in {"view-mode", "recording-cameras"}
+        )
         key = str(payload.get("key") if isinstance(payload, dict) else "").upper()
         event = str(payload.get("event") if isinstance(payload, dict) else "")
-        if not direct_action and (
+        if not (direct_action or direct_mode) and (
             key
             not in {
                 "W",

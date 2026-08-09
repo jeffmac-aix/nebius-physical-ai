@@ -713,6 +713,31 @@ def test_authenticated_backend_routes_gate_status_and_proxy_client(monkeypatch) 
     assert input_post[1]["headers"] == {
         "X-NPA-LeIsaac-Nonce": raw_manifest["session_nonce"]
     }
+    fallback_mode_payload = {
+        "v": 1,
+        "type": "recording-cameras",
+        "run_id": raw_manifest["run_id"],
+        "client_id": "route-test-browser",
+        "revision": 3,
+        "mode": "primary_and_secondary",
+        "client_mono_ns": 100,
+        "client_wall_ns": 200,
+    }
+    fallback_mode = client.post(
+        "/leisaac/input",
+        params={"run_id": raw_manifest["run_id"]},
+        headers={
+            "x-forwarded-proto": "https",
+            "x-npa-leisaac-control": "1",
+        },
+        json=fallback_mode_payload,
+    )
+    assert fallback_mode.status_code == 202
+    mode_post = [item for item in posted if item[0].endswith("/input")][-1]
+    assert mode_post[1]["json"] == fallback_mode_payload
+    assert mode_post[1]["headers"] == {
+        "X-NPA-LeIsaac-Nonce": raw_manifest["session_nonce"]
+    }
     recorder_control = client.post(
         "/leisaac/recorder",
         params={"run_id": raw_manifest["run_id"]},

@@ -1266,6 +1266,64 @@ def test_runtime_rejects_bad_auth_and_preserves_polling_fallback(
         assert fallback.json()["phase"] == "accepted"
         assert json.loads(runtime.INPUT_QUEUE_PATH.read_text())["key"] == "A"
 
+        mode_payload = {
+            "v": 1,
+            "type": "view-mode",
+            "run_id": RUN_ID,
+            "client_id": "fallback-browser",
+            "revision": 9,
+            "mode": "dual_slow",
+            "client_mono_ns": 300,
+            "client_wall_ns": 400,
+        }
+        runtime.CONTROL_OWNER.update(
+            token="fallback-lease",
+            client_id="fallback-browser",
+            resumed_wall_ns=400,
+        )
+        mode = client.post(
+            "/input",
+            headers={"x-npa-leisaac-nonce": NONCE},
+            json=mode_payload,
+        )
+        assert mode.status_code == 202
+        assert mode.json() == {
+            "v": 1,
+            "type": "ack",
+            "phase": "accepted",
+            "request_type": "view-mode",
+            "run_id": RUN_ID,
+            "client_id": "fallback-browser",
+            "revision": 9,
+            "mode": "dual_slow",
+        }
+        queued = json.loads(runtime.MODE_COMMAND_PATH.read_text(encoding="utf-8"))
+        assert queued["requested_view_mode"] == "dual_slow"
+        assert queued["view_revision"] == 9
+        assert queued["owner_client_id"] == "fallback-browser"
+
+        runtime.CONTROL_OWNER.update(token="", client_id="", resumed_wall_ns=0)
+        stale = client.post(
+            "/input",
+            headers={"x-npa-leisaac-nonce": NONCE},
+            json={**mode_payload, "revision": 8, "mode": "single_fast"},
+        )
+        assert stale.status_code == 202
+        assert stale.json()["phase"] == "superseded"
+        still_queued = json.loads(
+            runtime.MODE_COMMAND_PATH.read_text(encoding="utf-8")
+        )
+        assert still_queued["requested_view_mode"] == "dual_slow"
+        assert still_queued["view_revision"] == 9
+
+        observer = client.post(
+            "/input",
+            headers={"x-npa-leisaac-nonce": NONCE},
+            json={**mode_payload, "client_id": "observer", "revision": 10},
+        )
+        assert observer.status_code == 409
+        assert observer.json()["code"] == "controller_busy"
+
 
 def test_runtime_fsyncs_safety_releases_but_not_transient_presses(
     monkeypatch, tmp_path: Path

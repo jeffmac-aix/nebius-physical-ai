@@ -3752,9 +3752,10 @@
           updateLeIsaacModeUi(leisaacCapability);
         }
         // A preferred video recovery replaces the paired control socket too.
-        // Preserve a user change made during that bounded gap; the ordered
-        // resumed handshake below reissues the latest requested values.
-        if (!leisaacControlIsOpen(socket) || !leisaacControlLeaseReady || !leisaacClientId) {
+        // Preserve a user change made during that bounded gap. When tested
+        // JPEG polling is active, the same authenticated input endpoint carries
+        // the revisioned mode command while preferred transport recovers.
+        if (!leisaacClientId) {
           setLeIsaacStreamState(
             "Mode change queued; reconnecting authenticated live controls…",
             "pending",
@@ -3775,7 +3776,52 @@
           client_mono_ns: leisaacMonoNs(),
           client_wall_ns: leisaacWallNs(),
         };
-        socket.send(JSON.stringify(payload));
+        const transmit = () => {
+          const current = leisaacControlSocket;
+          if (
+            leisaacControlIsOpen(current) &&
+            leisaacControlLeaseReady &&
+            leisaacClientId === payload.client_id
+          ) {
+            current.send(JSON.stringify(payload));
+            return true;
+          }
+          const status = leisaacCapability;
+          if (
+            leisaacActiveTransport === "jpeg-poll" &&
+            status && status.input_url
+          ) {
+            fetch(String(status.input_url), {
+              method: "POST",
+              credentials: "include",
+              cache: "no-store",
+              headers: {
+                "Content-Type": "application/json",
+                "X-NPA-LeIsaac-Control": "1",
+              },
+              body: JSON.stringify(payload),
+            }).then((response) => {
+              if (!response.ok) throw new Error("fallback mode control returned HTTP " + String(response.status));
+              return refreshLeIsaacCapability(String(status.run_id || ""));
+            }).catch((error) => {
+              console.warn("LeIsaac fallback mode request failed", error);
+            });
+            return true;
+          }
+          if (!leisaacManualDisconnect && !leisaacReconnectPromise) {
+            scheduleLeIsaacReconnect(250);
+          }
+          return false;
+        };
+        const sent = transmit();
+        if (!leisaacControlIsOpen(socket) || !leisaacControlLeaseReady) {
+          setLeIsaacStreamState(
+            sent && leisaacActiveTransport === "jpeg-poll"
+              ? "Mode change sent through authenticated fallback controls…"
+              : "Mode change queued; reconnecting authenticated live controls…",
+            "pending",
+          );
+        }
         // Mode commands are idempotent at a revision, but unlike robot inputs
         // they do not live in the ordered control ledger. Retransmit the same
         // revision across the short recovery window so a socket replacement
@@ -3789,19 +3835,10 @@
               ? ((leisaacCapability || {}).applied_view_mode || "")
               : ((leisaacCapability || {}).applied_recording_camera_mode || ""));
             if (latestRevision !== revision || latestMode !== String(mode) || appliedMode === String(mode)) return;
-            const current = leisaacControlSocket;
-            if (
-              leisaacControlIsOpen(current) &&
-              leisaacControlLeaseReady &&
-              leisaacClientId === payload.client_id
-            ) {
-              current.send(JSON.stringify(payload));
-            } else if (!leisaacManualDisconnect && !leisaacReconnectPromise) {
-              scheduleLeIsaacReconnect(250);
-            }
+            transmit();
           }, delay);
         }
-        return true;
+        return sent;
       }
       function handleLeIsaacControlMessage(message, generation = leisaacSocketGeneration) {
         if (generation !== leisaacSocketGeneration) return;
