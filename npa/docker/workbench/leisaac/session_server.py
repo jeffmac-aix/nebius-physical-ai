@@ -220,11 +220,13 @@ APPLIED_ACK_LOCK = threading.Lock()
 BUNDLE_APPLY_LOCK = threading.Lock()
 MODE_COMMAND_LOCK = threading.Lock()
 CONTROL_OWNER_LOCK = threading.Lock()
+MODE_OWNER_LOCK = threading.Lock()
 CONTROL_OWNER: dict[str, str | int] = {
     "token": "",
     "client_id": "",
     "resumed_wall_ns": 0,
 }
+MODE_OWNER: dict[str, str] = {"client_id": ""}
 BUNDLE_RESTART = threading.Event()
 SERVER_STOP = threading.Event()
 BUNDLE_SELECTION: dict[str, dict[str, Any]] = {}
@@ -295,6 +297,18 @@ def _mode_request_state() -> dict[str, Any]:
     return payload if isinstance(payload, dict) else _mode_state()
 
 
+def _retain_mode_owner(client_id: str) -> None:
+    """Retain controller identity across simulator-child file resets."""
+
+    with MODE_OWNER_LOCK:
+        MODE_OWNER["client_id"] = str(client_id)
+
+
+def _retained_mode_owner() -> str:
+    with MODE_OWNER_LOCK:
+        return str(MODE_OWNER.get("client_id") or "")
+
+
 def _queue_mode_request(message: dict[str, Any]) -> bool:
     """Atomically publish the latest controller-owned scheduler request."""
 
@@ -329,6 +343,10 @@ def _queue_mode_request(message: dict[str, Any]) -> bool:
             requested_monotonic_ns=time.monotonic_ns(),
         )
         _write_json_atomic(MODE_COMMAND_PATH, command)
+        # Bundle changes restart only the simulator child. _reset_runtime_files()
+        # must replace its command/status files, but it must not erase the
+        # surrounding authenticated session server's retained lease identity.
+        _retain_mode_owner(str(message["client_id"]))
         return True
 
 
@@ -1368,6 +1386,7 @@ async def _serve_control_protocol(
                         "another authenticated control transport owns this session",
                     )
             CONTROL_OWNER.update(token=owner_token, client_id=client_id)
+            _retain_mode_owner(client_id)
             if resume:
                 CONTROL_OWNER["resumed_wall_ns"] = resumed_wall_ns
 
@@ -1998,7 +2017,9 @@ def build_app() -> FastAPI:
             client_id = str(message["client_id"])
             with CONTROL_OWNER_LOCK:
                 active_owner = str(CONTROL_OWNER.get("client_id") or "")
-            mode_owner = str(_mode_request_state().get("owner_client_id") or "")
+            mode_owner = _retained_mode_owner() or str(
+                _mode_request_state().get("owner_client_id") or ""
+            )
             # The polling fallback may outlive its preferred socket, but it may
             # not turn every authenticated observer into a mode controller.
             # Admit only the active lease client or that same client's retained

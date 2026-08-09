@@ -881,6 +881,7 @@ def _prepare_runtime(monkeypatch, tmp_path: Path):
     runtime.TRANSPORT_METRICS = TransportMetrics()
     runtime.FRAME_LATEST = AsyncLatestByKey(("workspace", "overview"))
     runtime.APPLIED_ACK_OFFSET = 0
+    runtime.MODE_OWNER["client_id"] = ""
     return runtime
 
 
@@ -947,6 +948,48 @@ def test_runtime_restart_resets_applied_ack_reader_offset(
 
     assert runtime.APPLIED_ACK_OFFSET == 0
     assert runtime.APPLIED_ACK_PATH.read_text(encoding="utf-8") == ""
+
+
+def test_runtime_restart_retains_only_the_controller_for_mode_fallback(
+    monkeypatch, tmp_path: Path
+) -> None:
+    runtime = _prepare_runtime(monkeypatch, tmp_path)
+    first = {
+        "v": 1,
+        "type": "view-mode",
+        "run_id": RUN_ID,
+        "client_id": "bundle-restart-controller",
+        "revision": 4,
+        "mode": "dual_slow",
+        "client_mono_ns": 1,
+        "client_wall_ns": 2,
+    }
+    assert runtime._queue_mode_request(first) is True
+
+    runtime._reset_runtime_files()
+    runtime.CONTROL_OWNER.update(token="", client_id="", resumed_wall_ns=0)
+
+    with TestClient(runtime.build_app()) as client:
+        retained = client.post(
+            "/input",
+            headers=_runtime_headers(),
+            json={
+                **first,
+                "type": "recording-cameras",
+                "revision": 1,
+                "mode": "primary_and_secondary",
+            },
+        )
+        assert retained.status_code == 202
+        assert retained.json()["phase"] == "accepted"
+
+        observer = client.post(
+            "/input",
+            headers=_runtime_headers(),
+            json={**first, "client_id": "observer", "revision": 5},
+        )
+        assert observer.status_code == 409
+        assert observer.json()["code"] == "controller_busy"
 
 
 @pytest.mark.parametrize("_stress_iteration", range(25))
