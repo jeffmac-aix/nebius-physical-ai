@@ -109,6 +109,81 @@ def test_select_agent_leisaac_run_pins_tls_before_sending_credentials(
     assert len(requests) == 1
 
 
+def test_select_agent_leisaac_run_retries_transient_backhaul_unavailability(
+    monkeypatch,
+) -> None:
+    certificate = b"agent-certificate"
+    statuses = iter((503, 200))
+    requests = []
+    sleeps = []
+
+    class FakeTLS:
+        def getpeercert(self, *, binary_form=False):
+            assert binary_form is True
+            return certificate
+
+        def settimeout(self, _seconds):
+            pass
+
+        def close(self):
+            pass
+
+    class FakeContext:
+        check_hostname = True
+        verify_mode = None
+
+        def wrap_socket(self, _raw, *, server_hostname):
+            assert server_hostname == "8.8.4.4"
+            return FakeTLS()
+
+    class FakeResponse:
+        def __init__(self):
+            self.status = next(statuses)
+
+        def read(self, _limit):
+            if self.status == 503:
+                return b'{"detail":"LeIsaac service is unavailable"}'
+            return b'{"selected":true,"run_id":"live-relay"}'
+
+    class FakeConnection:
+        def __init__(self, *_args, **_kwargs):
+            self.sock = None
+
+        def request(self, method, path, *, body, headers):
+            requests.append((method, path, body, headers))
+
+        def getresponse(self):
+            return FakeResponse()
+
+        def close(self):
+            self.sock.close()
+
+    monkeypatch.setattr(
+        "npa.cli.workbench.leisaac.ssl.create_default_context", FakeContext
+    )
+    monkeypatch.setattr(
+        "npa.cli.workbench.leisaac.socket.create_connection",
+        lambda *_args, **_kwargs: object(),
+    )
+    monkeypatch.setattr(
+        "npa.cli.workbench.leisaac.http.client.HTTPConnection", FakeConnection
+    )
+    monkeypatch.setattr(
+        "npa.cli.workbench.leisaac.time.sleep", lambda seconds: sleeps.append(seconds)
+    )
+
+    _select_agent_leisaac_run(
+        "8.8.4.4",
+        auth_user="npa",
+        auth_password="secret",
+        run_id="live-relay",
+        certificate_sha256=hashlib.sha256(certificate).hexdigest(),
+    )
+
+    assert len(requests) == 2
+    assert sleeps == [2]
+
+
 def test_wait_ready_rejects_old_ready_replica_during_rollout(monkeypatch) -> None:
     old_replica = {
         "metadata": {"generation": 2},

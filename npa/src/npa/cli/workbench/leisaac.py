@@ -375,45 +375,60 @@ def _select_agent_leisaac_run(
     except ValueError as exc:
         raise LeIsaacConfigError("agent certificate fingerprint is invalid") from exc
 
-    context = ssl.create_default_context()
-    context.check_hostname = False
-    context.verify_mode = ssl.CERT_NONE
-    raw = socket.create_connection((host, 443), timeout=10)
-    tls = context.wrap_socket(raw, server_hostname=host)
-    connection: http.client.HTTPConnection | None = None
-    try:
-        certificate = tls.getpeercert(binary_form=True)
-        actual_certificate = (
-            hashlib.sha256(certificate).hexdigest() if certificate else ""
-        )
-        if not secrets.compare_digest(actual_certificate, expected_certificate):
-            raise RuntimeError("public agent TLS certificate fingerprint changed")
-        # The TCP/TLS connection must fail fast, but selection performs capability
-        # resolution plus a conditional state write against object storage.  Preserve
-        # the pinned socket while giving those off-loop operations their own response
-        # budget instead of inheriting the 10-second connect timeout.
-        tls.settimeout(60)
-        connection = http.client.HTTPConnection(host, 443, timeout=10)
-        connection.sock = tls
-        payload = json.dumps({"run_id": selected_run}, separators=(",", ":"))
-        credential = base64.b64encode(
-            f"{auth_user}:{auth_password}".encode("utf-8")
-        ).decode("ascii")
-        connection.request(
-            "POST",
-            "/api/leisaac/select",
-            body=payload,
-            headers={
-                "Authorization": f"Basic {credential}",
-                "Content-Type": "application/json",
-                "X-NPA-LeIsaac-Control": "1",
-            },
-        )
-        response = connection.getresponse()
-        body = response.read(131073)
-        if response.status != 200 or len(body) > 131072:
+    payload = json.dumps({"run_id": selected_run}, separators=(",", ":"))
+    credential = base64.b64encode(
+        f"{auth_user}:{auth_password}".encode("utf-8")
+    ).decode("ascii")
+    while True:
+        context = ssl.create_default_context()
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        raw = socket.create_connection((host, 443), timeout=10)
+        tls = context.wrap_socket(raw, server_hostname=host)
+        connection: http.client.HTTPConnection | None = None
+        try:
+            certificate = tls.getpeercert(binary_form=True)
+            actual_certificate = (
+                hashlib.sha256(certificate).hexdigest() if certificate else ""
+            )
+            if not secrets.compare_digest(actual_certificate, expected_certificate):
+                raise RuntimeError("public agent TLS certificate fingerprint changed")
+            # The TCP/TLS connection must fail fast, but selection performs capability
+            # resolution plus a conditional state write against object storage. Preserve
+            # the pinned socket while giving those off-loop operations their own response
+            # budget instead of inheriting the 10-second connect timeout.
+            tls.settimeout(60)
+            connection = http.client.HTTPConnection(host, 443, timeout=10)
+            connection.sock = tls
+            connection.request(
+                "POST",
+                "/api/leisaac/select",
+                body=payload,
+                headers={
+                    "Authorization": f"Basic {credential}",
+                    "Content-Type": "application/json",
+                    "X-NPA-LeIsaac-Control": "1",
+                },
+            )
+            response = connection.getresponse()
+            body = response.read(131073)
+            status = int(response.status)
+        finally:
+            if connection is not None:
+                connection.close()
+            else:
+                tls.close()
+        # Kubernetes readiness covers the simulator and relay-client processes,
+        # while the reverse backhaul can still be completing its first connection.
+        # A 503 is the agent's explicit transient-unavailable response. Keep the
+        # live pod and retry with a freshly certificate-pinned HTTPS connection;
+        # authentication and every other response class remain fail closed.
+        if status == 503:
+            time.sleep(2)
+            continue
+        if status != 200 or len(body) > 131072:
             raise RuntimeError(
-                f"public agent rejected LeIsaac run selection (HTTP {response.status})"
+                f"public agent rejected LeIsaac run selection (HTTP {status})"
             )
         try:
             result = json.loads(body.decode("utf-8"))
@@ -427,11 +442,7 @@ def _select_agent_leisaac_run(
             or result.get("run_id") != selected_run
         ):
             raise RuntimeError("public agent did not persist the LeIsaac run selection")
-    finally:
-        if connection is not None:
-            connection.close()
-        else:
-            tls.close()
+        return
 
 
 def _relay_source(path: str) -> bytes:
