@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import base64
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import io
 import json
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -464,6 +466,9 @@ def test_cumulative_bundle_selection_uses_atomic_backend_state_mutation() -> Non
     s3 = FakeS3()
     applied: list[dict] = []
     runtime_selected: dict[str, dict[str, str]] = {}
+    block_next_apply = False
+    apply_entered = threading.Event()
+    release_apply = threading.Event()
 
     def mutate_state(mutation):
         result = mutation(state)
@@ -487,6 +492,7 @@ def test_cumulative_bundle_selection_uses_atomic_backend_state_mutation() -> Non
             }
 
     def http_post(_url, **kwargs):
+        nonlocal block_next_apply
         applied.append(kwargs["json"])
         runtime_selected.clear()
         for kind, digest in kwargs["json"]["selection"].items():
@@ -502,6 +508,10 @@ def test_cumulative_bundle_selection_uses_atomic_backend_state_mutation() -> Non
                 "name": bundle["name"],
                 "entrypoint": bundle["entrypoint"],
             }
+        if block_next_apply:
+            block_next_apply = False
+            apply_entered.set()
+            assert release_apply.wait(5), "test did not release bundle apply"
         return SimpleNamespace(status_code=202, json=lambda: {"accepted": True})
 
     app = FastAPI()
@@ -585,3 +595,46 @@ def test_cumulative_bundle_selection_uses_atomic_backend_state_mutation() -> Non
     assert restored.json()["bundle_selection"] == selection
     assert restored.json()["configuration"]["custom_bundle_count"] == 3
     assert len(applied) == before_restore + 1
+
+    # The runtime applies a new cumulative selection before the backend can
+    # persist it. A concurrent status refresh must wait for that transaction;
+    # otherwise its automatic restore sees the prior state and starts another
+    # simulator restart that erases modes selected against the first child.
+    replacement = _payload(kind="scene")
+    replacement["name"] = "replacement-scene"
+    replacement["files"][0] = _file(
+        "robot.usda", b'#usda 1.0\ndef Xform "ReplacementScene" {}\n'
+    )
+    uploaded = client.post(
+        "/leisaac/bundles?run_id=bundle-atomic-run",
+        headers=headers,
+        json=replacement,
+    )
+    assert uploaded.status_code == 201
+    block_next_apply = True
+    before_replacement = len(applied)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        selection_future = executor.submit(
+            client.post,
+            "/leisaac/bundles/select?run_id=bundle-atomic-run",
+            headers=headers,
+            json={
+                "kind": "scene",
+                "bundle_sha256": uploaded.json()["bundle_sha256"],
+            },
+        )
+        assert apply_entered.wait(5), "bundle apply did not start"
+        status_future = executor.submit(
+            client.get,
+            "/leisaac/status?run_id=bundle-atomic-run",
+            headers={"x-forwarded-proto": "https"},
+        )
+        assert not status_future.done(), "status bypassed the bundle transaction"
+        release_apply.set()
+        selected = selection_future.result(timeout=5)
+        concurrent_status = status_future.result(timeout=5)
+    assert selected.status_code == 202
+    assert concurrent_status.status_code == 200
+    assert concurrent_status.json()["available"] is True
+    assert len(applied) == before_replacement + 1
+    assert runtime_selected["scene"]["name"] == "replacement-scene"

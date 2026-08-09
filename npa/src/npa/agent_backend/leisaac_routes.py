@@ -629,8 +629,7 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
             headers=headers,
         )
 
-    @app.get("/leisaac/status")
-    def leisaac_status(request: Request, run_id: str = "") -> Any:
+    def _leisaac_status_impl(request: Request, run_id: str = "") -> Any:
         manifest: dict[str, Any] | None = None
         health: dict[str, Any] | None = None
         if str(request.headers.get("x-forwarded-proto") or "").lower() != "https":
@@ -709,6 +708,17 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
                 "X-Content-Type-Options": "nosniff",
             },
         )
+
+    @app.get("/leisaac/status")
+    async def leisaac_status(request: Request, run_id: str = "") -> Any:
+        # A bundle selection is one cumulative read/apply/persist transaction.
+        # Status-driven restore must not observe the runtime's newly applied
+        # selection before the matching backend state has been persisted, or it
+        # can launch a second restart with the prior selection. Serialize that
+        # boundary while retaining every blocking health/storage operation in a
+        # worker thread rather than on FastAPI's event loop.
+        async with bundle_selection_lock:
+            return await asyncio.to_thread(_leisaac_status_impl, request, run_id)
 
     @app.get(LEISAAC_BUNDLES_PATH.removeprefix("/api"))
     async def leisaac_bundles(request: Request) -> Any:
