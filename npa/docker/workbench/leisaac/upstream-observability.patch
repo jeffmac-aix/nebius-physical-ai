@@ -147,9 +147,9 @@ index a467482..d3bcad5 100644
 +    }
 +    # Background frames must not monopolize the Isaac render/event loop. Causal
 +    # action pairs bypass this cadence and remain immediate at full quality.
-+    single_primary_capture_fps = 30.0
++    single_primary_capture_fps = 16.0
 +    dual_primary_capture_fps = 20.0
-+    secondary_capture_fps = 2.5
++    secondary_capture_fps = 5.0
 +    capture_encoder = ThreadPoolExecutor(max_workers=1, thread_name_prefix="leisaac-jpeg")
 +    def primary_capture_interval():
 +        fps = (

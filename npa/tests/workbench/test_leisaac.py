@@ -564,7 +564,9 @@ def test_observability_patch_is_exact_and_records_real_upstream_input() -> None:
     assert "and browser_capture_needs_render()" in source
     assert 'capture_state["queue"].clear()' in source
     assert 'capture_state["priority_queue"]' in source
-    assert source.count("secondary_capture_fps = 2.5") == 1
+    assert source.count("single_primary_capture_fps = 16.0") == 1
+    assert source.count("dual_primary_capture_fps = 20.0") == 1
+    assert source.count("secondary_capture_fps = 5.0") == 1
     assert 'capture_state["last_causal_at"] = causal_at' in source
     assert (
         'capture_state["next_at"]["workspace"] = causal_at'

@@ -2304,6 +2304,8 @@
       const leisaacVideoPending = { workspace: null, overview: null };
       const leisaacVideoDecoding = { workspace: false, overview: false };
       const leisaacLastFrameSequences = { workspace: 0, overview: 0 };
+      let leisaacNextDualPrimaryDecodeAt = 0;
+      let leisaacLastDualPrimaryCausalSequence = 0;
       let leisaacDeliveredFrames = 0;
       let leisaacDroppedFrames = 0;
       let leisaacLastFpsAt = 0;
@@ -4335,6 +4337,33 @@
           }
           if (parsed.camera === "overview" && !leisaacDualMode(leisaacCapability)) {
             return;
+          }
+          const viewContract = leisaacContract(leisaacCapability, "view_mode_contract");
+          const dualPrimaryRequested = viewContract.values.length === 2
+            && leisaacRequestedViewMode === String(viewContract.values[1]);
+          if (
+            parsed.camera === "workspace"
+            && (leisaacDualMode(leisaacCapability) || dualPrimaryRequested)
+          ) {
+            const now = performance.now();
+            const causalSequence = Number(parsed.causalActionSequence || 0);
+            const causalPriority = causalSequence > leisaacLastDualPrimaryCausalSequence;
+            if (causalPriority) {
+              leisaacLastDualPrimaryCausalSequence = causalSequence;
+            } else if (now < leisaacNextDualPrimaryDecodeAt) {
+              leisaacDroppedFrames += 1;
+              updateLeIsaacTransportIndicator();
+              return;
+            }
+            // Dual view deliberately reserves browser decode/paint time for the
+            // real 2–5 FPS overview. New causal primary frames always bypass
+            // this background cadence so teleoperation remains prioritized.
+            leisaacNextDualPrimaryDecodeAt = (
+              leisaacNextDualPrimaryDecodeAt > 0
+              && now - leisaacNextDualPrimaryDecodeAt < 500
+            )
+              ? leisaacNextDualPrimaryDecodeAt + 125
+              : now + 125;
           }
           if (leisaacVideoPending[parsed.camera]) {
             parsed.browserDropped = Number(leisaacVideoPending[parsed.camera].browserDropped || 0) + 1;
