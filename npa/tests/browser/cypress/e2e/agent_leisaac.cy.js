@@ -1396,6 +1396,7 @@ describe("NPA agent LeIsaac capability tab", () => {
 
   it("browses immutable episodes, opens the exact upload, and synchronizes playback", () => {
     const versionId = "v000001-" + "b".repeat(32);
+    let episodeStatusRequests = 0;
     const episodeSummary = (index, outcome) => ({
       episode_index: index,
       episode_id: "episode-" + String(index),
@@ -1409,9 +1410,11 @@ describe("NPA agent LeIsaac capability tab", () => {
       device: "spacemouse",
       bundle: "bundle-sha256",
     });
-    cy.intercept("GET", "/api/leisaac/status*", {
-      statusCode: 200,
-      body: {
+    cy.intercept("GET", "/api/leisaac/status*", (request) => {
+      const uploadedIndex = episodeStatusRequests++ === 0 ? 0 : 1;
+      request.reply({
+        statusCode: 200,
+        body: {
         available: false,
         episodes_available: true,
         reason: "live runtime is reconnecting",
@@ -1424,11 +1427,12 @@ describe("NPA agent LeIsaac capability tab", () => {
           completed_episode_count: 2,
           last_outcome: "success",
           last_upload_status: "uploaded",
-          last_episode_index: 0,
+          last_episode_index: uploadedIndex,
           dataset_version_uri:
             "s3://bucket/datasets/leisaac/versions/" + versionId,
         },
-      },
+        },
+      });
     }).as("episodeStatus");
     cy.intercept("POST", "/api/leisaac/select", {
       statusCode: 200,
@@ -1477,7 +1481,7 @@ describe("NPA agent LeIsaac capability tab", () => {
       },
     );
     cy.intercept(
-      { method: "GET", pathname: "/api/leisaac/episodes/0" },
+      { method: "GET", pathname: "/api/leisaac/episodes/1" },
       (req) => {
         expect(req.query.version_id).to.equal(versionId);
         req.reply({
@@ -1487,7 +1491,7 @@ describe("NPA agent LeIsaac capability tab", () => {
           delay: 400,
           statusCode: 200,
           body: {
-            ...episodeSummary(0, "success"),
+            ...episodeSummary(1, "failure"),
             run_id: "mock-episodes",
             dataset_version: versionId,
             start_timestamp: "2026-08-06T01:00:00Z",
@@ -1504,7 +1508,7 @@ describe("NPA agent LeIsaac capability tab", () => {
                 label: "Workspace",
                 sha256: "d".repeat(64),
                 media_url:
-                  "/api/leisaac/episodes/0/media/workspace?run_id=mock-episodes&version_id=" +
+                  "/api/leisaac/episodes/1/media/workspace?run_id=mock-episodes&version_id=" +
                   versionId,
               },
               {
@@ -1512,7 +1516,7 @@ describe("NPA agent LeIsaac capability tab", () => {
                 label: "Wrist",
                 sha256: "e".repeat(64),
                 media_url:
-                  "/api/leisaac/episodes/0/media/wrist?run_id=mock-episodes&version_id=" +
+                  "/api/leisaac/episodes/1/media/wrist?run_id=mock-episodes&version_id=" +
                   versionId,
               },
             ],
@@ -1524,17 +1528,17 @@ describe("NPA agent LeIsaac capability tab", () => {
                 bytes: 900,
                 sha256: "a".repeat(64),
                 download_url:
-                  "/api/leisaac/episodes/0/download/records?run_id=mock-episodes&version_id=" +
+                  "/api/leisaac/episodes/1/download/records?run_id=mock-episodes&version_id=" +
                   versionId,
               },
               { name: "calibration", kind: "unknown", download_url: "" },
             ],
             export: {
               records_url:
-                "/api/leisaac/episodes/0/download/records?run_id=mock-episodes&version_id=" +
+                "/api/leisaac/episodes/1/download/records?run_id=mock-episodes&version_id=" +
                 versionId,
               metadata_url:
-                "/api/leisaac/episodes/0/download/metadata?run_id=mock-episodes&version_id=" +
+                "/api/leisaac/episodes/1/download/metadata?run_id=mock-episodes&version_id=" +
                 versionId,
             },
           },
@@ -1542,7 +1546,7 @@ describe("NPA agent LeIsaac capability tab", () => {
       },
     ).as("episodeDetail");
     cy.intercept(
-      { method: "GET", pathname: "/api/leisaac/episodes/0/timeline" },
+      { method: "GET", pathname: "/api/leisaac/episodes/1/timeline" },
       {
         statusCode: 200,
         body: {
@@ -1564,7 +1568,7 @@ describe("NPA agent LeIsaac capability tab", () => {
         },
       },
     ).as("episodeTimeline");
-    cy.intercept("GET", "/api/leisaac/episodes/0/media/*", {
+    cy.intercept("GET", "/api/leisaac/episodes/1/media/*", {
       statusCode: 206,
       headers: {
         "content-type": "video/mp4",

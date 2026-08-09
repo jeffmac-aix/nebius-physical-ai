@@ -2763,6 +2763,34 @@
         const match = String(uri || "").match(/\/(v[0-9]{6}-[a-f0-9]{32})(?:\/|$)/);
         return match ? match[1] : "";
       }
+      async function openLatestUploadedLeIsaacEpisode() {
+        const runId = String((leisaacCapability && leisaacCapability.run_id) || "");
+        if (!runId) throw new Error("No LeIsaac run is selected");
+        // The button remains useful while another episode is being recorded,
+        // so its attributes can truthfully point at the previous upload. At
+        // click time, resolve the authoritative recorder snapshot again: a
+        // finalize completion can otherwise beat the UI's next 500 ms poll and
+        // open the preceding immutable episode.
+        const fresh = await loadJson(
+          "/api/leisaac/status?run_id=" + encodeURIComponent(runId),
+        );
+        if (!(fresh && String(fresh.run_id || "") === runId)) {
+          throw new Error("Latest uploaded episode status is unavailable");
+        }
+        leisaacCapability = Object.assign({}, leisaacCapability || {}, fresh);
+        updateLeIsaacRecorder(leisaacCapability);
+        const recorder = fresh.recorder || {};
+        const index = recorder.last_episode_index;
+        const version = leisaacVersionIdFromUri(String(recorder.dataset_version_uri || ""));
+        if (
+          recorder.last_upload_status !== "uploaded"
+          || index === null
+          || index === undefined
+        ) {
+          throw new Error("No finalized uploaded episode is available");
+        }
+        return openLeIsaacEpisode(String(index), version);
+      }
       async function leisaacEpisodeJson(url, signal) {
         const response = await fetch(String(url), {
           credentials: "include",
@@ -5095,10 +5123,7 @@
           });
           const viewUploaded = panel.querySelector("#leisaacViewUploadedEpisode");
           if (viewUploaded) viewUploaded.addEventListener("click", () => {
-            openLeIsaacEpisode(
-              String(viewUploaded.getAttribute("data-episode-index") || ""),
-              String(viewUploaded.getAttribute("data-version-id") || ""),
-            ).catch((err) => showToast(String(err), "error"));
+            openLatestUploadedLeIsaacEpisode().catch((err) => showToast(String(err), "error"));
           });
           const previousEpisode = panel.querySelector("#leisaacEpisodePrevious");
           const nextEpisode = panel.querySelector("#leisaacEpisodeNext");
