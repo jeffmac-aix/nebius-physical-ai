@@ -2745,6 +2745,8 @@
           if (leisaacRecorderUiError.startsWith("Recorder status refresh failed")) {
             leisaacRecorderUiError = "";
           }
+          updateLeIsaacModeUi(status);
+          reconcileLeIsaacRuntimeModeReset(status);
           updateLeIsaacRecorder(status);
           return status;
         } catch (err) {
@@ -3917,6 +3919,51 @@
           }, delay);
         }
         return sent;
+      }
+      function reconcileLeIsaacRuntimeModeReset(status) {
+        // Bundle application restarts the simulator child, not the surrounding
+        // authenticated session server. The control socket therefore remains
+        // open and does not receive another `resumed` handshake, while the new
+        // child truthfully reports its safe default modes at revision zero.
+        // Only the active controller lease may restore its latest selections;
+        // observers and disconnected clients never issue mode commands here.
+        if (
+          !status || !status.available || leisaacManualDisconnect ||
+          !leisaacClientId || !leisaacControlLeaseReady ||
+          !leisaacControlIsOpen(leisaacControlSocket)
+        ) return false;
+        let resent = false;
+        const runtimeViewRevision = Number(status.view_revision || 0);
+        if (
+          leisaacRequestedViewMode &&
+          String(status.applied_view_mode || "") !== leisaacRequestedViewMode &&
+          (
+            String(status.requested_view_mode || "") !== leisaacRequestedViewMode ||
+            runtimeViewRevision < leisaacModeRevision
+          )
+        ) {
+          resent = sendLeIsaacModeRequest(
+            "view-mode",
+            leisaacRequestedViewMode,
+            true,
+          ) || resent;
+        }
+        const runtimeRecordingRevision = Number(status.recording_revision || 0);
+        if (
+          leisaacRequestedRecordingMode &&
+          String(status.applied_recording_camera_mode || "") !== leisaacRequestedRecordingMode &&
+          (
+            String(status.requested_recording_camera_mode || "") !== leisaacRequestedRecordingMode ||
+            runtimeRecordingRevision < leisaacRecordingRevision
+          )
+        ) {
+          resent = sendLeIsaacModeRequest(
+            "recording-cameras",
+            leisaacRequestedRecordingMode,
+            true,
+          ) || resent;
+        }
+        return resent;
       }
       function handleLeIsaacControlMessage(message, generation = leisaacSocketGeneration) {
         if (generation !== leisaacSocketGeneration) return;
@@ -5240,6 +5287,7 @@
         const connectBtn = panel.querySelector("#leisaacConnect");
         renderLeIsaacConfiguration(status);
         updateLeIsaacModeUi(status);
+        reconcileLeIsaacRuntimeModeReset(status);
         if (availability) availability.textContent = status.available
           ? "Live simulation is ready."
           : String(status.reason || "Live simulation is unavailable; Episodes remains usable when an S3 dataset is selected.");

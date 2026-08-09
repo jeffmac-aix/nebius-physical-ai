@@ -2043,6 +2043,21 @@ describe("NPA agent LeIsaac capability tab", () => {
       expect(recordingRevisions.length, "recording mode retransmissions").to.be.greaterThan(1);
       expect(new Set(recordingRevisions).size, "stable recording revision across reconnects").to.equal(1);
     });
+    cy.window().then((win) => {
+      // A bundle restarts only the simulator child. The authenticated socket
+      // stays open, but runtime mode state returns to safe revision-zero
+      // defaults and must be restored without waiting for another resume ack.
+      authoritativeRecordingRevision = 0;
+      authoritativeViewRevision = 0;
+      return win.__NPA_AGENT_TEST__.refreshLeIsaacCapability("mock-ws-fallback");
+    });
+    cy.window().should(() => {
+      expect(authoritativeRecordingRevision, "recording mode restored after child restart").to.be.greaterThan(0);
+      expect(authoritativeViewRevision, "view mode restored after child restart").to.be.greaterThan(0);
+    });
+    cy.then(() => {
+      expect(new Set(recordingRevisions).size, "stable recording revision after child restart").to.equal(1);
+    });
     cy.get("#leisaacDisconnect").click();
   });
 });
