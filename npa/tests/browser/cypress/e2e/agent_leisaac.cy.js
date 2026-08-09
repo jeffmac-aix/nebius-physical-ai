@@ -1832,9 +1832,12 @@ describe("NPA agent LeIsaac capability tab", () => {
       applied_recording_camera_mode: "primary_only",
       recording_revision: 0,
     };
-    cy.intercept("GET", "/api/leisaac/status?run_id=mock-ws-fallback", {
-      statusCode: 200,
-      body: {
+    let authoritativeRecordingRevision = 0;
+    let authoritativeViewRevision = 0;
+    cy.intercept("GET", "/api/leisaac/status?run_id=mock-ws-fallback", (request) => {
+      request.reply({
+        statusCode: 200,
+        body: {
         available: true,
         run_id: "mock-ws-fallback",
         task: "LeIsaac-SO101-PickOrange-v0",
@@ -1844,7 +1847,16 @@ describe("NPA agent LeIsaac capability tab", () => {
         frame_url: "/api/leisaac/frame.jpg?run_id=mock-ws-fallback",
         input_url: "/api/leisaac/input?run_id=mock-ws-fallback",
         ...modeFields,
-      },
+        requested_view_mode: authoritativeViewRevision ? "dual_slow" : "single_fast",
+        applied_view_mode: authoritativeViewRevision ? "dual_slow" : "single_fast",
+        view_revision: authoritativeViewRevision,
+        applied_view_revision: authoritativeViewRevision,
+        requested_recording_camera_mode: authoritativeRecordingRevision ? "primary_and_secondary" : "primary_only",
+        applied_recording_camera_mode: authoritativeRecordingRevision ? "primary_and_secondary" : "primary_only",
+        recording_revision: authoritativeRecordingRevision,
+        applied_recording_revision: authoritativeRecordingRevision,
+        },
+      });
     }).as("wsFallbackStatus");
     cy.intercept("GET", "/api/leisaac/status?run_id=mock-run", {
       statusCode: 200,
@@ -1886,6 +1898,7 @@ describe("NPA agent LeIsaac capability tab", () => {
         mode: "primary_and_secondary",
       });
       expect(request.body.revision).to.be.greaterThan(0);
+      authoritativeRecordingRevision = request.body.revision;
       request.reply({
         statusCode: 202,
         body: { v: 1, type: "ack", phase: "accepted" },
@@ -1900,6 +1913,7 @@ describe("NPA agent LeIsaac capability tab", () => {
         mode: "dual_slow",
       });
       expect(request.body.revision).to.be.greaterThan(0);
+      authoritativeViewRevision = request.body.revision;
       request.reply({
         statusCode: 202,
         body: { v: 1, type: "ack", phase: "accepted" },
@@ -1955,6 +1969,14 @@ describe("NPA agent LeIsaac capability tab", () => {
         send(raw) {
           if (!this.url.includes("/control")) return;
           const message = JSON.parse(String(raw));
+          if (message.type === "view-mode") {
+            authoritativeViewRevision = message.revision;
+            return;
+          }
+          if (message.type === "recording-cameras") {
+            authoritativeRecordingRevision = message.revision;
+            return;
+          }
           if (message.type !== "resume") return;
           win.setTimeout(() => {
             if (this.onmessage) this.onmessage({ data: JSON.stringify({
@@ -1985,6 +2007,10 @@ describe("NPA agent LeIsaac capability tab", () => {
     cy.get("#tabLeIsaac").click();
     cy.get("#leisaacRecordingCameras").select("primary_and_secondary");
     cy.wait("@fallbackModeControl");
+    cy.get("#leisaacModeStatus", { timeout: 5000 }).should(
+      "contain.text",
+      "recording: Primary + secondary",
+    );
     cy.get("#leisaacConnect").click();
     cy.wait("@wsFallbackFrame");
     cy.get("#leisaacTransportStatus", { timeout: 10000 })

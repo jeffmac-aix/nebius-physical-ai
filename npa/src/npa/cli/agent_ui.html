@@ -3807,6 +3807,48 @@
           client_mono_ns: leisaacMonoNs(),
           client_wall_ns: leisaacWallNs(),
         };
+        const reconcile = async () => {
+          const latestRevision = isView ? leisaacModeRevision : leisaacRecordingRevision;
+          if (latestRevision !== revision) return false;
+          const runId = String(payload.run_id || "");
+          if (!runId) return false;
+          try {
+            const response = await fetch(
+              "/api/leisaac/status?run_id=" + encodeURIComponent(runId),
+              { credentials: "include", cache: "no-store" },
+            );
+            if (!response.ok) return false;
+            const status = await response.json();
+            const appliedMode = String(isView
+              ? (status.applied_view_mode || "")
+              : (status.applied_recording_camera_mode || ""));
+            const appliedRevision = Number(isView
+              ? (status.applied_view_revision || 0)
+              : (status.applied_recording_revision || 0));
+            if (appliedMode !== String(mode) || appliedRevision < revision) return false;
+            if (
+              leisaacCapability &&
+              String(leisaacCapability.run_id || "") === runId &&
+              (isView ? leisaacModeRevision : leisaacRecordingRevision) === revision
+            ) {
+              if (isView) {
+                leisaacCapability.requested_view_mode = String(status.requested_view_mode || mode);
+                leisaacCapability.applied_view_mode = appliedMode;
+                leisaacCapability.view_revision = Number(status.view_revision || revision);
+                leisaacCapability.applied_view_revision = appliedRevision;
+              } else {
+                leisaacCapability.requested_recording_camera_mode = String(status.requested_recording_camera_mode || mode);
+                leisaacCapability.applied_recording_camera_mode = appliedMode;
+                leisaacCapability.recording_revision = Number(status.recording_revision || revision);
+                leisaacCapability.applied_recording_revision = appliedRevision;
+              }
+              updateLeIsaacModeUi(leisaacCapability);
+            }
+            return true;
+          } catch (_error) {
+            return false;
+          }
+        };
         const transmit = () => {
           const current = leisaacControlSocket;
           if (
@@ -3864,6 +3906,7 @@
               : ((leisaacCapability || {}).applied_recording_camera_mode || ""));
             if (latestRevision !== revision || latestMode !== String(mode) || appliedMode === String(mode)) return;
             transmit();
+            reconcile();
           }, delay);
         }
         return sent;
