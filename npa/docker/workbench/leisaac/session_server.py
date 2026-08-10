@@ -215,6 +215,7 @@ APPLIED_ACK_PATH = Path("/tmp/npa-leisaac-input-applied.jsonl")
 IPC_EVENT_PATH = Path("/tmp/npa-leisaac-events.sock")
 IPC_FRAME_HEADER = struct.Struct("!4sI")
 IPC_FRAME_MAGIC = b"NPF1"
+IPC_EVENT_MAX_BYTES = 1024 * 1024
 RECORDER_ROOT = Path("/tmp/npa-leisaac-recorder")
 RECORDER_STATUS_PATH = RECORDER_ROOT / "status.json"
 RECORDER_CONTROL_PATH = RECORDER_ROOT / "control.jsonl"
@@ -1398,6 +1399,16 @@ class _RuntimeEventProtocol(asyncio.DatagramProtocol):
             TRANSPORT_METRICS.increment("frames_coalesced")
 
 
+async def _receive_runtime_events(event_socket: socket.socket) -> None:
+    """Receive Unix datagrams through APIs supported by asyncio and uvloop."""
+
+    loop = asyncio.get_running_loop()
+    protocol = _RuntimeEventProtocol()
+    while True:
+        data = await loop.sock_recv(event_socket, IPC_EVENT_MAX_BYTES)
+        protocol.datagram_received(data, None)
+
+
 def _scan_applied_acks() -> None:
     global APPLIED_ACK_OFFSET
     with APPLIED_ACK_LOCK:
@@ -1888,20 +1899,19 @@ async def _lifespan(_app: FastAPI):
     IPC_EVENT_PATH.unlink(missing_ok=True)
     APPLIED_EVENT = asyncio.Event()
     RUNTIME_EVENT_QUEUE = asyncio.Queue(maxsize=256)
-    loop = asyncio.get_running_loop()
-    transport, _protocol = await loop.create_datagram_endpoint(
-        _RuntimeEventProtocol,
-        local_addr=str(IPC_EVENT_PATH),
-        family=socket.AF_UNIX,
-    )
+    event_socket = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+    event_socket.setblocking(False)
+    event_socket.bind(str(IPC_EVENT_PATH))
     os.chmod(IPC_EVENT_PATH, 0o600)
+    receiver = asyncio.create_task(_receive_runtime_events(event_socket))
     watcher = asyncio.create_task(_watch_frames())
     try:
         yield
     finally:
+        receiver.cancel()
         watcher.cancel()
-        await asyncio.gather(watcher, return_exceptions=True)
-        transport.close()
+        await asyncio.gather(receiver, watcher, return_exceptions=True)
+        event_socket.close()
         IPC_EVENT_PATH.unlink(missing_ok=True)
         RUNTIME_EVENT_QUEUE = None
         APPLIED_EVENT = None

@@ -7,6 +7,7 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import socket
 import struct
 from types import SimpleNamespace
 
@@ -1607,6 +1608,44 @@ def test_runtime_applied_ipc_wakes_waiter_without_file_poll(
         lambda: (_ for _ in ()).throw(AssertionError("unexpected file poll")),
     )
     asyncio.run(exercise())
+
+
+def test_runtime_lifespan_receives_unix_datagrams_on_uvloop(
+    monkeypatch, tmp_path: Path
+) -> None:
+    uvloop = pytest.importorskip("uvloop")
+    runtime = _prepare_runtime(monkeypatch, tmp_path)
+    acknowledgement = {
+        **_control(),
+        "simulator_applied_mono_ns": "700",
+        "simulator_applied_wall_ns": "800",
+        "simulator_step": 9,
+    }
+    runtime.CONTROL_LEDGER.accept(_control())
+
+    async def exercise() -> None:
+        async with runtime._lifespan(None):
+            sender = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+            try:
+                sender.sendto(
+                    json.dumps(
+                        {"type": "applied", "acknowledgement": acknowledgement}
+                    ).encode(),
+                    str(runtime.IPC_EVENT_PATH),
+                )
+                for _ in range(100):
+                    if runtime.CONTROL_LEDGER.applied("browser-test", 1) is not None:
+                        break
+                    await asyncio.sleep(0.001)
+                assert runtime.CONTROL_LEDGER.applied("browser-test", 1) == acknowledgement
+            finally:
+                sender.close()
+
+    loop = uvloop.new_event_loop()
+    try:
+        loop.run_until_complete(exercise())
+    finally:
+        loop.close()
 
 
 def test_runtime_frame_reader_skips_unchanged_jpeg_integrity_work(
