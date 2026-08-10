@@ -17,6 +17,9 @@ Two checks are wired, both real:
   VLM to answer it from a frame of the augmented clip. Upstream drives this
   through any OpenAI-compatible endpoint, so NPA points it at Nebius Token
   Factory (zero-GPU, hosted).
+- **Temporal consistency companion check** (:mod:`.temporal_consistency`) — an
+  NPA source-relative check for localized frame-to-frame instability. It is
+  reported separately and is not attributed to the upstream project.
 
 :func:`evaluate_run` is the stage entry point: it walks a Physical AI Data
 Factory run prefix, pairs every augmented variant with the run's source clip and
@@ -42,6 +45,10 @@ from npa.workbench.cosmos_evaluator.evaluate import (
 from npa.workbench.cosmos_evaluator.hallucination import (
     HallucinationResult,
     check_hallucination,
+)
+from npa.workbench.cosmos_evaluator.temporal_consistency import (
+    TemporalConsistencyResult,
+    check_temporal_consistency,
 )
 from npa.workbench.cosmos_evaluator.upstream import (
     UPSTREAM_LICENSE,
@@ -71,7 +78,9 @@ __all__ = [
     "CosmosEvaluatorStorageError",
     "EvaluateRunResult",
     "HallucinationResult",
+    "TemporalConsistencyResult",
     "check_hallucination",
+    "check_temporal_consistency",
     "evaluate_run",
     "report_uri_for",
     "upstream_source_dir",

@@ -11,11 +11,13 @@ The blueprint's augment stage publishes one directory per scenario variant::
 - the **attribute verification** check against the variant's sampled appearance
   values, with the config manifest's variable table as the option set, and
 - the **hallucination** check against the run's source clip, when one is
-  resolvable.
+  resolvable, and
+- an NPA **source-relative temporal consistency** companion check that rejects
+  excess frame-to-frame surface variation in input-conditioned variants.
 
-It writes a single ``npa.cosmos_evaluator.report.v1`` document. Its ``score``
-field is what the blueprint's quality gate thresholds on, so the gate needs no
-knowledge of which checks ran.
+It writes a single ``npa.cosmos_evaluator.report.v1`` document. The blueprint's
+quality gate requires both its aggregate ``score`` and explicit ``passed``
+disposition, so a strong average cannot hide a failed motion-integrity check.
 """
 
 from __future__ import annotations
@@ -37,6 +39,11 @@ from npa.workbench.cosmos_evaluator.hallucination import (
     DEFAULT_THRESHOLD as HALLUCINATION_THRESHOLD,
     HallucinationResult,
     check_hallucination,
+)
+from npa.workbench.cosmos_evaluator.temporal_consistency import (
+    DEFAULT_THRESHOLD as TEMPORAL_CONSISTENCY_THRESHOLD,
+    TemporalConsistencyResult,
+    check_temporal_consistency,
 )
 from npa.workbench.cosmos_evaluator.upstream import (
     UPSTREAM_LICENSE,
@@ -67,7 +74,7 @@ NON_ATTRIBUTE_KEYS = frozenset({"prompt"})
 
 @dataclass(frozen=True)
 class ClipEvaluation:
-    """Both checks' results for one augmented variant."""
+    """Quality-check results for one augmented variant."""
 
     clip_id: str
     score: float
@@ -76,6 +83,7 @@ class ClipEvaluation:
     variables: dict[str, str] = field(default_factory=dict)
     attribute_verification: dict[str, Any] | None = None
     hallucination: dict[str, Any] | None = None
+    temporal_consistency: dict[str, Any] | None = None
     skipped: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -123,6 +131,8 @@ def evaluate_run(
     original_video: str = "",
     threshold: float = HALLUCINATION_THRESHOLD,
     hallucination_weight: float = DEFAULT_HALLUCINATION_WEIGHT,
+    temporal_threshold: float = TEMPORAL_CONSISTENCY_THRESHOLD,
+    temporal_regions_json: str = "",
     question_model: str = "",
     vlm_model: str = "",
     max_clips: int = 0,
@@ -137,6 +147,8 @@ def evaluate_run(
         raise CosmosEvaluatorError("--output-uri is required")
     if not 0.0 <= hallucination_weight <= 1.0:
         raise CosmosEvaluatorError("--hallucination-weight must be between 0.0 and 1.0")
+    if not 0.0 < temporal_threshold <= 1.0:
+        raise CosmosEvaluatorError("--temporal-threshold must be greater than 0.0 and at most 1.0")
 
     store = storage if storage is not None else _storage()
     warnings: list[str] = []
@@ -173,6 +185,8 @@ def evaluate_run(
                         source_clip=source_clip,
                         threshold=threshold,
                         hallucination_weight=hallucination_weight,
+                        temporal_threshold=temporal_threshold,
+                        temporal_regions_json=temporal_regions_json,
                         question_model=question_model,
                         vlm_model=vlm_model,
                         warnings=warnings,
@@ -192,9 +206,10 @@ def evaluate_run(
     passed_clips = sum(1 for clip in evaluations if clip.passed)
     engines = sorted(
         {
-            str((clip.hallucination or {}).get("engine", ""))
+            str(result.get("engine", ""))
             for clip in evaluations
-            if clip.hallucination
+            for result in (clip.hallucination, clip.temporal_consistency)
+            if result
         }
         - {""}
     )
@@ -203,7 +218,12 @@ def evaluate_run(
         status=status,
         score=run_score,
         # A degraded run never learned enough to promote anything.
-        passed=status == "completed" and run_score >= threshold,
+        passed=(
+            status == "completed"
+            and bool(evaluations)
+            and passed_clips == len(evaluations)
+            and run_score >= threshold
+        ),
         augment_uri=augment_uri,
         output_uri=output_uri,
         result_uri=result_uri,
@@ -228,6 +248,8 @@ def _evaluate_clip(
     source_clip: Path | None,
     threshold: float,
     hallucination_weight: float,
+    temporal_threshold: float,
+    temporal_regions_json: str,
     question_model: str,
     vlm_model: str,
     warnings: list[str],
@@ -294,11 +316,36 @@ def _evaluate_clip(
             warnings.append(message)
             skipped.append("hallucination check failed")
 
+    temporal_result: TemporalConsistencyResult | None = None
+    if not input_conditioned:
+        skipped.append("temporal consistency only applies to input-conditioned variants")
+    elif video is None:
+        skipped.append("temporal consistency needs the augmented video")
+    elif source_clip is None:
+        skipped.append("temporal consistency needs a source clip")
+    else:
+        try:
+            temporal_result = check_temporal_consistency(
+                clip_id=clip_id,
+                original_video=source_clip,
+                augmented_video=video,
+                threshold=temporal_threshold,
+                regions=temporal_regions_json,
+            )
+        except Exception as exc:  # noqa: BLE001 - keep grading the remaining variants
+            message = f"temporal consistency check failed for {clip_id}: {exc}"[:300]
+            _log.warning(message, exc_info=True)
+            warnings.append(message)
+            skipped.append("temporal consistency check failed")
+
     score, passed = _combine_scores(
         attribute_result=attribute_result,
         hallucination_result=hallucination_result,
         input_conditioned=input_conditioned,
         hallucination_weight=hallucination_weight,
+        temporal_result=temporal_result,
+        temporal_required=input_conditioned,
+        score_threshold=threshold,
     )
     return ClipEvaluation(
         clip_id=clip_id,
@@ -308,6 +355,7 @@ def _evaluate_clip(
         variables=variables,
         attribute_verification=attribute_result.to_dict() if attribute_result else None,
         hallucination=hallucination_result.to_dict() if hallucination_result else None,
+        temporal_consistency=temporal_result.to_dict() if temporal_result else None,
         skipped=skipped,
     )
 
@@ -318,6 +366,9 @@ def _combine_scores(
     hallucination_result: HallucinationResult | None,
     input_conditioned: bool,
     hallucination_weight: float,
+    temporal_result: TemporalConsistencyResult | None = None,
+    temporal_required: bool = False,
+    score_threshold: float = 0.0,
 ) -> tuple[float, bool]:
     """Blend the two check scores into the number the quality gate reads.
 
@@ -330,20 +381,24 @@ def _combine_scores(
     hallucination_score = hallucination_result.score if hallucination_result else None
     use_hallucination = input_conditioned and hallucination_score is not None
 
-    if attribute_score is None and not use_hallucination:
-        return 0.0, False
     if attribute_score is None:
-        assert hallucination_score is not None
-        return round(hallucination_score, 6), bool(hallucination_result and hallucination_result.passed)
+        return 0.0, False
     if not use_hallucination:
-        return round(attribute_score, 6), bool(attribute_result and attribute_result.passed)
+        if input_conditioned:
+            return 0.0, False
+        score = round(attribute_score, 6)
+        return score, score >= score_threshold
 
     assert hallucination_score is not None
     blended = hallucination_weight * hallucination_score + (1.0 - hallucination_weight) * attribute_score
-    passed = bool(attribute_result and attribute_result.passed) and bool(
-        hallucination_result and hallucination_result.passed
-    )
-    return round(blended, 6), passed
+    passed = bool(hallucination_result and hallucination_result.passed)
+    if temporal_required:
+        if temporal_result is None:
+            return 0.0, False
+        blended = min(blended, temporal_result.score)
+        passed = passed and temporal_result.passed
+    score = round(blended, 6)
+    return score, passed and score >= score_threshold
 
 
 # ---------------------------------------------------------------------------

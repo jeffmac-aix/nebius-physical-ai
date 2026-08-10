@@ -23,7 +23,7 @@ NVIDIA blueprint (OSMO) → NPA stage (toolRef / run):
 | Stage 1 Config Generation | `generate-configs` | `run.shell` (sample appearance-only variables) | CPU |
 | Stage 2a Understand & Annotate | `annotate-original` | `workbench.token_factory.caption` | Token Factory (zero-GPU) |
 | Stage 2b Augment & Multiply | `augment` | `workbench.cosmos2.transfer_execute` | GPU (Cosmos Transfer 2.5) |
-| Evaluate & Validate | `grade` loop (`evaluate` + `quality-gate`) | `workbench.cosmos_evaluator.evaluate` + `data_factory_stages.grade_gate` | Token Factory + CPU |
+| Evaluate & Validate | `grade` loop + `quality-disposition` | Cosmos Evaluator + NPA temporal consistency + fail-closed disposition | Token Factory + CPU |
 | Stage 3 Pseudo-Label Augmented | `annotate-augmented` | `npa workbench token-factory caption` (run.shell) | Token Factory |
 | Stage 4a Curation | `cosmos-curate` | `workbench.cosmos_curate.curate` | CPU |
 | Stage 4b Curation review | `curate` | `data_factory_stages.curate` (FiftyOne Brain) | CPU |
@@ -42,7 +42,11 @@ Three NVIDIA components in that table are the real open-source projects:
   and *hallucination* (per-frame dynamic-mask comparison against the source clip,
   CPU only). The hallucination score only feeds the run score for
   input-conditioned variants; otherwise the clips are different scenes and it stays
-  informational.
+  informational. NPA adds a separately attributed source-relative temporal
+  consistency check over the full frame and localized regions. This rejects excess
+  frame-to-frame surface variation without treating source camera or object motion
+  as a defect. The default temporal threshold is `0.8`, which allows at most 25%
+  source-relative excess acceleration in every checked region.
 - **[Cosmos Curator](https://github.com/nvidia-cosmos/cosmos-curate)**
   (Apache-2.0) curates. The `cosmos-curate` stage drives upstream's own stages —
   `VideoDownloader` → `FixedStrideExtractorStage` → `ClipTranscodingStage` →
@@ -85,8 +89,14 @@ before submitting either first-class managed workflow.
 - **Token Factory (zero-GPU, hosted):** captioning, and the Cosmos Evaluator
   attribute-verification check's LLM + VLM calls.
 - **GPU (Nebius Managed K8s):** Cosmos Transfer 2.5 augmentation only.
-- **CPU:** config sampling, the evaluator's hallucination check, Cosmos Curator
-  curation, FiftyOne review, visualize, finalize.
+- **CPU:** config sampling, hallucination and temporal-consistency checks, Cosmos
+  Curator curation, FiftyOne review, visualize, finalize.
+
+The quality gate is fail closed. Promotion requires the aggregate threshold and
+every motion-integrity hard check to pass. If refinement is exhausted, `quality-disposition`
+writes `grade/quality_disposition.json` with `quality_status: rejected` and stops
+the workflow before labeling or curation. Workflow execution status and dataset
+quality status therefore remain separate and auditable.
 
 Each NVIDIA tool has its own workbench image, both CPU-only and both mode-based
 (`engine`, `smoke`, plus the tool's own commands):
@@ -155,7 +165,7 @@ NPA_SRC_S3_URI=s3://<bucket>/npa-src/ \
 ```bash
 npa workbench workflow submit "$SPEC" \
   --run-id "$(date -u +paidf-%Y%m%dt%H%M%sz)" \
-  --assume-decision promote_checkpoint \
+  --runtime \
   --secret-env NEBIUS_TOKEN_FACTORY_KEY \
   --secret-env AWS_ACCESS_KEY_ID \
   --secret-env AWS_SECRET_ACCESS_KEY
@@ -174,7 +184,7 @@ s3://<bucket>/physical-ai-data-factory/<run-id>/
   configs/             # Stage 1 sampled augmentation manifest  -> json
   labeled_original/    # Stage 2a VLM captions                  -> json
   cosmos_augmented/    # Stage 2b augmented clips + metadata    -> video / json
-  grade/               # Cosmos Evaluator report + decision     -> json
+  grade/               # evaluator, decision, quality disposition -> json
   labeled_augmented/   # Stage 3 VLM captions on augmented      -> json
   curation/
     cosmos_curator/    # Cosmos Curator output tree             -> video / json

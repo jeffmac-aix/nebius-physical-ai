@@ -16,7 +16,7 @@ import typer
 
 app = typer.Typer(
     name="cosmos-evaluator",
-    help="NVIDIA Cosmos Evaluator: hallucination + attribute-verification grading of augmented video.",
+    help="Cosmos Evaluator checks plus NPA source-relative temporal grading of augmented video.",
     no_args_is_help=True,
 )
 
@@ -59,6 +59,16 @@ def evaluate_cmd(
     hallucination_weight: float = typer.Option(
         0.5, "--hallucination-weight", help="Weight on the hallucination score for input-conditioned variants."
     ),
+    temporal_threshold: float = typer.Option(
+        0.8,
+        "--temporal-threshold",
+        help="Minimum source-relative temporal consistency score for every input-conditioned variant.",
+    ),
+    temporal_regions_json: str = typer.Option(
+        "",
+        "--temporal-regions-json",
+        help="Optional JSON list of normalized rectangular regions; default is full frame plus a 2x2 grid.",
+    ),
     question_model: str = typer.Option("", "--question-model", help="Token Factory LLM for question generation."),
     vlm_model: str = typer.Option("", "--vlm-model", help="Token Factory VLM that answers the questions."),
     max_clips: int = typer.Option(0, "--max-clips", help="Grade at most this many variants (0 = all)."),
@@ -78,6 +88,8 @@ def evaluate_cmd(
             original_video=original_video,
             threshold=threshold,
             hallucination_weight=hallucination_weight,
+            temporal_threshold=temporal_threshold,
+            temporal_regions_json=temporal_regions_json,
             question_model=question_model,
             vlm_model=vlm_model,
             max_clips=max_clips,

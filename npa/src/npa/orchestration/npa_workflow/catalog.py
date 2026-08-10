@@ -468,7 +468,8 @@ TOOL_CATALOG: dict[str, ToolEntry] = {
         name="workbench.cosmos_evaluator.evaluate",
         description=(
             "Grade augmented variants with the REAL NVIDIA Cosmos Evaluator checks "
-            "(hallucination + VLM attribute verification, Apache-2.0)."
+            "(hallucination + VLM attribute verification, Apache-2.0) plus the "
+            "NPA source-relative temporal consistency companion check."
         ),
         argv_template=[
             "npa",
@@ -485,6 +486,10 @@ TOOL_CATALOG: dict[str, ToolEntry] = {
             "{{config.configs_uri}}",
             "--threshold",
             "{{config.grade_threshold}}",
+            "--temporal-threshold",
+            "{{config.temporal_consistency_threshold}}",
+            "--temporal-regions-json",
+            "{{config.temporal_regions_json}}",
             "--vlm-model",
             "{{config.caption_model}}",
             "--output",

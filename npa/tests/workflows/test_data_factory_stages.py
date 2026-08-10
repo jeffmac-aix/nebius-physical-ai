@@ -120,6 +120,36 @@ def test_grade_gate_will_not_promote_a_degraded_report(tmp_path: Path, monkeypat
     assert dfs.grade_gate(str(scores), str(tmp_path / "d.json"), threshold=0.5) == "loop_back"
 
 
+def test_grade_gate_will_not_promote_when_a_hard_check_failed(tmp_path: Path, monkeypatch) -> None:
+    scores = tmp_path / "cosmos_evaluator.json"
+    scores.write_text(json.dumps({"score": 0.95, "status": "completed", "passed": False}))
+    monkeypatch.setattr(
+        "npa.orchestration.npa_workflow.decisions.write_decision",
+        lambda uri, decision: None,
+    )
+    assert dfs.grade_gate(str(scores), str(tmp_path / "d.json"), threshold=0.75) == "loop_back"
+
+
+def test_quality_disposition_accepts_only_a_complete_hard_check_pass(tmp_path: Path) -> None:
+    scores = tmp_path / "cosmos_evaluator.json"
+    disposition = tmp_path / "quality_disposition.json"
+    scores.write_text(json.dumps({"score": 0.81, "status": "completed", "passed": True}))
+    result = dfs.enforce_quality_disposition(str(scores), str(disposition), threshold="0.75")
+    assert result["quality_status"] == "accepted"
+    assert json.loads(disposition.read_text())["quality_status"] == "accepted"
+
+
+def test_quality_disposition_persists_rejection_before_failing(tmp_path: Path) -> None:
+    scores = tmp_path / "cosmos_evaluator.json"
+    disposition = tmp_path / "quality_disposition.json"
+    scores.write_text(json.dumps({"score": 0.9, "status": "completed", "passed": False}))
+    with pytest.raises(RuntimeError, match="quality rejected"):
+        dfs.enforce_quality_disposition(str(scores), str(disposition), threshold=0.75)
+    payload = json.loads(disposition.read_text())
+    assert payload["quality_status"] == "rejected"
+    assert payload["hard_checks_passed"] is False
+
+
 def test_grade_gate_falls_through_a_malformed_report_to_the_older_contract(
     tmp_path: Path, monkeypatch
 ) -> None:

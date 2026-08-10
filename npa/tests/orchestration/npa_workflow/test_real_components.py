@@ -114,10 +114,16 @@ def test_evaluate_runs_the_real_cosmos_evaluator() -> None:
     # The hallucination check needs the run's source clip and attribute
     # verification needs the sampled option table, so both must be passed.
     assert "--input-uri" in argv and "--configs-uri" in argv
+    assert "--temporal-threshold" in argv and "--temporal-regions-json" in argv
 
     loop = states["grade"]["loop"]
     assert loop["until"] == "promote_checkpoint"
     assert states["grade"]["sequence"] == ["augment", "evaluate", "quality-gate"]
+    assert states["grade"]["next"] == "quality-disposition"
+    assert states["annotate-augmented"]["needs"] == ["quality-disposition"]
+    assert "enforce_quality_disposition" in states["quality-disposition"]["run"]["shell"]
+    assert float(_spec()["config"]["grade_threshold"]) >= 0.75
+    assert float(_spec()["config"]["temporal_consistency_threshold"]) >= 0.8
 
 
 def test_curation_runs_the_real_cosmos_curator_before_review() -> None:

@@ -17,6 +17,7 @@ import pytest
 
 from npa.workbench.cosmos_evaluator import attribute_verification as av
 from npa.workbench.cosmos_evaluator import hallucination as hal
+from npa.workbench.cosmos_evaluator import temporal_consistency as temporal
 from npa.workbench.cosmos_evaluator.upstream import CosmosEvaluatorError
 
 APPEARANCE_OPTIONS = {
@@ -125,6 +126,81 @@ def test_check_hallucination_rejects_an_out_of_range_threshold(tmp_path: Path) -
     clip.write_bytes(b"not really a video")
     with pytest.raises(CosmosEvaluatorError, match="threshold"):
         hal.check_hallucination(clip_id="c", original_video=clip, augmented_video=clip, threshold=1.5)
+
+
+# ---------------------------------------------------------------------------
+# NPA source-relative temporal consistency companion check
+# ---------------------------------------------------------------------------
+
+
+def _frame_stream(values: list[np.ndarray]):
+    yield from values
+
+
+def _run_temporal_with_frames(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    source: list[np.ndarray],
+    augmented: list[np.ndarray],
+    **kwargs: Any,
+):
+    original = tmp_path / "original.mp4"
+    variant = tmp_path / "variant.mp4"
+    original.write_bytes(b"video")
+    variant.write_bytes(b"video")
+    monkeypatch.setattr(temporal, "_probe_size", lambda path: source[0].shape)
+    streams = iter([source, augmented])
+    monkeypatch.setattr(
+        temporal,
+        "_iter_gray_frames",
+        lambda path, height, width: _frame_stream(next(streams)),
+    )
+    return temporal.check_temporal_consistency(
+        clip_id="clip-0",
+        original_video=original,
+        augmented_video=variant,
+        **kwargs,
+    )
+
+
+def test_temporal_consistency_accepts_source_matching_motion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    frames = [np.full((8, 8), value, dtype=np.uint8) for value in (0, 8, 19, 33)]
+    result = _run_temporal_with_frames(tmp_path, monkeypatch, frames, [f.copy() for f in frames])
+    assert result.passed is True
+    assert result.score == 1.0
+    assert result.frame_counts_match is True
+    assert len(result.regions) == 5
+
+
+def test_temporal_consistency_rejects_local_excess_acceleration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = [np.zeros((8, 8), dtype=np.uint8) for _ in range(5)]
+    augmented = [frame.copy() for frame in source]
+    for index, frame in enumerate(augmented):
+        frame[:4, :4] = 80 if index % 2 else 0
+    result = _run_temporal_with_frames(tmp_path, monkeypatch, source, augmented)
+    assert result.passed is False
+    assert result.score < 0.75
+    assert next(region for region in result.regions if region.region_id == "tile-0").passed is False
+
+
+def test_temporal_consistency_rejects_a_frame_count_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = [np.full((4, 4), value, dtype=np.uint8) for value in (0, 2, 4, 6)]
+    augmented = [frame.copy() for frame in source[:3]]
+    result = _run_temporal_with_frames(tmp_path, monkeypatch, source, augmented)
+    assert result.frame_counts_match is False
+    assert result.passed is False
+
+
+def test_temporal_regions_validate_normalized_bounds() -> None:
+    assert temporal.parse_regions('[[0.1, 0.2, 0.8, 0.9]]')[0][1] == (0.1, 0.2, 0.8, 0.9)
+    with pytest.raises(CosmosEvaluatorError, match="bounds"):
+        temporal.parse_regions('[[0, 0, 2, 1]]')
 
 
 # ---------------------------------------------------------------------------
@@ -487,6 +563,87 @@ def test_combine_scores_ignores_hallucination_for_unconditioned_variants() -> No
         hallucination_weight=0.5,
     )
     assert conditioned == (0.6, False)
+
+
+def test_combine_scores_treats_temporal_consistency_as_a_hard_check() -> None:
+    from npa.workbench.cosmos_evaluator.evaluate import _combine_scores
+
+    attribute = av.AttributeVerificationResult(
+        clip_id="c",
+        passed=True,
+        total_checks=1,
+        passed_checks=1,
+        failed_checks=0,
+        score=1.0,
+        question_model="llm",
+        vlm_model="vlm",
+    )
+    hallucination = hal.HallucinationResult(
+        clip_id="c",
+        passed=True,
+        threshold=0.75,
+        score=0.95,
+        total_frames=10,
+        total_hallucinated_dynamic_pixels=1,
+        total_augmented_dynamic_pixels=20,
+    )
+    temporal_result = temporal.TemporalConsistencyResult(
+        clip_id="c",
+        passed=False,
+        threshold=0.75,
+        score=0.6,
+        total_frames=10,
+        frame_counts_match=True,
+    )
+    assert _combine_scores(
+        attribute_result=attribute,
+        hallucination_result=hallucination,
+        input_conditioned=True,
+        hallucination_weight=0.5,
+        temporal_result=temporal_result,
+        temporal_required=True,
+    ) == (0.6, False)
+
+
+def test_combine_scores_uses_attribute_checks_in_the_threshold_not_as_all_or_nothing() -> None:
+    from npa.workbench.cosmos_evaluator.evaluate import _combine_scores
+
+    attribute = av.AttributeVerificationResult(
+        clip_id="c",
+        passed=False,
+        total_checks=4,
+        passed_checks=2,
+        failed_checks=2,
+        score=0.5,
+        question_model="llm",
+        vlm_model="vlm",
+    )
+    hallucination = hal.HallucinationResult(
+        clip_id="c",
+        passed=True,
+        threshold=0.75,
+        score=1.0,
+        total_frames=10,
+        total_hallucinated_dynamic_pixels=0,
+        total_augmented_dynamic_pixels=20,
+    )
+    temporal_result = temporal.TemporalConsistencyResult(
+        clip_id="c",
+        passed=True,
+        threshold=0.8,
+        score=1.0,
+        total_frames=10,
+        frame_counts_match=True,
+    )
+    assert _combine_scores(
+        attribute_result=attribute,
+        hallucination_result=hallucination,
+        input_conditioned=True,
+        hallucination_weight=0.5,
+        temporal_result=temporal_result,
+        temporal_required=True,
+        score_threshold=0.75,
+    ) == (0.75, True)
 
 
 def test_combine_scores_is_zero_when_both_checks_are_missing() -> None:
