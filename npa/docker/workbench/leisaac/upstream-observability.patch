@@ -978,7 +978,13 @@ index 1ecc934..cb304f1 100644
 +        remote_action += self._remote_direct_action
 +        self._remote_direct_action[:] = 0.0
 +        return self._convert_delta_from_frame(self._delta_action + remote_action)
-@@ -71,0 +191,11 @@ class SO101Keyboard(Device):
+@@ -66,10 +186,19 @@ class SO101Keyboard(Device):
+     def _on_keyboard_event(self, event, *args, **kwargs):
+         super()._on_keyboard_event(event, *args, **kwargs)
+         # apply the command when pressed
+         if event.type == carb.input.KeyboardEventType.KEY_PRESS:
+             if event.input.name in self._INPUT_KEY_MAPPING.keys():
+                 self._delta_action += self._ACTION_DELTA_MAPPING[self._INPUT_KEY_MAPPING[event.input.name]]
 +                counter_name = os.environ.get("NPA_LEISAAC_INPUT_COUNTER", "")
 +                if counter_name:
 +                    try:
@@ -987,3 +993,6 @@ index 1ecc934..cb304f1 100644
 +                    except (OSError, ValueError):
 +                        # Telemetry must never interfere with upstream controls.
 +                        pass
+         # remove the command when un-pressed
+         if event.type == carb.input.KeyboardEventType.KEY_RELEASE:
+             if event.input.name in self._INPUT_KEY_MAPPING.keys():

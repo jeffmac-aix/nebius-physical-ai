@@ -35,6 +35,9 @@ RUN apt-get update \
     && test "$(git -C /opt/leisaac rev-parse HEAD)" = "${LEISAAC_COMMIT}" \
     && git -C /opt/leisaac apply --recount --check --unidiff-zero /tmp/leisaac-upstream-observability.patch \
     && git -C /opt/leisaac apply --recount --unidiff-zero /tmp/leisaac-upstream-observability.patch \
+    && /opt/npa/sim/venv/bin/python -m py_compile \
+      /opt/leisaac/source/leisaac/leisaac/devices/keyboard/so101_keyboard.py \
+      /opt/leisaac/scripts/environments/teleoperation/teleop_se3_agent.py \
     && sed -i '/"feetech-servo-sdk",/d' /opt/leisaac/source/leisaac/pyproject.toml \
     && ! grep -q 'feetech-servo-sdk' /opt/leisaac/source/leisaac/pyproject.toml \
     && /opt/npa/sim/venv/bin/python -m pip install --no-cache-dir \

@@ -491,6 +491,14 @@ def test_container_never_bakes_eula_client_or_assets() -> None:
     assert (
         "git -C /opt/leisaac apply --recount --check --unidiff-zero" in dockerfile
     )
+    assert (
+        "/opt/leisaac/source/leisaac/leisaac/devices/keyboard/so101_keyboard.py"
+        in dockerfile
+    )
+    assert (
+        "/opt/leisaac/scripts/environments/teleoperation/teleop_se3_agent.py"
+        in dockerfile
+    )
     assert os.access(ROOT / "npa/docker/workbench/leisaac/build.sh", os.X_OK)
 
 
