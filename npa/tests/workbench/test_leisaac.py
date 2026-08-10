@@ -499,6 +499,8 @@ def test_container_never_bakes_eula_client_or_assets() -> None:
         "/opt/leisaac/scripts/environments/teleoperation/teleop_se3_agent.py"
         in dockerfile
     )
+    assert '"self._remote_pulses.clear()" in m["reset"]' in dockerfile
+    assert '"_remote_pulses" not in m["_add_device_control_description"]' in dockerfile
     assert os.access(ROOT / "npa/docker/workbench/leisaac/build.sh", os.X_OK)
 
 

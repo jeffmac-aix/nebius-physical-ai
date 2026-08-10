@@ -826,11 +826,12 @@ index 1ecc934..cb304f1 100644
 +        self._remote_sim_step = 0
 +        if os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") == "1":
 +            self._started = True
-@@ -60,3 +77,0 @@ class SO101Keyboard(Device):
+@@ -60,6 +77,107 @@ class SO101Keyboard(Device):
 -    def get_device_state(self):
 -        return self._convert_delta_from_frame(self._delta_action)
 -
-@@ -64,0 +80,104 @@ class SO101Keyboard(Device):
+     def reset(self):
+         self._delta_action[:] = 0.0
 +        self._remote_pulses.clear()
 +        self._remote_direct_action[:] = 0.0
 +        self._remote_pending_applied.clear()

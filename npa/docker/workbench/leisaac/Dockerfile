@@ -38,6 +38,7 @@ RUN apt-get update \
     && /opt/npa/sim/venv/bin/python -m py_compile \
       /opt/leisaac/source/leisaac/leisaac/devices/keyboard/so101_keyboard.py \
       /opt/leisaac/scripts/environments/teleoperation/teleop_se3_agent.py \
+    && /opt/npa/sim/venv/bin/python -c 'import ast; p="/opt/leisaac/source/leisaac/leisaac/devices/keyboard/so101_keyboard.py"; c=next(n for n in ast.parse(open(p, encoding="utf-8").read()).body if isinstance(n, ast.ClassDef) and n.name == "SO101Keyboard"); m={n.name: ast.unparse(n) for n in c.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}; assert "self._remote_pulses.clear()" in m["reset"]; assert "_remote_pulses" not in m["_add_device_control_description"]' \
     && sed -i '/"feetech-servo-sdk",/d' /opt/leisaac/source/leisaac/pyproject.toml \
     && ! grep -q 'feetech-servo-sdk' /opt/leisaac/source/leisaac/pyproject.toml \
     && /opt/npa/sim/venv/bin/python -m pip install --no-cache-dir \
