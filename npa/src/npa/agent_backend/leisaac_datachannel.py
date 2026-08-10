@@ -33,6 +33,7 @@ MAX_VIDEO_DATACHANNEL_PEERS = 4
 # roughly one second of user-visible queue age.  Pull the next latest frame only
 # after aiortc has handed the current message out of its application buffer.
 VIDEO_DATACHANNEL_BUFFER_LOW_BYTES = 0
+VIDEO_DATACHANNEL_LOST_EVENT_FALLBACK_SECONDS = 0.1
 CONTROL_DATACHANNEL_LABEL = "npa-leisaac-control"
 CONTROL_DATACHANNEL_PROTOCOL = "npa.leisaac.control.v1"
 
@@ -81,6 +82,43 @@ def valid_control_datachannel(channel: Any) -> bool:
         and getattr(channel, "maxRetransmits", None) is None
         and getattr(channel, "maxPacketLifeTime", None) is None
     )
+
+
+async def _wait_for_buffer_low(
+    channel: Any,
+    metrics: TransportMetrics,
+    *,
+    fallback_seconds: float = VIDEO_DATACHANNEL_LOST_EVENT_FALLBACK_SECONDS,
+) -> bool:
+    """Wait for aiortc's low-buffer event with a race-safe bounded fallback."""
+
+    threshold = VIDEO_DATACHANNEL_BUFFER_LOW_BYTES
+    while str(channel.readyState) == "open" and int(channel.bufferedAmount) > threshold:
+        metrics.increment("datachannel_window_saturated")
+        ready = asyncio.Event()
+
+        def wake() -> None:
+            ready.set()
+
+        channel.on("bufferedamountlow", wake)
+        channel.on("close", wake)
+        try:
+            # aiortc can cross the threshold immediately before registration.
+            if int(channel.bufferedAmount) <= threshold:
+                return True
+            try:
+                await asyncio.wait_for(ready.wait(), timeout=fallback_seconds)
+            except asyncio.TimeoutError:
+                # aiortc 1.15.0 emits bufferedamountlow on a downward threshold
+                # crossing. This one bounded recheck covers a lost event or a
+                # test/future implementation that updates the counter silently.
+                pass
+        finally:
+            remove = getattr(channel, "remove_listener", None)
+            if callable(remove):
+                remove("bufferedamountlow", wake)
+                remove("close", wake)
+    return str(channel.readyState) == "open"
 
 
 class VideoDataChannelPeerPool:
@@ -216,14 +254,7 @@ class VideoDataChannelPeerPool:
             channel = await asyncio.wait_for(channel_ready, timeout=10.0)
             source = frame_source().__aiter__()
             while str(channel.readyState) == "open":
-                while (
-                    str(channel.readyState) == "open"
-                    and int(channel.bufferedAmount)
-                    > VIDEO_DATACHANNEL_BUFFER_LOW_BYTES
-                ):
-                    metrics.increment("datachannel_window_saturated")
-                    await asyncio.sleep(0.002)
-                if str(channel.readyState) != "open":
+                if not await _wait_for_buffer_low(channel, metrics):
                     break
                 # Pull from the runtime's latest-value source only after SCTP
                 # has room.  Frames that arrived during backpressure are then

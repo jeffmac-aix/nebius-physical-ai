@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import socket
 import threading
 from pathlib import Path
@@ -21,6 +22,7 @@ from npa.workbench.leisaac.agent_relay import (
 from npa.workbench.leisaac.reverse_client import (
     Client,
     WebSocketConnection,
+    _mask_websocket_payload,
     _pod_ipv4,
     _public_ipv4,
     load_config as load_client_config,
@@ -28,6 +30,22 @@ from npa.workbench.leisaac.reverse_client import (
 
 
 NONCE = "a" * 64
+
+
+@pytest.mark.parametrize("size", [0, 1, 3, 4, 5, 127, 1260, 180 * 1024])
+def test_private_websocket_mask_is_byte_identical_for_arbitrary_sizes(size: int) -> None:
+    payload = os.urandom(size)
+    mask = os.urandom(4)
+    expected = bytes(
+        value ^ mask[index % 4] for index, value in enumerate(payload)
+    )
+    assert _mask_websocket_payload(payload, mask) == expected
+    assert _mask_websocket_payload(expected, mask) == payload
+
+
+def test_private_websocket_mask_rejects_invalid_key_size() -> None:
+    with pytest.raises(ValueError, match="four bytes"):
+        _mask_websocket_payload(b"payload", b"bad")
 
 
 def test_agent_relay_control_and_raw_backhaul_are_loopback_only() -> None:

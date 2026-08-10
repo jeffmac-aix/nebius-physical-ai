@@ -8,6 +8,7 @@ read has an explicit bound, while media bodies remain streaming S3 objects.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
@@ -24,6 +25,7 @@ MAX_TIMELINE_BYTES = 16 * 1024 * 1024
 MAX_TIMELINE_ROWS = 5000
 MAX_MEDIA_BYTES = 2 * 1024 * 1024 * 1024
 STREAM_CHUNK_BYTES = 1024 * 1024
+MAX_S3_READ_WORKERS = 8
 
 _EPISODE_ID = re.compile(r"(?:0|[1-9][0-9]{0,8})")
 _VERSION_ID = re.compile(r"v[0-9]{6}-[a-f0-9]{32}")
@@ -37,10 +39,17 @@ _SHA256 = re.compile(r"[a-f0-9]{64}")
 class EpisodeStoreError(RuntimeError):
     """A safe, status-bearing episode API failure."""
 
-    def __init__(self, detail: str, *, status_code: int = 400):
+    def __init__(
+        self,
+        detail: str,
+        *,
+        status_code: int = 400,
+        skippable_legacy: bool = False,
+    ):
         super().__init__(detail)
         self.detail = detail
         self.status_code = status_code
+        self.skippable_legacy = skippable_legacy
 
 
 class RangeNotSatisfiable(EpisodeStoreError):
@@ -168,16 +177,22 @@ def _json_body(response: dict[str, Any], limit: int, detail: str) -> dict[str, A
     try:
         body = _read_body(response["Body"], limit, detail)
         payload = json.loads(body)
+    except EpisodeStoreError as exc:
+        raise EpisodeStoreError(
+            detail, status_code=502, skippable_legacy=True
+        ) from exc
     except (KeyError, UnicodeDecodeError, ValueError) as exc:
-        raise EpisodeStoreError(detail, status_code=502) from exc
+        raise EpisodeStoreError(
+            detail, status_code=502, skippable_legacy=True
+        ) from exc
     if not isinstance(payload, dict):
-        raise EpisodeStoreError(detail, status_code=502)
+        raise EpisodeStoreError(detail, status_code=502, skippable_legacy=True)
     checksum = hashlib.sha256(body).hexdigest()
     metadata = response.get("Metadata")
     metadata = dict(metadata) if isinstance(metadata, dict) else {}
     declared = str(metadata.get("sha256") or "")
     if declared and (not _SHA256.fullmatch(declared) or declared != checksum):
-        raise EpisodeStoreError(detail, status_code=502)
+        raise EpisodeStoreError(detail, status_code=502, skippable_legacy=True)
     # S3-compatible gateways do not all return user metadata on GET.  The JSON
     # body is already read under a strict bound, so retain an independently
     # computed digest for the version/player surface in every environment.
@@ -219,6 +234,9 @@ class EpisodeStore:
         self.prefix = prefix
         self.dataset_uri = f"s3://{self.bucket}/{self.prefix}"
         self.run_id = str(run_id)
+        self._episode_listing_key = re.compile(
+            re.escape(f"{self.prefix}/commits") + r"/episode-([0-9]{6})\.json"
+        )
 
     def _key(self, suffix: str) -> str:
         normalized = str(suffix or "").strip("/")
@@ -234,8 +252,58 @@ class EpisodeStore:
         try:
             response = self.client.get_object(Bucket=self.bucket, Key=key)
         except Exception as exc:
-            raise EpisodeStoreError(detail, status_code=404) from exc
+            response = getattr(exc, "response", None)
+            error = response.get("Error", {}) if isinstance(response, dict) else {}
+            code = str(error.get("Code") or "") if isinstance(error, dict) else ""
+            missing = isinstance(exc, KeyError) or code in {
+                "404",
+                "NoSuchKey",
+                "NotFound",
+            }
+            raise EpisodeStoreError(
+                detail,
+                status_code=404 if missing else 502,
+                skippable_legacy=missing,
+            ) from exc
         return _json_body(response, limit, detail), response
+
+    def _version_listing_entry(
+        self, version_prefix: str
+    ) -> dict[str, Any] | None:
+        version_id = version_prefix.rstrip("/").split("/")[-1]
+        if not _VERSION_ID.fullmatch(version_id):
+            return None
+        try:
+            manifest, raw = self._get_json(
+                self._key(f"versions/{version_id}/npa-dataset.json"),
+                "immutable dataset version manifest is unreadable",
+            )
+        except EpisodeStoreError as exc:
+            if exc.skippable_legacy:
+                return None
+            raise
+        if (
+            manifest.get("schema") != "npa.leisaac.dataset.v1"
+            or str(manifest.get("version") or "") != version_id
+            or str(manifest.get("output_prefix") or "").rstrip("/")
+            != self.dataset_uri
+        ):
+            return None
+        metadata_checksum = str((raw.get("Metadata") or {}).get("sha256") or "")
+        try:
+            episode_count = int(manifest.get("episode_count") or 0)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return {
+            "version_id": version_id,
+            "dataset_uri": str(manifest.get("dataset_uri") or ""),
+            "created_at": str(manifest.get("created_at") or ""),
+            "episode_count": episode_count,
+            "lerobot_version": str(manifest.get("lerobot_version") or ""),
+            "manifest_checksum": metadata_checksum
+            if _SHA256.fullmatch(metadata_checksum)
+            else "",
+        }
 
     def _object_ref(self, payload: Any, name: str) -> ObjectRef:
         if not isinstance(payload, dict):
@@ -310,35 +378,14 @@ class EpisodeStore:
                     if str(item.get("Key") or "").endswith("/npa-dataset.json")
                 }
             )[:page_size]
-        versions: list[dict[str, Any]] = []
-        for version_prefix in prefixes[:page_size]:
-            version_id = version_prefix.rstrip("/").split("/")[-1]
-            if not _VERSION_ID.fullmatch(version_id):
-                continue
-            manifest, raw = self._get_json(
-                self._key(f"versions/{version_id}/npa-dataset.json"),
-                "immutable dataset version manifest is unreadable",
-            )
-            if (
-                manifest.get("schema") != "npa.leisaac.dataset.v1"
-                or str(manifest.get("version") or "") != version_id
-                or str(manifest.get("output_prefix") or "").rstrip("/")
-                != self.dataset_uri
-            ):
-                continue
-            metadata_checksum = str((raw.get("Metadata") or {}).get("sha256") or "")
-            versions.append(
-                {
-                    "version_id": version_id,
-                    "dataset_uri": str(manifest.get("dataset_uri") or ""),
-                    "created_at": str(manifest.get("created_at") or ""),
-                    "episode_count": int(manifest.get("episode_count") or 0),
-                    "lerobot_version": str(manifest.get("lerobot_version") or ""),
-                    "manifest_checksum": metadata_checksum
-                    if _SHA256.fullmatch(metadata_checksum)
-                    else "",
-                }
-            )
+        selected_prefixes = prefixes[:page_size]
+        workers = min(MAX_S3_READ_WORKERS, len(selected_prefixes))
+        if workers:
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                entries = executor.map(self._version_listing_entry, selected_prefixes)
+                versions = [entry for entry in entries if entry is not None]
+        else:
+            versions = []
         return {
             "versions": versions,
             "next_cursor": str(response.get("NextContinuationToken") or ""),
@@ -448,28 +495,41 @@ class EpisodeStore:
             raise EpisodeStoreError(
                 "could not list immutable episodes", status_code=502
             ) from exc
-        episodes: list[dict[str, Any]] = []
+        candidates: list[tuple[str, int]] = []
         for item in response.get("Contents", []):
             key = str(item.get("Key") or "")
-            match = re.fullmatch(
-                re.escape(self._key("commits")) + r"/episode-([0-9]{6})\.json", key
-            )
+            match = self._episode_listing_key.fullmatch(key)
             if not match:
                 continue
             if version_commit_keys is not None and key not in version_commit_keys:
                 continue
+            candidates.append((key, int(match.group(1))))
+
+        def load(candidate: tuple[str, int]) -> tuple[dict[str, Any], str] | None:
+            key, index = candidate
             commit, _raw = self._get_json(key, "episode commit is unreadable")
-            index = int(match.group(1))
             if (
                 commit.get("schema") != "npa.leisaac.episode-commit.v1"
                 or int(commit.get("episode_index", -1)) != index
                 or not isinstance(commit.get("metadata"), dict)
                 or not isinstance(commit.get("objects"), dict)
             ):
-                continue
+                return None
             if str(commit["metadata"].get("run_id") or "") != self.run_id:
+                return None
+            return self._summary(commit, key), key
+
+        workers = min(MAX_S3_READ_WORKERS, len(candidates))
+        if workers:
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                loaded = list(executor.map(load, candidates))
+        else:
+            loaded = []
+        episodes: list[dict[str, Any]] = []
+        for entry in loaded:
+            if entry is None:
                 continue
-            summary = self._summary(commit, key)
+            summary, _key = entry
             summary["dataset_version"] = version_id
             values = {
                 "task": summary["task"],

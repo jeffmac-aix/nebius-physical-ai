@@ -6,11 +6,14 @@ index a467482..d3bcad5 100644
 +import asyncio
 +from concurrent.futures import ThreadPoolExecutor
 +import ctypes
++import fcntl
 +import hashlib
 +import json
 +from io import BytesIO
 @@ -92,0 +98 @@ import os
 +from pathlib import Path
++import socket
++import struct
 @@ -94,0 +101,8 @@ import time
 +from leisaac_dataset import EpisodeRecorder, extract_step
 +from leisaac_transport import (
@@ -109,6 +112,36 @@ index a467482..d3bcad5 100644
 +    view_command_path = os.environ.get("NPA_LEISAAC_VIEW_COMMAND_PATH", "")
 +    mode_command_path = os.environ.get("NPA_LEISAAC_MODE_COMMAND_PATH", "")
 +    mode_status_path = os.environ.get("NPA_LEISAAC_MODE_STATUS_PATH", "")
++    ipc_event_path = os.environ.get("NPA_LEISAAC_IPC_EVENT_PATH", "")
++    ipc_event_socket = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
++    def notify_runtime_event(payload):
++        if not ipc_event_path:
++            return
++        try:
++            ipc_event_socket.sendto(
++                json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8"),
++                ipc_event_path,
++            )
++        except OSError:
++            # Atomic files remain restart/lost-datagram recovery truth.
++            pass
++    def notify_runtime_frame(metadata, frame_bytes):
++        encoded_metadata = json.dumps(
++            metadata, sort_keys=True, separators=(",", ":")
++        ).encode("utf-8")
++        try:
++            ipc_event_socket.sendto(
++                struct.pack("!4sI", b"NPF1", len(encoded_metadata))
++                + encoded_metadata
++                + frame_bytes,
++                ipc_event_path,
++            )
++        except OSError:
++            # Oversized datagrams and listener restarts retain the fully
++            # verified atomic-file recovery path.
++            notify_runtime_event(
++                {"type": "frame-file", "camera": metadata["camera"]}
++            )
 +    mode_state = {
 +        "schema": "npa.leisaac.view-mode.v1",
 +        "requested_view_mode": DEFAULT_VIEW_MODE.value,
@@ -267,6 +300,7 @@ index a467482..d3bcad5 100644
 +                encoding="utf-8",
 +            )
 +            os.replace(metadata_temporary, metadata_destination)
++            notify_runtime_frame(metadata, frame_bytes)
 +        mode_state["capture_counts"][camera_id] += 1
 +        return frame_bytes
 +
@@ -762,6 +796,7 @@ index a467482..d3bcad5 100644
 +        capture_encoder.shutdown(wait=True, cancel_futures=True)
 +        poll_encoded_capture()
 +        recorder.shutdown(wait=True)
++        ipc_event_socket.close()
          signal.signal(signal.SIGINT, original_sigint_handler)
 diff --git a/source/leisaac/leisaac/devices/keyboard/so101_keyboard.py b/source/leisaac/leisaac/devices/keyboard/so101_keyboard.py
 index 1ecc934..cb304f1 100644
@@ -769,8 +804,10 @@ index 1ecc934..cb304f1 100644
 +++ b/source/leisaac/leisaac/devices/keyboard/so101_keyboard.py
 @@ -0,0 +1,5 @@
 +import json
++import fcntl
 +import os
 +from pathlib import Path
++import socket
 +import time
 +
 @@ -36,0 +42,13 @@ class SO101Keyboard(Device):
@@ -784,6 +821,8 @@ index 1ecc934..cb304f1 100644
 +        self._remote_pending_applied = []
 +        self._applied_counter = Path(counter_name) if counter_name else None
 +        self._applied_ack = Path(ack_name) if ack_name else None
++        self._ipc_event_path = os.environ.get("NPA_LEISAAC_IPC_EVENT_PATH", "")
++        self._ipc_event_socket = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
 +        self._remote_sim_step = 0
 +        if os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") == "1":
 +            self._started = True
@@ -796,23 +835,66 @@ index 1ecc934..cb304f1 100644
 +        self._remote_direct_action[:] = 0.0
 +        self._remote_pending_applied.clear()
 +
-+    def _record_applied_input(self, acknowledgement):
++    @staticmethod
++    def _advance_counter(counter, amount):
++        lock_path = counter.with_suffix(counter.suffix + ".lock")
++        with lock_path.open("a", encoding="utf-8") as lock:
++            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
++            try:
++                try:
++                    current = int(counter.read_text(encoding="utf-8").strip() or "0")
++                except (OSError, ValueError):
++                    current = 0
++                temporary = counter.with_suffix(".tmp")
++                temporary.write_text(f"{current + amount}\n", encoding="utf-8")
++                temporary.replace(counter)
++            finally:
++                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
++
++    def _notify_applied(self, acknowledgement):
++        if not self._ipc_event_path:
++            return
++        try:
++            self._ipc_event_socket.sendto(
++                json.dumps(
++                    {"type": "applied", "acknowledgement": acknowledgement},
++                    sort_keys=True,
++                    separators=(",", ":"),
++                ).encode("utf-8"),
++                self._ipc_event_path,
++            )
++        except OSError:
++            pass
++
++    def _record_applied_inputs(self, acknowledgements):
++        if not acknowledgements:
++            return
 +        if self._applied_counter is not None:
 +            try:
-+                current = self._applied_counter.read_text(encoding="utf-8").strip()
-+                count = int(current or "0") + 1
-+                temporary = self._applied_counter.with_suffix(".tmp")
-+                temporary.write_text(f"{count}\n", encoding="utf-8")
-+                temporary.replace(self._applied_counter)
-+            except (OSError, ValueError):
++                self._advance_counter(self._applied_counter, len(acknowledgements))
++            except OSError:
 +                pass
 +        if self._applied_ack is not None:
 +            try:
 +                with self._applied_ack.open("a", encoding="utf-8") as target:
-+                    target.write(json.dumps(acknowledgement, sort_keys=True, separators=(",", ":")) + "\n")
++                    target.writelines(
++                        json.dumps(item, sort_keys=True, separators=(",", ":")) + "\n"
++                        for item in acknowledgements
++                    )
 +                    target.flush()
-+            except OSError:
++                    if any(
++                        item.get("event") == "release"
++                        or (
++                            item.get("type") == "action"
++                            and all(float(value) == 0.0 for value in item.get("action", ()))
++                        )
++                        for item in acknowledgements
++                    ):
++                        os.fsync(target.fileno())
++            except (OSError, TypeError, ValueError):
 +                pass
++        for acknowledgement in acknowledgements:
++            self._notify_applied(acknowledgement)
 +
 +    def mark_remote_step_applied(self, simulator_step):
 +        """Acknowledge inputs only after the simulator step consumed them."""
@@ -828,8 +910,8 @@ index 1ecc934..cb304f1 100644
 +                simulator_applied_wall_ns=str(applied_wall_ns),
 +                simulator_step=int(simulator_step),
 +            )
-+            self._record_applied_input(acknowledgement)
 +            acknowledged.append(acknowledgement)
++        self._record_applied_inputs(acknowledged)
 +        self._remote_pending_applied.clear()
 +        return acknowledged[-1]
 +
@@ -901,10 +983,7 @@ index 1ecc934..cb304f1 100644
 +                if counter_name:
 +                    try:
 +                        counter = Path(counter_name)
-+                        count = int(counter.read_text(encoding="utf-8").strip() or "0") + 1
-+                        temporary = counter.with_suffix(".tmp")
-+                        temporary.write_text(f"{count}\n", encoding="utf-8")
-+                        temporary.replace(counter)
++                        self._advance_counter(counter, 1)
 +                    except (OSError, ValueError):
 +                        # Telemetry must never interfere with upstream controls.
 +                        pass

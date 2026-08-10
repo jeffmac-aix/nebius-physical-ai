@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+import fcntl
 import hashlib
 import hmac
 import json
@@ -20,6 +21,8 @@ import re
 import secrets
 import shutil
 import signal
+import socket
+import struct
 import subprocess
 import sys
 import tarfile
@@ -185,7 +188,7 @@ CLIENT_SOURCE_JS_SHA256 = (
 )
 CLIENT_JS_SHA256 = CLIENT_SOURCE_JS_SHA256
 UPSTREAM_OBSERVABILITY_PATCH_SHA256 = (
-    "59c342cbefdc1d1634da8ce4996570ef8c060b14477daf6403096e9643703c9e"
+    "972eae6dfde6e1c14eb1c2a793961fc40e4de05ecd2e9624d20c1b402124694f"
 )
 
 CACHE_ROOT = Path(os.environ.get("NPA_LEISAAC_CACHE_DIR", "/opt/leisaac-cache"))
@@ -209,6 +212,9 @@ CAMERA_PATHS = {
     "overview": (SECONDARY_FRAME_PATH, SECONDARY_FRAME_META_PATH),
 }
 APPLIED_ACK_PATH = Path("/tmp/npa-leisaac-input-applied.jsonl")
+IPC_EVENT_PATH = Path("/tmp/npa-leisaac-events.sock")
+IPC_FRAME_HEADER = struct.Struct("!4sI")
+IPC_FRAME_MAGIC = b"NPF1"
 RECORDER_ROOT = Path("/tmp/npa-leisaac-recorder")
 RECORDER_STATUS_PATH = RECORDER_ROOT / "status.json"
 RECORDER_CONTROL_PATH = RECORDER_ROOT / "control.jsonl"
@@ -245,6 +251,9 @@ FRAME_LATEST = AsyncLatestByKey(("workspace", "overview"))
 VIDEO_DATACHANNEL_PEERS = VideoDataChannelPeerPool()
 CONTROL_DATACHANNEL_PEERS = ControlDataChannelPeerPool()
 APPLIED_ACK_OFFSET = 0
+APPLIED_GENERATION = 0
+APPLIED_EVENT: asyncio.Event | None = None
+RUNTIME_EVENT_QUEUE: asyncio.Queue[dict[str, Any]] | None = None
 
 
 def _default_mode_state() -> dict[str, Any]:
@@ -811,6 +820,7 @@ def _simulation_launch() -> tuple[list[str], dict[str, str]]:
             "NPA_LEISAAC_APPLIED_COUNTER": str(APPLIED_COUNTER_PATH),
             "NPA_LEISAAC_INPUT_QUEUE": str(INPUT_QUEUE_PATH),
             "NPA_LEISAAC_APPLIED_ACK_PATH": str(APPLIED_ACK_PATH),
+            "NPA_LEISAAC_IPC_EVENT_PATH": str(IPC_EVENT_PATH),
             "NPA_LEISAAC_FRAME_PATH": str(FRAME_PATH),
             "NPA_LEISAAC_FRAME_META_PATH": str(FRAME_META_PATH),
             "NPA_LEISAAC_SECONDARY_FRAME_PATH": str(SECONDARY_FRAME_PATH),
@@ -1129,13 +1139,31 @@ def _authorized(headers: Any) -> bool:
 
 
 def _increment_input_counter() -> int:
-    try:
-        count = int(INPUT_COUNTER_PATH.read_text(encoding="utf-8").strip() or "0") + 1
-    except (OSError, ValueError):
-        count = 1
-    temporary = INPUT_COUNTER_PATH.with_suffix(".tmp")
-    temporary.write_text(f"{count}\n", encoding="utf-8")
-    temporary.replace(INPUT_COUNTER_PATH)
+    return _advance_input_counter(1)
+
+
+def _advance_input_counter(amount: int) -> int:
+    """Atomically reserve a counter range shared with the Isaac child."""
+
+    if amount < 1:
+        raise ValueError("counter increment must be positive")
+    lock_path = INPUT_COUNTER_PATH.with_suffix(INPUT_COUNTER_PATH.suffix + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a", encoding="utf-8") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        try:
+            try:
+                current = int(
+                    INPUT_COUNTER_PATH.read_text(encoding="utf-8").strip() or "0"
+                )
+            except (OSError, ValueError):
+                current = 0
+            count = current + amount
+            temporary = INPUT_COUNTER_PATH.with_suffix(".tmp")
+            temporary.write_text(f"{count}\n", encoding="utf-8")
+            temporary.replace(INPUT_COUNTER_PATH)
+        finally:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
     return count
 
 
@@ -1162,8 +1190,9 @@ def _append_inputs(records: list[dict[str, Any]]) -> list[int]:
             # durable boundary: their fsync also commits every prior ordered press.
             if durable:
                 os.fsync(queue.fileno())
-        for _record in records:
-            counts.append(_increment_input_counter())
+        if records:
+            final_count = _advance_input_counter(len(records))
+            counts.extend(range(final_count - len(records) + 1, final_count + 1))
     return counts
 
 
@@ -1175,11 +1204,36 @@ def _read_consistent_frame(
     camera: str = "workspace",
     after_sequence: int = 0,
     producer_pid: int = 0,
+    trusted_metadata: dict[str, Any] | None = None,
+    trusted_jpeg: bytes | None = None,
 ) -> tuple[dict[str, Any], bytes] | None:
     paths = CAMERA_PATHS.get(camera)
     if paths is None:
         return None
     frame_path, metadata_path = paths
+    if trusted_metadata is not None:
+        try:
+            observed_producer = int(trusted_metadata.get("producer_pid") or 0)
+            observed_sequence = int(trusted_metadata.get("sequence") or 0)
+            if observed_producer == producer_pid and observed_sequence <= after_sequence:
+                return None
+            jpeg = trusted_jpeg if trusted_jpeg is not None else frame_path.read_bytes()
+            declared_size = int(trusted_metadata.get("bytes") or 0)
+            declared_sha256 = str(trusted_metadata.get("sha256") or "")
+        except (OSError, TypeError, ValueError):
+            return None
+        if (
+            0 < len(jpeg) <= MAX_FRAME_BYTES
+            and jpeg.startswith(b"\xff\xd8")
+            and jpeg.endswith(b"\xff\xd9")
+            and len(jpeg) == declared_size
+            and re.fullmatch(r"[a-f0-9]{64}", declared_sha256)
+        ):
+            # The Unix socket is a same-pod trust boundary. The producer's
+            # digest remains in the envelope for storage/provenance consumers;
+            # this relay does not recompute it on the hot frame hop.
+            return trusted_metadata, jpeg
+        return None
     for _attempt in range(3):
         try:
             first = json.loads(metadata_path.read_text(encoding="utf-8"))
@@ -1236,16 +1290,38 @@ async def _watch_frames() -> None:
     producers = {camera: 0 for camera in CAMERA_PATHS}
     pending: dict[str, tuple[dict[str, Any], bytes]] = {}
     next_camera = "workspace"
+    initial = _read_new_frames(dict(sequences), dict(producers))
+    pending_events = list(initial)
     while True:
-        # One worker hop checks both tiny metadata files. Unchanged frames stop
-        # before JPEG I/O and SHA-256, avoiding duplicate work at the tighter
-        # poll cadence while retaining the full consistency/integrity check for
-        # every newly published frame.
-        discovered = await asyncio.to_thread(
-            _read_new_frames,
-            dict(sequences),
-            dict(producers),
-        )
+        if pending_events:
+            discovered = [pending_events.pop(0)]
+        else:
+            queue = RUNTIME_EVENT_QUEUE
+            if queue is None:
+                # Unit/startup fallback only. Production lifespan always binds
+                # the push socket before starting this watcher.
+                await asyncio.sleep(0.1)
+                discovered = _read_new_frames(dict(sequences), dict(producers))
+            else:
+                event = await queue.get()
+                camera = str(event.get("camera") or "")
+                metadata = event.get("metadata")
+                jpeg = event.get("jpeg")
+                trusted = str(event.get("type") or "") == "frame"
+                item = (
+                    _read_consistent_frame(
+                        camera,
+                        sequences.get(camera, 0),
+                        producers.get(camera, 0),
+                        metadata if trusted and isinstance(metadata, dict) else None,
+                        bytes(jpeg)
+                        if trusted and isinstance(jpeg, (bytes, bytearray))
+                        else None,
+                    )
+                    if camera in CAMERA_PATHS
+                    else None
+                )
+                discovered = [(camera, *item)] if item is not None else []
         for camera, metadata, jpeg in discovered:
             observed = int(metadata.get("sequence") or 0)
             producer = int(metadata.get("producer_pid") or 0)
@@ -1267,7 +1343,59 @@ async def _watch_frames() -> None:
             TRANSPORT_METRICS.increment("frames_published")
             TRANSPORT_METRICS.increment(f"{selected}_frames_published")
             next_camera = "overview" if selected == "workspace" else "workspace"
-        await asyncio.sleep(0.001)
+
+
+def _accept_applied_ack(payload: dict[str, Any]) -> None:
+    global APPLIED_GENERATION
+    if CONTROL_LEDGER.mark_applied(payload):
+        TRANSPORT_METRICS.increment("controls_applied")
+        APPLIED_GENERATION += 1
+        if APPLIED_EVENT is not None:
+            APPLIED_EVENT.set()
+
+
+class _RuntimeEventProtocol(asyncio.DatagramProtocol):
+    def datagram_received(self, data: bytes, _address: Any) -> None:
+        if data.startswith(IPC_FRAME_MAGIC) and len(data) >= IPC_FRAME_HEADER.size:
+            _magic, metadata_size = IPC_FRAME_HEADER.unpack_from(data)
+            metadata_end = IPC_FRAME_HEADER.size + metadata_size
+            if metadata_end > len(data):
+                return
+            try:
+                metadata = json.loads(data[IPC_FRAME_HEADER.size : metadata_end])
+            except (UnicodeDecodeError, ValueError):
+                return
+            if not isinstance(metadata, dict) or RUNTIME_EVENT_QUEUE is None:
+                return
+            payload = {
+                "type": "frame",
+                "camera": str(metadata.get("camera") or ""),
+                "metadata": metadata,
+                "jpeg": data[metadata_end:],
+            }
+            try:
+                RUNTIME_EVENT_QUEUE.put_nowait(payload)
+            except asyncio.QueueFull:
+                TRANSPORT_METRICS.increment("frames_coalesced")
+            return
+        try:
+            payload = json.loads(data)
+        except (UnicodeDecodeError, ValueError):
+            return
+        if not isinstance(payload, dict):
+            return
+        kind = str(payload.get("type") or "")
+        if kind == "applied":
+            acknowledgement = payload.get("acknowledgement")
+            if isinstance(acknowledgement, dict):
+                _accept_applied_ack(acknowledgement)
+            return
+        if kind not in {"frame", "frame-file"} or RUNTIME_EVENT_QUEUE is None:
+            return
+        try:
+            RUNTIME_EVENT_QUEUE.put_nowait(payload)
+        except asyncio.QueueFull:
+            TRANSPORT_METRICS.increment("frames_coalesced")
 
 
 def _scan_applied_acks() -> None:
@@ -1285,8 +1413,8 @@ def _scan_applied_acks() -> None:
                 payload = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if isinstance(payload, dict) and CONTROL_LEDGER.mark_applied(payload):
-                TRANSPORT_METRICS.increment("controls_applied")
+            if isinstance(payload, dict):
+                _accept_applied_ack(payload)
 
 
 async def _wait_for_applied(
@@ -1297,11 +1425,24 @@ async def _wait_for_applied(
 ) -> dict[str, Any] | None:
     deadline = time.monotonic() + timeout
     while not stop.is_set() and time.monotonic() < deadline:
-        await asyncio.to_thread(_scan_applied_acks)
         applied = CONTROL_LEDGER.applied(client_id, seq)
         if applied is not None:
             return applied
-        await asyncio.sleep(0.002)
+        observed = APPLIED_GENERATION
+        event = APPLIED_EVENT
+        if event is None:
+            await asyncio.to_thread(_scan_applied_acks)
+            await asyncio.sleep(0.1)
+            continue
+        event.clear()
+        if APPLIED_GENERATION != observed:
+            continue
+        try:
+            await asyncio.wait_for(event.wait(), timeout=0.1)
+        except asyncio.TimeoutError:
+            # Durable JSONL is recovery truth if a datagram is lost or the
+            # simulator was alive before the socket listener bound.
+            await asyncio.to_thread(_scan_applied_acks)
     return None
 
 
@@ -1743,12 +1884,27 @@ async def _video_datachannel_frames():
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
+    global APPLIED_EVENT, RUNTIME_EVENT_QUEUE
+    IPC_EVENT_PATH.unlink(missing_ok=True)
+    APPLIED_EVENT = asyncio.Event()
+    RUNTIME_EVENT_QUEUE = asyncio.Queue(maxsize=256)
+    loop = asyncio.get_running_loop()
+    transport, _protocol = await loop.create_datagram_endpoint(
+        _RuntimeEventProtocol,
+        local_addr=str(IPC_EVENT_PATH),
+        family=socket.AF_UNIX,
+    )
+    os.chmod(IPC_EVENT_PATH, 0o600)
     watcher = asyncio.create_task(_watch_frames())
     try:
         yield
     finally:
         watcher.cancel()
         await asyncio.gather(watcher, return_exceptions=True)
+        transport.close()
+        IPC_EVENT_PATH.unlink(missing_ok=True)
+        RUNTIME_EVENT_QUEUE = None
+        APPLIED_EVENT = None
 
 
 def build_app() -> FastAPI:
@@ -2141,6 +2297,11 @@ def build_app() -> FastAPI:
             await _serve_control_protocol(receive_websocket, emit_websocket)
         except WebSocketDisconnect:
             pass
+        except asyncio.CancelledError:
+            # ASGI/TestClient may cancel a closed socket handler instead of
+            # delivering WebSocketDisconnect. Cleanup in the shared protocol
+            # has already flushed deterministic releases.
+            return
         return
 
         run_id = os.environ.get("NPA_LEISAAC_RUN_ID", "")

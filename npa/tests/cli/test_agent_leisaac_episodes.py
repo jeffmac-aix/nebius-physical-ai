@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -271,6 +273,107 @@ def test_json_checksums_are_computed_when_gateway_omits_metadata() -> None:
     s3.objects[commit_key] = (commit_body, {"sha256": "0" * 64})
     with pytest.raises(EpisodeStoreError, match="episode commit was not found"):
         store.detail("0")
+
+
+def test_episode_and_version_listing_reads_are_ordered_and_bounded_concurrent() -> None:
+    base, commit, version = _fixture()
+
+    class TrackingS3(FakeS3):
+        def __init__(self) -> None:
+            super().__init__()
+            self.active = 0
+            self.maximum_active = 0
+            self.guard = threading.Lock()
+
+        def get_object(self, **kwargs):
+            with self.guard:
+                self.active += 1
+                self.maximum_active = max(self.maximum_active, self.active)
+            try:
+                time.sleep(0.005)
+                return super().get_object(**kwargs)
+            finally:
+                with self.guard:
+                    self.active -= 1
+
+    s3 = TrackingS3()
+    s3.objects.update(base.objects)
+    for index in range(12):
+        item = dict(commit)
+        item["episode_index"] = index
+        item["episode_uuid"] = f"uuid-{index}"
+        body = (json.dumps(item, sort_keys=True) + "\n").encode()
+        s3.put(f"{PREFIX}/commits/episode-{index:06d}.json", body)
+        version_id = f"v{index + 1:06d}-" + f"{index + 1:x}" * 32
+        manifest = dict(version)
+        manifest.update(
+            version=version_id,
+            dataset_uri=f"s3://bucket/{PREFIX}/versions/{version_id}",
+        )
+        s3.put(
+            f"{PREFIX}/versions/{version_id}/npa-dataset.json",
+            (json.dumps(manifest, sort_keys=True) + "\n").encode(),
+        )
+
+    store = _store(s3)
+    episodes = store.list_episodes(limit=12)["episodes"]
+    assert [item["episode_index"] for item in episodes] == list(range(12))
+    versions = store.list_versions(limit=12)["versions"]
+    assert [item["version_id"] for item in versions] == sorted(
+        item["version_id"] for item in versions
+    )
+    assert 1 < s3.maximum_active <= 8
+
+
+def test_aggregate_versions_skip_only_legacy_unreadable_objects() -> None:
+    s3, _commit, _version = _fixture()
+    malformed_id = "v000002-" + "c" * 32
+    s3.put(f"{PREFIX}/versions/{malformed_id}/npa-dataset.json", b"{")
+    store = _store(s3)
+
+    assert [item["version_id"] for item in store.list_versions()["versions"]] == [
+        VERSION_ID
+    ]
+    with pytest.raises(EpisodeStoreError, match="not found"):
+        store._version_manifest(malformed_id)
+
+
+def test_aggregate_versions_do_not_hide_auth_failures() -> None:
+    s3, _commit, _version = _fixture()
+
+    class AccessDenied(RuntimeError):
+        response = {"Error": {"Code": "AccessDenied"}}
+
+    original = s3.get_object
+
+    def denied(**kwargs):
+        if "/versions/" in str(kwargs["Key"]):
+            raise AccessDenied("denied")
+        return original(**kwargs)
+
+    s3.get_object = denied  # type: ignore[method-assign]
+    with pytest.raises(EpisodeStoreError, match="unreadable") as exc_info:
+        _store(s3).list_versions()
+    assert exc_info.value.status_code == 502
+
+
+def test_episode_listing_does_not_hide_worker_auth_failure() -> None:
+    s3, _commit, _version = _fixture()
+
+    class AccessDenied(RuntimeError):
+        response = {"Error": {"Code": "AccessDenied"}}
+
+    original = s3.get_object
+
+    def denied(**kwargs):
+        if "/commits/" in str(kwargs["Key"]):
+            raise AccessDenied("denied")
+        return original(**kwargs)
+
+    s3.get_object = denied  # type: ignore[method-assign]
+    with pytest.raises(EpisodeStoreError, match="unreadable") as exc_info:
+        _store(s3).list_episodes()
+    assert exc_info.value.status_code == 502
 
 
 def test_episode_detail_timeline_two_camera_and_unknown_download_fallback() -> None:

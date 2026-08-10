@@ -15,6 +15,7 @@ from npa.agent_backend.leisaac_datachannel import (
     VIDEO_DATACHANNEL_BUFFER_LOW_BYTES,
     VideoDataChannelError,
     VideoDataChannelPeerPool,
+    _wait_for_buffer_low,
     parse_video_datachannel_offer,
     valid_control_datachannel,
     valid_video_datachannel,
@@ -162,6 +163,13 @@ async def _assert_datachannel_relay_contract() -> None:
         def __init__(self) -> None:
             self.frames: list[bytes] = []
             self.buffer_checks = 0
+            self.listeners: dict[str, list] = {}
+
+        def on(self, name: str, callback) -> None:
+            self.listeners.setdefault(name, []).append(callback)
+
+        def remove_listener(self, name: str, callback) -> None:
+            self.listeners[name].remove(callback)
 
         @property
         def bufferedAmount(self) -> int:
@@ -197,3 +205,91 @@ async def _assert_datachannel_relay_contract() -> None:
     snapshot = metrics.snapshot()
     assert snapshot["datachannel_window_saturated"] == 1
     assert snapshot["datachannel_frames_sent"] == 1
+
+
+def test_datachannel_buffer_wait_wakes_on_aiortc_low_event() -> None:
+    async def exercise() -> None:
+        class Channel:
+            readyState = "open"
+            bufferedAmount = 1
+
+            def __init__(self) -> None:
+                self.listeners: dict[str, list] = {}
+
+            def on(self, name: str, callback) -> None:
+                self.listeners.setdefault(name, []).append(callback)
+
+            def remove_listener(self, name: str, callback) -> None:
+                self.listeners[name].remove(callback)
+
+            def emit(self, name: str) -> None:
+                for callback in tuple(self.listeners.get(name, ())):
+                    callback()
+
+        channel = Channel()
+        waiter = asyncio.create_task(
+            _wait_for_buffer_low(channel, TransportMetrics(), fallback_seconds=1.0)
+        )
+        await asyncio.sleep(0)
+        channel.bufferedAmount = 0
+        channel.emit("bufferedamountlow")
+        assert await asyncio.wait_for(waiter, timeout=0.1) is True
+
+    asyncio.run(exercise())
+
+
+def test_datachannel_buffer_wait_wakes_on_close() -> None:
+    async def exercise() -> None:
+        class Channel:
+            readyState = "open"
+            bufferedAmount = 1
+
+            def __init__(self) -> None:
+                self.listeners: dict[str, list] = {}
+
+            def on(self, name: str, callback) -> None:
+                self.listeners.setdefault(name, []).append(callback)
+
+            def remove_listener(self, name: str, callback) -> None:
+                self.listeners[name].remove(callback)
+
+            def emit(self, name: str) -> None:
+                for callback in tuple(self.listeners.get(name, ())):
+                    callback()
+
+        channel = Channel()
+        waiter = asyncio.create_task(
+            _wait_for_buffer_low(channel, TransportMetrics(), fallback_seconds=1.0)
+        )
+        await asyncio.sleep(0)
+        channel.readyState = "closed"
+        channel.emit("close")
+        assert await asyncio.wait_for(waiter, timeout=0.1) is False
+
+    asyncio.run(exercise())
+
+
+def test_datachannel_buffer_wait_recovers_from_lost_event() -> None:
+    async def exercise() -> None:
+        class Channel:
+            readyState = "open"
+            bufferedAmount = 1
+
+            def __init__(self) -> None:
+                self.listeners: dict[str, list] = {}
+
+            def on(self, name: str, callback) -> None:
+                self.listeners.setdefault(name, []).append(callback)
+
+            def remove_listener(self, name: str, callback) -> None:
+                self.listeners[name].remove(callback)
+
+        channel = Channel()
+        waiter = asyncio.create_task(
+            _wait_for_buffer_low(channel, TransportMetrics(), fallback_seconds=0.01)
+        )
+        await asyncio.sleep(0)
+        channel.bufferedAmount = 0
+        assert await asyncio.wait_for(waiter, timeout=0.1) is True
+
+    asyncio.run(exercise())

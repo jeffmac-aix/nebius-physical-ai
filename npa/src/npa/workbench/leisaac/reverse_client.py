@@ -22,6 +22,18 @@ HEADER = struct.Struct("!BII")
 MAX_FRAME = 4 * 1024 * 1024
 MAX_UDP_FLOWS = 64
 BACKHAUL_SUBPROTOCOL = "npa.leisaac.backhaul.v1"
+_XOR_TABLES = tuple(bytes(value ^ mask for value in range(256)) for mask in range(256))
+
+
+def _mask_websocket_payload(payload: bytes, mask: bytes) -> bytes:
+    """Apply RFC 6455's repeating mask with four C-level translations."""
+
+    if len(mask) != 4:
+        raise ValueError("WebSocket mask must contain four bytes")
+    masked = bytearray(len(payload))
+    for offset, value in enumerate(mask):
+        masked[offset::4] = payload[offset::4].translate(_XOR_TABLES[value])
+    return bytes(masked)
 
 
 def _pod_ipv4() -> str:
@@ -109,7 +121,9 @@ class WebSocketConnection:
             header = bytes((0x80 | opcode, 0x80 | 126)) + struct.pack("!H", size)
         else:
             header = bytes((0x80 | opcode, 0x80 | 127)) + struct.pack("!Q", size)
-        masked = bytes(value ^ mask[index % 4] for index, value in enumerate(payload))
+        # Mask before acquiring the shared socket lock. Large video messages no
+        # longer keep a ready control acknowledgement behind Python byte work.
+        masked = _mask_websocket_payload(payload, mask)
         with self.send_lock:
             self.connection.sendall(header + mask + masked)
 
@@ -179,7 +193,6 @@ class Client:
     def __init__(self, config: dict[str, Any]):
         self.config = config
         self.connection: WebSocketConnection | None = None
-        self.send_lock = threading.Lock()
         self.stream_lock = threading.Lock()
         self.streams: dict[int, socket.socket] = {}
         self.media_lock = threading.Lock()
@@ -194,8 +207,9 @@ class Client:
         connection = self.connection
         if connection is None:
             raise ConnectionError("backhaul is disconnected")
-        with self.send_lock:
-            connection.sendall(HEADER.pack(kind, stream_id, len(payload)) + payload)
+        # WebSocketConnection owns the one wire serialization lock. Preparing
+        # and masking this message happens before that lock is acquired.
+        connection.sendall(HEADER.pack(kind, stream_id, len(payload)) + payload)
 
     def read_stream(self, stream_id: int, stream: socket.socket) -> None:
         try:

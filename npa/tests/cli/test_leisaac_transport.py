@@ -856,6 +856,7 @@ def _prepare_runtime(monkeypatch, tmp_path: Path):
         "MODE_COMMAND_PATH": tmp_path / "mode-command.json",
         "MODE_STATUS_PATH": tmp_path / "mode-status.json",
         "APPLIED_ACK_PATH": tmp_path / "applied.jsonl",
+        "IPC_EVENT_PATH": tmp_path / "events.sock",
         "RECORDER_ROOT": tmp_path / "recorder",
         "RECORDER_STATUS_PATH": tmp_path / "recorder/status.json",
         "RECORDER_CONTROL_PATH": tmp_path / "recorder/control.jsonl",
@@ -1413,6 +1414,26 @@ def test_runtime_fsyncs_safety_releases_but_not_transient_presses(
     assert len(syncs) == 2
 
 
+def test_runtime_batches_counter_reservation_once_per_append(
+    monkeypatch, tmp_path: Path
+) -> None:
+    runtime = _prepare_runtime(monkeypatch, tmp_path)
+    reservations: list[int] = []
+
+    def reserve(amount: int) -> int:
+        reservations.append(amount)
+        return 100 + amount
+
+    monkeypatch.setattr(runtime, "_advance_input_counter", reserve)
+    monkeypatch.setattr(runtime.os, "fsync", lambda _fd: None)
+    counts = runtime._append_inputs(
+        [_control(index, event="release") for index in range(1, 9)]
+    )
+
+    assert reservations == [8]
+    assert counts == list(range(101, 109))
+
+
 def test_runtime_video_envelope_is_binary_and_nonblank(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -1486,24 +1507,30 @@ def test_runtime_frame_watcher_remains_live_across_both_cameras(
         runtime, "_mode_state", lambda: {"applied_view_mode": "dual_slow"}
     )
     publications: list[tuple[str, dict, bytes]] = []
-    reads = [
-        [("workspace", {"sequence": 1}, b"workspace-1")],
-        [("overview", {"sequence": 1}, b"overview-1")],
-        [("workspace", {"sequence": 2}, b"workspace-2")],
-        [("overview", {"sequence": 2}, b"overview-2")],
-    ]
+    frames = {
+        ("workspace", 1): ({"sequence": 1}, b"workspace-1"),
+        ("overview", 1): ({"sequence": 1}, b"overview-1"),
+        ("workspace", 2): ({"sequence": 2}, b"workspace-2"),
+        ("overview", 2): ({"sequence": 2}, b"overview-2"),
+    }
 
-    def read(_sequences: dict[str, int], _producers: dict[str, int]):
-        return reads.pop(0) if reads else []
+    def read(camera, _sequence, _producer, metadata=None, _jpeg=None):
+        return frames[(camera, int(metadata["sequence"]))]
 
     async def publish(_camera, item):
         publications.append(item)
 
-    monkeypatch.setattr(runtime, "_read_new_frames", read)
+    monkeypatch.setattr(runtime, "_read_new_frames", lambda *_args: [])
+    monkeypatch.setattr(runtime, "_read_consistent_frame", read)
     monkeypatch.setattr(runtime.FRAME_LATEST, "publish", publish)
 
     async def exercise() -> None:
+        runtime.RUNTIME_EVENT_QUEUE = asyncio.Queue()
         watcher = asyncio.create_task(runtime._watch_frames())
+        for camera, sequence in frames:
+            await runtime.RUNTIME_EVENT_QUEUE.put(
+                {"type": "frame", "camera": camera, "metadata": {"sequence": sequence}}
+            )
         while len(publications) < 4:
             await asyncio.sleep(0.001)
         watcher.cancel()
@@ -1522,6 +1549,64 @@ def test_runtime_frame_watcher_remains_live_across_both_cameras(
     assert metrics["frames_published"] == 4
     assert metrics["workspace_frames_published"] == 2
     assert metrics["overview_frames_published"] == 2
+
+
+def test_runtime_trusted_ipc_frame_skips_redundant_digest(
+    monkeypatch, tmp_path: Path
+) -> None:
+    runtime = _prepare_runtime(monkeypatch, tmp_path)
+    jpeg = b"\xff\xd8" + b"trusted-ipc" * 30 + b"\xff\xd9"
+    runtime.FRAME_PATH.write_bytes(jpeg)
+    metadata = {
+        "producer_pid": 9,
+        "sequence": 3,
+        "bytes": len(jpeg),
+        "sha256": hashlib.sha256(jpeg).hexdigest(),
+    }
+    monkeypatch.setattr(
+        runtime.hashlib,
+        "sha256",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("unexpected hash")),
+    )
+
+    assert runtime._read_consistent_frame(
+        "workspace", 2, 9, trusted_metadata=metadata
+    ) == (metadata, jpeg)
+
+
+def test_runtime_applied_ipc_wakes_waiter_without_file_poll(
+    monkeypatch, tmp_path: Path
+) -> None:
+    runtime = _prepare_runtime(monkeypatch, tmp_path)
+    acknowledgement = {
+        **_control(),
+        "simulator_applied_mono_ns": "700",
+        "simulator_applied_wall_ns": "800",
+        "simulator_step": 9,
+    }
+    runtime.CONTROL_LEDGER.accept(_control())
+
+    async def exercise() -> None:
+        runtime.APPLIED_EVENT = asyncio.Event()
+        stop = __import__("threading").Event()
+        waiter = asyncio.create_task(
+            runtime._wait_for_applied("browser-test", 1, stop, timeout=1.0)
+        )
+        await asyncio.sleep(0)
+        runtime._RuntimeEventProtocol().datagram_received(
+            json.dumps(
+                {"type": "applied", "acknowledgement": acknowledgement}
+            ).encode(),
+            None,
+        )
+        assert await asyncio.wait_for(waiter, timeout=0.1) == acknowledgement
+
+    monkeypatch.setattr(
+        runtime,
+        "_scan_applied_acks",
+        lambda: (_ for _ in ()).throw(AssertionError("unexpected file poll")),
+    )
+    asyncio.run(exercise())
 
 
 def test_runtime_frame_reader_skips_unchanged_jpeg_integrity_work(

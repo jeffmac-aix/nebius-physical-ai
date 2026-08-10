@@ -488,7 +488,9 @@ def test_container_never_bakes_eula_client_or_assets() -> None:
     assert "leisaac_datachannel.py /opt/npa/leisaac/leisaac_datachannel.py" in dockerfile
     assert "EXPOSE 8080/tcp 49100/tcp 47998/udp" in dockerfile
     assert "feetech-servo-sdk" in dockerfile and "-m pip check" in dockerfile
-    assert "git -C /opt/leisaac apply --check --unidiff-zero" in dockerfile
+    assert (
+        "git -C /opt/leisaac apply --recount --check --unidiff-zero" in dockerfile
+    )
     assert os.access(ROOT / "npa/docker/workbench/leisaac/build.sh", os.X_OK)
 
 
@@ -504,6 +506,11 @@ def test_observability_patch_is_exact_and_records_real_upstream_input() -> None:
     assert "def get_device_state(self):" in source
     assert "self._delta_action + remote_action" in source
     assert "NPA_LEISAAC_INPUT_COUNTER" in source
+    assert "NPA_LEISAAC_IPC_EVENT_PATH" in source
+    assert "def notify_runtime_frame(metadata, frame_bytes):" in source
+    assert "self._advance_counter(self._applied_counter, len(acknowledgements))" in source
+    assert "target.writelines(" in source
+    assert "os.fsync(target.fileno())" in source
     assert "NPA_LEISAAC_READY_PATH" in source
     assert "NPA_LEISAAC_BROWSER_TELEOP" in source
     assert '"task": args_cli.task' in source
@@ -558,6 +565,7 @@ def test_observability_patch_is_exact_and_records_real_upstream_input() -> None:
         "capture_encoder.shutdown(wait=True, cancel_futures=True)\n"
         "+        poll_encoded_capture()\n"
         "+        recorder.shutdown(wait=True)\n"
+        "+        ipc_event_socket.close()\n"
         "         signal.signal(signal.SIGINT, original_sigint_handler)"
         in source
     )
