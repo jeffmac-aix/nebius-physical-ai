@@ -1030,6 +1030,7 @@ def test_agent_bootstrap_installs_turn_without_baking_session_configuration() ->
     assert 'iceTransportPolicy: "relay"' in ui
     assert "installLeIsaacPeerConnection(status)" in ui
     assert "installLeIsaacVideoPlayGate(nativeVideo)" in ui
+    assert 'track.kind === "video" && track.readyState === "live" && !track.muted' in ui
     assert 'new DOMException("WebRTC media track did not arrive", "TimeoutError")' in ui
 
 
