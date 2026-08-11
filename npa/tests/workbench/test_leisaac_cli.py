@@ -280,38 +280,27 @@ def test_install_relay_creates_required_agent_directories() -> None:
     assert "${CREDENTIALS_DIRECTORY}/leisaac.json" in unit
 
 
-def test_relay_media_server_is_the_single_ready_pod_host(monkeypatch) -> None:
-    pod_list = {
-        "items": [
-            {
-                "metadata": {"name": "old", "deletionTimestamp": "now"},
-                "status": {
-                    "phase": "Running",
-                    "podIP": "10.96.34.1",
-                    "containerStatuses": [{"name": "leisaac", "ready": True}],
-                },
-            },
-            {
-                "metadata": {"name": "current"},
-                "status": {
-                    "phase": "Running",
-                    "podIP": "10.96.34.22",
-                    "containerStatuses": [
-                        {"name": "agent-relay-client", "ready": True},
-                        {"name": "leisaac", "ready": True},
-                    ],
-                },
-            },
-        ]
-    }
+def test_relay_media_server_is_the_stable_private_service_host(monkeypatch) -> None:
+    service = {"spec": {"clusterIP": "10.101.249.14"}}
+    calls = []
+
+    def kubectl(*args):
+        calls.append(args)
+        return SimpleNamespace(returncode=0, stdout=json.dumps(service), stderr="")
+
     monkeypatch.setattr(
         "npa.cli.workbench.leisaac._kubectl",
-        lambda *_args: SimpleNamespace(
-            returncode=0, stdout=json.dumps(pod_list), stderr=""
-        ),
+        kubectl,
     )
 
-    assert _relay_media_server("cluster", "leisaac", "deployment") == "10.96.34.22"
+    assert _relay_media_server("cluster", "leisaac", "deployment") == "10.101.249.14"
+    assert calls[0][2] == [
+        "get",
+        "service",
+        "deployment-relay",
+        "-o",
+        "json",
+    ]
 
 
 def _args() -> list[str]:

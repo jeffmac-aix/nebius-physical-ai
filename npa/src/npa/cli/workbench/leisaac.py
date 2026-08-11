@@ -190,39 +190,20 @@ def _delete_resources(context: str, namespace: str, name: str) -> None:
 
 
 def _relay_media_server(context: str, namespace: str, deployment: str) -> str:
-    """Return the private pod IP shared by the simulator and TURN sidecar."""
+    """Return the stable private Service IP for the simulator media peer."""
 
     result = _kubectl(
         context,
         namespace,
-        ["get", "pods", "-l", f"app={deployment}", "-o", "json"],
+        ["get", "service", f"{deployment}-relay", "-o", "json"],
     )
     if result.returncode:
         raise RuntimeError((result.stderr or result.stdout).strip())
-    candidates: list[str] = []
-    for pod in json.loads(result.stdout).get("items", []):
-        metadata = pod.get("metadata", {}) or {}
-        status = pod.get("status", {}) or {}
-        containers = status.get("containerStatuses", []) or []
-        main_ready = any(
-            item.get("name") == "leisaac" and item.get("ready") is True
-            for item in containers
-        )
-        if (
-            metadata.get("deletionTimestamp")
-            or status.get("phase") != "Running"
-            or not main_ready
-        ):
-            continue
-        candidates.append(
-            validate_private_ip(status.get("podIP"), "LeIsaac pod media address")
-        )
-    if len(candidates) != 1:
-        raise RuntimeError(
-            "LeIsaac relay requires exactly one ready simulator pod with a private "
-            "pod address"
-        )
-    return candidates[0]
+    service = json.loads(result.stdout)
+    return validate_private_ip(
+        (service.get("spec") or {}).get("clusterIP"),
+        "LeIsaac private media Service address",
+    )
 
 
 def _node_internal_ip(context: str, namespace: str) -> str:
