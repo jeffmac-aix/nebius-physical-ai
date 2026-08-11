@@ -370,7 +370,8 @@ def relay_client_secret_manifest(
         raise LeIsaacConfigError("relay certificate fingerprint is invalid")
     if not auth_user or not auth_password or "\n" in auth_user + auth_password:
         raise LeIsaacConfigError("agent basic-auth credential is invalid")
-    turn_config = f"""listening-port={TURN_PORT}
+    turn_config = f"""listening-ip=0.0.0.0
+listening-port={TURN_PORT}
 min-port={TURN_RELAY_PORT}
 max-port={TURN_RELAY_MAX_PORT}
 realm=npa-leisaac
@@ -382,7 +383,6 @@ total-quota={TURN_ALLOCATION_QUOTA}
 user-quota={TURN_ALLOCATION_QUOTA}
 no-tls
 no-dtls
-no-ipv6
 no-cli
 no-multicast-peers
 pidfile=/tmp/npa-leisaac-turn.pid
