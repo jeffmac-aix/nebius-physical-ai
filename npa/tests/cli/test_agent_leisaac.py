@@ -517,15 +517,6 @@ def test_agent_relay_status_returns_only_derived_session_turn_credential() -> No
             "credential": hashlib.sha256(
                 ("npa-leisaac-turn:" + "a" * 64).encode()
             ).hexdigest(),
-        },
-        {
-            "urls": [
-                "turn:1.1.1.1:3478?transport=udp",
-            ],
-            "username": "leisaac-live-1",
-            "credential": hashlib.sha256(
-                ("npa-leisaac-turn:" + "a" * 64).encode()
-            ).hexdigest(),
         }
     ]
     assert manifest["session_nonce"] not in repr(payload)

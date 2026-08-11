@@ -811,13 +811,6 @@ def status_payload(
                 ],
                 "username": run_id,
                 "credential": credential,
-            },
-            {
-                "urls": [
-                    f"turn:{manifest['media_host']}:{LEISAAC_TURN_PORT}?transport=udp",
-                ],
-                "username": run_id,
-                "credential": credential,
             }
         ]
         payload["ice_transport_policy"] = "relay"
