@@ -982,7 +982,10 @@ def _mark_runtime_ready() -> bool:
 def verify_runtime_nvenc() -> tuple[bool, str]:
     """Exercise runtime-injected NVENC before advertising the native path."""
 
-    if not Path("/dev/nvidia0").exists():
+    if not any(
+        path.name.removeprefix("nvidia").isdigit()
+        for path in Path("/dev").glob("nvidia*")
+    ):
         return False, "NVIDIA device nodes are unavailable"
     command = [
         "ffmpeg",
