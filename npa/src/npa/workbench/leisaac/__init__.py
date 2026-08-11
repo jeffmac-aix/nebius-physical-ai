@@ -373,6 +373,7 @@ def relay_client_secret_manifest(
     turn_config = f"""listening-port={TURN_PORT}
 min-port={TURN_RELAY_PORT}
 max-port={TURN_RELAY_MAX_PORT}
+external-ip={agent_host}
 realm=npa-leisaac
 user={run_id}:{turn_credential(session_nonce)}
 fingerprint
