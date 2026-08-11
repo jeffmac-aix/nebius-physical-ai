@@ -65,6 +65,8 @@ LEISAAC_HEALTH_SCHEMA = "npa.leisaac.health.v2"
 LEISAAC_LEGACY_HEALTH_SCHEMA = "npa.leisaac.health.v1"
 LEISAAC_MANIFEST_NAME = "leisaac-session.json"
 LEISAAC_SIGNAL_PORT = 49100
+LEISAAC_BACKHAUL_HOST = "127.0.0.1"
+LEISAAC_BACKHAUL_PORT = 48081
 LEISAAC_MEDIA_PORT = 47998
 LEISAAC_SERVICE_PORT = 8080
 LEISAAC_RELAY_SERVICE_PORT = 48080
@@ -460,6 +462,21 @@ def validate_health(manifest: dict, payload: dict | None) -> tuple[dict | None, 
     stream_transport = str(data.get("stream_transport") or "webrtc")
     if stream_transport not in {"webrtc", "jpeg-poll", "websocket-v1"}:
         return None, "LeIsaac service returned an unsupported stream transport"
+    requested_video_transport = str(data.get("requested_video_transport") or "")
+    active_video_transport = str(data.get("active_video_transport") or "")
+    video_codec = str(data.get("video_codec") or "")
+    hardware_acceleration = str(data.get("hardware_acceleration") or "")
+    video_fallback_reason = str(data.get("video_fallback_reason") or "")[:256]
+    if stream_transport == "webrtc" and any(
+        (requested_video_transport, active_video_transport, video_codec, hardware_acceleration)
+    ) and (
+        requested_video_transport != "webrtc-kit-h264"
+        or active_video_transport != "webrtc-kit-h264"
+        or video_codec != "H264"
+        or hardware_acceleration != "runtime-nvenc"
+        or video_fallback_reason
+    ):
+        return None, "LeIsaac service returned an invalid hardware video contract"
     if str(data.get("state") or "") != "ready" or not stream_ready:
         detail = str(data.get("detail") or data.get("state") or "starting")
         return None, f"LeIsaac service is not ready: {detail}"
@@ -590,6 +607,11 @@ def validate_health(manifest: dict, payload: dict | None) -> tuple[dict | None, 
         "webrtc_ready": True,
         "stream_ready": True,
         "stream_transport": stream_transport,
+        "requested_video_transport": requested_video_transport,
+        "active_video_transport": active_video_transport,
+        "video_codec": video_codec,
+        "hardware_acceleration": hardware_acceleration,
+        "video_fallback_reason": video_fallback_reason,
         "pid": _integer(data.get("pid")) or 0,
         "started_at": str(data.get("started_at") or ""),
         "gpu": str(data.get("gpu") or manifest.get("gpu") or ""),
@@ -700,6 +722,11 @@ def status_payload(
         "signaling_path": LEISAAC_SIGNAL_PATH,
         "client_module_url": f"{LEISAAC_CLIENT_MODULE_PATH}?run_id={run_id}",
         "stream_transport": health.get("stream_transport", "webrtc"),
+        "requested_video_transport": health.get("requested_video_transport", ""),
+        "active_video_transport": health.get("active_video_transport", ""),
+        "video_codec": health.get("video_codec", ""),
+        "hardware_acceleration": health.get("hardware_acceleration", ""),
+        "video_fallback_reason": health.get("video_fallback_reason", ""),
         "preferred_transport": "websocket-v1",
         # Public RTX profiles put relay-only RTC control ingress behind the
         # same-origin WebSocket relay. Keep RTC available, but select measured.

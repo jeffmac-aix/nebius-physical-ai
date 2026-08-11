@@ -146,6 +146,34 @@ def test_runtime_control_datachannel_offer_uses_shared_control_handler(
     assert observed["metrics"] is module.TRANSPORT_METRICS
 
 
+def test_runtime_public_surfaces_require_nonce_while_healthz_is_minimal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _session_server_module()
+    nonce = "e" * 64
+    monkeypatch.setenv("NPA_LEISAAC_SESSION_NONCE", nonce)
+    client_root = tmp_path / "client"
+    client_root.mkdir()
+    (client_root / "index.js").write_text("window.testClient = true;\n", encoding="utf-8")
+    provenance = tmp_path / "provenance.json"
+    provenance.write_text('{"schema":"test-provenance"}\n', encoding="utf-8")
+    monkeypatch.setattr(module, "CLIENT_ROOT", client_root)
+    monkeypatch.setattr(module, "PROVENANCE_PATH", provenance)
+    client = TestClient(module.build_app())
+
+    health = client.get("/healthz")
+    assert health.status_code == 200
+    assert health.json() == {"ok": True}
+    assert "run_id" not in health.text and "dataset" not in health.text
+    for path in ("/status", "/provenance", "/client/index.js"):
+        assert client.get(path).status_code == 403
+        assert client.get(path, headers={"X-Real-IP": "8.8.8.8"}).status_code == 403
+    headers = {"X-NPA-LeIsaac-Nonce": nonce, "X-Real-IP": "8.8.8.8"}
+    assert client.get("/status", headers=headers).status_code in {200, 503}
+    assert client.get("/provenance", headers=headers).status_code == 200
+    assert client.get("/client/index.js", headers=headers).status_code == 200
+
+
 def test_runtime_datachannel_source_coalesces_stale_causal_frames() -> None:
     module = _session_server_module()
     module.FRAME_LATEST = AsyncLatestByKey(("workspace", "overview"))
@@ -462,6 +490,7 @@ def test_container_never_bakes_eula_client_or_assets() -> None:
     assert "CLIENT_WSS_PATCH_NEW" not in server
     assert "vendor bytes remain pristine" in server
     assert 'f"--/app/livestream/publicEndpointPort={MEDIA_PORT}"' in server
+    assert '"--/app/livestream/webrtc/logQosStatus=true"' in server
     assert 'f"--/app/livestream/fixedHostPort={MEDIA_PORT}"' in server
     assert 'f"--/app/livestream/minHostPort={MEDIA_PORT}"' in server
     assert 'f"--/app/livestream/maxHostPort={MEDIA_PORT}"' in server
@@ -475,9 +504,10 @@ def test_container_never_bakes_eula_client_or_assets() -> None:
     assert 'environment["NPA_LEISAAC_BROWSER_TELEOP"] = "1"' in server
     assert "stdin=subprocess.DEVNULL" in server
     assert "start_new_session=True" in server
-    assert "READY_PATH.is_file()" in server and "FRAME_PATH.is_file()" in server
+    assert "READY_PATH.is_file()" in server and "HEARTBEAT_PATH.is_file()" in server
     assert 'update_state(detail="warming RTX renderer")' in server
-    assert 'stream_transport="websocket-v1"' in server
+    assert 'requested_video_transport="webrtc-kit-h264"' in server
+    assert 'active_video_transport=("webrtc-kit-h264" if hardware else "jpeg-websocket")' in server
     assert '"--/renderer/multiGpu/enabled=False"' in server
     assert "NPA_LEISAAC_INPUT_COUNTER" in server
     assert "NPA_LEISAAC_APPLIED_COUNTER" in server
@@ -488,6 +518,9 @@ def test_container_never_bakes_eula_client_or_assets() -> None:
     assert "leisaac_datachannel.py /opt/npa/leisaac/leisaac_datachannel.py" in dockerfile
     assert "EXPOSE 8080/tcp 49100/tcp 47998/udp" in dockerfile
     assert "feetech-servo-sdk" in dockerfile and "-m pip check" in dockerfile
+    assert "sed -i" not in dockerfile
+    assert "upstream-packaging.patch" in dockerfile
+    assert "THIRD_PARTY_NOTICES.md" in dockerfile
     assert (
         "git -C /opt/leisaac apply --recount --check --unidiff-zero" in dockerfile
     )
@@ -503,14 +536,26 @@ def test_container_never_bakes_eula_client_or_assets() -> None:
     assert '"_remote_pulses" not in m["_add_device_control_description"]' in dockerfile
     assert os.access(ROOT / "npa/docker/workbench/leisaac/build.sh", os.X_OK)
 
+    notices = (ROOT / "npa/docker/workbench/leisaac/THIRD_PARTY_NOTICES.md").read_text(
+        encoding="utf-8"
+    )
+    pyproject = (ROOT / "npa/pyproject.toml").read_text(encoding="utf-8")
+    assert "imageio-ffmpeg 0.6.0" in notices and "FFmpeg" in notices
+    assert 'leisaac = [' in pyproject and '"imageio-ffmpeg==0.6.0"' in pyproject
+
 
 def test_observability_patch_is_exact_and_records_real_upstream_input() -> None:
     patch = ROOT / "npa/docker/workbench/leisaac/upstream-observability.patch"
+    packaging_patch = ROOT / "npa/docker/workbench/leisaac/upstream-packaging.patch"
     server = _session_server_module()
 
     assert hashlib.sha256(patch.read_bytes()).hexdigest() == (
         server.UPSTREAM_OBSERVABILITY_PATCH_SHA256
     )
+    assert hashlib.sha256(packaging_patch.read_bytes()).hexdigest() == (
+        server.UPSTREAM_PACKAGING_PATCH_SHA256
+    )
+    assert '-    "feetech-servo-sdk",' in packaging_patch.read_text(encoding="utf-8")
     source = patch.read_text(encoding="utf-8")
     assert "source/leisaac/leisaac/devices/keyboard/so101_keyboard.py" in source
     assert "def get_device_state(self):" in source
@@ -523,6 +568,13 @@ def test_observability_patch_is_exact_and_records_real_upstream_input() -> None:
     assert "os.fsync(target.fileno())" in source
     assert "NPA_LEISAAC_READY_PATH" in source
     assert "NPA_LEISAAC_BROWSER_TELEOP" in source
+    assert "self._browser_teleop =" in source
+    assert (
+        "def _on_keyboard_event(self, event, *args, **kwargs):\n"
+        "+        # Native livestream viewers can emit unauthenticated Kit input."
+        in source
+    )
+    assert "+        if self._browser_teleop:\n+            return" in source
     assert '"task": args_cli.task' in source
     assert (
         " env_cfg = parse_env_cfg(args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs)\n"
@@ -553,8 +605,6 @@ def test_observability_patch_is_exact_and_records_real_upstream_input() -> None:
     assert 'source_queue.pop(0)' in source
     assert 'if capture_state["active"]:' in source
     assert "Submit only after Kit reports the prior GPU capture fully complete" in source
-    assert "await next_viewport_frame_async(viewport, n_frames=1)" in source
-    assert "the latency-critical workspace path stays pre-settled" in source
     assert "await capture_helper.wait_for_result(completion_frames=0)" in source
     assert source.count("viewport.camera_path = workspace_camera_path") == 2
     assert source.count("schedule_browser_capture()\n+        env.render()") == 1
@@ -565,6 +615,12 @@ def test_observability_patch_is_exact_and_records_real_upstream_input() -> None:
     assert (
         "def browser_capture_needs_render():\n"
         '+        """Keep physics/control cadence independent from background RTX work."""\n'
+        "+        if native_video:\n"
+        "+            now = time.monotonic()\n"
+        '+            if now < capture_state["next_native_render_at"]:\n'
+        "+                return False\n"
+        '+            capture_state["next_native_render_at"] = now + 1.0 / 30.0\n'
+        "+            return True\n"
         '+        if capture_state["encode_future"] is not None:\n'
         "+            return False\n"
         "+        return bool(\n"
@@ -582,9 +638,9 @@ def test_observability_patch_is_exact_and_records_real_upstream_input() -> None:
     assert "and browser_capture_needs_render()" in source
     assert 'capture_state["queue"].clear()' in source
     assert 'capture_state["priority_queue"]' in source
-    assert source.count("single_primary_capture_fps = 16.0") == 1
-    assert source.count("dual_primary_capture_fps = 20.0") == 1
-    assert source.count("secondary_capture_fps = 5.0") == 1
+    assert source.count("single_primary_capture_fps = 10.0 if native_video else 16.0") == 1
+    assert source.count("dual_primary_capture_fps = 10.0 if native_video else 20.0") == 1
+    assert source.count("secondary_capture_fps = 4.0") == 1
     assert 'capture_state["last_causal_at"] = causal_at' in source
     assert (
         'capture_state["next_at"]["workspace"] = causal_at'
@@ -602,9 +658,15 @@ def test_observability_patch_is_exact_and_records_real_upstream_input() -> None:
     assert "mark_remote_step_applied(sim_step)" in source
     assert "asyncio.ensure_future" in source
     assert "create_viewport_window" not in source
-    assert "Move one renderer-owned camera on one fully-awaited viewport" in source
-    assert "overview_camera_path = workspace_camera_path" in source
-    assert 'capture_state["viewport_camera_id"] == camera_id' in source
+    assert 'overview_camera_path = "/World/NPAOverviewCamera"' in source
+    assert 'resolution=(640, 360)' in source
+    assert "camera = Camera(" in source
+    assert "camera.initialize()" in source
+    assert "camera.get_rgba()" in source
+    assert "camera.destroy()" in source
+    assert "overview_camera_path = workspace_camera_path" not in source
+    assert "next_viewport_frame_async" not in source
+    assert "if camera_id == \"overview\":" in source
     assert "NPA_LEISAAC_INPUT_QUEUE" in source
     assert "NPA_LEISAAC_APPLIED_COUNTER" in source
     assert "NPA_LEISAAC_FRAME_PATH" in source
@@ -641,6 +703,14 @@ def test_health_reads_upstream_keyboard_counter(
     server.INPUT_COUNTER_PATH = counter
     server.APPLIED_COUNTER_PATH = applied
     server.FRAME_PATH = frame
+    server.STATE.update(
+        stream_ready=True,
+        stream_transport="webrtc",
+        requested_video_transport="webrtc-kit-h264",
+        active_video_transport="webrtc-kit-h264",
+        video_codec="H264",
+        hardware_acceleration="runtime-nvenc",
+    )
     mode_status = tmp_path / "view-mode-status.json"
     mode_status.write_text(
         json.dumps(
@@ -661,7 +731,10 @@ def test_health_reads_upstream_keyboard_counter(
     assert health["input_events"] == 13
     assert health["applied_inputs"] == 12
     assert health["stream_ready"] is True
-    assert health["stream_transport"] == "websocket-v1"
+    assert health["stream_transport"] == "webrtc"
+    assert health["active_video_transport"] == "webrtc-kit-h264"
+    assert health["video_codec"] == "H264"
+    assert health["hardware_acceleration"] == "runtime-nvenc"
     assert health["physics_device"] == "cuda:0"
     assert health["render_device"] == "cuda"
     assert health["seed"] == 42
@@ -762,7 +835,7 @@ def test_live_browser_runner_includes_leisaac_journey_and_environment_bridge() -
     runner = (ROOT / "npa/scripts/run_agent_cypress.sh").read_text(encoding="utf-8")
 
     assert "cypress/e2e/agent_leisaac_live.cy.js" in package["scripts"]["cy:live"]
-    assert 'CYPRESS_NPA_AGENT_CYPRESS_RUN_ID="${LIVE_SIM2REAL_RUN_ID}"' in runner
+    assert 'CYPRESS_NPA_AGENT_CYPRESS_RUN_ID="${LIVE_RUN_ID}"' in runner
     assert 'CYPRESS_NPA_AGENT_RUN_ID="${LIVE_LEISAAC_RUN_ID}"' in runner
     assert 'CYPRESS_NPA_AGENT_TASK="${LIVE_TASK}"' in runner
     assert 'CYPRESS_NPA_AGENT_ENVIRONMENT_ID="${LIVE_ENVIRONMENT_ID}"' in runner
@@ -786,6 +859,69 @@ def test_liveness_preserves_live_initial_reset_and_restarts_dead_child() -> None
     assert server.liveness_status() == 200
     server.STATE.update(state="failed", pid=0)
     assert server.liveness_status() == 503
+
+
+def test_frame_stall_revokes_controls_and_forces_safe_runtime_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    server = _session_server_module()
+    for name in (
+        "READY_PATH",
+        "INPUT_COUNTER_PATH",
+        "APPLIED_COUNTER_PATH",
+        "INPUT_QUEUE_PATH",
+        "APPLIED_ACK_PATH",
+        "FRAME_PATH",
+        "FRAME_META_PATH",
+        "SECONDARY_FRAME_PATH",
+        "SECONDARY_FRAME_META_PATH",
+        "VIEW_COMMAND_PATH",
+        "MODE_COMMAND_PATH",
+        "MODE_STATUS_PATH",
+        "HEARTBEAT_PATH",
+    ):
+        monkeypatch.setattr(server, name, tmp_path / name.lower())
+    monkeypatch.setattr(server, "RECORDER_ROOT", tmp_path / "recorder")
+    server.CONTROL_LEDGER = server.ControlLedger()
+    server.CONTROL_LEDGER.accept(
+        {
+            "v": 1,
+            "type": "control",
+            "run_id": "stall-test",
+            "client_id": "browser-test",
+            "seq": 1,
+            "key": "W",
+            "event": "press",
+            "client_mono_ns": 1,
+            "client_wall_ns": 2,
+        }
+    )
+    server.CONTROL_OWNER.update(
+        token="active", client_id="browser-test", lease_id="a" * 64
+    )
+    server.MODE_COMMAND_PATH.write_text(
+        json.dumps(
+            {
+                "requested_view_mode": "dual_slow",
+                "requested_recording_camera_mode": "primary_and_secondary",
+                "view_revision": 7,
+                "recording_revision": 9,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert server._prepare_stall_recovery() == 1
+    assert server.CONTROL_OWNER["token"] == ""
+    assert server.CONTROL_OWNER["lease_id"] == ""
+    assert server.FORCE_SAFE_RESTART.is_set()
+    assert server.CONTROL_LEDGER.resume("browser-test")["next_seq"] == 1
+
+    server._reset_runtime_files()
+    restored = json.loads(server.MODE_COMMAND_PATH.read_text(encoding="utf-8"))
+    assert restored["requested_view_mode"] == "single_fast"
+    assert restored["requested_recording_camera_mode"] == "primary_only"
+    assert server.FORCE_SAFE_RESTART.is_set() is False
 
 
 def test_custom_bundle_apply_is_mocked_at_s3_call_site_and_restart_safe(

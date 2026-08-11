@@ -1,20 +1,22 @@
 diff --git a/scripts/environments/teleoperation/teleop_se3_agent.py b/scripts/environments/teleoperation/teleop_se3_agent.py
-index a467482..d3bcad5 100644
+index a467482..8d0821b 100644
 --- a/scripts/environments/teleoperation/teleop_se3_agent.py
 +++ b/scripts/environments/teleoperation/teleop_se3_agent.py
-@@ -91,0 +92,6 @@ simulation_app = app_launcher.app
+@@ -89,8 +89,34 @@ app_launcher_args = vars(args_cli)
+ app_launcher = AppLauncher(app_launcher_args)
+ simulation_app = app_launcher.app
+
 +import asyncio
 +from concurrent.futures import ThreadPoolExecutor
 +import ctypes
 +import fcntl
 +import hashlib
 +import json
-+from io import BytesIO
-@@ -92,0 +98 @@ import os
++import math
 +from pathlib import Path
++import numpy as np
 +import socket
 +import struct
-@@ -94,0 +101,8 @@ import time
 +from leisaac_dataset import EpisodeRecorder, extract_step
 +from leisaac_transport import (
 +    DEFAULT_RECORDING_CAMERA_MODE,
@@ -23,18 +25,31 @@ index a467482..d3bcad5 100644
 +    ViewMode,
 +)
 +from PIL import Image
-@@ -97,0 +112,6 @@ from isaaclab.envs import DirectRLEnv, ManagerBasedRLEnv
++from io import BytesIO
+ import os
+ import time
 +from omni.kit.viewport.utility import (
 +    capture_viewport_to_buffer,
 +    get_active_viewport,
-+    next_viewport_frame_async,
 +)
 +from isaacsim.core.utils.viewports import set_camera_view
-@@ -122 +143,2 @@ class RateLimiter:
++from isaacsim.sensors.camera import Camera
+
+ import gymnasium as gym
+ import torch
+@@ -119,7 +145,8 @@ class RateLimiter:
+         next_wakeup_time = self.last_time + self.sleep_duration
+         while time.time() < next_wakeup_time:
+             time.sleep(self.render_period)
 -            env.sim.render()
 +            if env is not None:
 +                env.sim.render()
-@@ -159 +181,31 @@ def main():  # noqa: C901
+
+         self.last_time = self.last_time + self.sleep_duration
+
+@@ -157,6 +184,36 @@ def main():  # noqa: C901
+         os.makedirs(output_dir)
+
      env_cfg = parse_env_cfg(args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs)
 +    if os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") == "1":
 +        # Browser teleoperation renders the viewport and does not consume policy images.
@@ -66,11 +81,21 @@ index a467482..d3bcad5 100644
 +    if custom_scene_usd:
 +        # Custom scenes retain the task's expected object prim names and layout.
 +        env_cfg.scene.scene.spawn.usd_path = custom_scene_usd
-@@ -226 +278,3 @@ def main():  # noqa: C901
+     env_cfg.use_teleop_device(args_cli.teleop_device)
+     env_cfg.seed = args_cli.seed if args_cli.seed is not None else int(time.time())
+     task_name = args_cli.task
+@@ -224,6 +281,8 @@ def main():  # noqa: C901
+
+     # create environment
      env: ManagerBasedRLEnv | DirectRLEnv = gym.make(task_name, cfg=env_cfg).unwrapped
 +    if os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") == "1":
 +        env.cfg.sim.render_interval = 1_000_000_000
-@@ -313 +367,660 @@ def main():  # noqa: C901
+     # replace the original recorder manager with the streaming recorder manager or lerobot recorder manager
+     if args_cli.record:
+         del env.recorder_manager
+@@ -311,6 +370,733 @@ def main():  # noqa: C901
+     if hasattr(env, "initialize"):
+         env.initialize()
      env.reset()
 +    recorder = EpisodeRecorder(
 +        root=Path(os.environ["NPA_LEISAAC_RECORDER_ROOT"]),
@@ -112,6 +137,8 @@ index a467482..d3bcad5 100644
 +    view_command_path = os.environ.get("NPA_LEISAAC_VIEW_COMMAND_PATH", "")
 +    mode_command_path = os.environ.get("NPA_LEISAAC_MODE_COMMAND_PATH", "")
 +    mode_status_path = os.environ.get("NPA_LEISAAC_MODE_STATUS_PATH", "")
++    heartbeat_path = os.environ.get("NPA_LEISAAC_HEARTBEAT_PATH", "")
++    native_video = os.environ.get("NPA_LEISAAC_NATIVE_VIDEO") == "1"
 +    ipc_event_path = os.environ.get("NPA_LEISAAC_IPC_EVENT_PATH", "")
 +    ipc_event_socket = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
 +    def notify_runtime_event(payload):
@@ -176,13 +203,14 @@ index a467482..d3bcad5 100644
 +        "causal_action_sequence": 0,
 +        "causal_applied_monotonic_ns": 0,
 +        "last_causal_at": 0.0,
++        "next_native_render_at": 0.0,
 +        "viewport_camera_id": "workspace",
 +    }
 +    # Background frames must not monopolize the Isaac render/event loop. Causal
 +    # action pairs bypass this cadence and remain immediate at full quality.
-+    single_primary_capture_fps = 16.0
-+    dual_primary_capture_fps = 20.0
-+    secondary_capture_fps = 5.0
++    single_primary_capture_fps = 10.0 if native_video else 16.0
++    dual_primary_capture_fps = 10.0 if native_video else 20.0
++    secondary_capture_fps = 4.0
 +    capture_encoder = ThreadPoolExecutor(max_workers=1, thread_name_prefix="leisaac-jpeg")
 +    def primary_capture_interval():
 +        fps = (
@@ -209,14 +237,47 @@ index a467482..d3bcad5 100644
 +            camera_prim_path=workspace_camera_path,
 +            viewport_api=viewport,
 +        )
-+    # A second Kit viewport races the renderer's shared GPU command list on RTX
-+    # PRO 6000. Move one renderer-owned camera on one fully-awaited viewport.
-+    overview_viewport = viewport
-+    overview_camera_path = workspace_camera_path
++    # Keep secondary rendering off the active viewport used by native WebRTC.
++    # A lazily-created Camera owns an independent render product only while Dual
++    # slow or an active two-camera recording explicitly requires it.
++    overview_camera_path = "/World/NPAOverviewCamera"
 +    overview_eye = [1.8, 1.8, 1.5]
 +    overview_target = [0.0, 0.0, 0.45]
-+    if overview_viewport is not None:
-+        overview_viewport.resolution = (1280, 720)
++    overview_sensor = {"camera": None}
++
++    def overview_orientation():
++        direction = [
++            overview_target[index] - overview_eye[index]
++            for index in range(3)
++        ]
++        yaw = math.atan2(direction[1], direction[0])
++        pitch = math.atan2(
++            direction[2], math.hypot(direction[0], direction[1])
++        )
++        cy, sy = math.cos(yaw / 2.0), math.sin(yaw / 2.0)
++        cp, sp = math.cos(-pitch / 2.0), math.sin(-pitch / 2.0)
++        return np.array([cy * cp, -sy * sp, cy * sp, sy * cp])
++
++    def ensure_overview_sensor():
++        if overview_sensor["camera"] is not None:
++            return overview_sensor["camera"]
++        camera = Camera(
++            prim_path=overview_camera_path,
++            name="npa-overview-camera",
++            frequency=4,
++            resolution=(640, 360),
++            position=np.array(overview_eye),
++            orientation=overview_orientation(),
++        )
++        camera.initialize()
++        overview_sensor["camera"] = camera
++        return camera
++
++    def destroy_overview_sensor():
++        camera = overview_sensor["camera"]
++        overview_sensor["camera"] = None
++        if camera is not None:
++            camera.destroy()
 +    last_view_sequence = 0
 +
 +    def on_viewport_captured(
@@ -350,39 +411,14 @@ index a467482..d3bcad5 100644
 +        capture_group,
 +        causal_action_sequence,
 +        causal_applied_monotonic_ns,
-+        settle_first,
 +        capture_result,
 +    ):
-+        """Await a safe copy and leave the shared viewport settled on workspace."""
++        """Await a safe copy from the primary viewport."""
 +        encode_submitted = False
 +        try:
-+            if settle_first:
-+                # Camera-path changes need one viewport frame before the copied
-+                # pixels reflect that camera. This branch is normally overview;
-+                # the latency-critical workspace path stays pre-settled.
-+                await next_viewport_frame_async(viewport, n_frames=1)
-+                capture_helper = capture_viewport_to_buffer(
-+                    viewport,
-+                    on_viewport_captured(
-+                        capture_result,
-+                        camera_id,
-+                        capture_group,
-+                        causal_action_sequence,
-+                        causal_applied_monotonic_ns,
-+                    ),
-+                )
-+            # Await GPU retirement before another capture may switch the shared
++            # Await GPU retirement before another primary capture reuses this
 +            # viewport. Extra completion frames add latency after the copy is safe.
 +            await capture_helper.wait_for_result(completion_frames=0)
-+            if camera_id == "overview":
-+                set_camera_view(
-+                    workspace_eye,
-+                    workspace_target,
-+                    camera_prim_path=workspace_camera_path,
-+                    viewport_api=viewport,
-+                )
-+                capture_state["viewport_camera_id"] = "workspace"
-+                await next_viewport_frame_async(viewport, n_frames=1)
 +            capture_state["encode_future"] = capture_encoder.submit(
 +                encode_and_publish_capture,
 +                capture_result,
@@ -415,7 +451,7 @@ index a467482..d3bcad5 100644
 +            return
 +        (
 +            camera_id,
-+            selected_camera_path,
++            _selected_camera_path,
 +            destination,
 +            metadata_destination,
 +            capture_group,
@@ -427,34 +463,49 @@ index a467482..d3bcad5 100644
 +        capture_state["active"] = True
 +        capture_state["active_group"] = capture_group
 +        capture_state["active_priority"] = selected_priority
-+        same_camera = capture_state["viewport_camera_id"] == camera_id
++        if camera_id == "overview":
++            capture_result = {}
++            try:
++                camera = ensure_overview_sensor()
++                rgba = camera.get_rgba()
++                if rgba is None or getattr(rgba, "size", 0) == 0:
++                    raise RuntimeError("overview render product has no RGB frame")
++                capture_result.update(
++                    image=Image.fromarray(np.asarray(rgba, dtype=np.uint8)[:, :, :3]),
++                    capture_monotonic_ns=time.monotonic_ns(),
++                    capture_wall_ns=time.time_ns(),
++                    capture_group=capture_group,
++                    causal_action_sequence=causal_action_sequence,
++                    causal_applied_monotonic_ns=causal_applied_monotonic_ns,
++                    view_revision=mode_state["view_revision_applied"],
++                )
++                capture_state["encode_future"] = capture_encoder.submit(
++                    encode_and_publish_capture,
++                    capture_result,
++                    camera_id,
++                    destination,
++                    metadata_destination,
++                )
++                capture_state["encode_context"] = (camera_id, capture_group)
++            except Exception as exc:
++                print(
++                    f"[WARN] Could not capture overview render product: "
++                    f"{type(exc).__name__}: {exc}"
++                )
++                complete_capture(camera_id)
++            return
 +        capture_result = {}
 +        try:
-+            if same_camera:
-+                capture_helper = capture_viewport_to_buffer(
-+                    viewport,
-+                    on_viewport_captured(
-+                        capture_result,
-+                        camera_id,
-+                        capture_group,
-+                        causal_action_sequence,
-+                        causal_applied_monotonic_ns,
-+                    ),
-+                )
-+            else:
-+                eye = overview_eye if camera_id == "overview" else workspace_eye
-+                target = (
-+                    overview_target if camera_id == "overview" else workspace_target
-+                )
-+                set_camera_view(
-+                    eye,
-+                    target,
-+                    camera_prim_path=selected_camera_path,
-+                    viewport_api=viewport,
-+                )
-+                capture_state["viewport_camera_id"] = camera_id
-+                mode_state["camera_switches"] += 1
-+                capture_helper = None
++            capture_helper = capture_viewport_to_buffer(
++                viewport,
++                on_viewport_captured(
++                    capture_result,
++                    camera_id,
++                    capture_group,
++                    causal_action_sequence,
++                    causal_applied_monotonic_ns,
++                ),
++            )
 +        except Exception:
 +            capture_state["active"] = False
 +            capture_state["active_group"] = ""
@@ -470,7 +521,6 @@ index a467482..d3bcad5 100644
 +                capture_group,
 +                causal_action_sequence,
 +                causal_applied_monotonic_ns,
-+                not same_camera,
 +                capture_result,
 +            )
 +        )
@@ -478,6 +528,9 @@ index a467482..d3bcad5 100644
 +    def request_causal_capture(applied):
 +        """Latest applied action wins; releases can never wait behind stale frames."""
 +        if not applied:
++            return
++        if native_video and recorder.status()["state"] == "idle":
++            capture_state["next_native_render_at"] = 0.0
 +            return
 +        sequence = int(applied.get("seq") or 0)
 +        applied_ns = int(applied.get("simulator_applied_mono_ns") or 0)
@@ -521,7 +574,6 @@ index a467482..d3bcad5 100644
 +            return
 +        if (
 +            viewport is None
-+            or overview_viewport is None
 +            or capture_state["pending"]
 +        ):
 +            return
@@ -535,14 +587,21 @@ index a467482..d3bcad5 100644
 +            mode_state["applied_view_mode"] == ViewMode.DUAL_SLOW.value
 +            or recording_both
 +        )
++        if secondary_enabled:
++            ensure_overview_sensor()
++        else:
++            destroy_overview_sensor()
 +        primary_due = now >= capture_state["next_at"]["workspace"]
 +        secondary_due = secondary_enabled and now >= capture_state["next_at"]["overview"]
++        recording_active = recorder.status()["state"] in {
++            "recording", "outcome-pending"
++        }
 +        if not primary_due and not secondary_due:
 +            return
 +        capture_state["group"] += 1
 +        capture_group = f"capture-{capture_state['group']}"
 +        cameras = []
-+        if primary_due or secondary_due:
++        if (primary_due or secondary_due) and (not native_video or recording_active):
 +            cameras.append(
 +                ("workspace", workspace_camera_path, frame_path, frame_meta_path)
 +            )
@@ -569,6 +628,12 @@ index a467482..d3bcad5 100644
 +
 +    def browser_capture_needs_render():
 +        """Keep physics/control cadence independent from background RTX work."""
++        if native_video:
++            now = time.monotonic()
++            if now < capture_state["next_native_render_at"]:
++                return False
++            capture_state["next_native_render_at"] = now + 1.0 / 30.0
++            return True
 +        if capture_state["encode_future"] is not None:
 +            return False
 +        return bool(
@@ -661,13 +726,6 @@ index a467482..d3bcad5 100644
 +                    if item[0] == "workspace"
 +                ]
 +                capture_state["pending"].discard("overview")
-+                set_camera_view(
-+                    workspace_eye,
-+                    workspace_target,
-+                    camera_prim_path=workspace_camera_path,
-+                    viewport_api=viewport,
-+                )
-+                capture_state["viewport_camera_id"] = "workspace"
 +            mode_state["applied_view_mode"] = requested_view.value
 +            mode_state["applied_view_revision"] = view_revision
 +            changed = True
@@ -740,6 +798,10 @@ index a467482..d3bcad5 100644
 +        capture_state["viewport_camera_id"] = "workspace"
 +        last_view_sequence = sequence
 +        mode_state["view_revision_applied"] = sequence
++        if native_video:
++            capture_state["next_native_render_at"] = 0.0
++            write_mode_status()
++            return
 +        capture_state["group"] += 1
 +        capture_state["priority_queue"][:] = [
 +            (
@@ -762,11 +824,22 @@ index a467482..d3bcad5 100644
 +        apply_mode_command()
 +        schedule_browser_capture()
 +        env.render()
-@@ -375 +1088,2 @@ def main():  # noqa: C901
+     teleop_interface.reset()
+
+     resume_recorded_demo_count = 0
+@@ -372,16 +1158,44 @@ def main():  # noqa: C901
+                         break
+
+                 elif actions is None:
 -                    env.render()
 +                    if os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") != "1":
 +                        env.render()
-@@ -382 +1096,21 @@ def main():  # noqa: C901
+                 # apply actions
+                 else:
+                     if not start_record_state:
+                         if args_cli.record:
+                             print("Start Recording!!!")
+                         start_record_state = True
 -                    env.step(actions)
 +                    step_result = env.step(actions)
 +                    sim_step += 1
@@ -789,20 +862,35 @@ index a467482..d3bcad5 100644
 +                ):
 +                    env.render()
 +                recorder.process_commands(reset=env.reset)
-@@ -384 +1118 @@ def main():  # noqa: C901
++                if heartbeat_path and sim_step % 30 == 0:
++                    heartbeat = Path(heartbeat_path)
++                    heartbeat_tmp = heartbeat.with_suffix(".tmp")
++                    heartbeat_tmp.write_text(
++                        str(time.monotonic_ns()) + "\n", encoding="utf-8"
++                    )
++                    os.replace(heartbeat_tmp, heartbeat)
+                 if rate_limiter:
 -                    rate_limiter.sleep(env)
 +                    rate_limiter.sleep(None if os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") == "1" else env)
-@@ -395 +1129,4 @@ def main():  # noqa: C901
+             if interrupted:
+                 break
+     except Exception as e:
+@@ -392,6 +1206,10 @@ def main():  # noqa: C901
+         print("[INFO] Cleaning up resources...")
+     finally:
+         # Restore original signal handler
 +        capture_encoder.shutdown(wait=True, cancel_futures=True)
 +        poll_encoded_capture()
 +        recorder.shutdown(wait=True)
 +        ipc_event_socket.close()
          signal.signal(signal.SIGINT, original_sigint_handler)
+         # finalize the recorder manager
+         if args_cli.record and hasattr(env.recorder_manager, "finalize"):
 diff --git a/source/leisaac/leisaac/devices/keyboard/so101_keyboard.py b/source/leisaac/leisaac/devices/keyboard/so101_keyboard.py
-index 1ecc934..cb304f1 100644
+index 1ecc934..09ca2a8 100644
 --- a/source/leisaac/leisaac/devices/keyboard/so101_keyboard.py
 +++ b/source/leisaac/leisaac/devices/keyboard/so101_keyboard.py
-@@ -0,0 +1,5 @@
+@@ -1,3 +1,10 @@
 +import json
 +import fcntl
 +import os
@@ -810,7 +898,13 @@ index 1ecc934..cb304f1 100644
 +import socket
 +import time
 +
-@@ -36,0 +42,13 @@ class SO101Keyboard(Device):
+ import carb
+ import numpy as np
+
+@@ -32,6 +39,22 @@ class SO101Keyboard(Device):
+         # bindings for keyboard to command
+         self._create_key_bindings()
+
 +        queue_name = os.environ.get("NPA_LEISAAC_INPUT_QUEUE", "")
 +        counter_name = os.environ.get("NPA_LEISAAC_APPLIED_COUNTER", "")
 +        ack_name = os.environ.get("NPA_LEISAAC_APPLIED_ACK_PATH", "")
@@ -824,9 +918,16 @@ index 1ecc934..cb304f1 100644
 +        self._ipc_event_path = os.environ.get("NPA_LEISAAC_IPC_EVENT_PATH", "")
 +        self._ipc_event_socket = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
 +        self._remote_sim_step = 0
-+        if os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") == "1":
++        self._browser_teleop = os.environ.get("NPA_LEISAAC_BROWSER_TELEOP") == "1"
++        if self._browser_teleop:
 +            self._started = True
-@@ -60,6 +77,107 @@ class SO101Keyboard(Device):
+         # command buffers (dx, dy, dz, droll, dpitch, dyaw, d_shoulder_pan, d_gripper)
+         self._delta_action = np.zeros(8)
+
+@@ -57,18 +80,174 @@ class SO101Keyboard(Device):
+         self._display_controls_table.add_row(["U", "gripper_open"])
+         self._display_controls_table.add_row(["O", "gripper_close"])
+
 -    def get_device_state(self):
 -        return self._convert_delta_from_frame(self._delta_action)
 -
@@ -979,8 +1080,12 @@ index 1ecc934..cb304f1 100644
 +        remote_action += self._remote_direct_action
 +        self._remote_direct_action[:] = 0.0
 +        return self._convert_delta_from_frame(self._delta_action + remote_action)
-@@ -66,10 +186,19 @@ class SO101Keyboard(Device):
+
      def _on_keyboard_event(self, event, *args, **kwargs):
++        # Native livestream viewers can emit unauthenticated Kit input. In the
++        # browser service, only the ordered NPA queue owns robot authority.
++        if self._browser_teleop:
++            return
          super()._on_keyboard_event(event, *args, **kwargs)
          # apply the command when pressed
          if event.type == carb.input.KeyboardEventType.KEY_PRESS:

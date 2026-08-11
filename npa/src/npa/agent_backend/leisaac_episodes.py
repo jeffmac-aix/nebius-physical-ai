@@ -471,13 +471,18 @@ class EpisodeStore:
         if date_from and date_to and date_from > date_to:
             raise EpisodeStoreError("date from must not be after date to")
         version_commit_keys: set[str] | None = None
+        version_episode_count: int | None = None
         if version_id:
             version = self._version_manifest(version_id)
-            version_commit_keys = {
-                str(uri).removeprefix(f"s3://{self.bucket}/")
-                for uri in version["episode_commits"]
-                if str(uri).startswith(f"s3://{self.bucket}/{self.prefix}/commits/")
-            }
+            commits = version.get("episode_commits")
+            if isinstance(commits, list):
+                version_commit_keys = {
+                    str(uri).removeprefix(f"s3://{self.bucket}/")
+                    for uri in commits
+                    if str(uri).startswith(f"s3://{self.bucket}/{self.prefix}/commits/")
+                }
+            else:
+                version_episode_count = int(version["episode_count"])
         kwargs: dict[str, Any] = {
             "Bucket": self.bucket,
             "Prefix": self._key("commits/episode-"),
@@ -503,6 +508,8 @@ class EpisodeStore:
                 continue
             if version_commit_keys is not None and key not in version_commit_keys:
                 continue
+            if version_episode_count is not None and int(match.group(1)) >= version_episode_count:
+                continue
             candidates.append((key, int(match.group(1))))
 
         def load(candidate: tuple[str, int]) -> tuple[dict[str, Any], str] | None:
@@ -526,9 +533,11 @@ class EpisodeStore:
         else:
             loaded = []
         episodes: list[dict[str, Any]] = []
+        loaded_count = 0
         for entry in loaded:
             if entry is None:
                 continue
+            loaded_count += 1
             summary, _key = entry
             summary["dataset_version"] = version_id
             values = {
@@ -554,6 +563,11 @@ class EpisodeStore:
         return {
             "episodes": episodes,
             "next_cursor": str(response.get("NextContinuationToken") or ""),
+            "source_count": len(candidates),
+            "loaded_count": loaded_count,
+            "filtered_count": max(0, loaded_count - len(episodes)),
+            "skipped_count": max(0, len(candidates) - loaded_count),
+            "has_more_pages": bool(response.get("NextContinuationToken")),
             "bounded": True,
             "page_size": page_size,
             "filters": {key: value for key, value in expected.items() if value},
@@ -568,11 +582,18 @@ class EpisodeStore:
             "immutable dataset version was not found",
         )
         commits = manifest.get("episode_commits")
+        parent_linked = manifest.get("index_layout") == "parent-linked-v2"
         if (
             manifest.get("schema") != "npa.leisaac.dataset.v1"
             or str(manifest.get("version") or "") != version_id
-            or not isinstance(commits, list)
-            or len(commits) > MAX_TIMELINE_ROWS
+            or not (
+                (isinstance(commits, list) and len(commits) <= MAX_TIMELINE_ROWS)
+                or (
+                    parent_linked
+                    and isinstance(manifest.get("new_episode_commit"), str)
+                    and 0 < int(manifest.get("episode_count", 0)) <= MAX_TIMELINE_ROWS
+                )
+            )
             or str(manifest.get("output_prefix") or "").rstrip("/") != self.dataset_uri
         ):
             raise EpisodeStoreError(
@@ -585,7 +606,12 @@ class EpisodeStore:
     ) -> dict[str, Any]:
         manifest = self._version_manifest(version_id)
         expected_uri = f"s3://{self.bucket}/{commit_key}"
-        if expected_uri not in {str(item) for item in manifest["episode_commits"]}:
+        commits = manifest.get("episode_commits")
+        if isinstance(commits, list):
+            included = expected_uri in {str(item) for item in commits}
+        else:
+            included = 0 <= episode_index < int(manifest["episode_count"])
+        if not included:
             raise EpisodeStoreError(
                 "episode is not part of that immutable version", status_code=404
             )

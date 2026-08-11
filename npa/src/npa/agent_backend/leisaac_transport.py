@@ -207,6 +207,18 @@ def parse_control_message(raw: str | bytes, *, expected_run_id: str) -> dict[str
         ),
     }
     if message_type == "control":
+        if set(payload) != {
+            "v",
+            "type",
+            "run_id",
+            "client_id",
+            "seq",
+            "key",
+            "event",
+            "client_mono_ns",
+            "client_wall_ns",
+        }:
+            raise TransportProtocolError("invalid_message", "invalid keyboard control")
         key = str(payload.get("key") or "").upper()
         event = str(payload.get("event") or "")
         if key not in ALLOWED_KEYS or event not in ALLOWED_EVENTS:
@@ -260,6 +272,10 @@ def parse_control_message(raw: str | bytes, *, expected_run_id: str) -> dict[str
             ),
             keys_down=normalized,
         )
+        lease_id = str(payload.get("lease_id") or "")
+        if lease_id and not re.fullmatch(r"[a-f0-9]{64}", lease_id):
+            raise TransportProtocolError("invalid_message", "invalid control lease")
+        result["lease_id"] = lease_id
     elif message_type == "ping":
         nonce = str(payload.get("nonce") or "")
         if len(nonce) > 64 or any(character in nonce for character in "\r\n"):
@@ -500,6 +516,14 @@ class ControlLedger:
         with self._lock:
             state = self._clients.get(client_id)
             return tuple(sorted(state.keys_down)) if state is not None else ()
+
+    def reset_for_runtime_restart(self) -> int:
+        """Forget runtime-bound ordering state and report forced key releases."""
+
+        with self._lock:
+            released = sum(len(state.keys_down) for state in self._clients.values())
+            self._clients.clear()
+            return released
 
 
 @dataclass(frozen=True)
@@ -793,6 +817,8 @@ class TransportMetrics:
             "mode_requests_coalesced",
             "mode_transitions_applied",
             "mode_transition_errors",
+            "forced_safe_restarts",
+            "forced_releases",
         }
     )
 

@@ -253,6 +253,30 @@ def test_episode_listing_versions_filters_and_bounded_pagination() -> None:
         store.list_episodes(limit=5, version_id="../../latest")
 
 
+def test_filtered_empty_s3_page_returns_truthful_continuation_signal() -> None:
+    s3, commit, _version = _fixture()
+    second = json.loads(json.dumps(commit))
+    second["episode_index"] = 1
+    second["metadata"]["outcome"] = "success"
+    s3.put(
+        f"{PREFIX}/commits/episode-000001.json",
+        (json.dumps(second, sort_keys=True) + "\n").encode(),
+    )
+    first = _store(s3).list_episodes(limit=1, filters={"outcome": "failure"})
+    assert first["episodes"] == []
+    assert first["next_cursor"]
+    assert first["has_more_pages"] is True
+    assert first["source_count"] == first["loaded_count"] == 1
+    assert first["filtered_count"] == 1
+
+    second_page = _store(s3).list_episodes(
+        limit=1,
+        cursor=first["next_cursor"],
+        filters={"outcome": "success"},
+    )
+    assert [item["episode_index"] for item in second_page["episodes"]] == [1]
+
+
 def test_json_checksums_are_computed_when_gateway_omits_metadata() -> None:
     s3, _commit, _version = _fixture()
     commit_key = f"{PREFIX}/commits/episode-000000.json"

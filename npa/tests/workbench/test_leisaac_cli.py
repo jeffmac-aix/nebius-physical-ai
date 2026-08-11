@@ -264,6 +264,7 @@ def test_install_relay_creates_required_agent_directories() -> None:
         ssh,
         run_id="live-relay",
         session_nonce="a" * 64,
+        expires_at="2099-01-01T00:00:00Z",
     )
 
     assert "sudo install -d -m 0755 /etc/npa /opt/npa-agent" in ssh.command
@@ -466,7 +467,7 @@ def test_agent_relay_manifest_uses_selected_agent_storage_not_shell_endpoint(
 
     monkeypatch.setattr("boto3.client", client)
     monkeypatch.setenv("AWS_ENDPOINT_URL", "https://wrong-region.example")
-    manifest = {"run_id": "live-relay"}
+    manifest = {"run_id": "live-relay", "session_nonce": "a" * 64}
     storage = {
         "bucket": "bucket",
         "prefix": "checkpoints",
@@ -483,6 +484,7 @@ def test_agent_relay_manifest_uses_selected_agent_storage_not_shell_endpoint(
     assert client_calls[0][1]["aws_access_key_id"] == "agent-access"
     assert client_calls[0][1]["aws_secret_access_key"] == "agent-secret"
     assert calls[0]["Bucket"] == "bucket"
+    assert "session_nonce" not in json.loads(calls[0]["Body"])
 
 
 def test_agent_relay_manifest_rejects_storage_scope_mismatch() -> None:

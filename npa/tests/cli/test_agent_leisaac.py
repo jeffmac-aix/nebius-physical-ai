@@ -401,6 +401,63 @@ def test_v2_manifest_and_health_bind_task_environment_dataset_and_recorder() -> 
     assert normalize_manifest(stale, expected_run_id="leisaac-live-1")[0] is None
 
 
+def test_health_advertises_only_truthful_nvenc_h264_or_named_fallback() -> None:
+    manifest = _normalized()
+    base = {
+        "schema": "npa.leisaac.health.v1",
+        "state": "ready",
+        "stream_ready": True,
+        "run_id": manifest["run_id"],
+        "task": manifest["task"],
+        "source_commit": manifest["source_commit"],
+        "session_nonce": manifest["session_nonce"],
+        "signal_port": LEISAAC_SIGNAL_PORT,
+    }
+    native, reason = validate_health(
+        manifest,
+        {
+            **base,
+            "stream_transport": "webrtc",
+            "requested_video_transport": "webrtc-kit-h264",
+            "active_video_transport": "webrtc-kit-h264",
+            "video_codec": "H264",
+            "hardware_acceleration": "runtime-nvenc",
+            "video_fallback_reason": "",
+        },
+    )
+    assert reason == "" and native is not None
+    assert native["active_video_transport"] == "webrtc-kit-h264"
+    assert native["hardware_acceleration"] == "runtime-nvenc"
+
+    invalid, reason = validate_health(
+        manifest,
+        {
+            **base,
+            "stream_transport": "webrtc",
+            "requested_video_transport": "webrtc-kit-h264",
+            "active_video_transport": "webrtc-kit-h264",
+            "video_codec": "H264",
+            "hardware_acceleration": "none",
+        },
+    )
+    assert invalid is None and "hardware video contract" in reason
+
+    fallback, reason = validate_health(
+        manifest,
+        {
+            **base,
+            "stream_transport": "websocket-v1",
+            "requested_video_transport": "webrtc-kit-h264",
+            "active_video_transport": "jpeg-websocket",
+            "video_codec": "JPEG",
+            "hardware_acceleration": "none",
+            "video_fallback_reason": "NVENC probe failed",
+        },
+    )
+    assert reason == "" and fallback is not None
+    assert fallback["video_fallback_reason"] == "NVENC probe failed"
+
+
 def test_agent_relay_status_returns_only_derived_session_turn_credential() -> None:
     manifest = _normalized(
         transport="agent-relay",

@@ -79,13 +79,13 @@ def _literal_expression(node: ast.AST) -> bool:
 def validate_declarative_python(content: bytes) -> None:
     """Allow metadata/config declarations, never executable uploaded code."""
 
+    if len(content) > 256 * 1024:
+        raise BundleError("Python asset contract is too large")
     try:
         source = content.decode("utf-8")
         tree = ast.parse(source)
     except (UnicodeDecodeError, SyntaxError) as exc:
         raise BundleError("Python asset contract is not valid UTF-8 Python") from exc
-    if len(source) > 256 * 1024:
-        raise BundleError("Python asset contract is too large")
     for index, statement in enumerate(tree.body):
         if (
             index == 0
@@ -127,6 +127,39 @@ def validate_declarative_python(content: bytes) -> None:
         raise BundleError(
             "uploaded Python is declarative-only; calls, functions, classes, attribute writes, and executable statements are rejected"
         )
+
+
+def validate_usd_assets(files: dict[str, bytes]) -> None:
+    """Reject opaque or externally resolving USD and bound local references."""
+
+    for path, content in files.items():
+        suffix = PurePosixPath(path).suffix.lower()
+        if suffix not in {".usd", ".usda", ".usdc"}:
+            continue
+        if suffix == ".usdc" or content.startswith(b"PXR-USDC"):
+            raise BundleError(
+                "binary USDC upload is unsupported; submit inspectable USDA content"
+            )
+        try:
+            source = content.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise BundleError("USD upload must be inspectable UTF-8 USDA") from exc
+        lowered = source.lower()
+        if any(marker in lowered for marker in ("://", "file:", "omniverse:")):
+            raise BundleError("USD external or network asset references are forbidden")
+        for match in re.finditer(r"@([^@]+)@", source):
+            raw_reference = match.group(1).split("#", 1)[0]
+            reference = PurePosixPath(raw_reference)
+            if (
+                not raw_reference
+                or raw_reference.startswith("/")
+                or "\\" in raw_reference
+                or any(part in {"", ".", ".."} for part in reference.parts)
+            ):
+                raise BundleError("USD asset reference escapes the bundle root")
+            resolved = (PurePosixPath(path).parent / reference).as_posix()
+            if resolved not in files:
+                raise BundleError("USD asset reference is not present in the bundle")
 
 
 def validate_device_descriptor(content: bytes) -> None:
@@ -217,6 +250,7 @@ def validate_bundle(payload: Any) -> tuple[dict[str, Any], list[tuple[str, bytes
         files.append((path, content))
     if entrypoint not in seen:
         raise BundleError("bundle entrypoint is not present")
+    validate_usd_assets(dict(files))
     entry_suffix = PurePosixPath(entrypoint).suffix.lower()
     if kind in {"robot", "scene"} and entry_suffix not in {".usd", ".usda", ".usdc"}:
         raise BundleError("robot and scene entrypoints must be USD assets")

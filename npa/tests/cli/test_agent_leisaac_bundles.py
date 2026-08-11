@@ -18,6 +18,7 @@ from npa.agent_backend.leisaac_bundles import (
     DEVICE_SCHEMA,
     BundleError,
     BundleStore,
+    validate_declarative_python,
     validate_bundle,
 )
 from npa.agent_backend.leisaac_routes import LeIsaacDeps, register_leisaac_routes
@@ -126,6 +127,56 @@ def test_rejects_traversal_tampering_and_executable_python(mutate, match) -> Non
     mutate(payload)
     with pytest.raises(BundleError, match=match):
         validate_bundle(payload)
+
+
+@pytest.mark.parametrize(
+    "reference,match",
+    [
+        ("https://attacker.invalid/robot.usda", "external or network"),
+        ("file:///etc/passwd", "external or network"),
+        ("omniverse://attacker.invalid/asset", "external or network"),
+        ("/etc/passwd", "escapes the bundle root"),
+        ("../outside.usda", "escapes the bundle root"),
+        ("missing.usda", "not present in the bundle"),
+    ],
+)
+def test_rejects_hostile_usd_asset_references(reference: str, match: str) -> None:
+    payload = _payload()
+    payload["files"][0] = _file(
+        "robot.usda", f'#usda 1.0\ndef Xform "Robot" (references = @{reference}@) {{}}\n'.encode()
+    )
+    with pytest.raises(BundleError, match=match):
+        validate_bundle(payload)
+
+
+def test_rejects_opaque_usdc_and_accepts_bundle_local_usda_reference() -> None:
+    opaque = _payload()
+    opaque["entrypoint"] = "robot.usdc"
+    opaque["files"][0] = _file("robot.usdc", b"PXR-USDC\x00opaque")
+    with pytest.raises(BundleError, match="binary USDC"):
+        validate_bundle(opaque)
+
+    local = _payload()
+    local["files"][0] = _file(
+        "robot.usda", b'#usda 1.0\ndef Xform "Robot" (references = @parts/arm.usda@) {}\n'
+    )
+    local["files"].append(_file("parts/arm.usda", b'#usda 1.0\ndef Xform "Arm" {}\n'))
+    manifest, _files = validate_bundle(local)
+    assert manifest["entrypoint"] == "robot.usda"
+
+
+def test_declarative_python_size_gate_runs_before_ast_parse(monkeypatch) -> None:
+    parsed = False
+
+    def forbidden_parse(_source):
+        nonlocal parsed
+        parsed = True
+        raise AssertionError("oversized source reached ast.parse")
+
+    monkeypatch.setattr("npa.agent_backend.leisaac_bundles.ast.parse", forbidden_parse)
+    with pytest.raises(BundleError, match="too large"):
+        validate_declarative_python(b"A = 1\n" + b"#" * (256 * 1024))
+    assert parsed is False
 
 
 def test_store_is_immutable_bounded_and_scoped_to_configured_s3() -> None:
@@ -596,10 +647,10 @@ def test_cumulative_bundle_selection_uses_atomic_backend_state_mutation() -> Non
     assert restored.json()["configuration"]["custom_bundle_count"] == 3
     assert len(applied) == before_restore + 1
 
-    # The runtime applies a new cumulative selection before the backend can
-    # persist it. A concurrent status refresh must wait for that transaction;
-    # otherwise its automatic restore sees the prior state and starts another
-    # simulator restart that erases modes selected against the first child.
+    # Slow runtime apply must not serialize independent status health/storage
+    # discovery. The status snapshot may describe the last committed selection,
+    # while the narrow mutation transaction prevents it from restoring over the
+    # in-flight replacement.
     replacement = _payload(kind="scene")
     replacement["name"] = "replacement-scene"
     replacement["files"][0] = _file(
@@ -640,12 +691,13 @@ def test_cumulative_bundle_selection_uses_atomic_backend_state_mutation() -> Non
         selection_future = executor.submit(select_replacement)
         assert apply_entered.wait(5), "bundle apply did not start"
         status_future = executor.submit(fetch_concurrent_status)
-        assert not status_future.done(), "status bypassed the bundle transaction"
+        concurrent_status = status_future.result(timeout=2)
+        assert not selection_future.done(), "test apply was not held open"
         release_apply.set()
         selected = selection_future.result(timeout=5)
-        concurrent_status = status_future.result(timeout=5)
     assert selected.status_code == 202
     assert concurrent_status.status_code == 200
-    assert concurrent_status.json()["available"] is True
+    assert concurrent_status.json()["available"] is False
+    assert "Applying a checksum-verified" in concurrent_status.json()["reason"]
     assert len(applied) == before_replacement + 1
     assert runtime_selected["scene"]["name"] == "replacement-scene"

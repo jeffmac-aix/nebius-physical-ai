@@ -138,8 +138,8 @@ async function fetchStatus(win, runId) {
         }
 
         const capabilityProbe = await fetchStatus(win, runId);
-        const preferred =
-          String(capabilityProbe.payload.stream_transport || "") === "websocket-v1";
+        const streamTransport = String(capabilityProbe.payload.stream_transport || "");
+        const preferred = ["websocket-v1", "webrtc"].includes(streamTransport);
         benchmark.clock_method.simulator_application = preferred
           ? "sequenced simulator-applied acknowledgement; browser interval uses performance.now(), runtime/simulator stages use their shared monotonic clock"
           : "aggregate status observation; each sample is an upper bound because the baseline has no sequence acknowledgement";
@@ -247,7 +247,7 @@ async function fetchStatus(win, runId) {
             win,
             () => {
               const evidence = win.__NPA_AGENT_TEST__.leisaacTransportEvidence();
-              return evidence.active === "websocket-v1" && evidence.frames.length > startingFrameEvidence;
+              return ["websocket-v1", "webrtc-native-h264"].includes(evidence.active) && evidence.frames.length > startingFrameEvidence;
             },
             120000,
             "first preferred RTX frame",
@@ -306,7 +306,7 @@ async function fetchStatus(win, runId) {
                   `${event} simulator-applied acknowledgement ${ordinal}`,
                 );
           benchmark.control_samples.push({
-            protocol: "websocket-v1",
+            protocol: String(win.__NPA_AGENT_TEST__.leisaacTransportEvidence().active || ""),
             seq: accepted.seq,
             key,
             event,
@@ -406,8 +406,12 @@ async function fetchStatus(win, runId) {
               decoded_mono_ms: item.painted_mono_ms,
               transfer_bytes: item.bytes,
               network_ms: null,
-              decode_after_response_ms: item.painted_mono_ms - item.received_mono_ms,
-              response_end_mono_ms: item.received_mono_ms,
+              decode_after_response_ms: Number.isFinite(item.received_mono_ms)
+                ? item.painted_mono_ms - item.received_mono_ms
+                : null,
+              response_end_mono_ms: Number.isFinite(item.received_mono_ms)
+                ? item.received_mono_ms
+                : item.painted_mono_ms,
               latest_capture_observation_age_ms: item.frame_age_ms,
             }));
         } else {
@@ -429,7 +433,7 @@ async function fetchStatus(win, runId) {
             win,
             () => {
               const evidence = win.__NPA_AGENT_TEST__.leisaacTransportEvidence();
-              return evidence.active === "websocket-v1" && evidence.frames.length > framesBeforeReconnect;
+              return ["websocket-v1", "webrtc-native-h264"].includes(evidence.active) && evidence.frames.length > framesBeforeReconnect;
             },
             30000,
             "preferred transport reconnect frame",
@@ -458,7 +462,7 @@ async function fetchStatus(win, runId) {
         win.document.body.appendChild(paintCanvas);
         const paintContext = paintCanvas.getContext("2d");
         const frameUrl = String(initial.payload.frame_url || "");
-        for (let index = 0; index < frameCount; index += 1) {
+        for (let index = 0; frameUrl && streamTransport !== "webrtc" && index < frameCount; index += 1) {
           const separator = frameUrl.includes("?") ? "&" : "?";
           const startedMonoMs = win.performance.now();
           const startedWallMs = win.Date.now();

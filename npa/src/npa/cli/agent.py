@@ -5,7 +5,6 @@ from __future__ import annotations
 import base64
 import functools
 import inspect
-import ipaddress
 import json
 import os
 import re
@@ -13,7 +12,6 @@ import secrets
 import shlex
 import shutil
 import subprocess
-import tarfile
 import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NoReturn
@@ -41,7 +39,11 @@ from npa.clients.network import (
     resolve_instance_network_context,
 )
 from npa.clients.ssh import SSHClient, SSHError
-from npa.cli.agent_public import resolve_record_public_ip
+from npa.cli.agent_public import (
+    is_routable_public_ip as _is_routable_public_ip,
+    record_customer_url as _record_customer_url,
+    resolve_record_public_ip,
+)
 from npa.agent_backend.shipping import render_shipped_backend_install
 from npa.cli.agent_artifact_storage import (
     _resolve_artifact_project_storage,
@@ -52,6 +54,12 @@ from npa.cli.agent_login import (
     agent_mobile_login_help_html as _agent_mobile_login_help_html,
     agent_public_login_form_html as _agent_public_login_form_html,
     agent_strip_url_credentials_js as _agent_strip_url_credentials_js,
+)
+from npa.cli.agent_preflight import (
+    agent_hard_prereq_results as _base_agent_hard_prereq_results,
+    agent_nebius_auth_result as _base_agent_nebius_auth_result,
+    agent_token_factory_result as _base_agent_token_factory_result,
+    render_agent_checks as _render_agent_check_report,
 )
 from npa.cli.agent_site import DEFAULT_LICHTBLICK_PORT, nginx_agent_site_body
 from npa.cli.agent_contracts import (  # noqa: F401 - public compatibility exports
@@ -88,7 +96,6 @@ from npa.cli.agent_deployment import (
     build_deployment_manifest,
     fetch_live_deployment,
     normalize_workspace_label,
-    record_customer_url as _record_customer_url,
     record_public_https as _record_public_https,
     record_tls_verify as _record_tls_verify,
     verify_remote_deployment,
@@ -104,6 +111,22 @@ from npa.workbench.foxglove import (
     FOXGLOVE_EMBED_SDK_VERSION,
 )
 
+
+def _agent_hard_prereq_results(ssh_public_key_path: str) -> list[CheckResult]:
+    terraform = os.environ.get("NPA_TERRAFORM_BIN") or shutil.which("terraform") or ""
+    return _base_agent_hard_prereq_results(
+        ssh_public_key_path, terraform_bin=terraform
+    )
+
+
+def _agent_token_factory_result(tf_key: str | None = None) -> CheckResult:
+    if tf_key is None:
+        tf_key, _model = _resolve_deploy_llm_credentials()
+    return _base_agent_token_factory_result(tf_key)
+
+
+_agent_nebius_auth_result = _base_agent_nebius_auth_result
+
 app = typer.Typer(
     name="agent",
     help="Deploy and operate a public NPA chat agent VM.",
@@ -118,14 +141,8 @@ DEFAULT_AGENT_NAME = "agent"
 DEFAULT_AGENT_USER = "npa"
 DEFAULT_LLM_PROVIDER = "token_factory"
 DEFAULT_LLM_MODEL = "nvidia/Cosmos3-Super-Reasoner"
-# Cost-ordered ladder (cheapest-capable first). Per-turn cost-tier routing
-# (see agent_routing.build_model_ladder) reorders this for each request, but the
-# default configured order still surfaces the cheap workhorse ahead of the
-# branded reasoner so no-routing paths and the /models picker default cheap.
 DEFAULT_LLM_MODELS = (
-    "Qwen/Qwen3-32B",
-    "meta-llama/Llama-3.3-70B-Instruct",
-    DEFAULT_LLM_MODEL,
+    "Qwen/Qwen3-32B", "meta-llama/Llama-3.3-70B-Instruct", DEFAULT_LLM_MODEL,
     "Qwen/Qwen2.5-VL-72B-Instruct",
 )
 AGENT_UI_VERSION = "2026081001"
@@ -543,142 +560,11 @@ def _resolve_operator_credentials() -> tuple[str, str]:
     return creds.ai_cloud_api_key, creds.token_factory_api_key
 
 
-def _terraform_binary() -> str:
-    """Return the terraform binary path/name, honoring NPA_TERRAFORM_BIN."""
-    return (os.environ.get("NPA_TERRAFORM_BIN") or shutil.which("terraform") or "").strip()
-
-
-def _agent_hard_prereq_results(ssh_public_key_path: str) -> list[CheckResult]:
-    """Cheap, side-effect-free Route C prerequisites (terraform + SSH keys).
-
-    These are checked before any cloud IAM side effects or Terraform apply so a
-    missing binary or key surfaces up front instead of mid-run (after which a
-    transient SSH failure would auto-roll-back a freshly provisioned VM).
-    """
-    from npa.workflows.sim2real_health import CheckResult, FAIL, PASS
-
-    results: list[Any] = []
-
-    terraform = _terraform_binary()
-    if terraform:
-        results.append(
-            CheckResult(name="terraform", status=PASS, summary=f"terraform found ({terraform}).")
-        )
-    else:
-        results.append(
-            CheckResult(
-                name="terraform",
-                status=FAIL,
-                summary="terraform binary not found on PATH.",
-                remedy="Install it: https://developer.hashicorp.com/terraform/install",
-            )
-        )
-
-    pub_path = Path(ssh_public_key_path).expanduser()
-    if pub_path.is_file():
-        results.append(
-            CheckResult(name="ssh_public_key", status=PASS, summary=f"SSH public key present ({pub_path}).")
-        )
-    else:
-        priv_hint = str(pub_path)[:-4] if str(pub_path).endswith(".pub") else str(pub_path)
-        results.append(
-            CheckResult(
-                name="ssh_public_key",
-                status=FAIL,
-                summary=f"SSH public key not found: {pub_path}",
-                remedy=(
-                    f"Generate a keypair (`ssh-keygen -t ed25519 -f {priv_hint}`) "
-                    "or pass --ssh-public-key-path to an existing key."
-                ),
-            )
-        )
-
-    # The deploy flow uses the private key alongside the public key (pub path
-    # minus the .pub suffix) to bootstrap the VM over SSH. If --ssh-public-key-path
-    # is given without a .pub suffix, this resolves to the same path as the public
-    # key check above, which at worst yields a slightly redundant message.
-    priv_str = str(pub_path)[:-4] if str(pub_path).endswith(".pub") else str(pub_path)
-    priv_path = Path(priv_str)
-    if priv_path.is_file():
-        results.append(
-            CheckResult(name="ssh_private_key", status=PASS, summary=f"SSH private key present ({priv_path}).")
-        )
-    else:
-        results.append(
-            CheckResult(
-                name="ssh_private_key",
-                status=FAIL,
-                summary=f"SSH private key not found: {priv_path}",
-                remedy="The private key next to the public key is required to bootstrap the VM over SSH.",
-            )
-        )
-
-    return results
-
-
-def _agent_token_factory_result(tf_key: str | None = None) -> CheckResult:
-    """Token Factory key check (WARN): the headline chat feature needs it.
-
-    Pass a pre-resolved ``tf_key`` to avoid re-reading credentials when the
-    caller already has them.
-    """
-    from npa.workflows.sim2real_health import CheckResult, PASS, WARN
-
-    if tf_key is None:
-        tf_key, _ = _resolve_deploy_llm_credentials()
-    if tf_key:
-        return CheckResult(
-            name="token_factory", status=PASS, summary="Token Factory API key is configured."
-        )
-    return CheckResult(
-        name="token_factory",
-        status=WARN,
-        summary="Token Factory API key not found; agent chat will return 503 until it is set.",
-        remedy=(
-            "Get a key (starts with 'v1.') at https://tokenfactory.nebius.com/ and run "
-            "`npa configure --token-factory-key <key>`, then re-run `npa agent bootstrap`."
-        ),
-    )
-
-
-def _agent_nebius_auth_result() -> CheckResult:
-    """Live Nebius auth check (FAIL): deploy needs an authenticated profile to provision."""
-    from npa.workflows.sim2real_health import CheckResult, FAIL, PASS
-
-    try:
-        from npa.clients.nebius import get_iam_token
-
-        token = get_iam_token()
-    except Exception as exc:  # noqa: BLE001 - any auth/CLI error means "not ready"
-        return CheckResult(
-            name="nebius_profile",
-            status=FAIL,
-            summary="No authenticated Nebius CLI profile.",
-            remedy="Install/authenticate the Nebius CLI and run `npa configure`.",
-            details=(str(exc),),
-        )
-    if token:
-        return CheckResult(
-            name="nebius_profile", status=PASS, summary="Nebius CLI profile is authenticated."
-        )
-    return CheckResult(
-        name="nebius_profile",
-        status=FAIL,
-        summary="Nebius IAM token unavailable.",
-        remedy="Run `npa configure` / `nebius profile create` to authenticate.",
-    )
-
-
 def _render_agent_checks(results: list[CheckResult], *, output_json: bool) -> bool:
-    """Render agent preflight CheckResults; return True when any FAIL is present.
-
-    Uses the shared report renderer so agent and workbench-health preflight
-    output stay aligned.
-    """
-    from npa.workflows.sim2real_health import format_check_report, has_failure
-
-    typer.echo(format_check_report(results, output_json=output_json))
-    return has_failure(results)
+    """Render preflight results and report whether any check failed."""
+    report, failed = _render_agent_check_report(results, output_json=output_json)
+    typer.echo(report)
+    return failed
 
 
 def _normalize_llm_models(models: list[str] | tuple[str, ...] | str) -> list[str]:
@@ -1162,169 +1048,6 @@ def _stage_agent_npa_source(ssh: SSHClient, *, commit: str) -> None:
     finally:
         Path(archive_path).unlink(missing_ok=True)
         ssh.run(f"rm -f {shlex.quote(remote_archive)}")
-
-
-def _agent_strip_url_credentials_js() -> str:
-    """JS to strip user:pass@ from the URL bar while keeping HTTP Basic auth session."""
-    return """    <script>
-    (function stripUrlCredentials() {
-      try {
-        if (location.username || location.password) {
-          const clean = location.protocol + "//" + location.host + location.pathname + location.search + location.hash;
-          history.replaceState(null, "", clean);
-        }
-      } catch (_err) { /* best-effort */ }
-    })();
-    </script>"""
-
-
-def _agent_mobile_login_help_html() -> str:
-    """Mobile certificate + sign-in troubleshooting (public pages)."""
-    return """    <details class="mobile-help" style="margin:20px 0;padding:12px 16px;border:1px solid #e0e0e0;border-radius:8px;background:#fffbeb;">
-      <summary style="font-weight:600;cursor:pointer;">Phone / tablet login help</summary>
-      <ol style="margin:12px 0 0;padding-left:20px;line-height:1.55;">
-        <li><strong>Accept the certificate first.</strong> Open <a href="/healthz">/healthz</a> (no login). If Safari/Chrome warns the connection is not private, tap <em>Show Details</em> → <em>visit this website</em> / <em>Proceed</em>.</li>
-        <li>Return here and use the sign-in form (mobile browsers block password-in-URL redirects).</li>
-        <li>If sign-in still fails, try <strong>Chrome on Android</strong> or use a desktop browser.</li>
-        <li>Username is prefilled; password is in your operator <code>auth.env</code> file.</li>
-      </ol>
-    </details>"""
-
-
-def _agent_public_login_form_html(auth_user: str) -> str:
-    """Shared Sign in form for public welcome/login-help pages (mobile-safe basic auth)."""
-    return f"""    <section class="sign-in-panel" aria-labelledby="sign-in-heading">
-      <h2 id="sign-in-heading">Sign in</h2>
-      <p class="muted">Use the form if your browser does not show an HTTP Basic Auth dialog.</p>
-      <form id="npa-sign-in" class="sign-in" autocomplete="on">
-        <label for="npa-user">Username</label>
-        <input id="npa-user" name="username" type="text" value="{auth_user}" autocomplete="username" required>
-        <label for="npa-pass">Password</label>
-        <input id="npa-pass" name="password" type="password" autocomplete="current-password" required>
-        <button type="submit" id="npa-sign-in-btn">Sign in</button>
-        <p id="npa-sign-in-status" class="muted" role="status" aria-live="polite"></p>
-      </form>
-      <p class="muted note">Credentials are not left in the address bar after sign-in.</p>
-    </section>
-    <script>
-    (function () {{
-      try {{
-        if (location.username || location.password) {{
-          const clean = location.protocol + "//" + location.host + location.pathname + location.search + location.hash;
-          history.replaceState(null, "", clean);
-        }}
-      }} catch (_err) {{ /* best-effort */ }}
-      var form = document.getElementById("npa-sign-in");
-      var statusEl = document.getElementById("npa-sign-in-status");
-      var btn = document.getElementById("npa-sign-in-btn");
-      if (!form) return;
-
-      function setStatus(msg, isError) {{
-        if (!statusEl) return;
-        statusEl.textContent = msg || "";
-        statusEl.style.color = isError ? "#991b1b" : "#5f6573";
-      }}
-
-      function isMobileUa() {{
-        return /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || "");
-      }}
-
-      function destPath() {{
-        var rawPath = String(location.pathname || "/");
-        var normalizedPath = rawPath.length > 1 && rawPath.endsWith("/") ? rawPath.slice(0, -1) : rawPath;
-        return (normalizedPath === "/login-help.html" || normalizedPath === "/welcome") ? "/" : normalizedPath;
-      }}
-
-      function basicAuthHeader(user, pass) {{
-        return "Basic " + btoa(unescape(encodeURIComponent(user + ":" + pass)));
-      }}
-
-      function persistBasicAuth(user, pass) {{
-        try {{
-          sessionStorage.setItem("npa_agent_basic_auth", basicAuthHeader(user, pass));
-        }} catch (_err) {{ /* sessionStorage may be unavailable */ }}
-      }}
-
-      function xhrSignIn(user, pass, dest) {{
-        return new Promise(function (resolve, reject) {{
-          var xhr = new XMLHttpRequest();
-          xhr.open("GET", dest, true, user, pass);
-          xhr.onload = function () {{
-            if (xhr.status >= 200 && xhr.status < 400) {{
-              resolve();
-              return;
-            }}
-            if (xhr.status === 401) {{
-              reject(new Error("Invalid username or password."));
-              return;
-            }}
-            reject(new Error("Sign-in failed (HTTP " + xhr.status + ")."));
-          }};
-          xhr.onerror = function () {{
-            reject(new Error("Network error — open /healthz first and accept the certificate warning."));
-          }};
-          xhr.send();
-        }});
-      }}
-
-      function fetchSignIn(user, pass, dest) {{
-        return fetch(dest, {{
-          method: "GET",
-          headers: {{ "Authorization": basicAuthHeader(user, pass) }},
-          credentials: "omit",
-          cache: "no-store",
-        }}).then(function (resp) {{
-          if (!resp.ok) {{
-            throw new Error(resp.status === 401 ? "Invalid username or password." : "Sign-in failed (HTTP " + resp.status + ").");
-          }}
-        }});
-      }}
-
-      function urlEmbedSignIn(user, pass, dest) {{
-        var u = encodeURIComponent(user);
-        var p = encodeURIComponent(pass);
-        location.href = location.protocol + "//" + u + ":" + p + "@" + location.host + dest;
-      }}
-
-      form.addEventListener("submit", function (ev) {{
-        ev.preventDefault();
-        var user = document.getElementById("npa-user").value;
-        var pass = document.getElementById("npa-pass").value;
-        var dest = destPath();
-        setStatus("Signing in…", false);
-        if (btn) btn.disabled = true;
-
-        xhrSignIn(user, pass, dest)
-          .catch(function () {{ return fetchSignIn(user, pass, dest); }})
-          .then(function () {{
-            persistBasicAuth(user, pass);
-            window.location.href = dest;
-          }})
-          .catch(function (err) {{
-            if (!isMobileUa()) {{
-              persistBasicAuth(user, pass);
-              urlEmbedSignIn(user, pass, dest);
-              return;
-            }}
-            setStatus((err && err.message) ? err.message : "Sign-in failed on this device.", true);
-            if (btn) btn.disabled = false;
-          }});
-      }});
-    }})();
-    </script>"""
-def _is_routable_public_ip(value: str) -> bool:
-    candidate = (value or "").strip()
-    if not candidate:
-        return False
-    if candidate == "localhost":
-        return False
-    try:
-        ip = ipaddress.ip_address(candidate)
-    except ValueError:
-        return False
-    if ip.is_loopback or ip.is_private or ip.is_unspecified or ip.is_link_local:
-        return False
-    return True
 
 
 def _nginx_agent_site_body(
@@ -7454,11 +7177,34 @@ register_foxglove_routes(
 
 
 def _leisaac_manifest_for_run(run_id: str) -> dict | None:
-    return load_manifest_artifact(
+    manifest = load_manifest_artifact(
         run_id, validate_run_id=validate_run_id,
         s3_client=_agent_s3_client, s3_buckets=_agent_s3_buckets,
         find_artifacts=find_run_artifacts_across_buckets,
     )
+    if not isinstance(manifest, dict):
+        return None
+    # Dataset manifests remain nonsecret. Runtime authority is injected from
+    # the short-lived root-owned relay credential, which teardown removes.
+    try:
+        credential = json.loads(
+            Path("/etc/npa/leisaac-relay.json").read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError):
+        return manifest
+    if credential.get("run_id") != run_id:
+        return manifest
+    try:
+        expiry = datetime.fromisoformat(
+            str(credential.get("expires_at") or "").replace("Z", "+00:00")
+        )
+    except ValueError:
+        return manifest
+    if expiry <= datetime.now(timezone.utc):
+        return manifest
+    resolved = dict(manifest)
+    resolved["session_nonce"] = str(credential.get("session_nonce") or "")
+    return resolved
 
 
 register_leisaac_routes(

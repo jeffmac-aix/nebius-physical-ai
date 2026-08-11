@@ -441,6 +441,13 @@ def _import_rendered_backend(monkeypatch, tmp_path, *, module_name: str):
         "trace",
         "foxglove",
         "foxglove_routes",
+        "leisaac_registry",
+        "leisaac",
+        "leisaac_episodes",
+        "leisaac_bundles",
+        "leisaac_transport",
+        "leisaac_datachannel",
+        "leisaac_routes",
     ):
         (package / f"{name}.py").write_text(
             _extract(f"/opt/npa-agent/agent_backend/{name}.py"), encoding="utf-8"
@@ -526,6 +533,10 @@ def test_rendered_backend_imports_and_registers_foxglove_routes(monkeypatch, tmp
         "foxglove_routes",
         "leisaac_registry",
         "leisaac",
+        "leisaac_episodes",
+        "leisaac_bundles",
+        "leisaac_transport",
+        "leisaac_datachannel",
         "leisaac_routes",
     ):
         (package / f"{name}.py").write_text(

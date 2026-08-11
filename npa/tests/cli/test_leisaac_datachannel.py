@@ -17,6 +17,7 @@ from npa.agent_backend.leisaac_datachannel import (
     VideoDataChannelPeerPool,
     _wait_for_buffer_low,
     parse_video_datachannel_offer,
+    require_aiortc_runtime_version,
     valid_control_datachannel,
     valid_video_datachannel,
 )
@@ -56,6 +57,14 @@ def test_datachannel_offer_requires_exact_bounded_run_bound_sdp() -> None:
     for payload in invalid:
         with pytest.raises(VideoDataChannelError, match="invalid WebRTC video offer"):
             parse_video_datachannel_offer(payload, expected_run_id=RUN_ID)
+
+
+def test_aiortc_runtime_version_is_exact_and_fails_clearly(monkeypatch) -> None:
+    monkeypatch.setattr("npa.agent_backend.leisaac_datachannel.version", lambda _name: "1.15.0")
+    require_aiortc_runtime_version()
+    monkeypatch.setattr("npa.agent_backend.leisaac_datachannel.version", lambda _name: "1.16.0")
+    with pytest.raises(VideoDataChannelError, match=r"requires aiortc 1\.15\.0; found 1\.16\.0"):
+        require_aiortc_runtime_version()
 
 
 def test_datachannel_contract_is_unordered_and_never_retransmits_stale_frames() -> None:

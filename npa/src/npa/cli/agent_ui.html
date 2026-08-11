@@ -188,6 +188,7 @@
       .leisaac-stage img[hidden],
       .leisaac-stage canvas[hidden] { display: none; }
       .leisaac-stage audio { display: none; }
+      .leisaac-stage video { pointer-events: none; }
       .leisaac-overlay {
         position: absolute;
         left: 14px;
@@ -2322,6 +2323,9 @@
       let leisaacInputCount = 0;
       let leisaacStreamReady = false;
       let leisaacPeerConnectionRestore = null;
+      let leisaacNativeMediaPeer = null;
+      let leisaacNativeStatsBusy = false;
+      let leisaacNativeStatsSample = null;
       let leisaacWebSocketRestore = null;
       let leisaacFrameTimer = null;
       let leisaacSecondaryFrameTimer = null;
@@ -2356,6 +2360,7 @@
       let leisaacClientRunId = "";
       let leisaacClientResumeEpochMs = "";
       let leisaacClientResumeGeneration = 0;
+      let leisaacControlLeaseId = "";
       let leisaacControlLeaseReady = false;
       let leisaacReconnectPromise = null;
       let leisaacManualDisconnect = false;
@@ -2364,7 +2369,18 @@
       const leisaacUnackedControls = new Map();
       const leisaacKeysDown = new Set();
       const leisaacPings = new Map();
-      const leisaacTransportEvidence = { controls: [], frames: [], failures: [], reconnects: 0, active: "disconnected", video: "disconnected", dropped_frames: 0, decode_fallbacks: 0 };
+      const leisaacNativePendingCausal = new Map();
+      let leisaacNativePendingView = null;
+      let leisaacNativePaintedViewRevision = 0;
+      let leisaacNativeFrameCallbackGeneration = 0;
+      let leisaacNativeLastPresentedMs = 0;
+      const leisaacLastPaintByCamera = { workspace: 0, overview: 0 };
+      const leisaacPresentationIntervals = [];
+      let leisaacPresentationStalls = 0;
+      let leisaacPresentationStallDurationMs = 0;
+      let leisaacLatestFrameAgeMs = null;
+      let leisaacLastMetricsUiAt = 0;
+      const leisaacTransportEvidence = { controls: [], frames: [], failures: [], reconnects: 0, active: "disconnected", control: "disconnected", video: "disconnected", dropped_frames: 0, decode_fallbacks: 0, presentation: {} };
       const LEISAAC_EVIDENCE_LIMIT = 4096;
       function recordLeIsaacEvidence(kind, value) {
         const collection = leisaacTransportEvidence[kind];
@@ -2387,6 +2403,27 @@
           frames: leisaacTransportEvidence.frames.slice(),
           failures: leisaacTransportEvidence.failures.slice(),
         };
+      }
+      function observeLeIsaacPresentation(camera, paintedMonoMs, frameAgeMs = null) {
+        const prior = Number(leisaacLastPaintByCamera[camera] || 0);
+        leisaacLastPaintByCamera[camera] = paintedMonoMs;
+        const intervalMs = prior ? paintedMonoMs - prior : 0;
+        if (camera === "workspace" && intervalMs > 0) {
+          leisaacPresentationIntervals.push(intervalMs);
+          if (leisaacPresentationIntervals.length > 240) leisaacPresentationIntervals.shift();
+          if (intervalMs >= 250) {
+            leisaacPresentationStalls += 1;
+            leisaacPresentationStallDurationMs += intervalMs;
+          }
+        }
+        if (camera === "workspace") {
+          leisaacLatestFrameAgeMs = Number.isFinite(frameAgeMs) ? frameAgeMs : null;
+        }
+        if (paintedMonoMs - leisaacLastMetricsUiAt >= 250) {
+          leisaacLastMetricsUiAt = paintedMonoMs;
+          updateLeIsaacTransportIndicator();
+        }
+        return intervalMs;
       }
       let leisaacRecorderTimer = null;
       let leisaacRecorderPollInFlight = false;
@@ -2976,7 +3013,11 @@
           leisaacEpisodes = Array.isArray(payload.episodes) ? payload.episodes : [];
           leisaacEpisodeNextCursor = String(payload.next_cursor || "");
           renderLeIsaacEpisodeList();
-          if (label) label.textContent = "Showing " + String(leisaacEpisodes.length) + " immutable episode commits from this bounded page.";
+          if (label) label.textContent = leisaacEpisodes.length === 0 && leisaacEpisodeNextCursor
+            ? "No filter matches on this bounded page; more S3 pages are available. Continue with Next."
+            : "Showing " + String(leisaacEpisodes.length) + " immutable episode commits from this bounded page"
+              + " · filtered " + String(Number(payload.filtered_count || 0))
+              + " · skipped " + String(Number(payload.skipped_count || 0)) + ".";
           const previous = document.getElementById("leisaacEpisodesPreviousPage");
           const next = document.getElementById("leisaacEpisodesNextPage");
           if (previous) previous.disabled = leisaacEpisodeCursorHistory.length === 0;
@@ -3399,12 +3440,20 @@
         // reconnect from that predecessor must never steal the lease back.
         leisaacClientResumeEpochMs = String(Date.now());
         leisaacClientResumeGeneration = 0;
+        leisaacControlLeaseId = "";
       }
       function updateLeIsaacTransportIndicator() {
         const transport = document.getElementById("leisaacTransportStatus");
         const latency = document.getElementById("leisaacLatencyStatus");
         if (transport) {
-          const label = leisaacActiveTransport === "websocket-v1"
+          const activeVideo = String((leisaacCapability && leisaacCapability.active_video_transport) || leisaacVideoTransport || "disconnected");
+          const requestedVideo = String((leisaacCapability && leisaacCapability.requested_video_transport) || "unknown");
+          const codec = String((leisaacCapability && leisaacCapability.video_codec) || "unknown");
+          const acceleration = String((leisaacCapability && leisaacCapability.hardware_acceleration) || "unknown");
+          const fallback = String((leisaacCapability && leisaacCapability.video_fallback_reason) || "");
+          const label = leisaacActiveTransport === "webrtc-native-h264"
+            ? "WebRTC control + native video · requested " + requestedVideo + " · active " + activeVideo + " · " + codec + " · " + acceleration
+            : leisaacActiveTransport === "websocket-v1"
             ? (leisaacControlTransport === "webrtc-datachannel-v1"
               ? "WebRTC control + WebSocket video · preferred · latest-frame-wins"
               : leisaacVideoTransport === "webrtc-datachannel-v1"
@@ -3413,27 +3462,50 @@
             : leisaacActiveTransport === "jpeg-poll"
               ? "JPEG polling · fallback"
               : "disconnected";
-          transport.textContent = "Transport: " + label;
+          const contract = leisaacActiveTransport === "webrtc-native-h264"
+            ? ""
+            : " · requested " + requestedVideo + " · active " + activeVideo + " · " + codec + " · " + acceleration;
+          transport.textContent = "Transport: " + label + contract + (fallback ? " · fallback: " + fallback : "");
         }
         if (latency) {
           const now = performance.now();
           const elapsed = Math.max(0.001, (now - leisaacLastFpsAt) / 1000);
           const fps = leisaacLastFpsAt ? (leisaacDeliveredFrames - leisaacLastFpsFrames) / elapsed : 0;
           const uncertaintyMs = leisaacClockUncertaintyNs / 1000000;
+          const sorted = leisaacPresentationIntervals.slice().sort((left, right) => left - right);
+          const percentile = (fraction) => sorted.length
+            ? sorted[Math.min(sorted.length - 1, Math.floor((sorted.length - 1) * fraction))]
+            : 0;
+          const intervalP50 = percentile(0.5);
+          const intervalP95 = percentile(0.95);
+          const jitterMs = Math.max(0, intervalP95 - intervalP50);
+          const frameAge = Number.isFinite(leisaacLatestFrameAgeMs)
+            ? leisaacLatestFrameAgeMs.toFixed(1) + " ms"
+            : "unavailable for native RTP";
           latency.textContent =
             "Latency: control " + (leisaacLastControlLatencyMs ? leisaacLastControlLatencyMs.toFixed(1) + " ms" : "waiting") +
             " · " + fps.toFixed(1) + " FPS · dropped/coalesced " + String(leisaacDroppedFrames) +
+            " · interval p95 " + (intervalP95 ? intervalP95.toFixed(1) + " ms" : "waiting") +
+            " · jitter " + (jitterMs ? jitterMs.toFixed(1) + " ms" : "waiting") +
+            " · stalls " + String(leisaacPresentationStalls) + "/" + leisaacPresentationStallDurationMs.toFixed(1) + " ms" +
+            " · frame age " + frameAge +
             (uncertaintyMs ? " · clock ±" + uncertaintyMs.toFixed(1) + " ms" : "");
           if (!leisaacLastFpsAt || elapsed >= 1) {
             leisaacLastFpsAt = now;
             leisaacLastFpsFrames = leisaacDeliveredFrames;
           }
         }
-        leisaacTransportEvidence.active = leisaacActiveTransport === "websocket-v1"
-          ? leisaacControlTransport
-          : leisaacActiveTransport;
+        leisaacTransportEvidence.active = leisaacActiveTransport;
+        leisaacTransportEvidence.control = leisaacControlTransport;
         leisaacTransportEvidence.video = leisaacVideoTransport;
         leisaacTransportEvidence.dropped_frames = leisaacDroppedFrames;
+        leisaacTransportEvidence.presentation = {
+          interval_samples: leisaacPresentationIntervals.length,
+          stalls: leisaacPresentationStalls,
+          stall_duration_ms: leisaacPresentationStallDurationMs,
+          frame_age_ms: leisaacLatestFrameAgeMs,
+        };
+        if (leisaacActiveTransport === "webrtc-native-h264") sampleLeIsaacNativeStats();
       }
       function recordLeIsaacTransportFailure(stage, attempt, error) {
         const raw = String((error && error.message) || error || "transport failure");
@@ -3532,7 +3604,7 @@
         });
         if (event === "press") leisaacKeysDown.add(key);
         else leisaacKeysDown.delete(key);
-        if (leisaacActiveTransport === "websocket-v1") sendQueuedWebSocketControls();
+        if (["websocket-v1", "webrtc-native-h264"].includes(leisaacActiveTransport)) sendQueuedWebSocketControls();
         else {
           const flush = flushLeIsaacFallbackControls();
           if (flush) flush.catch((err) => {
@@ -3549,7 +3621,7 @@
           eventMonoMs: performance.now(),
           sentGeneration: 0,
         });
-        if (leisaacActiveTransport === "websocket-v1") sendQueuedWebSocketControls();
+        if (["websocket-v1", "webrtc-native-h264"].includes(leisaacActiveTransport)) sendQueuedWebSocketControls();
         else {
           const flush = flushLeIsaacFallbackControls();
           if (flush) flush.catch((err) => {
@@ -3595,6 +3667,7 @@
         const focused = host && (document.activeElement === host || host.contains(event && event.target));
         if (!leisaacStreamReady || !focused || !LEISAAC_KEYS.has(key) || (event && event.repeat)) return;
         event.preventDefault();
+        event.stopImmediatePropagation();
         queueLeIsaacControl(key, kind);
       }
       // Register before the lazy-loaded NVIDIA client.  Its keyboard handler
@@ -3609,6 +3682,8 @@
         const restore = leisaacPeerConnectionRestore;
         leisaacPeerConnectionRestore = null;
         if (restore) restore();
+        leisaacNativeMediaPeer = null;
+        leisaacNativeStatsSample = null;
       }
       function restoreLeIsaacWebSocketAdapter() {
         const restore = leisaacWebSocketRestore;
@@ -3657,7 +3732,8 @@
             iceServers: servers,
             iceTransportPolicy: "relay",
           });
-          return new NativePeerConnection(merged, constraints);
+          leisaacNativeMediaPeer = new NativePeerConnection(merged, constraints);
+          return leisaacNativeMediaPeer;
         }
         LeIsaacPeerConnection.prototype = NativePeerConnection.prototype;
         Object.setPrototypeOf(LeIsaacPeerConnection, NativePeerConnection);
@@ -3665,6 +3741,42 @@
         leisaacPeerConnectionRestore = () => {
           if (window.RTCPeerConnection === LeIsaacPeerConnection) window.RTCPeerConnection = NativePeerConnection;
         };
+      }
+      function sampleLeIsaacNativeStats() {
+        const peer = leisaacNativeMediaPeer;
+        if (!peer || typeof peer.getStats !== "function" || leisaacNativeStatsBusy) return;
+        const now = performance.now();
+        if (leisaacNativeStatsSample && now - leisaacNativeStatsSample.at < 1000) return;
+        leisaacNativeStatsBusy = true;
+        peer.getStats().then((report) => {
+          const codecs = new Map();
+          report.forEach((item) => {
+            if (item.type === "codec") codecs.set(item.id, item);
+          });
+          report.forEach((item) => {
+            if (item.type !== "inbound-rtp" || item.kind !== "video") return;
+            const previous = leisaacNativeStatsSample;
+            const elapsed = previous ? Math.max(0.001, (now - previous.at) / 1000) : 0;
+            const bytes = Number(item.bytesReceived || 0);
+            const codec = codecs.get(item.codecId) || {};
+            leisaacTransportEvidence.network = {
+              sampled_mono_ms: now,
+              receive_bitrate_bps: previous && elapsed
+                ? Math.max(0, (bytes - previous.bytes) * 8 / elapsed)
+                : null,
+              bytes_received: bytes,
+              packets_lost: Number(item.packetsLost || 0),
+              jitter_s: Number(item.jitter || 0),
+              frames_decoded: Number(item.framesDecoded || 0),
+              frames_dropped: Number(item.framesDropped || 0),
+              decoder_implementation: String(item.decoderImplementation || ""),
+              codec: String(codec.mimeType || ""),
+            };
+            leisaacNativeStatsSample = { at: now, bytes };
+          });
+        }).catch((error) => {
+          recordLeIsaacTransportFailure("webrtc-stats", 0, error);
+        }).finally(() => { leisaacNativeStatsBusy = false; });
       }
       function loadLeIsaacClient(status) {
         if (window.OVWebStreamingLibrary && window.OVWebStreamingLibrary.AppStreamer) {
@@ -3763,6 +3875,44 @@
           refreshSecondary();
         }
       }
+      function connectLeIsaacNativeSecondary(status) {
+        const secondary = document.getElementById("leisaacSecondaryFrame");
+        if (leisaacSecondaryFrameTimer !== null) window.clearTimeout(leisaacSecondaryFrameTimer);
+        leisaacSecondaryFrameTimer = null;
+        if (!secondary || !leisaacDualMode(status)) return;
+        secondary.onload = null;
+        secondary.onerror = null;
+        secondary.removeAttribute("src");
+        secondary.hidden = false;
+        let lastPaintMs = 0;
+        const refresh = () => {
+          leisaacFrameSequence += 1;
+          const separator = String(status.frame_url || "").includes("?") ? "&" : "?";
+          secondary.src = String(status.frame_url || "") + separator + "camera=overview&frame=" + String(leisaacFrameSequence);
+        };
+        secondary.onload = () => {
+          const now = performance.now();
+          recordLeIsaacEvidence("frames", {
+            sequence: leisaacFrameSequence,
+            camera: "overview",
+            transport: "authenticated-jpeg-poll",
+            painted_mono_ms: now,
+            inter_frame_ms: lastPaintMs ? now - lastPaintMs : null,
+            view_revision: Number((leisaacCapability && leisaacCapability.applied_view_revision) || 0),
+            causal_action_sequence: 0,
+            browser_dropped: 0,
+            dropped_before: 0,
+          });
+          lastPaintMs = now;
+          const label = document.getElementById("leisaacSecondaryStatus");
+          if (label) label.textContent = "Overview camera · bounded 4 FPS · primary-independent";
+          leisaacSecondaryFrameTimer = window.setTimeout(refresh, 250);
+        };
+        secondary.onerror = () => {
+          leisaacSecondaryFrameTimer = window.setTimeout(refresh, 500);
+        };
+        refresh();
+      }
       function updateLeIsaacModeUi(status) {
         if (!status) return;
         const viewContract = leisaacContract(status, "view_mode_contract");
@@ -3793,6 +3943,8 @@
         // as well as the selected value when that authoritative response lands.
         reconcileOptions(viewSelect, viewContract);
         reconcileOptions(recordingSelect, recordingContract);
+        const recorderState = String((status.recorder && status.recorder.state) || "idle");
+        if (recordingSelect) recordingSelect.disabled = !Boolean(status.available) || recorderState !== "idle";
         if (viewSelect && viewContract.values.includes(leisaacRequestedViewMode)) viewSelect.value = leisaacRequestedViewMode;
         if (recordingSelect && recordingContract.values.includes(leisaacRequestedRecordingMode)) recordingSelect.value = leisaacRequestedRecordingMode;
         const dual = viewContract.values.length === 2 && appliedView === viewContract.values[1];
@@ -4024,7 +4176,10 @@
         let payload;
         try { payload = JSON.parse(String(message.data || "")); } catch (_err) { return; }
         if (!payload || Number(payload.v || 0) !== 1) return;
-        if (payload.type === "resumed") {
+          if (payload.type === "resumed") {
+            if (/^[a-f0-9]{64}$/.test(String(payload.lease_id || ""))) {
+              leisaacControlLeaseId = String(payload.lease_id);
+            }
           leisaacControlLeaseReady = true;
           const expected = Number(payload.next_seq || 1);
           const lastApplied = Number(payload.last_applied_seq || 0);
@@ -4118,6 +4273,12 @@
               leisaacCapability.applied_view_mode = String(payload.mode || "");
               leisaacCapability.view_revision = latest;
               leisaacCapability.applied_view_revision = latest;
+              if (leisaacActiveTransport === "webrtc-native-h264") {
+                leisaacNativePendingView = {
+                  revision: latest,
+                  applied_ack_mono_ms: performance.now(),
+                };
+              }
             } else {
               leisaacCapability.requested_recording_camera_mode = String(payload.mode || "");
               leisaacCapability.applied_recording_camera_mode = String(payload.mode || "");
@@ -4125,6 +4286,9 @@
               leisaacCapability.applied_recording_revision = latest;
             }
             updateLeIsaacModeUi(leisaacCapability);
+            if (isView && leisaacActiveTransport === "webrtc-native-h264") {
+              connectLeIsaacNativeSecondary(leisaacCapability);
+            }
           }
           return;
         }
@@ -4148,9 +4312,83 @@
         });
         if (payload.phase === "applied") {
           leisaacLastControlLatencyMs = latencyMs;
+          if (leisaacActiveTransport === "webrtc-native-h264") {
+            // rVFC captureTime is mapped onto this document's monotonic
+            // timeline for WebRTC video.  A frame whose captureTime follows
+            // this applied acknowledgement is a conservative causal boundary.
+            // If the browser omits captureTime, leave causality unmeasured;
+            // never infer it from packet receipt or an arbitrary frame count.
+            leisaacNativePendingCausal.set(seq, {
+              applied_ack_mono_ms: performance.now(),
+              view_revision: Number((leisaacCapability && leisaacCapability.applied_view_revision) || 0),
+            });
+          }
           leisaacUnackedControls.delete(seq);
           updateLeIsaacTransportIndicator();
         }
+      }
+      function startLeIsaacNativeFrameTelemetry() {
+        const video = document.getElementById("leisaacVideo");
+        if (!video || typeof video.requestVideoFrameCallback !== "function") {
+          throw new Error("requestVideoFrameCallback is required for truthful WebRTC presentation telemetry");
+        }
+        const generation = ++leisaacNativeFrameCallbackGeneration;
+        leisaacNativeLastPresentedMs = 0;
+        const presented = (now, metadata) => {
+          if (generation !== leisaacNativeFrameCallbackGeneration || leisaacManualDisconnect) return;
+          const intervalMs = observeLeIsaacPresentation("workspace", now);
+          leisaacNativeLastPresentedMs = now;
+          let causalSequence = 0;
+          let causalLatencyMs = null;
+          let viewRevision = leisaacNativePaintedViewRevision;
+          const captureTime = Number(metadata.captureTime);
+          const frameAgeMs = Number.isFinite(captureTime) ? Math.max(0, now - captureTime) : null;
+          leisaacLatestFrameAgeMs = frameAgeMs;
+          if (
+            leisaacNativePendingView && Number.isFinite(captureTime) &&
+            captureTime >= Number(leisaacNativePendingView.applied_ack_mono_ms)
+          ) {
+            leisaacNativePaintedViewRevision = Number(leisaacNativePendingView.revision || 0);
+            leisaacNativePendingView = null;
+            viewRevision = leisaacNativePaintedViewRevision;
+          }
+          for (const [sequence, pending] of Array.from(leisaacNativePendingCausal.entries()).sort((a, b) => a[0] - b[0])) {
+            if (Number.isFinite(captureTime) && captureTime >= Number(pending.applied_ack_mono_ms)) {
+              causalSequence = Math.max(causalSequence, Number(sequence));
+              causalLatencyMs = now - Number(pending.applied_ack_mono_ms);
+              viewRevision = Number(pending.view_revision || viewRevision);
+              leisaacNativePendingCausal.delete(sequence);
+            }
+          }
+          leisaacDeliveredFrames += 1;
+          recordLeIsaacEvidence("frames", {
+            sequence: Number(metadata.presentedFrames || leisaacDeliveredFrames),
+            camera: "workspace",
+            transport: "webrtc-kit-h264",
+            codec: "H264",
+            hardware_acceleration: "runtime-nvenc",
+            media_time_s: Number(metadata.mediaTime || 0),
+            capture_time_ms: Number.isFinite(captureTime) ? captureTime : null,
+            receive_time_ms: Number.isFinite(Number(metadata.receiveTime)) ? Number(metadata.receiveTime) : null,
+            rtp_timestamp: Number.isFinite(Number(metadata.rtpTimestamp)) ? Number(metadata.rtpTimestamp) : null,
+            decode_processing_ms: Number.isFinite(Number(metadata.processingDuration))
+              ? Number(metadata.processingDuration) * 1000
+              : null,
+            expected_display_time_ms: Number(metadata.expectedDisplayTime || 0),
+            painted_mono_ms: now,
+            inter_frame_ms: intervalMs || null,
+            stall: intervalMs >= 250,
+            frame_age_ms: frameAgeMs,
+            frame_age_reason: frameAgeMs === null ? "browser did not expose WebRTC captureTime" : "",
+            causal_action_sequence: causalSequence,
+            causal_applied_to_painted_ms: causalLatencyMs,
+            view_revision: viewRevision,
+            browser_dropped: 0,
+            dropped_before: 0,
+          });
+          video.requestVideoFrameCallback(presented);
+        };
+        video.requestVideoFrameCallback(presented);
       }
       function parseLeIsaacFrame(buffer) {
         const view = new DataView(buffer);
@@ -4318,6 +4556,7 @@
             leisaacLastFrameSequences[frame.camera] = frame.sequence;
             const captureClientWallNs = frame.captureWallNs - leisaacClockOffsetNs;
             const frameAgeMs = (Date.now() * 1000000 - captureClientWallNs) / 1000000;
+            const intervalMs = observeLeIsaacPresentation(frame.camera, paintMonoMs, frameAgeMs);
             recordLeIsaacEvidence("frames", {
               sequence: frame.sequence,
               camera: frame.camera,
@@ -4332,6 +4571,7 @@
               view_revision: frame.viewRevision,
               received_mono_ms: frame.receivedMonoMs,
               painted_mono_ms: paintMonoMs,
+              inter_frame_ms: intervalMs || null,
               frame_age_ms: frameAgeMs,
               clock_uncertainty_ms: leisaacClockUncertaintyNs / 1000000,
               dropped_before: frame.droppedBefore,
@@ -4464,6 +4704,7 @@
         host.setAttribute("data-orbit-bound", "1");
         let pointer = null;
         host.addEventListener("pointerdown", (event) => {
+          event.stopImmediatePropagation();
           if (!(leisaacCapability && leisaacCapability.view_orbit)) return;
           pointer = { id: event.pointerId, x: event.clientX, y: event.clientY };
           host.classList.add("is-orbiting");
@@ -4479,6 +4720,7 @@
           event.preventDefault();
         });
         host.addEventListener("pointermove", (event) => {
+          event.stopImmediatePropagation();
           if (!pointer || pointer.id !== event.pointerId) return;
           const dx = event.clientX - pointer.x;
           const dy = event.clientY - pointer.y;
@@ -4488,6 +4730,7 @@
           event.preventDefault();
         });
         const finish = (event) => {
+          event.stopImmediatePropagation();
           if (pointer && pointer.id === event.pointerId) {
             try {
               if (
@@ -4503,6 +4746,7 @@
         host.addEventListener("pointerup", finish);
         host.addEventListener("pointercancel", finish);
         host.addEventListener("wheel", (event) => {
+          event.stopImmediatePropagation();
           if (!(leisaacCapability && leisaacCapability.view_orbit)) return;
           queueLeIsaacViewDelta(0, 0, event.deltaY * 0.002);
           event.preventDefault();
@@ -4774,21 +5018,21 @@
           throw error;
         }
       }
-      function openLeIsaacSocketPair(status, useControlDataChannel, useVideoDataChannel) {
+      function openLeIsaacSocketPair(status, useControlDataChannel, useVideoDataChannel, controlOnly = false) {
         closeLeIsaacSockets();
         const generation = leisaacSocketGeneration;
         const control = useControlDataChannel
           ? null
           : new WebSocket(leisaacWebSocketUrl(status.control_ws_url), "npa.leisaac.control.v1");
-        const video = useVideoDataChannel
+        const video = controlOnly ? null : (useVideoDataChannel
           ? null
-          : new WebSocket(leisaacWebSocketUrl(status.video_ws_url), "npa.leisaac.video.v1");
+          : new WebSocket(leisaacWebSocketUrl(status.video_ws_url), "npa.leisaac.video.v1"));
         if (video) video.binaryType = "arraybuffer";
         leisaacControlSocket = control;
         leisaacVideoSocket = video;
         return new Promise((resolve, reject) => {
           let controlOpen = false;
-          let videoOpen = false;
+          let videoOpen = controlOnly;
           let settled = false;
           const timeout = window.setTimeout(() => finish(new Error("preferred connection timed out")), 15000);
           const finish = (error) => {
@@ -4830,6 +5074,7 @@
               keys_down: Array.from(leisaacKeysDown),
               client_mono_ns: leisaacMonoNs(),
               client_wall_ns: leaseEpoch,
+              lease_id: leisaacControlLeaseId,
             }));
             finish();
           };
@@ -4840,6 +5085,7 @@
           } else {
             openLeIsaacControlDataChannel(status, generation)
               .then((channel) => {
+                leisaacControlSocket = channel;
                 channel.onmessage = receiveControl;
                 resume(channel);
               })
@@ -4852,7 +5098,7 @@
               finish();
             };
             video.onmessage = handleLeIsaacVideoMessage;
-          } else {
+          } else if (!controlOnly) {
             openLeIsaacVideoDataChannel(status, generation).then(() => {
               videoOpen = true;
               finish();
@@ -4864,7 +5110,7 @@
           if (control) {
             control.onclose = () => {
               if (!settled) failed();
-              else if (generation === leisaacSocketGeneration && leisaacActiveTransport === "websocket-v1") recoverLeIsaacPreferred(status);
+              else if (generation === leisaacSocketGeneration && ["websocket-v1", "webrtc-native-h264"].includes(leisaacActiveTransport)) recoverLeIsaacPreferred(status, controlOnly);
             };
           }
           if (video) {
@@ -4890,7 +5136,7 @@
           throw new Error("preferred transport authorization failed (HTTP " + response.status + ")");
         }
       }
-      async function connectLeIsaacPreferred(status) {
+      async function connectLeIsaacPreferred(status, controlOnly = false) {
         let lastError = null;
         for (let attempt = 0; attempt < 3; attempt += 1) {
           if (leisaacManualDisconnect) return false;
@@ -4901,23 +5147,24 @@
             const useControlDataChannel = attempt === 0 &&
               String(status.preferred_control_transport || "") === "webrtc-datachannel-v1" &&
               Boolean(status.control_datachannel_url);
-            const useVideoDataChannel = attempt === 0 && !useControlDataChannel &&
+            const useVideoDataChannel = !controlOnly && attempt === 0 && !useControlDataChannel &&
               String(status.preferred_transport || "") === "webrtc-datachannel-v1" &&
               Boolean(status.video_datachannel_url);
-            await openLeIsaacSocketPair(status, useControlDataChannel, useVideoDataChannel);
+            await openLeIsaacSocketPair(status, useControlDataChannel, useVideoDataChannel, controlOnly);
             // A transient preferred-transport failure may have started the
             // tested JPEG fallback.  Stop its polling loops before accepting
             // binary frames so the two transports cannot contend or present
             // stale fallback images after recovery.
             if (recoveredFromPolling) stopLeIsaacFramePolling();
             leisaacReconnectAttempts = attempt;
-            leisaacActiveTransport = "websocket-v1";
+            leisaacActiveTransport = controlOnly ? "webrtc-native-h264" : "websocket-v1";
+            if (controlOnly) leisaacVideoTransport = "webrtc-kit-h264-nvenc";
             const generation = leisaacSocketGeneration;
             if (leisaacControlDataChannel) {
               leisaacControlDataChannel.onclose = () => {
-                if (generation === leisaacSocketGeneration && leisaacActiveTransport === "websocket-v1") {
+                if (generation === leisaacSocketGeneration && ["websocket-v1", "webrtc-native-h264"].includes(leisaacActiveTransport)) {
                   recordLeIsaacTransportFailure("webrtc-control", attempt, new Error("data channel closed"));
-                  recoverLeIsaacPreferred(status);
+                  recoverLeIsaacPreferred(status, controlOnly);
                 }
               };
             }
@@ -4926,10 +5173,10 @@
                 if (
                   ["failed", "closed"].includes(String(leisaacControlPeer && leisaacControlPeer.connectionState || "")) &&
                   generation === leisaacSocketGeneration &&
-                  leisaacActiveTransport === "websocket-v1"
+                  ["websocket-v1", "webrtc-native-h264"].includes(leisaacActiveTransport)
                 ) {
                   recordLeIsaacTransportFailure("webrtc-control-peer", attempt, new Error("peer connection failed"));
-                  recoverLeIsaacPreferred(status);
+                  recoverLeIsaacPreferred(status, controlOnly);
                 }
               };
             }
@@ -4969,6 +5216,7 @@
             closeLeIsaacSockets();
           }
         }
+        if (controlOnly) throw (lastError || new Error("authenticated control transport unavailable"));
         setLeIsaacStreamState("Preferred transport unavailable; using tested polling fallback", "pending");
         leisaacActiveTransport = "jpeg-poll";
         updateLeIsaacTransportIndicator();
@@ -4979,12 +5227,12 @@
         if (lastError) console.warn("LeIsaac preferred transport failed", lastError);
         return false;
       }
-      function recoverLeIsaacPreferred(status) {
+      function recoverLeIsaacPreferred(status, controlOnly = false) {
         if (leisaacReconnectPromise) return leisaacReconnectPromise;
         leisaacTransportEvidence.reconnects += 1;
         leisaacStreamReady = false;
         setLeIsaacStreamState("Reconnecting preferred transport…", "pending");
-        leisaacReconnectPromise = connectLeIsaacPreferred(status).finally(() => { leisaacReconnectPromise = null; });
+        leisaacReconnectPromise = connectLeIsaacPreferred(status, controlOnly).finally(() => { leisaacReconnectPromise = null; });
         return leisaacReconnectPromise;
       }
       function scheduleLeIsaacReconnect(delayMs) {
@@ -4998,7 +5246,7 @@
           if (leisaacManualDisconnect) return;
           if (
             leisaacControlLeaseReady &&
-            leisaacActiveTransport === "websocket-v1" &&
+            ["websocket-v1", "webrtc-native-h264"].includes(leisaacActiveTransport) &&
             leisaacControlIsOpen(leisaacControlSocket)
           ) return;
           if (leisaacReconnectPromise) {
@@ -5043,6 +5291,14 @@
         if (connectBtn) connectBtn.disabled = true;
         leisaacManualDisconnect = false;
         leisaacStreamReady = false;
+        leisaacNativePendingView = null;
+        leisaacNativePaintedViewRevision = Number(status.applied_view_revision || 0);
+        leisaacPresentationIntervals.length = 0;
+        leisaacPresentationStalls = 0;
+        leisaacPresentationStallDurationMs = 0;
+        leisaacLatestFrameAgeMs = null;
+        leisaacLastPaintByCamera.workspace = 0;
+        leisaacLastPaintByCamera.overview = 0;
         setLeIsaacStreamState("Connecting to live simulation…", "pending");
         try {
           ensureLeIsaacClientIdentity(status);
@@ -5060,6 +5316,13 @@
             return;
           }
           const AppStreamer = await loadLeIsaacClient(status);
+          // Establish the authenticated authority/safety channel without
+          // starting the JPEG display socket. Kit owns the one live primary
+          // media pipeline; recording capture remains independent.
+          await connectLeIsaacPreferred(status, true);
+          stopLeIsaacFrames();
+          const nativeVideo = document.getElementById("leisaacVideo");
+          if (nativeVideo) nativeVideo.hidden = false;
           // Install after NVIDIA's module has applied its adapter shims, but
           // before AppStreamer creates the live peer connection.
           installLeIsaacPeerConnection(status);
@@ -5082,12 +5345,15 @@
               audioElementId: "leisaacAudio",
               authenticate: false,
               maxReconnects: 20,
-              nativeTouchEvents: true,
+              // Video is display-only. All keyboard, gamepad, touch, and orbit
+              // authority stays on NPA's authenticated ordered control path.
+              nativeTouchEvents: false,
+              localizeTextInput: false,
               // Match NVIDIA's supported direct-stream defaults.  Kit uses
               // these dimensions to initialize its RTX encoder surface.
-              width: 1920,
-              height: 1080,
-              fps: 60,
+              width: 1280,
+              height: 720,
+              fps: 30,
               onUpdate: handleLeIsaacStreamEvent,
               onStart: handleLeIsaacStreamEvent,
               onStop: () => {
@@ -5104,6 +5370,7 @@
               },
             },
           });
+          connectLeIsaacNativeSecondary(status);
           if (disconnectBtn) disconnectBtn.disabled = false;
         } catch (err) {
           restoreLeIsaacPeerConnection();
@@ -5118,6 +5385,7 @@
         const detail = String((message && (message.info || message.detail || message.message)) || "Connecting");
         if (status === "success") {
           leisaacStreamReady = true;
+          startLeIsaacNativeFrameTelemetry();
           setLeIsaacStreamState("Live · keyboard teleoperation active", "ready");
           const host = document.getElementById("leisaacStreamHost");
           if (host) host.focus();
@@ -5132,6 +5400,9 @@
       }
       async function disconnectLeIsaac() {
         leisaacManualDisconnect = true;
+        leisaacNativeFrameCallbackGeneration += 1;
+        leisaacNativePendingCausal.clear();
+        leisaacNativePendingView = null;
         leisaacBundleRestartPending = false;
         const controlSocket = leisaacControlSocket;
         if (leisaacControlIsOpen(controlSocket) && leisaacClientId) {
@@ -10559,6 +10830,7 @@
           removeLeIsaacTab,
           connectLeIsaac,
           disconnectLeIsaac,
+          queueLeIsaacControl,
           leisaacTransportEvidence: snapshotLeIsaacTransportEvidence,
           // Performance probes poll every few milliseconds on the browser
           // event loop. They are read-only and must not allocate/copy the

@@ -279,6 +279,7 @@ describe("NPA agent LeIsaac capability tab", () => {
     cy.wait("@recorderControl");
     cy.get("@recorderControl.all").should("have.length", 1);
     cy.get("#leisaacRecorderStatus").should("contain.text", "State: recording");
+    cy.get("#leisaacRecordingCameras").should("be.disabled");
     cy.get("#leisaacRecordSuccess").should("not.be.disabled").click();
     cy.wait("@recorderControl");
     cy.get("#leisaacRecorderGuidance").should(
@@ -288,6 +289,7 @@ describe("NPA agent LeIsaac capability tab", () => {
     cy.get("#leisaacRecordFinalize").should("not.be.disabled").click();
     cy.wait("@recorderControl");
     cy.get("#leisaacRecorderStatus").should("contain.text", "completed: 2");
+    cy.get("#leisaacRecordingCameras").should("not.be.disabled");
     cy.get("#leisaacRecorderArtifact").should(
       "contain.text",
       "Immutable dataset",
@@ -485,6 +487,13 @@ describe("NPA agent LeIsaac capability tab", () => {
         available: true,
         run_id: "mock-run",
         transport: "agent-relay",
+        stream_transport: "webrtc",
+        control_ws_url: "/api/leisaac/transport/control?run_id=mock-run",
+        requested_video_transport: "webrtc-kit-h264",
+        active_video_transport: "webrtc-kit-h264",
+        video_codec: "H264",
+        hardware_acceleration: "runtime-nvenc",
+        video_fallback_reason: "",
         task: "LeIsaac-SO101-PickOrange-v0",
         teleop_device: "keyboard",
         media_server: "203.0.113.50",
@@ -500,6 +509,7 @@ describe("NPA agent LeIsaac capability tab", () => {
         signaling_server: "same-origin",
         signaling_port: 443,
         signaling_path: "/api/leisaac/signal",
+        control_ws_url: "/api/leisaac/transport/control?run_id=mock-run",
         client_module_url: "/api/leisaac/client/index.js?run_id=mock-run",
         source_version: "0.4.0",
         source_commit: "1651c321e9b0c1bb54233211fc7b3cd70d8373d5",
@@ -557,6 +567,12 @@ describe("NPA agent LeIsaac capability tab", () => {
         available: true,
         run_id: "mock-run",
         transport: "agent-relay",
+        stream_transport: "webrtc",
+        requested_video_transport: "webrtc-kit-h264",
+        active_video_transport: "webrtc-kit-h264",
+        video_codec: "H264",
+        hardware_acceleration: "runtime-nvenc",
+        video_fallback_reason: "",
         task: "LeIsaac-SO101-PickOrange-v0",
         teleop_device: "keyboard",
         media_server: "203.0.113.50",
@@ -570,6 +586,7 @@ describe("NPA agent LeIsaac capability tab", () => {
           },
         ],
         signaling_path: "/api/leisaac/signal",
+        control_ws_url: "/api/leisaac/transport/control?run_id=mock-run",
         client_module_url: "/api/leisaac/client/index.js?run_id=mock-run",
         gpu: "NVIDIA RTX PRO 6000 Blackwell Server Edition",
       },
@@ -608,13 +625,58 @@ describe("NPA agent LeIsaac capability tab", () => {
       win.RTCPeerConnection = CapturingPeerConnection;
       function CapturingWebSocket(url) {
         this.url = String(url);
+        this.readyState = CapturingWebSocket.CONNECTING;
+        this.sent = [];
+        if (this.url.includes("/transport/control")) {
+          win.__LEISAAC_CONTROL_SOCKET__ = this;
+        }
+        win.setTimeout(() => {
+          this.readyState = CapturingWebSocket.OPEN;
+          if (this.onopen) this.onopen({ target: this });
+        }, 0);
       }
       CapturingWebSocket.CONNECTING = 0;
       CapturingWebSocket.OPEN = 1;
       CapturingWebSocket.CLOSING = 2;
       CapturingWebSocket.CLOSED = 3;
+      CapturingWebSocket.prototype.send = function send(raw) {
+        this.sent.push(String(raw));
+        const message = JSON.parse(String(raw));
+        if (message.type !== "resume" && !this.url.includes("/transport/control")) return;
+        const response = message.type === "resume"
+          ? {
+              v: 1,
+              type: "resumed",
+              run_id: message.run_id,
+              client_id: message.client_id,
+              lease_id: "a".repeat(64),
+              lease_generation: 1,
+              next_seq: 1,
+              last_applied_seq: 0,
+              keys_down: [],
+            }
+          : { ...message, type: "ack", phase: "applied" };
+        win.setTimeout(() => {
+          if (this.onmessage) this.onmessage({ data: JSON.stringify(response) });
+        }, 0);
+      };
+      CapturingWebSocket.prototype.close = function close() {
+        this.readyState = CapturingWebSocket.CLOSED;
+        if (this.onclose) this.onclose({ target: this });
+      };
       win.__LEISAAC_NATIVE_WEBSOCKET__ = CapturingWebSocket;
       win.WebSocket = CapturingWebSocket;
+      win.__LEISAAC_FRAME_CALLBACKS__ = [];
+      const video = win.document.getElementById("leisaacVideo");
+      win.__LEISAAC_UNAUTHENTICATED_KEY_EVENTS__ = 0;
+      win.document.getElementById("leisaacStreamHost").addEventListener(
+        "keydown",
+        () => { win.__LEISAAC_UNAUTHENTICATED_KEY_EVENTS__ += 1; },
+      );
+      video.requestVideoFrameCallback = (callback) => {
+        win.__LEISAAC_FRAME_CALLBACKS__.push(callback);
+        return win.__LEISAAC_FRAME_CALLBACKS__.length;
+      };
     });
     cy.get("#leisaacConnect").click();
     cy.wait("@leisaacClient");
@@ -622,6 +684,11 @@ describe("NPA agent LeIsaac capability tab", () => {
       "contain.text",
       "keyboard teleoperation active",
     );
+    cy.get("#leisaacTransportStatus")
+      .should("contain.text", "native video")
+      .and("contain.text", "active webrtc-kit-h264")
+      .and("contain.text", "H264")
+      .and("contain.text", "runtime-nvenc");
     cy.window()
       .its("__LEISAAC_CONNECT_PROPS__.streamConfig.signalingPath")
       .should("eq", "/api/leisaac/signal");
@@ -636,13 +703,19 @@ describe("NPA agent LeIsaac capability tab", () => {
       .should("eq", 47998);
     cy.window()
       .its("__LEISAAC_CONNECT_PROPS__.streamConfig.width")
-      .should("eq", 1920);
+      .should("eq", 1280);
     cy.window()
       .its("__LEISAAC_CONNECT_PROPS__.streamConfig.height")
-      .should("eq", 1080);
+      .should("eq", 720);
     cy.window()
       .its("__LEISAAC_CONNECT_PROPS__.streamConfig.fps")
-      .should("eq", 60);
+      .should("eq", 30);
+    cy.window()
+      .its("__LEISAAC_CONNECT_PROPS__.streamConfig.nativeTouchEvents")
+      .should("eq", false);
+    cy.window()
+      .its("__LEISAAC_CONNECT_PROPS__.streamConfig.localizeTextInput")
+      .should("eq", false);
     cy.window()
       .its("__LEISAAC_PEER_CONFIG__.iceTransportPolicy")
       .should("eq", "relay");
@@ -653,6 +726,67 @@ describe("NPA agent LeIsaac capability tab", () => {
     cy.get("#leisaacInputStatus")
       .should("contain.text", "Keyboard events sent: 1")
       .and("contain.text", "last W");
+    cy.window().its("__LEISAAC_UNAUTHENTICATED_KEY_EVENTS__").should("eq", 0);
+    cy.window().should((win) => {
+      const socket = win.__LEISAAC_CONTROL_SOCKET__;
+      expect(
+        socket && socket.sent.map((raw) => JSON.parse(raw)).find(
+          (item) => item.type === "control" && item.key === "W",
+        ),
+      ).to.be.an("object");
+    });
+    cy.window().then((win) => {
+      const socket = win.__LEISAAC_CONTROL_SOCKET__;
+      const control = socket.sent.map((raw) => JSON.parse(raw)).find(
+        (item) => item.type === "control" && item.key === "W",
+      );
+      expect(control).to.be.an("object");
+      win.__LEISAAC_CAUSAL_SEQUENCE__ = control.seq;
+      if (!win.__NPA_AGENT_TEST__.leisaacTransportEvidenceLive().controls.some(
+        (item) => item.seq === control.seq && item.phase === "applied",
+      )) {
+        socket.onmessage({
+          data: JSON.stringify({ ...control, type: "ack", phase: "applied" }),
+        });
+      }
+    });
+    cy.window().should((win) => {
+      expect(
+        win.__NPA_AGENT_TEST__.leisaacTransportEvidenceLive().controls.some(
+          (item) => item.seq === win.__LEISAAC_CAUSAL_SEQUENCE__ && item.phase === "applied" &&
+            item.key === "W" && item.event === "press",
+        ),
+      ).to.equal(true);
+    });
+    cy.window().then((win) => {
+      const first = win.__LEISAAC_FRAME_CALLBACKS__.shift();
+      expect(first).to.be.a("function");
+      first(win.performance.now(), {
+        presentedFrames: 1,
+        mediaTime: 0.033,
+        captureTime: 0,
+        expectedDisplayTime: win.performance.now(),
+      });
+      const frames = win.__NPA_AGENT_TEST__.leisaacTransportEvidenceLive().frames;
+      expect(frames.at(-1).causal_action_sequence).to.equal(0);
+      const second = win.__LEISAAC_FRAME_CALLBACKS__.shift();
+      expect(second).to.be.a("function");
+      second(win.performance.now() + 33, {
+        presentedFrames: 2,
+        mediaTime: 0.066,
+        captureTime: win.performance.now() + 30,
+        receiveTime: win.performance.now() + 31,
+        rtpTimestamp: 9000,
+        processingDuration: 0.004,
+        expectedDisplayTime: win.performance.now() + 33,
+      });
+      expect(frames.at(-1).causal_action_sequence).to.equal(win.__LEISAAC_CAUSAL_SEQUENCE__);
+      expect(frames.at(-1).rtp_timestamp).to.equal(9000);
+      expect(frames.at(-1).decode_processing_ms).to.equal(4);
+      expect(frames.at(-1).frame_age_ms).to.be.at.least(0);
+      expect(frames.at(-1).view_revision).to.equal(0);
+      expect(frames.at(-1).transport).to.equal("webrtc-kit-h264");
+    });
 
     cy.intercept("GET", "/api/leisaac/status?run_id=mock-run", {
       statusCode: 200,
@@ -903,8 +1037,19 @@ describe("NPA agent LeIsaac capability tab", () => {
       expect(peer.channel.options).to.deep.include({ ordered: true });
       expect(peer.channel.sent.some((item) => item.type === "resume")).to.equal(true);
       const evidence = win.__NPA_AGENT_TEST__.leisaacTransportEvidence();
-      expect(evidence.active).to.equal("webrtc-datachannel-v1");
+      expect(evidence.active).to.equal("websocket-v1");
+      expect(evidence.control).to.equal("webrtc-datachannel-v1");
       expect(evidence.video).to.equal("websocket-v1");
+    });
+    cy.window().then((win) => {
+      win.__NPA_AGENT_TEST__.queueLeIsaacControl("W", "press");
+    });
+    cy.window().should((win) => {
+      expect(
+        win.__LEISAAC_DC_PEER__.channel.sent.some(
+          (item) => item.type === "control" && item.key === "W",
+        ),
+      ).to.equal(true);
     });
     cy.get("#leisaacDisconnect").click();
   });
@@ -1658,6 +1803,52 @@ describe("NPA agent LeIsaac capability tab", () => {
     cy.get("#leisaacEpisodeList").should("contain.text", "Episode 1 · failure");
   });
 
+  it("distinguishes a filtered empty S3 page from an empty collection", () => {
+    cy.intercept("GET", "/api/leisaac/status*", {
+      statusCode: 200,
+      body: {
+        available: false,
+        episodes_available: true,
+        reason: "runtime intentionally unavailable",
+        run_id: "mock-filtered-page",
+        task: "LeIsaac-SO101-LiftCube-v0",
+        dataset_uri: "s3://bucket/datasets/leisaac",
+        recorder: { state: "idle", completed_episode_count: 2 },
+      },
+    }).as("filteredPageStatus");
+    cy.intercept("POST", "/api/leisaac/select", {
+      statusCode: 200,
+      body: { selected: true },
+    });
+    cy.intercept("GET", "/api/leisaac/episodes/versions?*", {
+      statusCode: 200,
+      body: { versions: [], next_cursor: "", bounded: true },
+    });
+    cy.intercept("GET", "/api/leisaac/episodes?*", {
+      statusCode: 200,
+      body: {
+        episodes: [],
+        next_cursor: "opaque-next-page",
+        has_more_pages: true,
+        source_count: 20,
+        loaded_count: 20,
+        filtered_count: 20,
+        skipped_count: 0,
+        bounded: true,
+      },
+    }).as("filteredEmptyPage");
+    cy.window().then((win) =>
+      win.__NPA_AGENT_TEST__.refreshLeIsaacCapability("mock-filtered-page"),
+    );
+    cy.wait("@filteredPageStatus");
+    cy.get("#tabLeIsaac").click();
+    cy.wait("@filteredEmptyPage");
+    cy.get("#leisaacEpisodeStatus")
+      .should("contain.text", "No filter matches on this bounded page")
+      .and("contain.text", "Continue with Next");
+    cy.get("#leisaacEpisodesNextPage").should("not.be.disabled");
+  });
+
   it("validates, uploads, discovers, and applies robot, scene, and device bundles", () => {
     const digests = { robot: "d".repeat(64), scene: "e".repeat(64), device: "f".repeat(64) };
     const uploaded = [];
@@ -1927,6 +2118,13 @@ describe("NPA agent LeIsaac capability tab", () => {
     cy.intercept("POST", "/api/leisaac/input?run_id=mock-ws-fallback", (request) => {
       if (request.body.type !== "view-mode") return;
       expect(request.headers["x-npa-leisaac-control"]).to.equal("1");
+      if (request.body.mode !== "dual_slow") {
+        request.reply({
+          statusCode: 202,
+          body: { v: 1, type: "ack", phase: "accepted" },
+        });
+        return;
+      }
       expect(request.body).to.include({
         v: 1,
         type: "view-mode",

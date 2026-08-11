@@ -25,7 +25,7 @@ LIVE_RUN_ID="${NPA_AGENT_CYPRESS_RUN_ID:-${NPA_AGENT_RUN_ID:-}}"
 LIVE_LEISAAC_RUN_ID="${NPA_AGENT_RUN_ID:-}"
 LIVE_TASK="${NPA_AGENT_TASK:-}"
 LIVE_ENVIRONMENT_ID="${NPA_AGENT_ENVIRONMENT_ID:-}"
-LIVE_COMPLETED_EPISODES="${NPA_AGENT_COMPLETED_EPISODES:-0}"
+LIVE_COMPLETED_EPISODES="${NPA_AGENT_COMPLETED_EPISODES:-}"
 LIVE_ARTIFACT_KEY="${NPA_AGENT_CYPRESS_ARTIFACT_KEY:-}"
 
 usage() {
@@ -113,6 +113,17 @@ if [[ -z "${AGENT_URL}" || -z "${AGENT_USER:-}" || -z "${AGENT_PASSWORD:-}" ]]; 
 fi
 
 LIVE_CYPRESS_SCRIPT="cy:live"
+if [[ -n "${LIVE_LEISAAC_RUN_ID}" || -n "${LIVE_TASK}" || -n "${LIVE_ENVIRONMENT_ID}" || -n "${LIVE_COMPLETED_EPISODES}" ]]; then
+  if [[ -z "${LIVE_LEISAAC_RUN_ID}" || -z "${LIVE_TASK}" || -z "${LIVE_ENVIRONMENT_ID}" || -z "${LIVE_COMPLETED_EPISODES}" ]]; then
+    echo "Live LeIsaac Cypress requires NPA_AGENT_RUN_ID, NPA_AGENT_TASK, NPA_AGENT_ENVIRONMENT_ID, and NPA_AGENT_COMPLETED_EPISODES" >&2
+    exit 2
+  fi
+  if ! [[ "${LIVE_COMPLETED_EPISODES}" =~ ^[0-9]+$ ]]; then
+    echo "NPA_AGENT_COMPLETED_EPISODES must be a non-negative integer" >&2
+    exit 2
+  fi
+  LIVE_CYPRESS_SCRIPT="cy:live-leisaac"
+fi
 if [[ -n "${LIVE_RUN_ID}" || -n "${LIVE_ARTIFACT_KEY}" ]]; then
   if [[ -z "${LIVE_RUN_ID}" || -z "${LIVE_ARTIFACT_KEY}" ]]; then
     echo "Exact RRD mode requires both NPA_AGENT_CYPRESS_RUN_ID and NPA_AGENT_CYPRESS_ARTIFACT_KEY" >&2

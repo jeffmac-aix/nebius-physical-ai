@@ -4,6 +4,7 @@ import json
 import os
 import socket
 import threading
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -55,21 +56,38 @@ def test_agent_relay_control_and_raw_backhaul_are_loopback_only() -> None:
 
 def test_relay_configs_pin_nonce_public_agent_and_certificate(tmp_path: Path) -> None:
     server_path = tmp_path / "server.json"
-    server_path.write_text(json.dumps({"session_nonce": NONCE}), encoding="utf-8")
-    assert load_server_config(server_path) == {"session_nonce": NONCE}
+    expires_at = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+    server_path.write_text(
+        json.dumps(
+            {"run_id": "run-123", "session_nonce": NONCE, "expires_at": expires_at}
+        ),
+        encoding="utf-8",
+    )
+    loaded = load_server_config(server_path)
+    assert loaded["run_id"] == "run-123"
+    assert loaded["session_nonce"] == NONCE
+    assert loaded["expires_at"] == expires_at
+    assert loaded["expires_epoch"] > datetime.now(timezone.utc).timestamp()
 
     server_path.write_text(
         json.dumps(
             {
                 "session_nonce": NONCE,
+                "run_id": "run-123",
+                "expires_at": expires_at,
                 "media_target_host": "10.96.0.22",
                 "media_target_port": 3478,
             }
         ),
         encoding="utf-8",
     )
-    assert load_server_config(server_path) == {
+    loaded = load_server_config(server_path)
+    expires_epoch = loaded.pop("expires_epoch")
+    assert expires_epoch > datetime.now(timezone.utc).timestamp()
+    assert loaded == {
         "session_nonce": NONCE,
+        "run_id": "run-123",
+        "expires_at": expires_at,
         "media_target_host": "10.96.0.22",
         "media_target_port": 3478,
     }
@@ -82,6 +100,8 @@ def test_relay_configs_pin_nonce_public_agent_and_certificate(tmp_path: Path) ->
             json.dumps(
                 {
                     "session_nonce": NONCE,
+                    "run_id": "run-123",
+                    "expires_at": expires_at,
                     "media_target_host": host,
                     "media_target_port": port,
                 }
@@ -89,6 +109,19 @@ def test_relay_configs_pin_nonce_public_agent_and_certificate(tmp_path: Path) ->
             encoding="utf-8",
         )
         with pytest.raises(ValueError, match="media target"):
+            load_server_config(server_path)
+
+    for invalid in (
+        {"run_id": "", "session_nonce": NONCE, "expires_at": expires_at},
+        {"run_id": "run-123", "session_nonce": NONCE, "expires_at": ""},
+        {
+            "run_id": "run-123",
+            "session_nonce": NONCE,
+            "expires_at": (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat(),
+        },
+    ):
+        server_path.write_text(json.dumps(invalid), encoding="utf-8")
+        with pytest.raises(ValueError, match="run id|expiry|expired"):
             load_server_config(server_path)
 
     client_path = tmp_path / "client.json"
@@ -168,6 +201,23 @@ def test_backhaul_rejects_unauthenticated_hello() -> None:
     assert backhaul.attach(server_connection) is False
     peer.close()
     server_connection.close()
+
+
+def test_expired_backhaul_revokes_connection_and_rejects_reuse() -> None:
+    backhaul = Backhaul(NONCE, expires_epoch=2.0)
+    server_connection, peer = socket.socketpair()
+    backhaul.connection = server_connection
+    backhaul.peer_public_ip = "8.8.4.4"
+
+    assert backhaul.expired(now=1.999) is False
+    assert backhaul.expired(now=2.0) is True
+    backhaul.revoke()
+
+    assert backhaul.connection is None
+    assert backhaul.peer_public_ip == ""
+    with pytest.raises((BrokenPipeError, ConnectionResetError, OSError)):
+        peer.sendall(b"credential cannot be reused")
+    peer.close()
 
 
 def test_backhaul_preserves_multiple_browser_udp_flows() -> None:

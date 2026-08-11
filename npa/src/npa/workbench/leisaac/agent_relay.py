@@ -10,10 +10,12 @@ simulator; the allocation's media path remains private inside the GPU pod.
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import hmac
 import http.server
 import ipaddress
 import json
+import re
 import signal
 import socket
 import socketserver
@@ -23,16 +25,19 @@ import time
 from pathlib import Path
 from typing import Any
 
+from npa.agent_backend.leisaac import LEISAAC_BACKHAUL_HOST, LEISAAC_BACKHAUL_PORT
+
 STATUS_LISTEN = ("127.0.0.1", 48080)
 SIGNAL_LISTEN = ("127.0.0.1", 49100)
 MEDIA_LISTEN = ("0.0.0.0", 3478)
-BACKHAUL_LISTEN = ("127.0.0.1", 48081)
+BACKHAUL_LISTEN = (LEISAAC_BACKHAUL_HOST, LEISAAC_BACKHAUL_PORT)
 CONTROL_LISTEN = ("127.0.0.1", 48082)
 HELLO, OPEN, DATA, CLOSE, UDP, UDP_CLOSE = 1, 2, 3, 4, 5, 6
 HEADER = struct.Struct("!BII")
 MAX_FRAME = 4 * 1024 * 1024
 MAX_UDP_FLOWS = 64
 UDP_FLOW_TTL_SECONDS = 120.0
+RUN_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
 
 
 def load_config(path: str | Path) -> dict[str, Any]:
@@ -46,7 +51,25 @@ def load_config(path: str | Path) -> dict[str, Any]:
         raise ValueError(
             "relay session nonce must be 64 lowercase hexadecimal characters"
         )
-    result: dict[str, Any] = {"session_nonce": nonce}
+    run_id = str(data.get("run_id") or "")
+    if RUN_ID_PATTERN.fullmatch(run_id) is None:
+        raise ValueError("relay run id is invalid")
+    expires_at = str(data.get("expires_at") or "")
+    try:
+        expiry = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("relay credential expiry must be an ISO-8601 timestamp") from exc
+    if expiry.tzinfo is None:
+        raise ValueError("relay credential expiry must include a timezone")
+    expires_epoch = expiry.astimezone(timezone.utc).timestamp()
+    if expires_epoch <= time.time():
+        raise ValueError("relay credential has expired")
+    result: dict[str, Any] = {
+        "run_id": run_id,
+        "session_nonce": nonce,
+        "expires_at": expiry.astimezone(timezone.utc).isoformat(),
+        "expires_epoch": expires_epoch,
+    }
     media_host = str(data.get("media_target_host") or "").strip()
     media_port = int(data.get("media_target_port") or 0)
     if media_host or media_port:
@@ -94,6 +117,8 @@ class Backhaul:
         self,
         nonce: str,
         media_target: tuple[str, int] | None = None,
+        *,
+        expires_epoch: float = float("inf"),
     ):
         self.nonce = nonce.encode("ascii")
         self.condition = threading.Condition()
@@ -110,8 +135,41 @@ class Backhaul:
         self.media_target = media_target
         self.direct_media: dict[tuple[str, int], tuple[socket.socket, float]] = {}
         self.peer_public_ip = ""
+        self.expires_epoch = expires_epoch
+
+    def expired(self, *, now: float | None = None) -> bool:
+        return (time.time() if now is None else now) >= self.expires_epoch
+
+    def revoke(self) -> None:
+        """Close every credential-bound path when the short lease expires."""
+
+        with self.condition:
+            connection = self.connection
+            self.connection = None
+            self.peer_public_ip = ""
+            self.condition.notify_all()
+        if connection is not None:
+            try:
+                connection.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            connection.close()
+        with self.stream_lock:
+            streams = list(self.streams.values())
+            self.streams.clear()
+        for stream in streams:
+            try:
+                stream.close()
+            except OSError:
+                pass
+        with self.udp_lock:
+            self.udp_by_address.clear()
+            self.udp_by_stream.clear()
+        self.close_direct_media()
 
     def attach(self, connection: socket.socket) -> bool:
+        if self.expired():
+            return False
         kind, stream_id, payload = _receive_frame(connection)
         try:
             hello = json.loads(payload)
@@ -266,6 +324,8 @@ class Backhaul:
     def relay_browser_udp(self, payload: bytes, address: tuple[str, int]) -> None:
         """Send a browser datagram over native VPC UDP or the TLS fallback."""
 
+        if self.expired():
+            raise ConnectionError("LeIsaac relay credential has expired")
         if self.media_target is not None:
             self.direct_media_for(address).send(payload)
             return
@@ -284,9 +344,13 @@ class Backhaul:
 
     def send(self, kind: int, stream_id: int, payload: bytes = b"") -> None:
         with self.condition:
-            if self.connection is None:
-                self.condition.wait_for(lambda: self.connection is not None, timeout=10)
+            if self.connection is None and not self.expired():
+                self.condition.wait_for(
+                    lambda: self.connection is not None or self.expired(), timeout=10
+                )
             connection = self.connection
+        if self.expired():
+            raise ConnectionError("LeIsaac relay credential has expired")
         if connection is None:
             raise ConnectionError("LeIsaac pod backhaul is unavailable")
         frame = HEADER.pack(kind, stream_id, len(payload)) + payload
@@ -355,13 +419,19 @@ class _ControlHandler(http.server.BaseHTTPRequestHandler):
             self.send_error(404)
             return
         peer = self.server.backhaul.peer_public_ip  # type: ignore[attr-defined]
+        expired = self.server.backhaul.expired()  # type: ignore[attr-defined]
         payload = (
             json.dumps(
-                {"connected": bool(peer), "peer_public_ip": peer}, sort_keys=True
+                {
+                    "connected": bool(peer) and not expired,
+                    "expired": expired,
+                    "peer_public_ip": "" if expired else peer,
+                },
+                sort_keys=True,
             ).encode("utf-8")
             + b"\n"
         )
-        self.send_response(200 if peer else 503)
+        self.send_response(410 if expired else (200 if peer else 503))
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(payload)))
         self.send_header("Cache-Control", "no-store")
@@ -442,11 +512,21 @@ def serve(config: dict[str, Any]) -> None:
             str(config["media_target_host"]),
             int(config["media_target_port"]),
         )
-    backhaul = Backhaul(str(config["session_nonce"]), media_target)
+    backhaul = Backhaul(
+        str(config["session_nonce"]),
+        media_target,
+        expires_epoch=float(config["expires_epoch"]),
+    )
     status = _TCPServer(STATUS_LISTEN, backhaul, 8080)
     signaling = _TCPServer(SIGNAL_LISTEN, backhaul, 49100)
     control = _ControlServer(backhaul)
     stop = threading.Event()
+
+    def expire_credential() -> None:
+        if stop.wait(max(0.0, backhaul.expires_epoch - time.time())):
+            return
+        backhaul.revoke()
+        stop.set()
 
     def request_stop(_signum: int, _frame: object) -> None:
         stop.set()
@@ -457,6 +537,7 @@ def serve(config: dict[str, Any]) -> None:
         threading.Thread(target=status.serve_forever, daemon=True),
         threading.Thread(target=signaling.serve_forever, daemon=True),
         threading.Thread(target=control.serve_forever, daemon=True),
+        threading.Thread(target=expire_credential, daemon=True),
         threading.Thread(
             target=serve_backhaul,
             kwargs={

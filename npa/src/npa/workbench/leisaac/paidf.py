@@ -82,17 +82,48 @@ def _episode_commit(
     client: Any, manifest: dict[str, Any], episode_index: int
 ) -> dict[str, Any]:
     commits = manifest.get("episode_commits")
-    if (
-        not isinstance(commits, list)
-        or episode_index < 0
-        or episode_index >= len(commits)
-    ):
+    episode_count = int(
+        manifest.get("episode_count", len(commits) if isinstance(commits, list) else -1)
+    )
+    if episode_index < 0 or episode_index >= episode_count:
         raise DatasetError("episode index is outside the finalized dataset")
-    bucket, key = split_s3_uri(str(commits[episode_index]), label="episode commit URI")
+    if isinstance(commits, list):
+        commit_uri = str(commits[episode_index])
+    else:
+        output_uri = str(manifest.get("output_prefix") or "").rstrip("/")
+        commit_uri = f"{output_uri}/commits/episode-{episode_index:06d}.json"
+    bucket, key = split_s3_uri(commit_uri, label="episode commit URI")
     commit = _json_object(client, bucket, key)
     if int(commit.get("episode_index", -1)) != episode_index:
         raise DatasetError("episode commit index does not match the requested episode")
     return commit
+
+
+def _episode_commit_uri(manifest: dict[str, Any], episode_index: int) -> str:
+    commits = manifest.get("episode_commits")
+    if isinstance(commits, list):
+        return str(commits[episode_index])
+    return (
+        str(manifest.get("output_prefix") or "").rstrip("/")
+        + f"/commits/episode-{episode_index:06d}.json"
+    )
+
+
+def _primary_objects(commit: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    objects = commit.get("objects", {})
+    storage = objects.get("camera_storage", {})
+    primary = str(storage.get("primary_camera") or "primary")
+    videos = objects.get("videos")
+    frames_by_camera = objects.get("frames_by_camera")
+    video = videos.get(primary) if isinstance(videos, dict) else objects.get("video")
+    frames = (
+        frames_by_camera.get(primary)
+        if isinstance(frames_by_camera, dict)
+        else objects.get("frames")
+    )
+    if not isinstance(video, dict) or not isinstance(frames, list):
+        raise DatasetError("source episode commit has no canonical primary camera")
+    return video, frames
 
 
 def export_episode_to_paidf(
@@ -114,12 +145,12 @@ def export_episode_to_paidf(
     manifest_sha256 = _metadata_sha256(manifest_head)
     if len(manifest_sha256) != 64:
         raise DatasetError("source dataset manifest has no SHA-256 object metadata")
-    commit_uri = str(manifest["episode_commits"][episode_index])
+    commit_uri = _episode_commit_uri(manifest, episode_index)
     commit_bucket, commit_key = split_s3_uri(commit_uri, label="episode commit URI")
     commit_sha256 = _metadata_sha256(
         client.head_object(Bucket=commit_bucket, Key=commit_key)
     )
-    frames = commit.get("objects", {}).get("frames")
+    video, frames = _primary_objects(commit)
     if (
         len(commit_sha256) != 64
         or not isinstance(frames, list)
@@ -144,7 +175,6 @@ def export_episode_to_paidf(
             "PAIDF output path must be the clean run prefix "
             f"s3://BUCKET/{expected_suffix}"
         )
-    video = commit["objects"]["video"]
     input_key = f"{output_prefix}/input/leisaac-episode-{episode_index:06d}.mp4"
     client.copy_object(
         Bucket=output_bucket,
@@ -408,7 +438,7 @@ def materialize_paidf_dataset(
         )
     except Exception as exc:
         raise DatasetError("source episode commit checksum is unavailable") from exc
-    commit_frames = commit.get("objects", {}).get("frames")
+    commit_video, commit_frames = _primary_objects(commit)
     frame_checksums = (
         [str(item.get("sha256") or "") for item in commit_frames]
         if isinstance(commit_frames, list)
@@ -421,7 +451,7 @@ def materialize_paidf_dataset(
         lineage.get("schema") != "npa.leisaac.paidf-input.v1"
         or source.get("dataset_uri") != dataset_uri.rstrip("/")
         or source.get("dataset_manifest_sha256") != source_manifest_sha256
-        or source_commit_uri != str(source_manifest["episode_commits"][episode_index])
+        or source_commit_uri != _episode_commit_uri(source_manifest, episode_index)
         or source.get("episode_commit_sha256") != source_commit_sha256
         or int(source.get("episode_index", -1)) != episode_index
         or source.get("episode_uuid") != commit.get("episode_uuid")
@@ -429,7 +459,7 @@ def materialize_paidf_dataset(
         or source.get("environment_id") != commit["metadata"].get("environment_id")
         or int(source.get("environment_index", -1))
         != int(commit["metadata"].get("environment_index", -2))
-        or source.get("video_sha256") != commit["objects"]["video"]["sha256"]
+        or source.get("video_sha256") != commit_video["sha256"]
         or source.get("records_sha256") != commit["objects"]["records"]["sha256"]
         or int(source.get("frame_count", -1))
         != int(commit["metadata"].get("frame_count", -2))
@@ -461,7 +491,7 @@ def materialize_paidf_dataset(
         paidf_prefix + "/cosmos_augmented/"
     ):
         raise DatasetError("PAIDF variant is outside the selected immutable run")
-    source_video = commit["objects"]["video"]
+    source_video, _source_frames = _primary_objects(commit)
     with tempfile.TemporaryDirectory(prefix="npa-leisaac-paidf-") as temporary:
         root = Path(temporary)
         source_local = root / "source.mp4"

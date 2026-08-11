@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
+from importlib.metadata import PackageNotFoundError, version
 from typing import Any, Awaitable, Callable
 
 try:  # workbench image: sibling modules are on sys.path
@@ -36,10 +37,24 @@ VIDEO_DATACHANNEL_BUFFER_LOW_BYTES = 0
 VIDEO_DATACHANNEL_LOST_EVENT_FALLBACK_SECONDS = 0.1
 CONTROL_DATACHANNEL_LABEL = "npa-leisaac-control"
 CONTROL_DATACHANNEL_PROTOCOL = "npa.leisaac.control.v1"
+AIORTC_RUNTIME_VERSION = "1.15.0"
 
 
 class VideoDataChannelError(RuntimeError):
     """A safe, client-facing WebRTC video negotiation failure."""
+
+
+def require_aiortc_runtime_version() -> None:
+    """Pin semantics used for SCTP buffering and codec negotiation."""
+
+    try:
+        actual = version("aiortc")
+    except PackageNotFoundError as exc:
+        raise VideoDataChannelError("WebRTC runtime aiortc is unavailable") from exc
+    if actual != AIORTC_RUNTIME_VERSION:
+        raise VideoDataChannelError(
+            f"WebRTC runtime requires aiortc {AIORTC_RUNTIME_VERSION}; found {actual}"
+        )
 
 
 def parse_video_datachannel_offer(payload: Any, *, expected_run_id: str) -> str:
@@ -156,6 +171,7 @@ class VideoDataChannelPeerPool:
     ) -> dict[str, Any]:
         """Negotiate and retain one peer; its relay starts when the channel opens."""
 
+        require_aiortc_runtime_version()
         try:
             from aiortc import (  # type: ignore[import-not-found]
                 RTCConfiguration,
@@ -286,6 +302,7 @@ class ControlDataChannelPeerPool(VideoDataChannelPeerPool):
         channel_handler: Callable[[Any], Awaitable[None]],
         metrics: TransportMetrics,
     ) -> dict[str, Any]:
+        require_aiortc_runtime_version()
         try:
             from aiortc import (  # type: ignore[import-not-found]
                 RTCConfiguration,

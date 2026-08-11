@@ -188,7 +188,10 @@ CLIENT_SOURCE_JS_SHA256 = (
 )
 CLIENT_JS_SHA256 = CLIENT_SOURCE_JS_SHA256
 UPSTREAM_OBSERVABILITY_PATCH_SHA256 = (
-    "83cbd75e1d16a6dc1a9868033a0240a82678b6fc8ed2d20052ebc350b9d36f68"
+    "d79d53e57ca59283a1b2a311d288e991e92a2155d334f0dc62769c5785c4f1aa"
+)
+UPSTREAM_PACKAGING_PATCH_SHA256 = (
+    "6940dce429c7d03d7576b4c56836a8a2cad2102a77658c1480acfcd27e8f5783"
 )
 
 CACHE_ROOT = Path(os.environ.get("NPA_LEISAAC_CACHE_DIR", "/opt/leisaac-cache"))
@@ -206,6 +209,7 @@ SECONDARY_FRAME_META_PATH = Path("/tmp/npa-leisaac-frame-overview.json")
 VIEW_COMMAND_PATH = Path("/tmp/npa-leisaac-view-command.json")
 MODE_COMMAND_PATH = Path("/tmp/npa-leisaac-mode-command.json")
 MODE_STATUS_PATH = Path("/tmp/npa-leisaac-mode-status.json")
+HEARTBEAT_PATH = Path("/tmp/npa-leisaac-simulator-heartbeat")
 CUSTOM_BUNDLE_ROOT = CACHE_ROOT / "custom"
 CAMERA_PATHS = {
     "workspace": (FRAME_PATH, FRAME_META_PATH),
@@ -231,10 +235,13 @@ MODE_OWNER_LOCK = threading.Lock()
 CONTROL_OWNER: dict[str, str | int] = {
     "token": "",
     "client_id": "",
-    "resumed_wall_ns": 0,
+    "lease_id": "",
+    "lease_generation": 0,
+    "leased_at_monotonic_ns": 0,
 }
 MODE_OWNER: dict[str, str] = {"client_id": ""}
 BUNDLE_RESTART = threading.Event()
+FORCE_SAFE_RESTART = threading.Event()
 SERVER_STOP = threading.Event()
 BUNDLE_SELECTION: dict[str, dict[str, Any]] = {}
 STATE: dict[str, Any] = {
@@ -244,6 +251,10 @@ STATE: dict[str, Any] = {
     "pid": 0,
     "gpu": "",
     "started_at": "",
+}
+VIDEO_PATH: dict[str, str | bool] = {
+    "hardware": False,
+    "fallback_reason": "hardware encoder has not been verified",
 }
 CHILD: subprocess.Popen[str] | None = None
 CONTROL_LEDGER = ControlLedger()
@@ -615,6 +626,10 @@ def stage_runtime() -> None:
                 "path": "upstream-observability.patch",
                 "sha256": UPSTREAM_OBSERVABILITY_PATCH_SHA256,
             },
+            "npa_packaging_patch": {
+                "path": "upstream-packaging.patch",
+                "sha256": UPSTREAM_PACKAGING_PATCH_SHA256,
+            },
         },
         "assets": [
             {"url": ROBOT_URL, "sha256": ROBOT_SHA256, "bytes": robot.stat().st_size},
@@ -782,6 +797,23 @@ def _simulation_launch() -> tuple[list[str], dict[str, str]]:
     media_host = os.environ.get("NPA_LEISAAC_MEDIA_HOST", "").strip()
     if not media_host:
         raise RuntimeError("NPA_LEISAAC_MEDIA_HOST is required")
+    kit_arguments = [
+        "--no-window",
+        "--/renderer/multiGpu/enabled=False",
+    ]
+    if bool(VIDEO_PATH["hardware"]):
+        kit_arguments.extend(
+            [
+                "--enable omni.kit.livestream.webrtc",
+                "--/app/livestream/webrtc/logQosStatus=true",
+                f"--/app/livestream/publicEndpointAddress={media_host}",
+                f"--/app/livestream/publicEndpointPort={MEDIA_PORT}",
+                f"--/app/livestream/fixedHostPort={MEDIA_PORT}",
+                f"--/app/livestream/minHostPort={MEDIA_PORT}",
+                f"--/app/livestream/maxHostPort={MEDIA_PORT}",
+                f"--/app/livestream/port={SIGNAL_PORT}",
+            ]
+        )
     command = [
         "/isaac-sim/python.sh",
         "/opt/leisaac/scripts/environments/teleoperation/teleop_se3_agent.py",
@@ -791,20 +823,7 @@ def _simulation_launch() -> tuple[list[str], dict[str, str]]:
         f"--seed={TELEOP_SEED}",
         "--device=cuda:0",
         "--enable_cameras",
-        "--kit_args="
-        + " ".join(
-            [
-                "--no-window",
-                "--enable omni.kit.livestream.webrtc",
-                f"--/app/livestream/publicEndpointAddress={media_host}",
-                f"--/app/livestream/publicEndpointPort={MEDIA_PORT}",
-                f"--/app/livestream/fixedHostPort={MEDIA_PORT}",
-                f"--/app/livestream/minHostPort={MEDIA_PORT}",
-                f"--/app/livestream/maxHostPort={MEDIA_PORT}",
-                f"--/app/livestream/port={SIGNAL_PORT}",
-                "--/renderer/multiGpu/enabled=False",
-            ]
-        ),
+        "--kit_args=" + " ".join(kit_arguments),
     ]
     environment = os.environ.copy()
     module_root = "/opt/npa/leisaac"
@@ -829,6 +848,8 @@ def _simulation_launch() -> tuple[list[str], dict[str, str]]:
             "NPA_LEISAAC_VIEW_COMMAND_PATH": str(VIEW_COMMAND_PATH),
             "NPA_LEISAAC_MODE_COMMAND_PATH": str(MODE_COMMAND_PATH),
             "NPA_LEISAAC_MODE_STATUS_PATH": str(MODE_STATUS_PATH),
+            "NPA_LEISAAC_HEARTBEAT_PATH": str(HEARTBEAT_PATH),
+            "NPA_LEISAAC_NATIVE_VIDEO": "1" if VIDEO_PATH["hardware"] else "0",
             "NPA_LEISAAC_RECORDER_ROOT": str(RECORDER_ROOT),
             "NPA_LEISAAC_CUSTOM_ROOT": str(CUSTOM_BUNDLE_ROOT),
         }
@@ -850,7 +871,7 @@ def _reset_runtime_files() -> None:
         except (OSError, ValueError):
             prior_mode = {}
         restart_mode = _default_mode_state()
-        if isinstance(prior_mode, dict):
+        if isinstance(prior_mode, dict) and not FORCE_SAFE_RESTART.is_set():
             requested_view = str(prior_mode.get("requested_view_mode") or "")
             requested_recording = str(
                 prior_mode.get("requested_recording_camera_mode") or ""
@@ -892,23 +913,48 @@ def _reset_runtime_files() -> None:
         SECONDARY_FRAME_META_PATH,
         VIEW_COMMAND_PATH,
         MODE_STATUS_PATH,
+        HEARTBEAT_PATH,
     ):
         path.unlink(missing_ok=True)
     with MODE_COMMAND_LOCK:
         _write_json_atomic(MODE_COMMAND_PATH, restart_mode)
+    FORCE_SAFE_RESTART.clear()
     _write_json_atomic(MODE_STATUS_PATH, _default_mode_state())
     shutil.rmtree(RECORDER_ROOT, ignore_errors=True)
     RECORDER_ROOT.mkdir(parents=True, exist_ok=True)
 
 
 def _frame_stream_stalled(now: float | None = None) -> bool:
-    """Detect a live child whose prioritized primary publisher stopped."""
+    """Detect a live child whose render/control loop stopped."""
 
     try:
-        oldest = FRAME_PATH.stat().st_mtime
+        oldest = HEARTBEAT_PATH.stat().st_mtime
     except OSError:
-        return False
+        try:
+            oldest = FRAME_PATH.stat().st_mtime
+        except OSError:
+            return False
     return (time.time() if now is None else now) - oldest > FRAME_STALL_SECONDS
+
+
+def _prepare_stall_recovery() -> int:
+    """Revoke runtime-bound state before replacing a non-responsive simulator."""
+
+    released = CONTROL_LEDGER.reset_for_runtime_restart()
+    with CONTROL_OWNER_LOCK:
+        CONTROL_OWNER.update(
+            token="",
+            client_id="",
+            lease_id="",
+            lease_generation=int(CONTROL_OWNER.get("lease_generation") or 0) + 1,
+            leased_at_monotonic_ns=0,
+        )
+    with MODE_OWNER_LOCK:
+        MODE_OWNER["client_id"] = ""
+    FORCE_SAFE_RESTART.set()
+    TRANSPORT_METRICS.increment("forced_safe_restarts")
+    TRANSPORT_METRICS.increment("forced_releases", released)
+    return released
 
 
 def _mark_runtime_ready() -> bool:
@@ -917,14 +963,61 @@ def _mark_runtime_ready() -> bool:
     with STATE_LOCK:
         if BUNDLE_RESTART.is_set():
             return False
+        hardware = bool(VIDEO_PATH["hardware"])
         STATE.update(
             state="ready",
             detail="live",
             webrtc_ready=True,
             stream_ready=True,
-            stream_transport="websocket-v1",
+            stream_transport="webrtc" if hardware else "websocket-v1",
+            requested_video_transport="webrtc-kit-h264",
+            active_video_transport=("webrtc-kit-h264" if hardware else "jpeg-websocket"),
+            video_codec="H264" if hardware else "JPEG",
+            hardware_acceleration="runtime-nvenc" if hardware else "none",
+            video_fallback_reason=("" if hardware else str(VIDEO_PATH["fallback_reason"])),
         )
         return True
+
+
+def verify_runtime_nvenc() -> tuple[bool, str]:
+    """Exercise runtime-injected NVENC before advertising the native path."""
+
+    if not Path("/dev/nvidia0").exists():
+        return False, "NVIDIA device nodes are unavailable"
+    command = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-f",
+        "lavfi",
+        "-i",
+        "color=size=64x64:rate=1",
+        "-frames:v",
+        "1",
+        "-c:v",
+        "h264_nvenc",
+        "-bf",
+        "0",
+        "-f",
+        "h264",
+        "-",
+    ]
+    try:
+        result = subprocess.run(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            timeout=20,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, f"NVENC probe failed ({type(exc).__name__})"
+    if result.returncode:
+        detail = result.stderr.decode("utf-8", errors="replace").splitlines()
+        return False, (detail[-1][:160] if detail else "NVENC probe was rejected")
+    return True, ""
 
 
 def run_simulation() -> None:
@@ -932,6 +1025,8 @@ def run_simulation() -> None:
     try:
         update_state(detail="fetching operator-licensed Isaac runtime")
         subprocess.run(["/opt/npa/bin/isaac-bootstrap", "ensure"], check=True)
+        hardware, fallback_reason = verify_runtime_nvenc()
+        VIDEO_PATH.update(hardware=hardware, fallback_reason=fallback_reason)
         while not SERVER_STOP.is_set():
             BUNDLE_RESTART.clear()
             update_state(
@@ -954,10 +1049,11 @@ def run_simulation() -> None:
             while CHILD.poll() is None and not BUNDLE_RESTART.is_set():
                 if (
                     READY_PATH.is_file()
-                    and FRAME_PATH.is_file()
-                    and FRAME_PATH.stat().st_size > 0
+                    and HEARTBEAT_PATH.is_file()
+                    and HEARTBEAT_PATH.stat().st_size > 0
                 ):
                     if _frame_stream_stalled():
+                        _prepare_stall_recovery()
                         update_state(
                             state="restarting",
                             detail="recovering stalled primary frame publisher",
@@ -1093,8 +1189,8 @@ def health_document() -> dict[str, Any]:
         "media_port": MEDIA_PORT,
         "input_events": input_events,
         "applied_inputs": applied_inputs,
-        "stream_ready": bool(frame_bytes),
-        "stream_transport": "websocket-v1",
+        "stream_ready": bool(state.get("stream_ready")),
+        "stream_transport": str(state.get("stream_transport") or "webrtc"),
         "frame_bytes": frame_bytes,
         "frame_updated_at": frame_updated_at,
         "frame_sequence": frame_sequence,
@@ -1550,31 +1646,51 @@ async def _serve_control_protocol(
         client_id: str,
         *,
         resume: bool = False,
-        resumed_wall_ns: int = 0,
-    ) -> None:
+        lease_id: str = "",
+    ) -> str:
         """Permit one authenticated control transport to own mutable runtime state."""
 
         with CONTROL_OWNER_LOCK:
-            current = CONTROL_OWNER["token"]
+            current = str(CONTROL_OWNER["token"])
             if current and current != owner_token:
-                # A recovery socket presents the stable random browser identity
-                # and wall-clock epoch in its ordered resume handshake. A newer
-                # authenticated browser page may replace a half-open predecessor,
-                # while a late buffered resume from the old socket cannot steal
-                # control back.
+                # Only the server-issued, single-use resume capability may replace
+                # a half-open transport for the same browser lease. Client clocks
+                # are telemetry only and never participate in authority decisions.
                 if not (
                     resume
-                    and resumed_wall_ns
-                    > int(CONTROL_OWNER.get("resumed_wall_ns") or 0)
+                    and client_id == str(CONTROL_OWNER.get("client_id") or "")
+                    and lease_id
+                    and secrets.compare_digest(
+                        lease_id, str(CONTROL_OWNER.get("lease_id") or "")
+                    )
                 ):
                     raise TransportProtocolError(
                         "controller_busy",
                         "another authenticated control transport owns this session",
                     )
-            CONTROL_OWNER.update(token=owner_token, client_id=client_id)
+            elif not current and str(CONTROL_OWNER.get("client_id") or "") == client_id:
+                retained_lease = str(CONTROL_OWNER.get("lease_id") or "")
+                if retained_lease and not (
+                    resume
+                    and lease_id
+                    and secrets.compare_digest(lease_id, retained_lease)
+                ):
+                    raise TransportProtocolError(
+                        "controller_busy", "control lease resume capability is required"
+                    )
+            next_lease_id = secrets.token_hex(32) if resume else str(
+                CONTROL_OWNER.get("lease_id") or ""
+            )
+            CONTROL_OWNER.update(
+                token=owner_token,
+                client_id=client_id,
+                lease_id=next_lease_id,
+                lease_generation=int(CONTROL_OWNER.get("lease_generation") or 0)
+                + (1 if resume else 0),
+                leased_at_monotonic_ns=time.monotonic_ns(),
+            )
             _retain_mode_owner(client_id)
-            if resume:
-                CONTROL_OWNER["resumed_wall_ns"] = resumed_wall_ns
+            return next_lease_id
 
     async def send_mode_applied(message: dict[str, Any]) -> None:
         try:
@@ -1631,10 +1747,10 @@ async def _serve_control_protocol(
             try:
                 message = parse_control_message(raw, expected_run_id=run_id)
                 message_client_id = str(message["client_id"])
-                claim_controller(
+                active_lease_id = claim_controller(
                     message_client_id,
                     resume=message["type"] == "resume",
-                    resumed_wall_ns=int(message["client_wall_ns"]),
+                    lease_id=str(message.get("lease_id") or ""),
                 )
                 if active_client_id and message_client_id != active_client_id:
                     raise TransportProtocolError(
@@ -1670,6 +1786,10 @@ async def _serve_control_protocol(
                     response["view_revision"] = int(mode.get("view_revision") or 0)
                     response["recording_revision"] = int(
                         mode.get("recording_revision") or 0
+                    )
+                    response["lease_id"] = active_lease_id
+                    response["lease_generation"] = int(
+                        CONTROL_OWNER.get("lease_generation") or 0
                     )
                     TRANSPORT_METRICS.increment("reconnects")
                     await send(response)
@@ -1782,8 +1902,7 @@ async def _serve_control_protocol(
                 if CONTROL_OWNER["token"] == owner_token:
                     CONTROL_OWNER.update(
                         token="",
-                        client_id="",
-                        resumed_wall_ns=0,
+                        leased_at_monotonic_ns=0,
                     )
             await asyncio.gather(sender, *mode_ack_tasks, return_exceptions=True)
 
@@ -1884,6 +2003,7 @@ async def _video_datachannel_frames():
             causal_applied_monotonic_ns=int(
                 metadata.get("causal_applied_monotonic_ns") or 0
             ),
+            view_revision=int(metadata.get("view_revision") or 0),
             dropped_before=dropped,
             flags=1 if camera == "overview" else 0,
             sha256=bytes.fromhex(str(metadata["sha256"])),
@@ -1926,7 +2046,9 @@ def build_app() -> FastAPI:
         return JSONResponse(status_code=status, content={"ok": status == 200})
 
     @application.get("/status")
-    def status() -> Response:
+    def status(request: Request) -> Response:
+        if not _authorized(request.headers):
+            return JSONResponse(status_code=403, content={"detail": "forbidden"})
         document = health_document()
         return JSONResponse(
             status_code=200 if document["state"] == "ready" else 503,
@@ -2041,7 +2163,9 @@ def build_app() -> FastAPI:
         )
 
     @application.get("/client/index.js")
-    def client_module() -> Response:
+    def client_module(request: Request) -> Response:
+        if not _authorized(request.headers):
+            return JSONResponse(status_code=403, content={"detail": "forbidden"})
         return Response(
             content=(CLIENT_ROOT / "index.js").read_bytes(),
             media_type="text/javascript",
@@ -2054,7 +2178,9 @@ def build_app() -> FastAPI:
         )
 
     @application.get("/provenance")
-    def provenance() -> Response:
+    def provenance(request: Request) -> Response:
+        if not _authorized(request.headers):
+            return JSONResponse(status_code=403, content={"detail": "forbidden"})
         return Response(
             content=PROVENANCE_PATH.read_bytes(), media_type="application/json"
         )
@@ -2195,6 +2321,7 @@ def build_app() -> FastAPI:
                     "key": payload.get("key"),
                     "event": payload.get("event"),
                     "client_mono_ns": payload.get("client_mono_ns", 0),
+                    "client_wall_ns": payload.get("client_wall_ns", 0),
                 },
                 separators=(",", ":"),
             )
@@ -2313,178 +2440,6 @@ def build_app() -> FastAPI:
             # has already flushed deterministic releases.
             return
         return
-
-        run_id = os.environ.get("NPA_LEISAAC_RUN_ID", "")
-        applied_queue: asyncio.Queue[tuple[str, int]] = asyncio.Queue(
-            maxsize=MAX_CLIENT_HISTORY
-        )
-        stop = threading.Event()
-        send_lock = asyncio.Lock()
-
-        async def send(payload: dict[str, Any]) -> None:
-            async with send_lock:
-                await asyncio.wait_for(
-                    websocket.send_text(json.dumps(payload, separators=(",", ":"))),
-                    timeout=2.0,
-                )
-
-        async def send_applied() -> None:
-            while True:
-                client_id, seq = await applied_queue.get()
-                payload = await _wait_for_applied(client_id, seq, stop)
-                if payload is None:
-                    await send(
-                        {
-                            "v": 1,
-                            "type": "error",
-                            "code": "application_timeout",
-                            "run_id": run_id,
-                            "client_id": client_id,
-                            "seq": seq,
-                        }
-                    )
-                    continue
-                acknowledgement = dict(payload)
-                acknowledgement.update(v=1, type="ack", phase="applied", run_id=run_id)
-                await send(acknowledgement)
-
-        sender = asyncio.create_task(send_applied())
-        active_client_id = ""
-
-        def release_all(
-            client_id: str, client_mono_ns: int = 0, client_wall_ns: int = 0
-        ) -> int:
-            releases: list[tuple[int, dict[str, Any]]] = []
-            for key in CONTROL_LEDGER.keys_down(client_id):
-                next_seq = int(CONTROL_LEDGER.resume(client_id)["next_seq"])
-                message = {
-                    "v": 1,
-                    "type": "control",
-                    "run_id": run_id,
-                    "client_id": client_id,
-                    "seq": next_seq,
-                    "key": key,
-                    "event": "release",
-                    "client_mono_ns": client_mono_ns,
-                    "client_wall_ns": client_wall_ns,
-                }
-                _accepted, queued = CONTROL_LEDGER.accept(message)
-                if queued is not None:
-                    releases.append((next_seq, queued))
-            if not releases:
-                return 0
-
-            # This bounded local transaction intentionally has no cancellation point:
-            # Starlette cancels every task in the WebSocket task group during teardown,
-            # including tasks protected by asyncio.shield().  A synchronous append,
-            # flush and fsync is therefore the only truthful guarantee that every held
-            # robot control is durably released before the handler can finish.
-            _append_inputs([queued for _seq, queued in releases])
-            TRANSPORT_METRICS.increment("controls_accepted", len(releases))
-            for seq, _queued in releases:
-                applied_queue.put_nowait((client_id, seq))
-            return len(releases)
-
-        try:
-            while True:
-                raw = await websocket.receive_text()
-                try:
-                    message = parse_control_message(raw, expected_run_id=run_id)
-                    message_client_id = str(message["client_id"])
-                    if active_client_id and message_client_id != active_client_id:
-                        raise TransportProtocolError(
-                            "client_mismatch",
-                            "one control WebSocket may own only one client ID",
-                        )
-                    active_client_id = message_client_id
-                    if message["type"] == "ping":
-                        await send(
-                            {
-                                "v": 1,
-                                "type": "pong",
-                                "run_id": run_id,
-                                "client_id": message["client_id"],
-                                "nonce": message.get("nonce", ""),
-                                "client_mono_ns": str(message["client_mono_ns"]),
-                                "client_wall_ns": str(message["client_wall_ns"]),
-                                "runtime_mono_ns": str(time.monotonic_ns()),
-                                "runtime_wall_ns": str(time.time_ns()),
-                            }
-                        )
-                        continue
-                    if message["type"] == "resume":
-                        response = CONTROL_LEDGER.resume(str(message["client_id"]))
-                        response["run_id"] = run_id
-                        response["client_mono_ns"] = str(message["client_mono_ns"])
-                        response["client_wall_ns"] = str(message["client_wall_ns"])
-                        TRANSPORT_METRICS.increment("reconnects")
-                        await send(response)
-                        continue
-                    if message["type"] == "release-all":
-                        released = release_all(
-                            active_client_id,
-                            int(message["client_mono_ns"]),
-                            int(message["client_wall_ns"]),
-                        )
-                        await send(
-                            {
-                                "v": 1,
-                                "type": "released",
-                                "run_id": run_id,
-                                "client_id": message["client_id"],
-                                "runtime_mono_ns": str(time.monotonic_ns()),
-                                "released_count": released,
-                            }
-                        )
-                        continue
-                    with STATE_LOCK:
-                        ready = STATE.get("state") == "ready"
-                    if not ready:
-                        await send(
-                            {
-                                "v": 1,
-                                "type": "error",
-                                "code": "simulator_not_ready",
-                                "detail": "simulator not ready",
-                            }
-                        )
-                        continue
-                    accepted, queued = CONTROL_LEDGER.accept(message)
-                    if queued is not None:
-                        await asyncio.to_thread(_append_input, queued)
-                        TRANSPORT_METRICS.increment("controls_accepted")
-                    else:
-                        TRANSPORT_METRICS.increment("controls_duplicate")
-                    await send(accepted)
-                    await applied_queue.put(
-                        (str(message["client_id"]), int(message["seq"]))
-                    )
-                except TransportProtocolError as exc:
-                    TRANSPORT_METRICS.increment("control_errors")
-                    await send(exc.payload())
-        except WebSocketDisconnect:
-            pass
-        finally:
-            try:
-                if active_client_id:
-                    try:
-                        release_all(active_client_id)
-                    except Exception as exc:
-                        _log_exception(
-                            logging.CRITICAL,
-                            "Failed to release LeIsaac controls during disconnect",
-                            exc,
-                        )
-            finally:
-                stop.set()
-                sender.cancel()
-                try:
-                    await asyncio.gather(sender, return_exceptions=True)
-                except asyncio.CancelledError:
-                    # The durable safety transaction above is complete.  Cancellation
-                    # while draining the already-cancelled acknowledgement sender is an
-                    # expected ASGI teardown condition, not a client-visible failure.
-                    pass
 
     @application.websocket("/transport/video")
     async def transport_video(websocket: WebSocket) -> None:
@@ -2645,4 +2600,12 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    if sys.argv[1:] == ["golden-smoke"]:
+        os.execv(
+            "/opt/npa/sim/venv/bin/python",
+            [
+                "/opt/npa/sim/venv/bin/python",
+                "/opt/npa/leisaac/smoke_functional.py",
+            ],
+        )
     raise SystemExit(main())

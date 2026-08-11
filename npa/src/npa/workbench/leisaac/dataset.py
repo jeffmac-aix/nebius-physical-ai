@@ -1077,7 +1077,12 @@ def _stats(values: list[Any]) -> dict[str, Any]:
 
 
 def build_lerobot_dataset(
-    episodes: list[dict[str, Any]], destination: Path
+    episodes: list[dict[str, Any]],
+    destination: Path,
+    *,
+    episode_index_offset: int = 0,
+    global_index_offset: int = 0,
+    task_catalog: list[str] | None = None,
 ) -> dict[str, Any]:
     """Build an exact LeRobotDataset v3 tree from immutable raw episode bundles."""
 
@@ -1088,7 +1093,8 @@ def build_lerobot_dataset(
         raise DatasetError("cannot build an empty dataset")
     shutil.rmtree(destination, ignore_errors=True)
     destination.mkdir(parents=True)
-    tasks = sorted({str(ep["metadata"]["task"]) for ep in episodes})
+    episode_tasks = {str(ep["metadata"]["task"]) for ep in episodes}
+    tasks = sorted(set(task_catalog or []) | episode_tasks)
     task_indexes = {task: index for index, task in enumerate(tasks)}
     episode_meta: list[dict[str, Any]] = []
     stats_values: dict[str, list[Any]] = {
@@ -1107,8 +1113,9 @@ def build_lerobot_dataset(
         "observation.timestamp.monotonic_ns": [],
         "observation.timestamp.wall_clock_ns": [],
     }
-    global_index = 0
-    for episode_index, episode in enumerate(episodes):
+    global_index = global_index_offset
+    for local_episode_index, episode in enumerate(episodes):
+        episode_index = episode_index_offset + local_episode_index
         rows = _load_records(Path(episode["records_path"]))
         meta = episode["metadata"]
         if (
@@ -1332,12 +1339,12 @@ def build_lerobot_dataset(
     info = {
         "codebase_version": LEROBOT_CODEBASE_VERSION,
         "robot_type": "so101",
-        "total_episodes": len(episodes),
+        "total_episodes": episode_index_offset + len(episodes),
         "total_frames": global_index,
         "total_tasks": len(tasks),
         "chunks_size": 1000,
         "fps": FPS,
-        "splits": {"train": f"0:{len(episodes)}"},
+        "splits": {"train": f"0:{episode_index_offset + len(episodes)}"},
         "data_path": "data/chunk-{chunk_index:03d}/file-{file_index:03d}.parquet",
         "video_path": "videos/{video_key}/chunk-{chunk_index:03d}/file-{file_index:03d}.mp4",
         "data_files_size_in_mb": 100,
@@ -1520,13 +1527,11 @@ class S3DatasetStore:
         manifest = self._manifest_from_latest(latest)
         completed = int(manifest["episode_count"])
         commit_uris = manifest.get("episode_commits")
-        if (
-            completed <= 0
-            or not isinstance(commit_uris, list)
-            or len(commit_uris) != completed
-        ):
+        commit_uri = str(manifest.get("new_episode_commit") or "")
+        if not commit_uri and isinstance(commit_uris, list) and commit_uris:
+            commit_uri = str(commit_uris[-1] or "")
+        if completed <= 0 or not commit_uri:
             raise DatasetError("current dataset manifest has invalid episode commits")
-        commit_uri = str(commit_uris[-1] or "")
         bucket, key = split_s3_uri(commit_uri, label="latest episode commit URI")
         if bucket != self.bucket or not key.startswith(self.prefix + "/commits/"):
             raise DatasetError("latest episode commit escaped the output prefix")
@@ -1559,6 +1564,7 @@ class S3DatasetStore:
         }
 
     def _commits(self) -> list[dict[str, Any]]:
+        """Legacy migration reader; normal finalization uses bounded indexes."""
         prefix = self._key("commits/episode-")
         result: list[dict[str, Any]] = []
         token = None
@@ -1589,6 +1595,102 @@ class S3DatasetStore:
                     "existing episode commits are stale, malformed, or non-contiguous"
                 )
         return result
+
+    def _commit_for_uuid(self, episode_uuid: str) -> dict[str, Any] | None:
+        index_key = self._key(f"episode-uuids/{episode_uuid}.json")
+        try:
+            response = self.client.get_object(Bucket=self.bucket, Key=index_key)
+        except Exception as exc:
+            if self._is_missing_object(exc):
+                return None
+            raise DatasetError("could not read the episode UUID index") from exc
+        try:
+            pointer = json.loads(response["Body"].read())
+            commit_key = str(pointer["commit_key"])
+            commit_response = self.client.get_object(
+                Bucket=self.bucket, Key=commit_key
+            )
+            commit = json.loads(commit_response["Body"].read())
+        except Exception as exc:
+            raise DatasetError("episode UUID index is malformed") from exc
+        if (
+            commit.get("episode_uuid") != episode_uuid
+            or commit_key
+            != self._key(f"commits/episode-{int(commit.get('episode_index', -1)):06d}.json")
+        ):
+            raise DatasetError("episode UUID index does not match its commit")
+        return commit
+
+    def _commit_at_index(self, episode_index: int) -> dict[str, Any] | None:
+        key = self._key(f"commits/episode-{episode_index:06d}.json")
+        try:
+            response = self.client.get_object(Bucket=self.bucket, Key=key)
+        except Exception as exc:
+            if self._is_missing_object(exc):
+                return None
+            raise DatasetError("could not read the episode commit") from exc
+        try:
+            commit = json.loads(response["Body"].read())
+        except Exception as exc:
+            raise DatasetError("episode commit is malformed") from exc
+        if (
+            not isinstance(commit, dict)
+            or commit.get("schema") != "npa.leisaac.episode-commit.v1"
+            or int(commit.get("episode_index", -1)) != episode_index
+        ):
+            raise DatasetError("episode commit index is malformed")
+        return commit
+
+    @staticmethod
+    def _validate_retry_sources(
+        commit: dict[str, Any], records: Path, primary_video: Path
+    ) -> None:
+        objects = commit.get("objects")
+        videos = objects.get("videos") if isinstance(objects, dict) else None
+        storage = objects.get("camera_storage") if isinstance(objects, dict) else None
+        primary = str(storage.get("primary_camera") or "") if isinstance(storage, dict) else ""
+        record_ref = objects.get("records") if isinstance(objects, dict) else None
+        video_ref = videos.get(primary) if isinstance(videos, dict) else None
+        if (
+            not isinstance(record_ref, dict)
+            or not isinstance(video_ref, dict)
+            or str(record_ref.get("sha256") or "") != sha256_file(records)
+            or str(video_ref.get("sha256") or "") != sha256_file(primary_video)
+        ):
+            raise DatasetError("episode UUID retry has different source bytes")
+
+    def _publish_uuid_index(self, commit: dict[str, Any]) -> None:
+        episode_uuid = str(commit["episode_uuid"])
+        commit_key = self._key(
+            f"commits/episode-{int(commit['episode_index']):06d}.json"
+        )
+        payload = {
+            "schema": "npa.leisaac.episode-uuid-index.v1",
+            "episode_uuid": episode_uuid,
+            "commit_key": commit_key,
+            "metadata_sha256": hashlib.sha256(
+                json.dumps(
+                    commit["metadata"], sort_keys=True, separators=(",", ":")
+                ).encode()
+            ).hexdigest(),
+        }
+        body = (json.dumps(payload, sort_keys=True) + "\n").encode()
+        try:
+            self.client.put_object(
+                Bucket=self.bucket,
+                Key=self._key(f"episode-uuids/{episode_uuid}.json"),
+                Body=body,
+                Metadata={"sha256": hashlib.sha256(body).hexdigest()},
+                IfNoneMatch="*",
+            )
+        except Exception as exc:
+            if not self._is_precondition_failure(exc):
+                raise DatasetError("could not publish the episode UUID index") from exc
+            existing = self._commit_for_uuid(episode_uuid)
+            if existing is None or existing.get("metadata") != commit.get("metadata"):
+                raise DatasetError(
+                    "episode UUID already exists with different provenance"
+                ) from exc
 
     def publish_episode(
         self, episode_dir: Path, metadata: dict[str, Any]
@@ -1624,49 +1726,56 @@ class S3DatasetStore:
             videos[camera] = video
         records = episode_dir / "records.jsonl"
         rows = _load_records(records)
+        primary_frame_paths = sorted((episode_dir / "frames").glob("frame-*.jpg"))
+        if (
+            len(primary_frame_paths) != len(rows)
+            or [sha256_file(path) for path in primary_frame_paths]
+            != [str(row["frame_sha256"]) for row in rows]
+        ):
+            raise DatasetError("raw primary frames do not match episode records")
         fps = int(metadata.get("fps") or FPS)
         media = _validate_camera_media(videos, expected_frames=len(rows), fps=fps)
-        commits = self._commits()
-        existing = [
-            item
-            for item in commits
-            if item.get("episode_uuid") == metadata.get("episode_uuid")
-        ]
-        if existing:
-            commit = existing[0]
-            if len(existing) != 1 or commit.get("metadata") != metadata:
+        primary_camera = camera_ids[0]
+        existing = self._commit_for_uuid(str(metadata["episode_uuid"]))
+        if existing is not None:
+            if existing.get("metadata") != metadata:
                 raise DatasetError(
                     "episode UUID already exists with different provenance"
                 )
-            version = self._publish_version(commits)
-            episode_index = int(commit["episode_index"])
+            latest, _etag = self._read_latest()
+            episode_index = int(existing["episode_index"])
+            if latest is not None and int(latest["episode_count"]) > episode_index:
+                version = self._manifest_from_latest(latest)
+            else:
+                if (int(latest["episode_count"]) if latest else 0) != episode_index:
+                    raise DatasetError("episode UUID index is ahead of dataset history")
+                self._validate_retry_sources(
+                    existing, records, videos[primary_camera]
+                )
+                previous = self._manifest_from_latest(latest) if latest else None
+                version = self._publish_version(
+                    previous,
+                    existing,
+                    records_path=records,
+                    video_path=videos[primary_camera],
+                )
             return {
                 "episode_index": episode_index,
                 "completed_episode_count": int(version["episode_count"]),
                 "dataset_version_uri": version["dataset_uri"],
                 "episode_commit_uri": f"s3://{self.bucket}/{self._key(f'commits/episode-{episode_index:06d}.json')}",
             }
-        episode_index = 0 if not commits else int(commits[-1]["episode_index"]) + 1
-        bundle = f"episodes/{episode_index:06d}-{metadata['episode_uuid']}"
-        primary_camera = camera_ids[0]
-        primary_frames = sorted((episode_dir / "frames").glob("frame-*.jpg"))
+        bundle = f"episodes/by-id/{metadata['episode_uuid']}"
         objects: dict[str, Any] = {
             "records": self._put_file(f"{bundle}/records.jsonl", records),
-            "video": self._put_file(f"{bundle}/episode.mp4", videos[primary_camera]),
             "metadata": self._put_file(
                 f"{bundle}/episode.json", episode_dir / "episode.json"
             ),
-            "frames": [
-                self._put_file(f"{bundle}/frames/{path.name}", path)
-                for path in primary_frames
-            ],
-        }
-        if len(camera_ids) > 1:
-            objects["videos"] = {
+            "videos": {
                 camera: self._put_file(f"{bundle}/videos/{camera}.mp4", videos[camera])
                 for camera in camera_ids
-            }
-            objects["frames_by_camera"] = {
+            },
+            "frames_by_camera": {
                 camera: [
                     self._put_file(f"{bundle}/frames/{camera}/{path.name}", path)
                     for path in sorted(
@@ -1678,31 +1787,108 @@ class S3DatasetStore:
                     )
                 ]
                 for index, camera in enumerate(camera_ids)
-            }
-        commit = {
-            "schema": "npa.leisaac.episode-commit.v1",
-            "episode_index": episode_index,
-            "episode_uuid": metadata["episode_uuid"],
-            "committed_at": utc_now(),
-            "metadata": metadata,
-            "objects": objects,
-            "media": media,
+            },
+            "camera_storage": {
+                "schema": "npa.leisaac.camera-storage.v1",
+                "primary_camera": primary_camera,
+                "videos": "objects.videos",
+                "frames": "objects.frames_by_camera",
+                "stored_once": True,
+            },
         }
-        commit_bytes = (json.dumps(commit, indent=2, sort_keys=True) + "\n").encode()
-        try:
-            self.client.put_object(
-                Bucket=self.bucket,
-                Key=self._key(f"commits/episode-{episode_index:06d}.json"),
-                Body=commit_bytes,
-                Metadata={"sha256": hashlib.sha256(commit_bytes).hexdigest()},
-                IfNoneMatch="*",
-            )
-        except Exception as exc:
-            raise DatasetError(
-                "episode index was concurrently committed; retry finalization"
-            ) from exc
-        commits.append(commit)
-        version = self._publish_version(commits)
+        previous_manifest: dict[str, Any] | None = None
+        for concurrency_attempt in range(64):
+            latest, _etag = self._read_latest()
+            previous_manifest = self._manifest_from_latest(latest) if latest else None
+            episode_index = int(latest["episode_count"]) if latest else 0
+            commit = {
+                "schema": "npa.leisaac.episode-commit.v1",
+                "episode_index": episode_index,
+                "episode_uuid": metadata["episode_uuid"],
+                "committed_at": utc_now(),
+                "metadata": metadata,
+                "objects": objects,
+                "media": media,
+            }
+            commit_bytes = (
+                json.dumps(commit, indent=2, sort_keys=True) + "\n"
+            ).encode()
+            try:
+                self.client.put_object(
+                    Bucket=self.bucket,
+                    Key=self._key(f"commits/episode-{episode_index:06d}.json"),
+                    Body=commit_bytes,
+                    Metadata={"sha256": hashlib.sha256(commit_bytes).hexdigest()},
+                    IfNoneMatch="*",
+                )
+                break
+            except Exception as exc:
+                if not self._is_precondition_failure(exc):
+                    raise DatasetError("could not publish episode commit") from exc
+                conflicting = self._commit_at_index(episode_index)
+                if (
+                    conflicting is not None
+                    and conflicting.get("episode_uuid") == metadata["episode_uuid"]
+                ):
+                    if conflicting.get("metadata") != metadata:
+                        raise DatasetError(
+                            "episode UUID already exists with different provenance"
+                        ) from exc
+                    self._validate_retry_sources(
+                        conflicting, records, videos[primary_camera]
+                    )
+                    self._publish_uuid_index(conflicting)
+                    version = self._publish_version(
+                        previous_manifest,
+                        conflicting,
+                        records_path=records,
+                        video_path=videos[primary_camera],
+                    )
+                    return {
+                        "episode_index": episode_index,
+                        "completed_episode_count": int(version["episode_count"]),
+                        "dataset_version_uri": version["dataset_uri"],
+                        "episode_commit_uri": f"s3://{self.bucket}/{self._key(f'commits/episode-{episode_index:06d}.json')}",
+                    }
+                concurrent = self._commit_for_uuid(str(metadata["episode_uuid"]))
+                if concurrent is not None:
+                    if concurrent.get("metadata") != metadata:
+                        raise DatasetError(
+                            "episode UUID already exists with different provenance"
+                        ) from exc
+                    for _ in range(64):
+                        concurrent_latest, _etag = self._read_latest()
+                        if concurrent_latest and int(
+                            concurrent_latest["episode_count"]
+                        ) > int(concurrent["episode_index"]):
+                            version = self._manifest_from_latest(concurrent_latest)
+                            return {
+                                "episode_index": int(concurrent["episode_index"]),
+                                "completed_episode_count": int(
+                                    version["episode_count"]
+                                ),
+                                "dataset_version_uri": version["dataset_uri"],
+                                "episode_commit_uri": "s3://"
+                                + self.bucket
+                                + "/"
+                                + self._key(
+                                    f"commits/episode-{int(concurrent['episode_index']):06d}.json"
+                                ),
+                            }
+                        time.sleep(0.05)
+                    raise DatasetError(
+                        "concurrent episode commit did not publish its dataset version"
+                    ) from exc
+                time.sleep(min(0.5, 0.01 * (concurrency_attempt + 1)))
+        else:
+            raise DatasetError("episode commit concurrency did not converge")
+        self._publish_uuid_index(commit)
+        version = self._publish_version(
+            previous_manifest,
+            commit,
+            records_path=records,
+            video_path=videos[primary_camera],
+        )
         return {
             "episode_index": episode_index,
             "completed_episode_count": int(version["episode_count"]),
@@ -1714,50 +1900,60 @@ class S3DatasetStore:
         destination.parent.mkdir(parents=True, exist_ok=True)
         self.client.download_file(self.bucket, key, str(destination))
 
-    def _publish_version(self, commits: list[dict[str, Any]]) -> dict[str, Any]:
+    def _publish_version(
+        self,
+        previous: dict[str, Any] | None,
+        commit: dict[str, Any],
+        *,
+        records_path: Path,
+        video_path: Path,
+    ) -> dict[str, Any]:
+        """Publish only this episode's immutable LeRobot shard and a small index."""
+
         with tempfile.TemporaryDirectory(prefix="npa-leisaac-version-") as temporary:
             root = Path(temporary)
-            episode_inputs: list[dict[str, Any]] = []
-            for index, commit in enumerate(commits):
-                episode_root = root / "raw" / f"episode-{index:06d}"
-                records_path = episode_root / "records.jsonl"
-                video_path = episode_root / "episode.mp4"
-                self._download(commit["objects"]["records"]["key"], records_path)
-                self._download(commit["objects"]["video"]["key"], video_path)
-                if sha256_file(records_path) != commit["objects"]["records"]["sha256"]:
-                    raise DatasetError("downloaded episode records checksum mismatch")
-                if sha256_file(video_path) != commit["objects"]["video"]["sha256"]:
-                    raise DatasetError("downloaded episode video checksum mismatch")
-                rows = _load_records(records_path)
-                frame_objects = commit["objects"].get("frames")
-                if (
-                    not isinstance(frame_objects, list)
-                    or len(frame_objects) != len(rows)
-                    or [str(item.get("sha256") or "") for item in frame_objects]
-                    != [str(row["frame_sha256"]) for row in rows]
-                ):
-                    raise DatasetError("raw frame objects do not match episode records")
-                episode_inputs.append(
+            dataset_root = root / "dataset"
+            previous_info = previous.get("info", {}) if previous else {}
+            task_catalog = sorted(
+                set(previous.get("task_catalog", []) if previous else [])
+                | {str(commit["metadata"]["task"])}
+            )
+            shard_info = build_lerobot_dataset(
+                [
                     {
                         "records_path": records_path,
                         "video_path": video_path,
                         "metadata": commit["metadata"],
                     }
-                )
-            dataset_root = root / "dataset"
-            info = build_lerobot_dataset(episode_inputs, dataset_root)
-            version_id = f"v{len(commits):06d}-{uuid.uuid4().hex}"
+                ],
+                dataset_root,
+                episode_index_offset=int(commit["episode_index"]),
+                global_index_offset=int(previous_info.get("total_frames") or 0),
+                task_catalog=task_catalog,
+            )
+            episode_count = int(commit["episode_index"]) + 1
+            version_id = f"v{episode_count:06d}-{uuid.uuid4().hex}"
             version_prefix = f"versions/{version_id}"
-            files: list[dict[str, Any]] = []
+            manifest_key = self._key(f"{version_prefix}/npa-dataset.json")
+            manifest_uri = f"s3://{self.bucket}/{manifest_key}"
+            shard_prefix = f"lerobot-shards/{commit['episode_uuid']}"
+            shard_files: list[dict[str, Any]] = []
             for path in sorted(
                 item for item in dataset_root.rglob("*") if item.is_file()
             ):
-                files.append(
+                shard_files.append(
                     self._put_file(
-                        f"{version_prefix}/{path.relative_to(dataset_root).as_posix()}",
+                        f"{shard_prefix}/{path.relative_to(dataset_root).as_posix()}",
                         path,
                     )
                 )
+            commit_uri = (
+                f"s3://{self.bucket}/"
+                + self._key(
+                    f"commits/episode-{int(commit['episode_index']):06d}.json"
+                )
+            )
+            info = dict(shard_info)
             manifest = {
                 "schema": DATASET_SCHEMA,
                 "lerobot_version": LEROBOT_TARGET_VERSION,
@@ -1766,25 +1962,25 @@ class S3DatasetStore:
                 "output_prefix": f"s3://{self.bucket}/{self.prefix}",
                 "version": version_id,
                 "created_at": utc_now(),
-                "episode_count": len(commits),
-                "episode_commits": [
-                    "s3://"
-                    + self.bucket
-                    + "/"
-                    + self._key(
-                        "commits/episode-"
-                        + f"{int(item['episode_index']):06d}"
-                        + ".json"
-                    )
-                    for item in commits
-                ],
+                "episode_count": episode_count,
+                # v2 manifests are constant-sized parent-linked snapshots. Old
+                # v1 manifests with cumulative episode_commits/files remain
+                # readable, but finalization never recopies those arrays.
+                "index_layout": "parent-linked-v2",
                 "info": info,
-                "files": files,
+                "task_catalog": task_catalog,
+                "files": shard_files,
+                "storage_layout": "immutable-episode-shards-v1",
+                "new_episode_commit": commit_uri,
+                "new_episode_files": shard_files,
+                "parent_manifest_uri": (
+                    str(previous.get("manifest_uri") or "") if previous else ""
+                ),
+                "manifest_uri": manifest_uri,
             }
             manifest_bytes = (
                 json.dumps(manifest, indent=2, sort_keys=True) + "\n"
             ).encode()
-            manifest_key = self._key(f"{version_prefix}/npa-dataset.json")
             self.client.put_object(
                 Bucket=self.bucket,
                 Key=manifest_key,
@@ -1795,8 +1991,8 @@ class S3DatasetStore:
             latest = {
                 "schema": "npa.leisaac.dataset-latest.v1",
                 "dataset_uri": manifest["dataset_uri"],
-                "manifest_uri": f"s3://{self.bucket}/{manifest_key}",
-                "episode_count": len(commits),
+                "manifest_uri": manifest_uri,
+                "episode_count": episode_count,
                 "updated_at": utc_now(),
             }
             return self._publish_latest_monotonic(latest, manifest)

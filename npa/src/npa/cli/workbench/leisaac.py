@@ -16,6 +16,7 @@ import ssl
 import subprocess
 import time
 import urllib.request
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Any
 
@@ -455,12 +456,14 @@ def _install_agent_relay(
     *,
     run_id: str,
     session_nonce: str,
+    expires_at: str,
     media_target_host: str = "",
     media_target_port: int = 0,
 ) -> None:
     config = {
         "run_id": run_id,
         "session_nonce": session_nonce,
+        "expires_at": expires_at,
     }
     if media_target_host or media_target_port:
         config["media_target_host"] = media_target_host
@@ -473,7 +476,8 @@ Wants=network-online.target
 [Service]
 Type=simple
 DynamicUser=yes
-ExecStart=/usr/bin/python3 /opt/npa-agent/leisaac-agent-relay.py --config /etc/npa/leisaac-relay.json
+LoadCredential=leisaac.json:/etc/npa/leisaac-relay.json
+ExecStart=/usr/bin/python3 /opt/npa-agent/leisaac-agent-relay.py --config $CREDENTIALS_DIRECTORY/leisaac.json
 Restart=on-failure
 RestartSec=2
 NoNewPrivileges=yes
@@ -506,7 +510,8 @@ sudo install -d -m 0755 /etc/npa /opt/npa-agent
 echo {shlex.quote(script_b64)} | base64 -d | sudo tee {_RELAY_SCRIPT} >/dev/null
 echo {shlex.quote(config_b64)} | base64 -d | sudo tee {_RELAY_CONFIG} >/dev/null
 echo {shlex.quote(unit_b64)} | base64 -d | sudo tee /etc/systemd/system/{_RELAY_UNIT} >/dev/null
-sudo chmod 0644 {_RELAY_SCRIPT} {_RELAY_CONFIG} /etc/systemd/system/{_RELAY_UNIT}
+sudo chmod 0644 {_RELAY_SCRIPT} /etc/systemd/system/{_RELAY_UNIT}
+sudo chmod 0600 {_RELAY_CONFIG}
 sudo systemctl daemon-reload
 sudo systemctl enable --now {_RELAY_UNIT} >/dev/null
 sudo systemctl restart {_RELAY_UNIT}
@@ -624,10 +629,14 @@ def _put_manifest(
             or None
         )
     client = boto3.client("s3", **client_kwargs)
+    public_manifest = dict(manifest)
+    public_manifest.pop("session_nonce", None)
     client.put_object(
         Bucket=bucket,
         Key=key,
-        Body=(json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode("utf-8"),
+        Body=(json.dumps(public_manifest, indent=2, sort_keys=True) + "\n").encode(
+            "utf-8"
+        ),
         ContentType="application/json",
     )
     return f"s3://{bucket}/{key}"
@@ -814,6 +823,10 @@ def launch_cmd(
         seed = validate_seed(seed)
         num_envs = validate_num_envs(num_envs)
         expires_at = validate_expiry(expires_at)
+        if not expires_at:
+            expires_at = (
+                datetime.now(timezone.utc) + timedelta(hours=8)
+            ).isoformat().replace("+00:00", "Z")
         source_ranges = validate_source_ranges(source_range)
         split_s3_uri(output_path)
         if manifest_prefix and artifact_uri:
@@ -886,6 +899,7 @@ def launch_cmd(
                 ssh,
                 run_id=run_id,
                 session_nonce=nonce,
+                expires_at=expires_at,
             )
             certificate_sha256 = _agent_certificate_sha256(media_host)
             relay_secret = relay_client_secret_manifest(

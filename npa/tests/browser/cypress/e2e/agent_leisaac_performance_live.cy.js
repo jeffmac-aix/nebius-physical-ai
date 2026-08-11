@@ -61,8 +61,13 @@ async function waitUntil(win, predicate, timeoutMs, label, intervalMs = 5) {
 }
 
 function sampleCanvas(win, id) {
-  const source = win.document.getElementById(id);
-  if (!source || !source.width || !source.height || source.hidden) {
+  let source = win.document.getElementById(id);
+  if (id === "leisaacCanvas" && (!source || source.hidden)) {
+    source = win.document.getElementById("leisaacVideo");
+  }
+  const sourceWidth = Number(source && (source.videoWidth || source.width) || 0);
+  const sourceHeight = Number(source && (source.videoHeight || source.height) || 0);
+  if (!source || !sourceWidth || !sourceHeight || source.hidden) {
     throw new Error(`canvas ${id} is unavailable or blank`);
   }
   const width = 96;
@@ -145,6 +150,10 @@ function frameStageSummary(frames) {
       clock_uncertainty_ms: distribution(selected.map(
         (frame) => frame.clock_uncertainty_ms,
       )),
+      inter_frame_ms: distribution(selected.map((frame) => frame.inter_frame_ms)),
+      stalls_250ms: selected.filter(
+        (frame) => frame.stall === true || Number(frame.inter_frame_ms || 0) >= 250,
+      ).length,
     };
   }
   return cameras;
@@ -254,7 +263,7 @@ function frameStageSummary(frames) {
           win,
           () => {
             const evidence = liveTransportEvidence(win);
-            return ["websocket-v1", "webrtc-datachannel-v1"].includes(evidence.active) &&
+            return ["websocket-v1", "webrtc-datachannel-v1", "webrtc-native-h264"].includes(evidence.active) &&
               evidence.frames.slice(startingFrameCount)
                 .some((frame) => frame.camera === "workspace");
           },
@@ -481,14 +490,22 @@ function frameStageSummary(frames) {
           failures: Array.isArray(finalEvidence.failures)
             ? finalEvidence.failures.slice(-16)
             : [],
-          policy: finalEvidence.active === "webrtc-datachannel-v1"
+          policy: finalEvidence.active === "webrtc-native-h264"
+            ? "authenticated reliable control channel; browser-native Kit H.264/NVENC video; presentation via requestVideoFrameCallback"
+            : finalEvidence.active === "webrtc-datachannel-v1"
             ? "TURN-only reliable ordered control RTCDataChannel; binary WebSocket latest-frame-wins video"
             : finalEvidence.video === "webrtc-datachannel-v1"
               ? "TURN-only unordered maxRetransmits=0 video; reliable ordered control WebSocket"
               : "binary same-origin WebSocket control/video; CUDA fixed-step simulation; latest-frame-wins video",
         };
         benchmark.quality = {
-          workspace: { width: 1280, height: 720, jpeg_quality: 82, variance: workspace.variance },
+          workspace: {
+            width: 1280,
+            height: 720,
+            codec: finalEvidence.active === "webrtc-native-h264" ? "H264" : "JPEG",
+            jpeg_quality: finalEvidence.active === "webrtc-native-h264" ? null : 82,
+            variance: workspace.variance,
+          },
           overview: overview
             ? { width: 1280, height: 720, jpeg_quality: 82, variance: overview.variance }
             : null,

@@ -19,6 +19,8 @@ USER root
 SHELL ["/bin/bash", "-lc"]
 
 COPY docker/workbench/leisaac/upstream-observability.patch /tmp/leisaac-upstream-observability.patch
+COPY docker/workbench/leisaac/upstream-packaging.patch /tmp/leisaac-upstream-packaging.patch
+COPY docker/workbench/leisaac/THIRD_PARTY_NOTICES.md /opt/npa/licenses/leisaac/THIRD_PARTY_NOTICES.md
 
 # libXrandr is required by omni.kit.livestream.webrtc. All Python packages here
 # are OSS; Isaac, task assets, and NVIDIA's browser client are deliberately absent.
@@ -35,11 +37,12 @@ RUN apt-get update \
     && test "$(git -C /opt/leisaac rev-parse HEAD)" = "${LEISAAC_COMMIT}" \
     && git -C /opt/leisaac apply --recount --check --unidiff-zero /tmp/leisaac-upstream-observability.patch \
     && git -C /opt/leisaac apply --recount --unidiff-zero /tmp/leisaac-upstream-observability.patch \
+    && git -C /opt/leisaac apply --check /tmp/leisaac-upstream-packaging.patch \
+    && git -C /opt/leisaac apply /tmp/leisaac-upstream-packaging.patch \
     && /opt/npa/sim/venv/bin/python -m py_compile \
       /opt/leisaac/source/leisaac/leisaac/devices/keyboard/so101_keyboard.py \
       /opt/leisaac/scripts/environments/teleoperation/teleop_se3_agent.py \
-    && /opt/npa/sim/venv/bin/python -c 'import ast; p="/opt/leisaac/source/leisaac/leisaac/devices/keyboard/so101_keyboard.py"; c=next(n for n in ast.parse(open(p, encoding="utf-8").read()).body if isinstance(n, ast.ClassDef) and n.name == "SO101Keyboard"); m={n.name: ast.unparse(n) for n in c.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}; assert "self._remote_pulses.clear()" in m["reset"]; assert "_remote_pulses" not in m["_add_device_control_description"]' \
-    && sed -i '/"feetech-servo-sdk",/d' /opt/leisaac/source/leisaac/pyproject.toml \
+    && /opt/npa/sim/venv/bin/python -c 'import ast; p="/opt/leisaac/source/leisaac/leisaac/devices/keyboard/so101_keyboard.py"; c=next(n for n in ast.parse(open(p, encoding="utf-8").read()).body if isinstance(n, ast.ClassDef) and n.name == "SO101Keyboard"); f={n.name:n for n in c.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}; m={k:ast.unparse(v) for k,v in f.items()}; assert "self._remote_pulses.clear()" in m["reset"]; assert "_remote_pulses" not in m["_add_device_control_description"]; assert ast.unparse(f["_on_keyboard_event"].body[0].test) == "self._browser_teleop" and isinstance(f["_on_keyboard_event"].body[0].body[0], ast.Return)' \
     && ! grep -q 'feetech-servo-sdk' /opt/leisaac/source/leisaac/pyproject.toml \
     && /opt/npa/sim/venv/bin/python -m pip install --no-cache-dir \
       deepdiff==8.6.1 \
@@ -57,7 +60,8 @@ RUN apt-get update \
     && ! /opt/npa/sim/venv/bin/python -m pip show feetech-servo-sdk \
     && /opt/npa/sim/venv/bin/python -m pip check \
     && cp /opt/leisaac/LICENSE /opt/leisaac/APACHE-2.0.txt \
-    && rm -f /tmp/leisaac-upstream-observability.patch \
+    && test -z "$(find /opt/npa/sim/venv -type f -path '*/imageio_ffmpeg/binaries/ffmpeg*' -print -quit)" \
+    && rm -f /tmp/leisaac-upstream-observability.patch /tmp/leisaac-upstream-packaging.patch \
     && rm -rf /opt/leisaac/.git \
     && test ! -e /opt/leisaac/assets/robots/so101_follower.usd \
     && test ! -e /opt/leisaac/assets/scenes/kitchen_with_orange \

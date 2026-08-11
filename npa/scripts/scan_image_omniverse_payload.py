@@ -45,6 +45,10 @@ from pathlib import Path
 
 # Path signatures that only a real Omniverse Kit / Isaac Sim install produces.
 PAYLOAD_SIGNATURES: tuple[tuple[str, str], ...] = (
+    (
+        r"(?i)(?:^|/)site-packages/imageio_ffmpeg/binaries/ffmpeg[^/]*$",
+        "an imageio-ffmpeg wheel-bundled static FFmpeg executable",
+    ),
     (r"(?i)site-packages/isaacsim/", "the isaacsim wheel's installed package tree"),
     (r"(?i)site-packages/isaaclab/", "the isaaclab wheel's installed package tree"),
     (

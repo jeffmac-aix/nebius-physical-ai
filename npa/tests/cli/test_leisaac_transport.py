@@ -86,6 +86,7 @@ def test_control_messages_are_bounded_and_exactly_scoped() -> None:
         ({"key": "R"}, "invalid_message"),
         ({"seq": -1}, "invalid_message"),
         ({"type": "unknown"}, "invalid_message"),
+        ({"unexpected": True}, "invalid_message"),
     ):
         with pytest.raises(TransportProtocolError) as exc_info:
             parse_control_message(
@@ -201,7 +202,7 @@ def test_only_one_authenticated_control_transport_owns_mode_changes(
     runtime = _runtime_module()
     monkeypatch.setenv("NPA_LEISAAC_RUN_ID", RUN_ID)
     monkeypatch.setattr(runtime, "_queue_mode_request", lambda _message: None)
-    runtime.CONTROL_OWNER.update(token="", client_id="", resumed_wall_ns=0)
+    runtime.CONTROL_OWNER.update(token="", client_id="", lease_id="")
 
     async def exercise() -> None:
         first_queue: asyncio.Queue[str] = asyncio.Queue()
@@ -271,12 +272,12 @@ def test_only_one_authenticated_control_transport_owns_mode_changes(
     asyncio.run(exercise())
 
 
-def test_newer_resume_supersedes_half_open_control_transport(
+def test_server_lease_replaces_half_open_transport_and_forged_clock_cannot_steal(
     monkeypatch,
 ) -> None:
     runtime = _runtime_module()
     monkeypatch.setenv("NPA_LEISAAC_RUN_ID", RUN_ID)
-    runtime.CONTROL_OWNER.update(token="", client_id="", resumed_wall_ns=0)
+    runtime.CONTROL_OWNER.update(token="", client_id="", lease_id="")
     released: list[dict[str, object]] = []
     monkeypatch.setattr(runtime, "_append_inputs", lambda rows: released.extend(rows))
 
@@ -320,12 +321,13 @@ def test_newer_resume_supersedes_half_open_control_transport(
         await first_queue.put(json.dumps(resume))
         await asyncio.wait_for(first_ready.wait(), timeout=1.0)
         assert first_emitted[0]["type"] == "resumed"
+        first_lease = str(first_emitted[0]["lease_id"])
 
         replacement_resume = dict(resume)
         replacement_resume.update(
-            client_id="replacement-browser-controller",
             client_mono_ns=3,
-            client_wall_ns=4,
+            client_wall_ns=2**63 - 1,
+            lease_id=first_lease,
         )
         await replacement_queue.put(json.dumps(replacement_resume))
         await asyncio.wait_for(replacement_ready.wait(), timeout=1.0)
@@ -337,25 +339,26 @@ def test_newer_resume_supersedes_half_open_control_transport(
         assert first_emitted[-1]["code"] == "controller_busy"
 
         first_ready.clear()
-        equal_epoch_resume = dict(resume)
-        equal_epoch_resume["client_wall_ns"] = 4
-        await first_queue.put(json.dumps(equal_epoch_resume))
+        forged_resume = dict(resume)
+        forged_resume.update(
+            client_id="forged-second-browser",
+            client_wall_ns=2**63 - 1,
+        )
+        await first_queue.put(json.dumps(forged_resume))
         await asyncio.wait_for(first_ready.wait(), timeout=1.0)
         assert first_emitted[-1]["code"] == "controller_busy"
-        assert runtime.CONTROL_OWNER["client_id"] == "replacement-browser-controller"
+        assert runtime.CONTROL_OWNER["client_id"] == "stable-browser-controller"
 
         first.cancel()
         await asyncio.gather(first, return_exceptions=True)
-        assert runtime.CONTROL_OWNER["client_id"] == "replacement-browser-controller"
+        assert runtime.CONTROL_OWNER["client_id"] == "stable-browser-controller"
         assert released == []
 
         replacement.cancel()
         await asyncio.gather(replacement, return_exceptions=True)
-        assert runtime.CONTROL_OWNER == {
-            "token": "",
-            "client_id": "",
-            "resumed_wall_ns": 0,
-        }
+        assert runtime.CONTROL_OWNER["token"] == ""
+        assert runtime.CONTROL_OWNER["client_id"] == "stable-browser-controller"
+        assert runtime.CONTROL_OWNER["lease_id"]
 
     asyncio.run(exercise())
 
@@ -400,6 +403,12 @@ def test_control_ledger_is_ordered_idempotent_and_recovers_state() -> None:
     with pytest.raises(TransportProtocolError) as stale:
         ledger.accept(first)
     assert stale.value.code == "sequence_too_old"
+
+    assert ledger.reset_for_runtime_restart() == 1
+    reset = ledger.resume("browser-test")
+    assert reset["next_seq"] == 1
+    assert reset["last_applied_seq"] == 0
+    assert reset["keys_down"] == []
 
 
 def test_direct_so101_actions_share_ordering_and_reject_unsafe_values() -> None:
@@ -976,7 +985,7 @@ def test_runtime_restart_retains_only_the_controller_for_mode_fallback(
     assert runtime._queue_mode_request(second) is True
 
     runtime._reset_runtime_files()
-    runtime.CONTROL_OWNER.update(token="", client_id="", resumed_wall_ns=0)
+    runtime.CONTROL_OWNER.update(token="", client_id="", lease_id="")
 
     restarted = json.loads(runtime.MODE_COMMAND_PATH.read_text(encoding="utf-8"))
     assert restarted["requested_view_mode"] == "dual_slow"
@@ -1342,7 +1351,7 @@ def test_runtime_rejects_bad_auth_and_preserves_polling_fallback(
         runtime.CONTROL_OWNER.update(
             token="fallback-lease",
             client_id="fallback-browser",
-            resumed_wall_ns=400,
+            lease_id="",
         )
         mode = client.post(
             "/input",
@@ -1365,7 +1374,7 @@ def test_runtime_rejects_bad_auth_and_preserves_polling_fallback(
         assert queued["view_revision"] == 9
         assert queued["owner_client_id"] == "fallback-browser"
 
-        runtime.CONTROL_OWNER.update(token="", client_id="", resumed_wall_ns=0)
+        runtime.CONTROL_OWNER.update(token="", client_id="", lease_id="")
         stale = client.post(
             "/input",
             headers={"x-npa-leisaac-nonce": NONCE},

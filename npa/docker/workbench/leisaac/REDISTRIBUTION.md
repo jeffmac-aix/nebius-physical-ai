@@ -12,6 +12,12 @@ runtime dependencies and do not change the `redistribution: public`
 classification. Demonstration data and operator S3 credentials are runtime
 inputs and are never image layers.
 
+`imageio-ffmpeg==0.6.0` is a LeIsaac-only optional host dependency, not an NPA
+core dependency. Its BSD-2-Clause wrapper and wheel-bundled FFmpeg distinction
+are recorded in `THIRD_PARTY_NOTICES.md`. The container deliberately installs
+Debian's dynamically packaged FFmpeg and asserts that no imageio-ffmpeg bundled
+executable exists.
+
 The current Kubernetes launcher and functional smoke support only the
 hard-selected RTX PRO 6000 Blackwell pool. L40S has RT cores in general, but is
 not an advertised LeIsaac route until this exact image and launcher are tested
@@ -51,10 +57,12 @@ the operator must confirm that its NVIDIA agreement permits the intended use.
 The browser service uses upstream LeIsaac's software keyboard device. The
 unlicensed `feetech-servo-sdk` package used only by physical SO101 leader
 hardware is intentionally neither installed nor redistributed. NPA applies one
-packaging-only patch that removes that mandatory dependency edge from upstream's
+reviewable `upstream-packaging.patch` that removes that mandatory dependency edge from upstream's
 `pyproject.toml`; the lazy-loaded hardware implementation and the real
 `SO101Keyboard`/task source are otherwise unchanged. The build runs `pip check`
-after installation.
+after installation. NPA's Apache-2.0 source modifications are exactly
+`upstream-observability.patch` and `upstream-packaging.patch`; their build-time
+`git apply --check` steps prevent an unreviewed fuzzy mutation.
 
 Before publication, run the full-filesystem (not `--history-only`) scan of the
 exact published digest with `npa/scripts/scan_image_omniverse_payload.py`. Its

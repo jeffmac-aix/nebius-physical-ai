@@ -258,7 +258,9 @@ containers:
         Rendering is hard-routed to RTX PRO 6000, never H100/H200.
     golden_eval:
       kind: container-smoke
-      command: /isaac-sim/python.sh /opt/npa/leisaac/smoke_functional.py
+      # Serverless appends this argv to the image ENTRYPOINT. session_server.py
+      # dispatches this exact token to the smoke runner before normal startup.
+      command: golden-smoke
       serverless_gpu: rtx6000
       gpu: required
       timeout_seconds: 7200

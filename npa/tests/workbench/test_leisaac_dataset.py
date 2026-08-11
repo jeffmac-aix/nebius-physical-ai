@@ -498,6 +498,8 @@ class _FakeS3:
         self.objects: dict[tuple[str, str], tuple[bytes, dict[str, str]]] = {}
         self.fail_next_latest_precondition = False
         self.latest_precondition_failures = 0
+        self.put_keys: list[str] = []
+        self.get_keys: list[str] = []
 
     def put_object(
         self,
@@ -511,6 +513,7 @@ class _FakeS3:
         **_kwargs,
     ):
         target = (Bucket, Key)
+        self.put_keys.append(Key)
         if IfNoneMatch == "*" and target in self.objects:
             raise RuntimeError("precondition failed")
         data = Body.read() if hasattr(Body, "read") else bytes(Body)
@@ -539,6 +542,7 @@ class _FakeS3:
         return {"Contents": contents, "IsTruncated": False}
 
     def get_object(self, *, Bucket, Key):
+        self.get_keys.append(Key)
         data = self.objects[(Bucket, Key)][0]
         return {
             "Body": io.BytesIO(data),
@@ -625,6 +629,15 @@ def test_s3_store_publishes_faststart_synchronized_two_camera_artifacts(
         fake.objects[("bucket", "demos/leisaac/commits/episode-000000.json")][0]
     )
     assert set(commit["objects"]["videos"]) == {"workspace", "overview"}
+    assert "video" not in commit["objects"]
+    assert "frames" not in commit["objects"]
+    assert commit["objects"]["camera_storage"] == {
+        "schema": "npa.leisaac.camera-storage.v1",
+        "primary_camera": "workspace",
+        "videos": "objects.videos",
+        "frames": "objects.frames_by_camera",
+        "stored_once": True,
+    }
     assert set(commit["media"]) == {"workspace", "overview"}
     assert all(item["codec"] == "h264" for item in commit["media"].values())
     assert all(item["frames"] == 3 for item in commit["media"].values())
@@ -675,8 +688,12 @@ def test_s3_store_resumes_episode_numbers_and_publishes_lerobot_v3(
     second = _episode_dir(tmp_path, "LeIsaac-SO101-LiftCube-v0", "table-b", 1)
     result0 = store.publish_episode(*first)
     retried0 = store.publish_episode(*first)
+    first_put_count = len(fake.put_keys)
     fake.fail_next_latest_precondition = True
     result1 = store.publish_episode(*second)
+    second_puts = fake.put_keys[first_put_count:]
+    assert not any("episode-0/" in key for key in second_puts)
+    assert not any("lerobot-shards/episode-0/" in key for key in second_puts)
     assert result0["episode_index"] == 0
     assert retried0["episode_index"] == 0
     assert retried0["completed_episode_count"] == 1
@@ -722,7 +739,10 @@ def test_s3_store_resumes_episode_numbers_and_publishes_lerobot_v3(
         "demos/leisaac/commits/episode-000001.json",
     ]
     version_prefix = result1["dataset_version_uri"].split("s3://bucket/", 1)[1]
-    info = json.loads(fake.objects[("bucket", f"{version_prefix}/meta/info.json")][0])
+    manifest = json.loads(
+        fake.objects[("bucket", f"{version_prefix}/npa-dataset.json")][0]
+    )
+    info = manifest["info"]
     assert info["codebase_version"] == "v3.0"
     assert info["total_episodes"] == 2
     assert info["total_tasks"] == 2
@@ -740,28 +760,134 @@ def test_s3_store_resumes_episode_numbers_and_publishes_lerobot_v3(
     ]
     assert info["features"]["observation.images.front"]["info"]["video.codec"] == "h264"
     assert info["features"]["observation.images.front"]["shape"] == [720, 1280, 3]
-    tasks_bytes = fake.objects[("bucket", f"{version_prefix}/meta/tasks.parquet")][0]
+    tasks_ref = next(
+        item for item in manifest["new_episode_files"] if item["key"].endswith("/meta/tasks.parquet")
+    )
+    tasks_bytes = fake.objects[("bucket", tasks_ref["key"])][0]
     tasks = pq.read_table(io.BytesIO(tasks_bytes))
     assert tasks["task"].to_pylist() == [
         "LeIsaac-SO101-LiftCube-v0",
         "LeIsaac-SO101-PickOrange-v0",
     ]
     assert tasks["task_index"].to_pylist() == [0, 1]
-    parquet_bytes = fake.objects[
-        ("bucket", f"{version_prefix}/data/chunk-000/file-001.parquet")
-    ][0]
+    parquet_ref = next(
+        item
+        for item in manifest["new_episode_files"]
+        if item["key"].endswith("/data/chunk-000/file-001.parquet")
+    )
+    parquet_bytes = fake.objects[("bucket", parquet_ref["key"])][0]
     table = pq.read_table(io.BytesIO(parquet_bytes))
     assert table.num_rows == 3
     assert table["environment.id"].to_pylist() == ["table-b"] * 3
     assert table["success"].to_pylist() == [False, False, False]
     assert table["reset_reason"].to_pylist()[-1] == "failure"
 
-    first_only = store._commits()[:1]
-    stale_result = store._publish_version(first_only)
-    latest = json.loads(fake.objects[("bucket", "demos/leisaac/latest.json")][0])
-    assert latest["episode_count"] == 2
-    assert stale_result["episode_count"] == 2
-    assert stale_result["dataset_uri"] == result1["dataset_version_uri"]
+    assert manifest["storage_layout"] == "immutable-episode-shards-v1"
+    assert manifest["index_layout"] == "parent-linked-v2"
+    assert "episode_commits" not in manifest
+    assert manifest["new_episode_commit"].endswith("episode-000001.json")
+    assert manifest["parent_manifest_uri"].endswith("/npa-dataset.json")
+
+
+def test_32_episode_finalize_work_is_constant_and_never_reuploads_history(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cheap scale proof: media size/history cannot affect later finalization."""
+    fake = _FakeS3()
+    store = S3DatasetStore("s3://bucket/demos/leisaac-scale", client=fake)
+
+    def encode(_frames: Path, destination: Path, _fps: int) -> None:
+        destination.write_bytes(b"bounded-test-h264")
+
+    def validate(videos, *, expected_frames, fps):
+        return {
+            camera: {
+                "codec": "h264",
+                "pix_fmt": "yuv420p",
+                "width": 1280,
+                "height": 720,
+                "fps": float(fps),
+                "frames": expected_frames,
+                "duration": expected_frames / fps,
+                "timestamps": [index / fps for index in range(expected_frames)],
+                "has_audio": False,
+            }
+            for camera in videos
+        }
+
+    def build(_episodes, output: Path, *, episode_index_offset, global_index_offset, task_catalog):
+        output.mkdir(parents=True)
+        (output / "episode-shard.bin").write_bytes(
+            f"shard-{episode_index_offset}".encode()
+        )
+        return {
+            "codebase_version": "v3.0",
+            "total_episodes": episode_index_offset + 1,
+            "total_frames": global_index_offset + 3,
+            "total_tasks": len(task_catalog),
+            "features": {},
+        }
+
+    monkeypatch.setattr(leisaac_dataset, "_encode_frames", encode)
+    monkeypatch.setattr(leisaac_dataset, "_validate_camera_media", validate)
+    monkeypatch.setattr(leisaac_dataset, "build_lerobot_dataset", build)
+
+    put_counts: list[int] = []
+    get_counts: list[int] = []
+    manifest_sizes: list[int] = []
+    for index in range(32):
+        episode, metadata = _episode_dir(
+            tmp_path, "LeIsaac-SO101-LiftCube-v0", "scale-table", index
+        )
+        puts_before = len(fake.put_keys)
+        gets_before = len(fake.get_keys)
+        result = store.publish_episode(episode, metadata)
+        put_counts.append(len(fake.put_keys) - puts_before)
+        get_counts.append(len(fake.get_keys) - gets_before)
+        version_prefix = result["dataset_version_uri"].split("s3://bucket/", 1)[1]
+        manifest_body = fake.objects[("bucket", f"{version_prefix}/npa-dataset.json")][0]
+        manifest_sizes.append(len(manifest_body))
+
+    assert max(put_counts) == min(put_counts)
+    assert max(get_counts) - min(get_counts) <= 2
+    assert max(manifest_sizes) - min(manifest_sizes) < 512
+    assert len({key for key in fake.put_keys if "/commits/" in key}) == 32
+    assert len({key for key in fake.put_keys if "/versions/" in key}) == 32
+    first_media_prefix = "demos/leisaac-scale/episodes/by-id/episode-0/"
+    assert sum(key.startswith(first_media_prefix) for key in fake.put_keys) == 6
+    assert not fake.get_keys or not any(
+        "/episodes/by-id/" in key or "/lerobot-shards/" in key
+        for key in fake.get_keys
+    )
+
+
+def test_finalize_recovers_commit_written_before_uuid_index_and_latest(
+    tmp_path: Path,
+) -> None:
+    fake = _FakeS3()
+    store = S3DatasetStore("s3://bucket/demos/leisaac-crash", client=fake)
+    episode = _episode_dir(
+        tmp_path, "LeIsaac-SO101-LiftCube-v0", "crash-recovery", 0
+    )
+    store.publish_episode(*episode)
+    fake.objects.pop(("bucket", "demos/leisaac-crash/latest.json"))
+    fake.objects.pop(
+        ("bucket", "demos/leisaac-crash/episode-uuids/episode-0.json")
+    )
+
+    recovered = store.publish_episode(*episode)
+
+    assert recovered["episode_index"] == 0
+    assert recovered["completed_episode_count"] == 1
+    assert ("bucket", "demos/leisaac-crash/latest.json") in fake.objects
+    assert (
+        "bucket",
+        "demos/leisaac-crash/episode-uuids/episode-0.json",
+    ) in fake.objects
+    commit_keys = {
+        key for bucket, key in fake.objects if bucket == "bucket" and "/commits/" in key
+    }
+    assert commit_keys == {"demos/leisaac-crash/commits/episode-000000.json"}
 
 
 def test_s3_endpoint_precedence_is_explicit_then_env_then_config_then_primary() -> None:

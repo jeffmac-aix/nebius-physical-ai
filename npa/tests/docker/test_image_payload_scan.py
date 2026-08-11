@@ -62,6 +62,7 @@ PAYLOAD_PATHS = [
     "opt/leisaac-cache/downloads/omniverse-webrtc-streaming-library-99.42.7.tgz",
     "opt/leisaac-cache/assets/runtime/robots/arbitrary-version/robot.usda",
     "opt/leisaac/assets/scenes/future-release/task.usdc",
+    "opt/venv/lib/python3.11/site-packages/imageio_ffmpeg/binaries/ffmpeg-linux-x86_64-v7.0.2",
 ]
 
 # Paths the re-architected images legitimately DO ship.
