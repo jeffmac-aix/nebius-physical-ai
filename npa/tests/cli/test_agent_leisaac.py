@@ -208,6 +208,38 @@ def test_manifest_artifact_loader_requires_one_bounded_canonical_object() -> Non
     assert duplicated is None
 
 
+def test_manifest_artifact_loader_reads_configured_canonical_key_without_discovery() -> None:
+    payload = b'{"schema":"npa.leisaac.session.v1"}'
+    calls: list[dict[str, str]] = []
+
+    class S3:
+        def get_object(self, **kwargs):
+            calls.append(kwargs)
+            return {"Body": io.BytesIO(payload)}
+
+    def unexpected_discovery(*_args, **_kwargs):
+        raise AssertionError("canonical configured manifest must not scan run parents")
+
+    loaded = load_manifest_artifact(
+        "live",
+        validate_run_id=lambda value: value,
+        s3_client=lambda: (
+            S3(),
+            {"bucket": "agent-bucket", "prefix": "checkpoints/npa-agent"},
+        ),
+        s3_buckets=lambda _s3, _settings: ["agent-bucket"],
+        find_artifacts=unexpected_discovery,
+    )
+
+    assert loaded == {"schema": "npa.leisaac.session.v1"}
+    assert calls == [
+        {
+            "Bucket": "agent-bucket",
+            "Key": "checkpoints/npa-agent/live/reports/leisaac-session.json",
+        }
+    ]
+
+
 @pytest.mark.parametrize(
     "override,reason_fragment",
     [

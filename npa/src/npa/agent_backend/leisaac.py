@@ -116,16 +116,8 @@ def load_manifest_artifact(
 
     normalized_run = validate_run_id(run_id)
     s3, settings = s3_client()
-    bucket, artifacts = find_artifacts(
-        s3_buckets(s3, settings),
-        base_prefix=settings.get("prefix", ""),
-        run_id=normalized_run,
-        s3=s3,
-    )
-    matches = [
-        item for item in artifacts if is_leisaac_manifest_key(str(item.key or ""))
-    ]
     base_prefix = str(settings.get("prefix") or "").strip().strip("/")
+    primary_bucket = str(settings.get("bucket") or "").strip()
     canonical_key = "/".join(
         part
         for part in (
@@ -136,6 +128,36 @@ def load_manifest_artifact(
         )
         if part
     )
+
+    # Agent-relay launch constrains capability publication to the agent's
+    # configured bucket and prefix. Read that exact key before walking every
+    # historical run parent: the latter becomes both slow and intentionally
+    # incomplete once a long-lived artifact bucket reaches its bounded scan.
+    # Legacy/custom manifest prefixes continue through discovery below.
+    if primary_bucket and canonical_key:
+        try:
+            response = s3.get_object(Bucket=primary_bucket, Key=canonical_key)
+        except Exception:  # noqa: BLE001 - SDKs/mocks expose different not-found types
+            pass
+        else:
+            body = response["Body"].read(131073)
+            if len(body) <= 131072:
+                try:
+                    payload = json.loads(body.decode("utf-8"))
+                except (UnicodeDecodeError, ValueError):
+                    payload = None
+                if isinstance(payload, dict):
+                    return payload
+
+    bucket, artifacts = find_artifacts(
+        s3_buckets(s3, settings),
+        base_prefix=base_prefix,
+        run_id=normalized_run,
+        s3=s3,
+    )
+    matches = [
+        item for item in artifacts if is_leisaac_manifest_key(str(item.key or ""))
+    ]
     canonical = [
         item
         for item in matches
