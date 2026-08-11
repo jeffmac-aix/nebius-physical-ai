@@ -992,7 +992,10 @@ def verify_runtime_nvenc() -> tuple[bool, str]:
         "-f",
         "lavfi",
         "-i",
-        "color=size=64x64:rate=1",
+        # Blackwell NVENC rejects 64x64 even though older generations accept
+        # it. Exercise a resolution above the cross-generation minimum so the
+        # capability probe reflects real teleoperation frames.
+        "color=size=256x256:rate=1",
         "-frames:v",
         "1",
         "-c:v",
