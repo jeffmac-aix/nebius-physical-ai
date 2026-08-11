@@ -3850,16 +3850,32 @@
         const gatedPlay = () => {
           const deadline = performance.now() + 5000;
           return new Promise((resolve, reject) => {
+            let stableStream = null;
+            let stableTrackIds = "";
+            let stableSince = 0;
             const waitForTrack = () => {
+              const stream = video.srcObject;
               const current = video.srcObject && typeof video.srcObject.getTracks === "function"
                 ? video.srcObject.getTracks()
                 : [];
               const liveVideo = current.some((track) =>
                 track.kind === "video" && track.readyState === "live" && !track.muted
               );
-              if (liveVideo && video.readyState >= HTMLMediaElement.HAVE_METADATA) {
+              const trackIds = current.map((track) => track.id).sort().join(",");
+              const now = performance.now();
+              if (!liveVideo || video.readyState < HTMLMediaElement.HAVE_METADATA) {
+                stableStream = null;
+                stableTrackIds = "";
+                stableSince = 0;
+              } else if (stream !== stableStream || trackIds !== stableTrackIds) {
+                stableStream = stream;
+                stableTrackIds = trackIds;
+                stableSince = now;
+              } else if (now - stableSince >= 250) {
                 nativePlay().then(resolve, reject);
-              } else if (performance.now() >= deadline) {
+                return;
+              }
+              if (now >= deadline) {
                 reject(new DOMException("WebRTC media track did not arrive", "TimeoutError"));
               } else {
                 window.setTimeout(waitForTrack, 10);
