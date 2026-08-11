@@ -180,32 +180,15 @@ def _resolve_record_public_ip(record: dict[str, Any]) -> str:
     return resolve_record_public_ip(record, resolver=resolve_instance_network_context)
 
 
-def _embedded_agent_stage_runtime_source() -> str:
-    """Return agent_stage_runtime.py source embedded into the backend."""
-    return embedded_python_source(
-        Path(__file__).with_name("agent_stage_runtime.py"), strip_standalone=True
-    )
+def _embedded_agent_module_source(filename: str) -> str:
+    """Return one standalone agent module embedded into the backend."""
+    return embedded_python_source(Path(__file__).with_name(filename), strip_standalone=True)
 
 
-def _embedded_agent_viewer_runtime_source() -> str:
-    """Return agent_viewer_runtime.py source embedded into the backend."""
-    return embedded_python_source(
-        Path(__file__).with_name("agent_viewer_runtime.py"), strip_standalone=True
-    )
-
-
-def _embedded_agent_access_source() -> str:
-    """Return agent_access.py source embedded into the backend."""
-    return embedded_python_source(
-        Path(__file__).with_name("agent_access.py"), strip_standalone=True
-    )
-
-
-def _embedded_agent_access_runtime_source() -> str:
-    """Return agent_access_runtime.py source embedded into the backend."""
-    return embedded_python_source(
-        Path(__file__).with_name("agent_access_runtime.py"), strip_standalone=True
-    )
+_embedded_agent_stage_runtime_source = functools.partial(_embedded_agent_module_source, "agent_stage_runtime.py")
+_embedded_agent_viewer_runtime_source = functools.partial(_embedded_agent_module_source, "agent_viewer_runtime.py")
+_embedded_agent_access_source = functools.partial(_embedded_agent_module_source, "agent_access.py")
+_embedded_agent_access_runtime_source = functools.partial(_embedded_agent_module_source, "agent_access_runtime.py")
 
 
 def _fail(message: str) -> NoReturn:
