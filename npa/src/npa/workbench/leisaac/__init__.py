@@ -450,7 +450,9 @@ def deployment_manifest(
             "LeIsaac demonstration collection requires a recorder Secret"
         )
     media_host = validate_public_ip(media_host, "media host")
-    if not relay_client_secret and media_server:
+    if relay_client_secret:
+        media_server = validate_private_ip(media_server, "agent relay media server")
+    elif media_server:
         media_server = validate_public_ip(media_server, "media server")
         if media_server != media_host:
             raise LeIsaacConfigError(
@@ -637,7 +639,8 @@ def deployment_manifest(
                     "exec turnserver -c /opt/npa-relay/turnserver.conf "
                     '"--listening-ip=${NPA_LEISAAC_POD_IP}" '
                     '"--listening-ip=127.0.0.1" '
-                    '"--relay-ip=${NPA_LEISAAC_POD_IP}"'
+                    '"--relay-ip=${NPA_LEISAAC_POD_IP}" '
+                    '"--allowed-peer-ip=${NPA_LEISAAC_MEDIA_SERVER}"'
                 ],
                 "env": [
                     {
@@ -648,7 +651,11 @@ def deployment_manifest(
                                 "fieldPath": "status.podIP",
                             }
                         },
-                    }
+                    },
+                    {
+                        "name": "NPA_LEISAAC_MEDIA_SERVER",
+                        "value": media_server,
+                    },
                 ],
                 "ports": [
                     {

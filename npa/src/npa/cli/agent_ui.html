@@ -2472,6 +2472,7 @@
       let leisaacNativeStatsBusy = false;
       let leisaacNativeStatsSample = null;
       let leisaacWebSocketRestore = null;
+      let leisaacVideoPlayRestore = null;
       let leisaacFrameTimer = null;
       let leisaacSecondaryFrameTimer = null;
       let leisaacFrameSequence = 0;
@@ -3835,6 +3836,45 @@
         const restore = leisaacWebSocketRestore;
         leisaacWebSocketRestore = null;
         if (restore) restore();
+      }
+      function restoreLeIsaacVideoPlayGate() {
+        const restore = leisaacVideoPlayRestore;
+        leisaacVideoPlayRestore = null;
+        if (restore) restore();
+      }
+      function installLeIsaacVideoPlayGate(video) {
+        restoreLeIsaacVideoPlayGate();
+        if (!video || typeof video.play !== "function") return;
+        const ownPlay = Object.getOwnPropertyDescriptor(video, "play");
+        const nativePlay = video.play.bind(video);
+        const gatedPlay = () => {
+          const tracks = video.srcObject && typeof video.srcObject.getTracks === "function"
+            ? video.srcObject.getTracks()
+            : [];
+          if (tracks.length) return nativePlay();
+          const deadline = performance.now() + 5000;
+          return new Promise((resolve, reject) => {
+            const waitForTrack = () => {
+              const current = video.srcObject && typeof video.srcObject.getTracks === "function"
+                ? video.srcObject.getTracks()
+                : [];
+              if (current.length) {
+                nativePlay().then(resolve, reject);
+              } else if (performance.now() >= deadline) {
+                reject(new DOMException("WebRTC media track did not arrive", "TimeoutError"));
+              } else {
+                window.setTimeout(waitForTrack, 10);
+              }
+            };
+            waitForTrack();
+          });
+        };
+        video.play = gatedPlay;
+        leisaacVideoPlayRestore = () => {
+          if (video.play !== gatedPlay) return;
+          if (ownPlay) Object.defineProperty(video, "play", ownPlay);
+          else delete video.play;
+        };
       }
       function installLeIsaacWebSocketAdapter(status) {
         restoreLeIsaacWebSocketAdapter();
@@ -5530,6 +5570,12 @@
           stopLeIsaacFrames();
           const nativeVideo = document.getElementById("leisaacVideo");
           if (nativeVideo) nativeVideo.hidden = false;
+          // The pinned NVIDIA client calls play() while its MediaStream is
+          // still empty. Chromium can then abort that promise when ontrack
+          // replaces the stream, and the vendor client tears down a healthy
+          // ICE session as "No tracks found". Gate only this video element
+          // until the first real track arrives; subsequent plays are native.
+          installLeIsaacVideoPlayGate(nativeVideo);
           // Install after NVIDIA's module has applied its adapter shims, but
           // before AppStreamer creates the live peer connection.
           installLeIsaacPeerConnection(status);
@@ -5565,12 +5611,14 @@
               onStart: handleLeIsaacStreamEvent,
               onStop: () => {
                 leisaacStreamReady = false;
+                restoreLeIsaacVideoPlayGate();
                 restoreLeIsaacPeerConnection();
                 restoreLeIsaacWebSocketAdapter();
                 setLeIsaacStreamState("Disconnected", "pending");
               },
               onTerminate: () => {
                 leisaacStreamReady = false;
+                restoreLeIsaacVideoPlayGate();
                 restoreLeIsaacPeerConnection();
                 restoreLeIsaacWebSocketAdapter();
                 setLeIsaacStreamState("Disconnected", "pending");
@@ -5580,6 +5628,7 @@
           connectLeIsaacNativeSecondary(status);
           if (disconnectBtn) disconnectBtn.disabled = false;
         } catch (err) {
+          restoreLeIsaacVideoPlayGate();
           restoreLeIsaacPeerConnection();
           restoreLeIsaacWebSocketAdapter();
           if (connectBtn) connectBtn.disabled = false;
@@ -5598,6 +5647,7 @@
           if (host) host.focus();
         } else if (status === "error" || status === "canceled" || status === "cancelled") {
           leisaacStreamReady = false;
+          restoreLeIsaacVideoPlayGate();
           restoreLeIsaacPeerConnection();
           restoreLeIsaacWebSocketAdapter();
           setLeIsaacStreamState(detail, "error");
@@ -5657,6 +5707,7 @@
         if (streamer && streamer.terminate) {
           try { await streamer.terminate(false, true); } catch (_err) { /* already disconnected */ }
         }
+        restoreLeIsaacVideoPlayGate();
         restoreLeIsaacPeerConnection();
         restoreLeIsaacWebSocketAdapter();
         const connectBtn = document.getElementById("leisaacConnect");

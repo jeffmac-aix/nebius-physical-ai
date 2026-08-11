@@ -339,6 +339,7 @@ def test_agent_relay_client_is_secret_mounted_as_non_gpu_sidecar() -> None:
     assert "--listening-ip=${NPA_LEISAAC_POD_IP}" in turn["args"][0]
     assert "--listening-ip=127.0.0.1" in turn["args"][0]
     assert "--relay-ip=${NPA_LEISAAC_POD_IP}" in turn["args"][0]
+    assert "--allowed-peer-ip=${NPA_LEISAAC_MEDIA_SERVER}" in turn["args"][0]
     assert turn["env"] == [
         {
             "name": "NPA_LEISAAC_POD_IP",
@@ -348,7 +349,8 @@ def test_agent_relay_client_is_secret_mounted_as_non_gpu_sidecar() -> None:
                     "fieldPath": "status.podIP",
                 }
             },
-        }
+        },
+        {"name": "NPA_LEISAAC_MEDIA_SERVER", "value": "10.96.0.5"},
     ]
     assert "@sha256:" in turn["image"]
     assert {item["containerPort"] for item in turn["ports"]} == {
@@ -1027,6 +1029,8 @@ def test_agent_bootstrap_installs_turn_without_baking_session_configuration() ->
     assert "leisaac-turn.conf" not in agent
     assert 'iceTransportPolicy: "relay"' in ui
     assert "installLeIsaacPeerConnection(status)" in ui
+    assert "installLeIsaacVideoPlayGate(nativeVideo)" in ui
+    assert 'new DOMException("WebRTC media track did not arrive", "TimeoutError")' in ui
 
 
 def test_client_is_served_pristine_after_exact_hash_verification(

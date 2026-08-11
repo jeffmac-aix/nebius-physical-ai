@@ -22,6 +22,8 @@ HEADER = struct.Struct("!BII")
 MAX_FRAME = 4 * 1024 * 1024
 MAX_UDP_FLOWS = 64
 BACKHAUL_SUBPROTOCOL = "npa.leisaac.backhaul.v1"
+WEBSOCKET_HEARTBEAT_INTERVAL_SECONDS = 10.0
+WEBSOCKET_HEARTBEAT_TIMEOUT_SECONDS = 30.0
 _XOR_TABLES = tuple(bytes(value ^ mask for value in range(256)) for mask in range(256))
 
 
@@ -111,6 +113,8 @@ class WebSocketConnection:
         self.connection = connection
         self.buffer = bytearray()
         self.send_lock = threading.Lock()
+        self.closed = threading.Event()
+        self.last_pong = time.monotonic()
 
     def _send_message(self, payload: bytes, opcode: int = 2) -> None:
         mask = os.urandom(4)
@@ -152,6 +156,9 @@ class WebSocketConnection:
             if opcode == 9:
                 self._send_message(payload, opcode=10)
                 continue
+            if opcode == 10:
+                self.last_pong = time.monotonic()
+                continue
             if opcode in (0, 2):
                 fragments.extend(payload)
                 if final:
@@ -164,7 +171,36 @@ class WebSocketConnection:
         del self.buffer[:size]
         return result
 
+    def _abort(self) -> None:
+        self.closed.set()
+        try:
+            self.connection.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        self.connection.close()
+
+    def _heartbeat_once(self, now: float | None = None) -> bool:
+        current = time.monotonic() if now is None else now
+        if current - self.last_pong >= WEBSOCKET_HEARTBEAT_TIMEOUT_SECONDS:
+            self._abort()
+            return False
+        try:
+            self._send_message(b"", opcode=9)
+        except OSError:
+            self._abort()
+            return False
+        return True
+
+    def start_heartbeat(self) -> None:
+        def heartbeat() -> None:
+            while not self.closed.wait(WEBSOCKET_HEARTBEAT_INTERVAL_SECONDS):
+                if not self._heartbeat_once():
+                    return
+
+        threading.Thread(target=heartbeat, daemon=True).start()
+
     def close(self) -> None:
+        self.closed.set()
         try:
             self._send_message(b"", opcode=8)
         except OSError:
@@ -360,6 +396,7 @@ class Client:
                         separators=(",", ":"),
                     ).encode("ascii"),
                 )
+                self.connection.start_heartbeat()
                 while True:
                     self.handle(*_receive_frame(self.connection))
             except (ConnectionError, EOFError, OSError, ssl.SSLError, ValueError):

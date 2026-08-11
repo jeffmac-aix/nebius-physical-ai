@@ -28,6 +28,7 @@ from npa.workbench.leisaac.reverse_client import (
     _public_ipv4,
     load_config as load_client_config,
 )
+from npa.workbench.leisaac import reverse_client
 
 
 NONCE = "a" * 64
@@ -395,4 +396,20 @@ def test_private_websocket_client_masks_outbound_and_reads_binary_reply() -> Non
     websocket.sendall(b"hello")
     assert websocket.recv(5) == b"world"
     client_socket.close()
+    server_socket.close()
+
+
+def test_private_websocket_heartbeat_aborts_a_half_open_backhaul(
+    monkeypatch,
+) -> None:
+    client_socket, server_socket = socket.socketpair()
+    websocket = WebSocketConnection(client_socket)  # type: ignore[arg-type]
+    websocket.last_pong = 10.0
+    monkeypatch.setattr(
+        reverse_client, "WEBSOCKET_HEARTBEAT_TIMEOUT_SECONDS", 30.0
+    )
+
+    assert websocket._heartbeat_once(now=40.0) is False
+    assert websocket.closed.is_set()
+    assert server_socket.recv(1) == b""
     server_socket.close()
