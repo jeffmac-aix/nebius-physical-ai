@@ -489,6 +489,12 @@ if sudo systemctl is-active --quiet {_RELAY_UNIT} && [ "$existing" != {run_q} ];
   exit 42
 fi
 sudo install -d -m 0755 /etc/npa /opt/npa-agent
+sudo tee /etc/sysctl.d/90-npa-leisaac-relay.conf >/dev/null <<'EOF'
+net.core.rmem_max=8388608
+net.core.wmem_max=8388608
+net.core.netdev_max_backlog=5000
+EOF
+sudo sysctl --system >/dev/null
 echo {shlex.quote(script_b64)} | base64 -d | sudo tee {_RELAY_SCRIPT} >/dev/null
 echo {shlex.quote(config_b64)} | base64 -d | sudo tee {_RELAY_CONFIG} >/dev/null
 echo {shlex.quote(unit_b64)} | base64 -d | sudo tee /etc/systemd/system/{_RELAY_UNIT} >/dev/null

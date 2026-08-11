@@ -270,6 +270,9 @@ def test_install_relay_creates_required_agent_directories() -> None:
     )
 
     assert "sudo install -d -m 0755 /etc/npa /opt/npa-agent" in ssh.command
+    assert "net.core.rmem_max=8388608" in ssh.command
+    assert "net.core.wmem_max=8388608" in ssh.command
+    assert "net.core.netdev_max_backlog=5000" in ssh.command
     assert "DynamicUser=yes" not in ssh.command  # unit is base64-encoded in transit
     assert "openssl req -x509" not in ssh.command
 

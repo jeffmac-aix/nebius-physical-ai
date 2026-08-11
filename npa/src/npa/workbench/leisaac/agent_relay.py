@@ -37,7 +37,15 @@ HEADER = struct.Struct("!BII")
 MAX_FRAME = 4 * 1024 * 1024
 MAX_UDP_FLOWS = 64
 UDP_FLOW_TTL_SECONDS = 120.0
+UDP_SOCKET_BUFFER_BYTES = 8 * 1024 * 1024
 RUN_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
+
+
+def _tune_udp_socket(sock: socket.socket) -> None:
+    """Keep an H.264 keyframe burst out of the kernel drop path."""
+
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, UDP_SOCKET_BUFFER_BYTES)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, UDP_SOCKET_BUFFER_BYTES)
 
 
 def load_config(path: str | Path) -> dict[str, Any]:
@@ -310,6 +318,7 @@ class Backhaul:
             if len(self.direct_media) >= MAX_UDP_FLOWS:
                 raise ConnectionError("too many browser UDP flows")
             media = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            _tune_udp_socket(media)
             media.connect(self.media_target)
             self.direct_media[address] = (media, observed)
         for stale_media in expired:
@@ -486,6 +495,7 @@ def serve_backhaul(
 def relay_udp(backhaul: Backhaul, *, stop: threading.Event) -> None:
     public = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     public.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    _tune_udp_socket(public)
     public.bind(MEDIA_LISTEN)
     public.settimeout(0.5)
     backhaul.public_udp = public

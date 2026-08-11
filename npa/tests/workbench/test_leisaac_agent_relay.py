@@ -16,7 +16,9 @@ from npa.workbench.leisaac.agent_relay import (
     HELLO,
     OPEN,
     UDP,
+    UDP_SOCKET_BUFFER_BYTES,
     Backhaul,
+    _tune_udp_socket,
     _receive_frame,
     load_config as load_server_config,
 )
@@ -32,6 +34,21 @@ from npa.workbench.leisaac import reverse_client
 
 
 NONCE = "a" * 64
+
+
+def test_agent_relay_tunes_both_udp_socket_buffers() -> None:
+    configured: list[tuple[int, int, int]] = []
+
+    class FakeSocket:
+        def setsockopt(self, level: int, option: int, value: int) -> None:
+            configured.append((level, option, value))
+
+    _tune_udp_socket(FakeSocket())  # type: ignore[arg-type]
+
+    assert configured == [
+        (socket.SOL_SOCKET, socket.SO_RCVBUF, UDP_SOCKET_BUFFER_BYTES),
+        (socket.SOL_SOCKET, socket.SO_SNDBUF, UDP_SOCKET_BUFFER_BYTES),
+    ]
 
 
 @pytest.mark.parametrize("size", [0, 1, 3, 4, 5, 127, 1260, 180 * 1024])
@@ -343,6 +360,9 @@ def test_agent_uses_native_private_udp_per_browser_flow(monkeypatch) -> None:
 
         def connect(self, address: tuple[str, int]) -> None:
             self.target = address
+
+        def setsockopt(self, _level: int, _option: int, _value: int) -> None:
+            return None
 
         def send(self, payload: bytes) -> None:
             self.sent.append(payload)
