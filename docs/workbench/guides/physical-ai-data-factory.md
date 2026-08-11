@@ -87,6 +87,16 @@ The bundled upstream sample is no longer a fallback because it was removed for
 redistribution reasons. Upload the source video beneath the run's `input/` prefix
 before submitting either first-class managed workflow.
 
+Cosmos Transfer's upstream prompt and generated-video content guardrails remain
+enabled by default. Some validated benign domains can fall outside the generic
+video classifier's calibration set and produce no publishable output after a
+successful diffusion. After an operator reviews that false positive, a single
+run may explicitly set `NPA_COSMOS_DISABLE_CONTENT_GUARDRAILS=1`. NPA then passes
+upstream's documented `--disable-guardrails` setup option and records
+`content_guardrails_enabled: false` in Transfer metadata. This opt-out does not
+weaken the downstream attribute, hallucination, temporal, or quality-disposition
+checks; it should not be made a shared default.
+
 ## Runtime placement
 
 - **Token Factory (zero-GPU, hosted):** captioning, and the Cosmos Evaluator

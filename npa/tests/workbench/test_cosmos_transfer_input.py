@@ -155,6 +155,34 @@ def test_run_cosmos_transfer_accepts_small_guardrailed_video(
     assert result["video_path"].endswith("small.mp4")
 
 
+def test_run_cosmos_transfer_content_guardrail_opt_out_is_explicit(
+    tmp_path: Path, monkeypatch
+) -> None:
+    repo = tmp_path / "repo"
+    (repo / "examples").mkdir(parents=True)
+    monkeypatch.setattr(tx, "cosmos_transfer_repo", lambda: repo)
+    monkeypatch.setattr(tx, "ensure_env", lambda _repo: Path("/usr/bin/python3"))
+    monkeypatch.setenv("HF_TOKEN", "unit-test-placeholder")
+    seen: list[list[str]] = []
+
+    def fake_run(cmd, *_args, **kwargs):
+        seen.append(cmd)
+        outdir = Path(kwargs["cwd"]) / cmd[cmd.index("-o") + 1]
+        outdir.mkdir(parents=True)
+        (outdir / "result.mp4").write_bytes(b"x" * 8_932)
+
+    monkeypatch.setattr(tx.subprocess, "run", fake_run)
+
+    guarded = tx.run_cosmos_transfer(run_id="guarded", spec="assets/custom.json")
+    assert "--disable-guardrails" not in seen[-1]
+    assert guarded["content_guardrails_enabled"] is True
+
+    monkeypatch.setenv(tx.DISABLE_CONTENT_GUARDRAILS_ENV, "1")
+    opted_out = tx.run_cosmos_transfer(run_id="opted-out", spec="assets/custom.json")
+    assert "--disable-guardrails" in seen[-1]
+    assert opted_out["content_guardrails_enabled"] is False
+
+
 def test_publish_marks_real_gpu_mode_and_conditioning(tmp_path: Path, monkeypatch) -> None:
     video = tmp_path / "out.mp4"
     video.write_bytes(b"x" * 200_000)
@@ -178,6 +206,7 @@ def test_publish_marks_real_gpu_mode_and_conditioning(tmp_path: Path, monkeypatc
             "input_conditioned": True,
             "input_video": "/tmp/robot_input.mp4",
             "control": "edge",
+            "content_guardrails_enabled": False,
         },
         "s3://bkt/run1/cosmos_augmented/",
         run_id="run1",
@@ -188,10 +217,12 @@ def test_publish_marks_real_gpu_mode_and_conditioning(tmp_path: Path, monkeypatc
     assert manifest["input_conditioned"] is True
     assert manifest["conditioned_input"] == "robot_input.mp4"
     assert manifest["control"] == "edge"
+    assert manifest["content_guardrails_enabled"] is False
     meta = json.loads(recorded["metadata"])
     assert meta["mode"] == "cosmos_transfer2.5_gpu"
     assert meta["input_conditioned"] is True
     assert meta["conditioned_input"] == "robot_input.mp4"
+    assert meta["content_guardrails_enabled"] is False
 
 
 def test_multi_variant_publish_writes_one_clip_per_combo(tmp_path: Path, monkeypatch) -> None:
