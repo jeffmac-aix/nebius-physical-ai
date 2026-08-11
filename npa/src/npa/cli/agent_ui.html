@@ -3879,6 +3879,23 @@
             iceTransportPolicy: "relay",
           });
           leisaacNativeMediaPeer = new NativePeerConnection(merged, constraints);
+          const updatePeerEvidence = () => {
+            const peer = leisaacNativeMediaPeer;
+            if (!peer) return;
+            leisaacTransportEvidence.native_peer = {
+              connection_state: String(peer.connectionState || ""),
+              ice_connection_state: String(peer.iceConnectionState || ""),
+              ice_gathering_state: String(peer.iceGatheringState || ""),
+              signaling_state: String(peer.signalingState || ""),
+            };
+          };
+          for (const eventName of [
+            "connectionstatechange",
+            "iceconnectionstatechange",
+            "icegatheringstatechange",
+            "signalingstatechange",
+          ]) leisaacNativeMediaPeer.addEventListener(eventName, updatePeerEvidence);
+          updatePeerEvidence();
           return leisaacNativeMediaPeer;
         }
         LeIsaacPeerConnection.prototype = NativePeerConnection.prototype;
