@@ -3952,6 +3952,23 @@
             iceTransportPolicy: "relay",
           });
           leisaacNativeMediaPeer = new NativePeerConnection(merged, constraints);
+          // NVIDIA's pinned client hard-codes a 4 Mbps minimum/start bitrate.
+          // A TURN/TCP allocation begins with a conservative congestion
+          // estimate, so that floor fills Kit's encoder queue before WebRTC can
+          // ramp up. Keep 720p output while allowing congestion control to
+          // start safely and grow to a crisp interactive bitrate.
+          const nativeSetLocalDescription = leisaacNativeMediaPeer.setLocalDescription.bind(leisaacNativeMediaPeer);
+          leisaacNativeMediaPeer.setLocalDescription = (description) => {
+            if (!description || description.type !== "answer" || typeof description.sdp !== "string") {
+              return nativeSetLocalDescription(description);
+            }
+            const tuned = description.sdp
+              .replace(/(^|\r?\n)b=AS:\d+/g, "$1b=AS:1500")
+              .replace(/x-google-max-bitrate=\d+/g, "x-google-max-bitrate=1500")
+              .replace(/x-google-min-bitrate=\d+/g, "x-google-min-bitrate=300")
+              .replace(/x-google-start-bitrate=\d+/g, "x-google-start-bitrate=300");
+            return nativeSetLocalDescription(Object.assign({}, description, { sdp: tuned }));
+          };
           let candidateCount = 0;
           let candidateError = null;
           const updatePeerEvidence = () => {

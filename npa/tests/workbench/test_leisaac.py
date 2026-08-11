@@ -1035,6 +1035,9 @@ def test_agent_bootstrap_installs_turn_without_baking_session_configuration() ->
     assert 'track.kind === "video" && track.readyState === "live" && !track.muted' in ui
     assert "now - stableSince >= 250" in ui
     assert 'new DOMException("WebRTC media track did not arrive", "TimeoutError")' in ui
+    assert '"x-google-max-bitrate=1500"' in ui
+    assert '"x-google-min-bitrate=300"' in ui
+    assert '"x-google-start-bitrate=300"' in ui
 
 
 def test_client_is_served_pristine_after_exact_hash_verification(
