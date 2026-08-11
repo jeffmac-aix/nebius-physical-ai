@@ -3863,20 +3863,25 @@
         restoreLeIsaacPeerConnection();
         if (String(status.transport || "") !== "agent-relay") return;
         const servers = Array.isArray(status.ice_servers) ? status.ice_servers : [];
-        if (String(status.ice_transport_policy || "") !== "relay" || servers.length !== 1) {
+        if (String(status.ice_transport_policy || "") !== "relay" || servers.length !== 2) {
           throw new Error("LeIsaac agent relay did not provide its authenticated TURN contract");
         }
-        const server = servers[0] || {};
-        const urls = Array.isArray(server.urls) ? server.urls.map(String) : [String(server.urls || "")];
-        const expectedTurnTransports = new Set(["tcp"]);
+        const urls = servers.flatMap((server) =>
+          Array.isArray(server.urls) ? server.urls.map(String) : [String(server.urls || "")]
+        );
+        const expectedTurnTransports = new Set(["udp", "tcp"]);
         const actualTurnTransports = new Set(urls.map((url) => String(url).split("?transport=")[1] || ""));
+        const username = String((servers[0] || {}).username || "");
+        const credential = String((servers[0] || {}).credential || "");
         if (
-          urls.length !== 1 ||
+          urls.length !== 2 ||
+          servers.some((server) => (Array.isArray(server.urls) ? server.urls : [server.urls]).length !== 1) ||
           urls.some((url) => !url.startsWith("turn:")) ||
           actualTurnTransports.size !== expectedTurnTransports.size ||
           Array.from(expectedTurnTransports).some((transport) => !actualTurnTransports.has(transport)) ||
-          !server.username ||
-          !server.credential
+          !username ||
+          !credential ||
+          servers.some((server) => String(server.username || "") !== username || String(server.credential || "") !== credential)
         ) {
           throw new Error("LeIsaac TURN configuration is invalid");
         }

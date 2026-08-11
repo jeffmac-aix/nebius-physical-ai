@@ -502,6 +502,13 @@ describe("NPA agent LeIsaac capability tab", () => {
         ice_servers: [
           {
             urls: [
+              "turn:203.0.113.50:3478?transport=udp",
+            ],
+            username: "mock-run",
+            credential: "ephemeral-test-credential",
+          },
+          {
+            urls: [
               "turn:203.0.113.50:3478?transport=tcp",
             ],
             username: "mock-run",
@@ -581,6 +588,13 @@ describe("NPA agent LeIsaac capability tab", () => {
         media_port: 47998,
         ice_transport_policy: "relay",
         ice_servers: [
+          {
+            urls: [
+              "turn:203.0.113.50:3478?transport=udp",
+            ],
+            username: "mock-run",
+            credential: "ephemeral-test-credential",
+          },
           {
             urls: [
               "turn:203.0.113.50:3478?transport=tcp",
@@ -725,6 +739,9 @@ describe("NPA agent LeIsaac capability tab", () => {
       .should("eq", "relay");
     cy.window()
       .its("__LEISAAC_PEER_CONFIG__.iceServers.0.urls.0")
+      .should("eq", "turn:203.0.113.50:3478?transport=udp");
+    cy.window()
+      .its("__LEISAAC_PEER_CONFIG__.iceServers.1.urls.0")
       .should("eq", "turn:203.0.113.50:3478?transport=tcp");
     cy.get("#leisaacStreamHost").trigger("keydown", { key: "W", code: "KeyW" });
     cy.get("#leisaacInputStatus")
@@ -907,6 +924,12 @@ describe("NPA agent LeIsaac capability tab", () => {
       video_ws_url: "/api/leisaac/transport/video?run_id=mock-datachannel",
       ice_transport_policy: "relay",
       ice_servers: [{
+        urls: [
+          "turn:203.0.113.50:3478?transport=udp",
+        ],
+        username: "bounded-test-user",
+        credential: "bounded-test-credential",
+      }, {
         urls: [
           "turn:203.0.113.50:3478?transport=tcp",
         ],

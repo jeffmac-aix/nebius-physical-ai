@@ -807,6 +807,13 @@ def status_payload(
         payload["ice_servers"] = [
             {
                 "urls": [
+                    f"turn:{manifest['media_host']}:{LEISAAC_TURN_PORT}?transport=udp",
+                ],
+                "username": run_id,
+                "credential": credential,
+            },
+            {
+                "urls": [
                     f"turn:{manifest['media_host']}:{LEISAAC_TURN_PORT}?transport=tcp",
                 ],
                 "username": run_id,
