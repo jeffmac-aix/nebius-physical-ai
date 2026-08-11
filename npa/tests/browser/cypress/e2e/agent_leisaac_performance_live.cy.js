@@ -259,17 +259,22 @@ function frameStageSummary(frames) {
 
         const startingFrameCount = liveTransportEvidence(win).frames.length;
         win.document.getElementById("leisaacConnect").click();
-        await waitUntil(
-          win,
-          () => {
-            const evidence = liveTransportEvidence(win);
-            return ["websocket-v1", "webrtc-datachannel-v1", "webrtc-native-h264"].includes(evidence.active) &&
-              evidence.frames.slice(startingFrameCount)
-                .some((frame) => frame.camera === "workspace");
-          },
-          120000,
-          "preferred RTX primary camera",
-        );
+        try {
+          await waitUntil(
+            win,
+            () => {
+              const evidence = liveTransportEvidence(win);
+              return ["websocket-v1", "webrtc-datachannel-v1", "webrtc-native-h264"].includes(evidence.active) &&
+                evidence.frames.slice(startingFrameCount)
+                  .some((frame) => frame.camera === "workspace");
+            },
+            numberEnv("NPA_LEISAAC_CONNECT_TIMEOUT_MS", 120000),
+            "preferred RTX primary camera",
+          );
+        } catch (error) {
+          const evidence = liveTransportEvidence(win);
+          throw new Error(`${error.message}; transport evidence=${JSON.stringify(evidence)}`);
+        }
         const selector = win.document.getElementById("leisaacViewMode");
         selector.value = viewMode;
         selector.dispatchEvent(new win.Event("change", { bubbles: true }));
