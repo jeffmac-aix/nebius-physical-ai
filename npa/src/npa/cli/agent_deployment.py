@@ -362,8 +362,14 @@ def verify_remote_deployment(
     ssh: _SshRunner, expected: Mapping[str, str], *, backend_port: int = 8787
 ) -> dict[str, Any]:
     """Read the backend directly over loopback and require the exact expected identity."""
+    url = f"http://127.0.0.1:{int(backend_port)}/deployment"
     result = ssh.run_or_raise(
-        f"curl -fsS http://127.0.0.1:{int(backend_port)}/deployment",
+        "attempt=0; "
+        f"until payload=$(curl -fsS {url} 2>/dev/null); do "
+        "attempt=$((attempt + 1)); "
+        "[ \"$attempt\" -ge 30 ] && exit 1; "
+        "sleep 1; "
+        "done; printf '%s' \"$payload\"",
     )
     # Lightweight render-test doubles historically return None. Production SSHClient
     # always returns the documented tuple and is checked strictly below.
