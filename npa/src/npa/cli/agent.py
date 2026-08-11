@@ -7124,6 +7124,22 @@ register_foxglove_routes(
 
 
 def _leisaac_manifest_for_run(run_id: str) -> dict | None:
+    # An active private relay is authoritative for which single LeIsaac run
+    # this agent can serve. Reject unrelated viewer selections before generic
+    # artifact discovery; otherwise a polling UI can repeatedly walk the full
+    # bucket for an ordinary sim-viz run while teleoperation is launching.
+    try:
+        credential = json.loads(
+            Path("/etc/npa/leisaac-relay.json").read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError):
+        credential = None
+    if (
+        isinstance(credential, dict)
+        and str(credential.get("run_id") or "").strip()
+        and credential.get("run_id") != run_id
+    ):
+        return None
     manifest = load_manifest_artifact(
         run_id, validate_run_id=validate_run_id,
         s3_client=_agent_s3_client, s3_buckets=_agent_s3_buckets,
@@ -7133,11 +7149,7 @@ def _leisaac_manifest_for_run(run_id: str) -> dict | None:
         return None
     # Dataset manifests remain nonsecret. Runtime authority is injected from
     # the short-lived root-owned relay credential, which teardown removes.
-    try:
-        credential = json.loads(
-            Path("/etc/npa/leisaac-relay.json").read_text(encoding="utf-8")
-        )
-    except (OSError, ValueError):
+    if not isinstance(credential, dict):
         return manifest
     if credential.get("run_id") != run_id:
         return manifest
