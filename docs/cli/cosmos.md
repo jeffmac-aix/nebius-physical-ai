@@ -8,8 +8,8 @@ Usage: npa workbench cosmos [OPTIONS] COMMAND [ARGS]...
 NVIDIA Cosmos world model serving and inference endpoints.
 
 Options
---project  -p  TEXT  Project alias from ~/.npa/config.yaml.
---name  -n  TEXT  Workbench instance name within the project.
+--project  -p  <str>  Project alias from ~/.npa/config.yaml.
+--name  -n  <str>  Workbench instance name within the project.
 --help  Show this message and exit.
 Commands
 check  Check Cosmos3 source and HF checkpoint access without downloading weights.
@@ -35,8 +35,8 @@ system-info  Collect and display system hardware information from the Cosmos VM.
 
 | Option | Description |
 | --- | --- |
-| `--project` | -p  TEXT  Project alias from ~/.npa/config.yaml. |
-| `--name` | -n  TEXT  Workbench instance name within the project. |
+| `--project` | -p  <str>  Project alias from ~/.npa/config.yaml. |
+| `--name` | -n  <str>  Workbench instance name within the project. |
 | `--help` | Show this message and exit. |
 
 ## Subcommands

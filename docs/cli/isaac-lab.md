@@ -8,8 +8,8 @@ Usage: npa workbench isaac-lab [OPTIONS] COMMAND [ARGS]...
 Isaac Lab simulation workbench deployment, training, and evaluation.
 
 Options
---project  -p  TEXT  Project alias from ~/.npa/config.yaml.
---name  -n  TEXT  Workbench instance name within the project.
+--project  -p  <str>  Project alias from ~/.npa/config.yaml.
+--name  -n  <str>  Workbench instance name within the project.
 --help  Show this message and exit.
 Commands
 list  List configured Isaac Lab workbenches.
@@ -28,8 +28,8 @@ export-onnx  Export a trained rsl_rl actor checkpoint to ONNX with an obs/action
 
 | Option | Description |
 | --- | --- |
-| `--project` | -p  TEXT  Project alias from ~/.npa/config.yaml. |
-| `--name` | -n  TEXT  Workbench instance name within the project. |
+| `--project` | -p  <str>  Project alias from ~/.npa/config.yaml. |
+| `--name` | -n  <str>  Workbench instance name within the project. |
 | `--help` | Show this message and exit. |
 
 ## Subcommands

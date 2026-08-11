@@ -8,8 +8,8 @@ Usage: npa workbench sonic [OPTIONS] COMMAND [ARGS]...
 NVIDIA GEAR-SONIC whole-body-control workbench.
 
 Options
---project  -p  TEXT  Project alias from ~/.npa/config.yaml.
---name  -n  TEXT  Workbench instance name within the project.
+--project  -p  <str>  Project alias from ~/.npa/config.yaml.
+--name  -n  <str>  Workbench instance name within the project.
 --help  Show this message and exit.
 Commands
 deploy  Prepare or plan a SONIC runtime.
@@ -26,8 +26,8 @@ retargeting  Motion retargeting for SONIC locomotion workflows.
 
 | Option | Description |
 | --- | --- |
-| `--project` | -p  TEXT  Project alias from ~/.npa/config.yaml. |
-| `--name` | -n  TEXT  Workbench instance name within the project. |
+| `--project` | -p  <str>  Project alias from ~/.npa/config.yaml. |
+| `--name` | -n  <str>  Workbench instance name within the project. |
 | `--help` | Show this message and exit. |
 
 ## Subcommands
