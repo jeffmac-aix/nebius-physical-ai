@@ -146,7 +146,7 @@ def test_runtime_control_datachannel_offer_uses_shared_control_handler(
     assert observed["metrics"] is module.TRANSPORT_METRICS
 
 
-def test_runtime_public_surfaces_require_nonce_while_healthz_is_minimal(
+def test_runtime_public_surfaces_require_nonce_while_health_endpoints_are_minimal(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     module = _session_server_module()
@@ -165,6 +165,15 @@ def test_runtime_public_surfaces_require_nonce_while_healthz_is_minimal(
     assert health.status_code == 200
     assert health.json() == {"ok": True}
     assert "run_id" not in health.text and "dataset" not in health.text
+    monkeypatch.setitem(module.STATE, "state", "starting")
+    readiness = client.get("/readyz")
+    assert readiness.status_code == 503
+    assert readiness.json() == {"ready": False}
+    monkeypatch.setitem(module.STATE, "state", "ready")
+    readiness = client.get("/readyz")
+    assert readiness.status_code == 200
+    assert readiness.json() == {"ready": True}
+    assert "run_id" not in readiness.text and "dataset" not in readiness.text
     for path in ("/status", "/provenance", "/client/index.js"):
         assert client.get(path).status_code == 403
         assert client.get(path, headers={"X-Real-IP": "8.8.8.8"}).status_code == 403
@@ -248,7 +257,7 @@ def test_deployment_is_real_rt_core_leisaac_and_operator_eula_runtime_config() -
     assert env["OMNI_KIT_ACCEPT_EULA"] == "YES"
     assert env["ISAACSIM_ACCEPT_EULA"] == "YES"
     assert env["NPA_LEISAAC_MEDIA_HOST"] == "1.1.1.1"
-    assert "/status" == container["readinessProbe"]["httpGet"]["path"]
+    assert "/readyz" == container["readinessProbe"]["httpGet"]["path"]
     assert container["livenessProbe"]["failureThreshold"] == 30
     assert "hostPort" not in next(
         port for port in container["ports"] if port["name"] == "media"

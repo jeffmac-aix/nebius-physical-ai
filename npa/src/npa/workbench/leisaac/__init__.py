@@ -563,7 +563,7 @@ def deployment_manifest(
                     },
                 },
                 "readinessProbe": {
-                    "httpGet": {"path": "/status", "port": "status"},
+                    "httpGet": {"path": "/readyz", "port": "status"},
                     "periodSeconds": 5,
                     "failureThreshold": 720,
                 },

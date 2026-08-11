@@ -2045,6 +2045,14 @@ def build_app() -> FastAPI:
         status = liveness_status()
         return JSONResponse(status_code=status, content={"ok": status == 200})
 
+    @application.get("/readyz")
+    def readyz() -> Response:
+        # Kubernetes needs simulator readiness without receiving the session
+        # credential or regaining access to the detailed /status document.
+        with STATE_LOCK:
+            ready = STATE.get("state") == "ready"
+        return JSONResponse(status_code=200 if ready else 503, content={"ready": ready})
+
     @application.get("/status")
     def status(request: Request) -> Response:
         if not _authorized(request.headers):
