@@ -640,7 +640,11 @@ def deployment_manifest(
                     '"--listening-ip=${NPA_LEISAAC_POD_IP}" '
                     '"--listening-ip=127.0.0.1" '
                     '"--relay-ip=${NPA_LEISAAC_POD_IP}" '
-                    '"--allowed-peer-ip=${NPA_LEISAAC_MEDIA_SERVER}"'
+                    # Kit advertises its pod address in the native SDP. TURN
+                    # is co-located in that same network namespace, so permit
+                    # precisely that address instead of hairpinning media
+                    # through the stable Service virtual IP.
+                    '"--allowed-peer-ip=${NPA_LEISAAC_POD_IP}"'
                 ],
                 "env": [
                     {
@@ -651,10 +655,6 @@ def deployment_manifest(
                                 "fieldPath": "status.podIP",
                             }
                         },
-                    },
-                    {
-                        "name": "NPA_LEISAAC_MEDIA_SERVER",
-                        "value": media_server,
                     },
                 ],
                 "ports": [

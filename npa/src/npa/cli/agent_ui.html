@@ -5604,7 +5604,12 @@
               signalingPort: Number(window.location.port || (window.location.protocol === "https:" ? 443 : 80)),
               signalingPath: String(status.signaling_path || "/api/leisaac/signal"),
               signalingQuery: query,
-              mediaServer: String(status.media_server || ""),
+              // Kit's publicEndpointAddress is already authoritative. In the
+              // relay profile it is the current pod IP, which co-located TURN
+              // can reach directly. Passing the stable Service IP here makes
+              // NVIDIA's client rewrite that valid SDP candidate and adds a
+              // kube-proxy hairpin to the DTLS/RTP path.
+              mediaServer: "",
               mediaPort: Number(status.media_port || 47998),
               autoLaunch: true,
               cursor: "free",
