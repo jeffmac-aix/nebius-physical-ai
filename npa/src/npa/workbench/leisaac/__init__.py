@@ -636,6 +636,7 @@ def deployment_manifest(
                 "args": [
                     "exec turnserver -c /opt/npa-relay/turnserver.conf "
                     '"--listening-ip=${NPA_LEISAAC_POD_IP}" '
+                    '"--listening-ip=127.0.0.1" '
                     '"--relay-ip=${NPA_LEISAAC_POD_IP}"'
                 ],
                 "env": [

@@ -337,6 +337,7 @@ def test_agent_relay_client_is_secret_mounted_as_non_gpu_sidecar() -> None:
     assert turn["name"] == "turn"
     assert turn["command"] == ["sh", "-c"]
     assert "--listening-ip=${NPA_LEISAAC_POD_IP}" in turn["args"][0]
+    assert "--listening-ip=127.0.0.1" in turn["args"][0]
     assert "--relay-ip=${NPA_LEISAAC_POD_IP}" in turn["args"][0]
     assert turn["env"] == [
         {
