@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -270,6 +272,12 @@ def test_install_relay_creates_required_agent_directories() -> None:
     assert "sudo install -d -m 0755 /etc/npa /opt/npa-agent" in ssh.command
     assert "DynamicUser=yes" not in ssh.command  # unit is base64-encoded in transit
     assert "openssl req -x509" not in ssh.command
+
+    encoded_payloads = re.findall(
+        r"echo ([A-Za-z0-9+/=]+) \| base64 -d", ssh.command
+    )
+    unit = base64.b64decode(encoded_payloads[-1]).decode("utf-8")
+    assert "${CREDENTIALS_DIRECTORY}/leisaac.json" in unit
 
 
 def test_relay_media_server_is_the_single_ready_pod_host(monkeypatch) -> None:

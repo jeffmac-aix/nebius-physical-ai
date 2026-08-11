@@ -25,12 +25,12 @@ import time
 from pathlib import Path
 from typing import Any
 
-from npa.agent_backend.leisaac import LEISAAC_BACKHAUL_HOST, LEISAAC_BACKHAUL_PORT
-
 STATUS_LISTEN = ("127.0.0.1", 48080)
 SIGNAL_LISTEN = ("127.0.0.1", 49100)
 MEDIA_LISTEN = ("0.0.0.0", 3478)
-BACKHAUL_LISTEN = (LEISAAC_BACKHAUL_HOST, LEISAAC_BACKHAUL_PORT)
+# This file is shipped as a standalone script and executed by system Python on
+# the agent VM, where the NPA source package is intentionally not installed.
+BACKHAUL_LISTEN = ("127.0.0.1", 48081)
 CONTROL_LISTEN = ("127.0.0.1", 48082)
 HELLO, OPEN, DATA, CLOSE, UDP, UDP_CLOSE = 1, 2, 3, 4, 5, 6
 HEADER = struct.Struct("!BII")
