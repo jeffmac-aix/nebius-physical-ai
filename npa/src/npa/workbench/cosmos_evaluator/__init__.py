@@ -17,12 +17,13 @@ Two checks are wired, both real:
   VLM to answer it from a frame of the augmented clip. Upstream drives this
   through any OpenAI-compatible endpoint, so NPA points it at Nebius Token
   Factory (zero-GPU, hosted).
-- **Temporal consistency companion check** (:mod:`.temporal_consistency`) — an
-  NPA source-relative check for localized frame-to-frame instability. It is
-  reported separately and is not attributed to the upstream project.
+- **Temporal consistency companion diagnostic** (:mod:`.temporal_consistency`) —
+  an NPA source-relative, two-sided residual for localized frame instability or
+  motion collapse. It is advisory by default, reported separately, and is not
+  attributed to the upstream project.
 
 :func:`evaluate_run` is the stage entry point: it walks a Physical AI Data
-Factory run prefix, pairs every augmented variant with the run's source clip and
+Factory run prefix, pairs every augmented variant with its recorded source clip and
 its sampled appearance variables, runs both checks per variant, and writes one
 ``npa.cosmos_evaluator.report.v1`` report whose ``score`` the blueprint's quality
 gate reads.

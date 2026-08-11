@@ -12,12 +12,13 @@ The blueprint's augment stage publishes one directory per scenario variant::
   values, with the config manifest's variable table as the option set, and
 - the **hallucination** check against the run's source clip, when one is
   resolvable, and
-- an NPA **source-relative temporal consistency** companion check that rejects
-  excess frame-to-frame surface variation in input-conditioned variants.
+- an NPA **source-relative temporal consistency** companion diagnostic that
+  measures both excess frame-to-frame variation and collapsed source motion.
 
 It writes a single ``npa.cosmos_evaluator.report.v1`` document. The blueprint's
 quality gate requires both its aggregate ``score`` and explicit ``passed``
-disposition, so a strong average cannot hide a failed motion-integrity check.
+disposition. Temporal consistency is advisory by default; deployments may make
+it a hard check only after calibrating the noise floor for their capture path.
 """
 
 from __future__ import annotations
@@ -41,6 +42,8 @@ from npa.workbench.cosmos_evaluator.hallucination import (
     check_hallucination,
 )
 from npa.workbench.cosmos_evaluator.temporal_consistency import (
+    DEFAULT_BLUR_KSIZE as TEMPORAL_BLUR_KSIZE,
+    DEFAULT_NOISE_FLOOR as TEMPORAL_NOISE_FLOOR,
     DEFAULT_THRESHOLD as TEMPORAL_CONSISTENCY_THRESHOLD,
     TemporalConsistencyResult,
     check_temporal_consistency,
@@ -60,6 +63,8 @@ REPORT_SCHEMA = "npa.cosmos_evaluator.report.v1"
 VIDEO_NAME = "augmented_video.mp4"
 METADATA_NAME = "metadata.json"
 CONFIG_MANIFEST_NAME = "manifest.json"
+VIDEO_SUFFIXES = frozenset({".mp4", ".mov", ".webm", ".mkv", ".avi"})
+TEMPORAL_MODES = frozenset({"advisory", "required"})
 
 # Weight on the hallucination score when the variant really is a re-render of the
 # run's own footage. Without input conditioning the two clips show different
@@ -80,6 +85,8 @@ class ClipEvaluation:
     score: float
     passed: bool
     input_conditioned: bool
+    status: str = "completed"
+    temporal_enforced: bool = False
     variables: dict[str, str] = field(default_factory=dict)
     attribute_verification: dict[str, Any] | None = None
     hallucination: dict[str, Any] | None = None
@@ -104,6 +111,8 @@ class EvaluateRunResult:
     passed_clips: int
     threshold: float
     generated_at: str
+    batch_policy: str = "all-variants"
+    temporal_mode: str = "advisory"
     engines: list[str] = field(default_factory=list)
     clips: list[ClipEvaluation] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
@@ -133,13 +142,16 @@ def evaluate_run(
     hallucination_weight: float = DEFAULT_HALLUCINATION_WEIGHT,
     temporal_threshold: float = TEMPORAL_CONSISTENCY_THRESHOLD,
     temporal_regions_json: str = "",
+    temporal_mode: str = "advisory",
+    temporal_noise_floor: float = TEMPORAL_NOISE_FLOOR,
+    temporal_blur_ksize: int = TEMPORAL_BLUR_KSIZE,
     question_model: str = "",
     vlm_model: str = "",
     max_clips: int = 0,
     client: Any | None = None,
     storage: Any | None = None,
 ) -> EvaluateRunResult:
-    """Run both Cosmos Evaluator checks over every augmented variant."""
+    """Run the configured Cosmos Evaluator checks over every augmented variant."""
 
     if not augment_uri:
         raise CosmosEvaluatorError("--augment-uri is required")
@@ -148,7 +160,17 @@ def evaluate_run(
     if not 0.0 <= hallucination_weight <= 1.0:
         raise CosmosEvaluatorError("--hallucination-weight must be between 0.0 and 1.0")
     if not 0.0 < temporal_threshold <= 1.0:
-        raise CosmosEvaluatorError("--temporal-threshold must be greater than 0.0 and at most 1.0")
+        raise CosmosEvaluatorError(
+            "--temporal-threshold must be greater than 0.0 and at most 1.0"
+        )
+    if temporal_mode not in TEMPORAL_MODES:
+        raise CosmosEvaluatorError("--temporal-mode must be advisory or required")
+    if temporal_noise_floor <= 0.0:
+        raise CosmosEvaluatorError("--temporal-noise-floor must be greater than 0.0")
+    if temporal_blur_ksize < 1 or temporal_blur_ksize % 2 == 0:
+        raise CosmosEvaluatorError(
+            "--temporal-blur-ksize must be a positive odd integer"
+        )
 
     store = storage if storage is not None else _storage()
     warnings: list[str] = []
@@ -158,11 +180,13 @@ def evaluate_run(
         workdir = Path(tmp)
         clip_dirs = _list_clip_dirs(augment_uri, store=store)
         if not clip_dirs:
-            raise CosmosEvaluatorError(f"no augmented variant directories found under {augment_uri}")
+            raise CosmosEvaluatorError(
+                f"no augmented variant directories found under {augment_uri}"
+            )
         if max_clips and max_clips > 0:
             clip_dirs = clip_dirs[:max_clips]
 
-        source_clip = _resolve_source_clip(
+        source_clips = _resolve_source_clips(
             original_video=original_video,
             input_uri=input_uri,
             store=store,
@@ -182,11 +206,14 @@ def evaluate_run(
                         store=store,
                         client=client,
                         option_table=option_table,
-                        source_clip=source_clip,
+                        source_clips=source_clips,
                         threshold=threshold,
                         hallucination_weight=hallucination_weight,
                         temporal_threshold=temporal_threshold,
                         temporal_regions_json=temporal_regions_json,
+                        temporal_mode=temporal_mode,
+                        temporal_noise_floor=temporal_noise_floor,
+                        temporal_blur_ksize=temporal_blur_ksize,
                         question_model=question_model,
                         vlm_model=vlm_model,
                         warnings=warnings,
@@ -200,6 +227,11 @@ def evaluate_run(
                 status = "degraded"
                 warnings.append(str(exc)[:300])
                 break
+
+        if status == "completed" and any(
+            clip.status != "completed" for clip in evaluations
+        ):
+            status = "degraded"
 
     scores = [clip.score for clip in evaluations]
     run_score = round(sum(scores) / len(scores), 6) if scores else 0.0
@@ -231,6 +263,7 @@ def evaluate_run(
         passed_clips=passed_clips,
         threshold=threshold,
         generated_at=datetime.now(timezone.utc).isoformat(),
+        temporal_mode=temporal_mode,
         engines=engines,
         clips=evaluations,
         warnings=warnings,
@@ -245,26 +278,50 @@ def _evaluate_clip(
     store: Any,
     client: Any | None,
     option_table: dict[str, list[str]],
-    source_clip: Path | None,
+    source_clips: Sequence[Path],
     threshold: float,
     hallucination_weight: float,
     temporal_threshold: float,
     temporal_regions_json: str,
+    temporal_mode: str,
+    temporal_noise_floor: float,
+    temporal_blur_ksize: int,
     question_model: str,
     vlm_model: str,
     warnings: list[str],
 ) -> ClipEvaluation:
     workdir.mkdir(parents=True, exist_ok=True)
     skipped: list[str] = []
+    degraded = False
 
-    metadata = _download_json(clip_uri + METADATA_NAME, store=store) or {}
-    raw_variables = metadata.get("variables") if isinstance(metadata, dict) else {}
+    raw_metadata = _download_json(clip_uri + METADATA_NAME, store=store)
+    if raw_metadata is None:
+        metadata: dict[str, Any] = {}
+    elif isinstance(raw_metadata, dict):
+        metadata = raw_metadata
+    else:
+        metadata = {}
+        degraded = True
+        warnings.append(f"variant metadata is not an object for {clip_id}")
+        skipped.append("variant metadata is malformed")
+    raw_variables = metadata.get("variables")
+    if raw_variables is not None and not isinstance(raw_variables, dict):
+        raw_variables = {}
+        degraded = True
+        warnings.append(f"variant variables are not an object for {clip_id}")
+        skipped.append("variant variables are malformed")
     variables = {
         str(key): str(value)
         for key, value in (raw_variables or {}).items()
         if key not in NON_ATTRIBUTE_KEYS and str(value).strip()
     }
     input_conditioned = bool(metadata.get("input_conditioned"))
+    source_clip = _select_source_clip(
+        clip_id=clip_id,
+        metadata=metadata,
+        source_clips=source_clips,
+        warnings=warnings,
+    )
 
     video = _download_file(clip_uri + VIDEO_NAME, workdir, store=store)
     frame = None
@@ -296,12 +353,21 @@ def _evaluate_clip(
             _log.warning(message, exc_info=True)
             warnings.append(message)
             skipped.append("attribute verification failed")
+            degraded = True
+        else:
+            # Upstream attribute verification records per-question endpoint
+            # failures instead of raising. Preserve that distinction at run level
+            # so a transient VLM outage is not reported as measured bad quality.
+            if any(check.error for check in attribute_result.checks):
+                degraded = True
 
     hallucination_result: HallucinationResult | None = None
     if video is None:
         skipped.append("hallucination check needs the augmented video")
     elif source_clip is None:
-        skipped.append("hallucination check needs a source clip (pass --original-video or --input-uri)")
+        skipped.append(
+            "hallucination check needs a source clip (pass --original-video or --input-uri)"
+        )
     else:
         try:
             hallucination_result = check_hallucination(
@@ -315,10 +381,14 @@ def _evaluate_clip(
             _log.warning(message, exc_info=True)
             warnings.append(message)
             skipped.append("hallucination check failed")
+            if input_conditioned:
+                degraded = True
 
     temporal_result: TemporalConsistencyResult | None = None
     if not input_conditioned:
-        skipped.append("temporal consistency only applies to input-conditioned variants")
+        skipped.append(
+            "temporal consistency only applies to input-conditioned variants"
+        )
     elif video is None:
         skipped.append("temporal consistency needs the augmented video")
     elif source_clip is None:
@@ -331,12 +401,16 @@ def _evaluate_clip(
                 augmented_video=video,
                 threshold=temporal_threshold,
                 regions=temporal_regions_json,
+                noise_floor=temporal_noise_floor,
+                blur_ksize=temporal_blur_ksize,
             )
         except Exception as exc:  # noqa: BLE001 - keep grading the remaining variants
             message = f"temporal consistency check failed for {clip_id}: {exc}"[:300]
             _log.warning(message, exc_info=True)
             warnings.append(message)
             skipped.append("temporal consistency check failed")
+            if temporal_mode == "required":
+                degraded = True
 
     score, passed = _combine_scores(
         attribute_result=attribute_result,
@@ -344,7 +418,7 @@ def _evaluate_clip(
         input_conditioned=input_conditioned,
         hallucination_weight=hallucination_weight,
         temporal_result=temporal_result,
-        temporal_required=input_conditioned,
+        temporal_required=input_conditioned and temporal_mode == "required",
         score_threshold=threshold,
     )
     return ClipEvaluation(
@@ -352,6 +426,8 @@ def _evaluate_clip(
         score=score,
         passed=passed,
         input_conditioned=input_conditioned,
+        status="degraded" if degraded else "completed",
+        temporal_enforced=input_conditioned and temporal_mode == "required",
         variables=variables,
         attribute_verification=attribute_result.to_dict() if attribute_result else None,
         hallucination=hallucination_result.to_dict() if hallucination_result else None,
@@ -387,11 +463,18 @@ def _combine_scores(
         if input_conditioned:
             return 0.0, False
         score = round(attribute_score, 6)
-        return score, score >= score_threshold
+        return score, bool(
+            attribute_result and attribute_result.passed
+        ) and score >= score_threshold
 
     assert hallucination_score is not None
-    blended = hallucination_weight * hallucination_score + (1.0 - hallucination_weight) * attribute_score
-    passed = bool(hallucination_result and hallucination_result.passed)
+    blended = (
+        hallucination_weight * hallucination_score
+        + (1.0 - hallucination_weight) * attribute_score
+    )
+    passed = bool(attribute_result and attribute_result.passed) and bool(
+        hallucination_result and hallucination_result.passed
+    )
     if temporal_required:
         if temporal_result is None:
             return 0.0, False
@@ -432,7 +515,9 @@ def _list_keys(uri: str, *, store: Any) -> list[str]:
         if token:
             kwargs["ContinuationToken"] = token
         page = store.s3.list_objects_v2(**kwargs)
-        keys.extend(entry["Key"] for entry in page.get("Contents", []) if entry.get("Key"))
+        keys.extend(
+            entry["Key"] for entry in page.get("Contents", []) if entry.get("Key")
+        )
         if not page.get("IsTruncated"):
             break
         token = page.get("NextContinuationToken")
@@ -504,7 +589,7 @@ def _download_file(uri: str, dest_dir: Path, *, store: Any) -> Path | None:
     return path if path.is_file() else None
 
 
-def _download_json(uri: str, *, store: Any) -> dict[str, Any] | None:
+def _download_json(uri: str, *, store: Any) -> Any | None:
     if not _is_remote(uri):
         local = Path(_local_path(uri))
         if not local.is_file():
@@ -531,13 +616,13 @@ def _download_first_frame(clip_uri: str, workdir: Path, *, store: Any) -> Path |
         frames = sorted(root.glob("frame-*.png")) if root.is_dir() else []
         return frames[0] if frames else None
     _, prefix = _split(clip_uri if clip_uri.endswith("/") else clip_uri + "/")
-    keys = [key for key in _list_keys(clip_uri, store=store) if key.lower().endswith(".png")]
+    keys = [
+        key for key in _list_keys(clip_uri, store=store) if key.lower().endswith(".png")
+    ]
     if not keys:
         return None
     bucket, _ = _split(clip_uri)
-    return _download_file(
-        f"s3://{bucket}/{sorted(keys)[0]}", workdir, store=store
-    )
+    return _download_file(f"s3://{bucket}/{sorted(keys)[0]}", workdir, store=store)
 
 
 def _load_option_table(
@@ -554,10 +639,16 @@ def _load_option_table(
 
     manifest: dict[str, Any] | None = None
     if configs_uri:
-        uri = configs_uri if configs_uri.endswith(".json") else configs_uri.rstrip("/") + f"/{CONFIG_MANIFEST_NAME}"
+        uri = (
+            configs_uri
+            if configs_uri.endswith(".json")
+            else configs_uri.rstrip("/") + f"/{CONFIG_MANIFEST_NAME}"
+        )
         manifest = _download_json(uri, store=store)
         if manifest is None:
-            warnings.append(f"config manifest not found at {uri}; using the blueprint's default option table")
+            warnings.append(
+                f"config manifest not found at {uri}; using the blueprint's default option table"
+            )
     variables = manifest.get("variables") if isinstance(manifest, dict) else None
     if isinstance(variables, dict) and variables:
         return {
@@ -570,35 +661,86 @@ def _load_option_table(
     return {key: list(values) for key, values in APPEARANCE_VARIABLES.items()}
 
 
-def _resolve_source_clip(
+def _resolve_source_clips(
     *,
     original_video: str,
     input_uri: str,
     store: Any,
     workdir: Path,
     warnings: list[str],
-) -> Path | None:
-    """Materialize the clip the augmented variants are compared against."""
+) -> list[Path]:
+    """Materialize every candidate source clip without choosing one globally."""
 
     if original_video:
         path = _download_file(original_video, workdir, store=store)
         if path is None:
             warnings.append(f"--original-video {original_video} could not be read")
-        return path
+        return [path] if path is not None else []
     if not input_uri:
-        return None
+        return []
+    if not _is_remote(input_uri):
+        root = Path(_local_path(input_uri))
+        if root.is_file():
+            return [root] if root.suffix.lower() in VIDEO_SUFFIXES else []
+        return (
+            sorted(
+                path
+                for path in root.rglob("*")
+                if path.is_file() and path.suffix.lower() in VIDEO_SUFFIXES
+            )
+            if root.is_dir()
+            else []
+        )
+
     prefixed = input_uri if input_uri.endswith("/") else input_uri + "/"
-    if not _is_remote(prefixed):
-        root = Path(_local_path(prefixed))
-        videos = sorted(root.rglob("*.mp4")) if root.is_dir() else []
-        return videos[0] if videos else None
-    keys = [key for key in _list_keys(prefixed, store=store) if key.lower().endswith(".mp4")]
-    if not keys:
-        return None
+    keys = [
+        key
+        for key in _list_keys(prefixed, store=store)
+        if Path(key).suffix.lower() in VIDEO_SUFFIXES
+    ]
     bucket, _ = _split(prefixed)
-    return _download_file(
-        f"s3://{bucket}/{sorted(keys)[0]}", workdir, store=store
+    sources: list[Path] = []
+    for index, key in enumerate(sorted(keys)):
+        path = _download_file(
+            f"s3://{bucket}/{key}", workdir / f"source-{index:04d}", store=store
+        )
+        if path is None:
+            warnings.append(f"source clip {Path(key).name} could not be read")
+        else:
+            sources.append(path)
+    return sources
+
+
+def _select_source_clip(
+    *,
+    clip_id: str,
+    metadata: dict[str, Any],
+    source_clips: Sequence[Path],
+    warnings: list[str],
+) -> Path | None:
+    """Match one variant to its recorded conditioned input without first-key fallback."""
+
+    if not source_clips:
+        return None
+    conditioned_input = Path(str(metadata.get("conditioned_input") or "")).name
+    if conditioned_input:
+        matches = [path for path in source_clips if path.name == conditioned_input]
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            warnings.append(
+                f"source clip is ambiguous for {clip_id}: multiple inputs are named {conditioned_input}"
+            )
+            return None
+    if len(source_clips) == 1:
+        return source_clips[0]
+    detail = (
+        f"conditioned input {conditioned_input!r} was not found"
+        if conditioned_input
+        else "variant metadata has no conditioned_input"
     )
+    warnings.append(f"source clip unresolved for {clip_id}: {detail}")
+    return None
 
 
 def write_report(
@@ -624,7 +766,9 @@ def write_report(
     return str(path)
 
 
-def evaluator_engine_summary(*, environ: dict[str, str] | None = None) -> dict[str, Any]:
+def evaluator_engine_summary(
+    *, environ: dict[str, str] | None = None
+) -> dict[str, Any]:
     """Describe which evaluator engine this environment will use."""
 
     root = upstream_source_dir(environ=environ)

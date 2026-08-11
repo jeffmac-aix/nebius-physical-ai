@@ -283,10 +283,14 @@ def enforce_quality_disposition(
     reasons: list[str] = []
     report: dict[str, Any] = {}
     try:
-        report = _download_json(report_uri)
-        if not isinstance(report, dict):
-            raise TypeError(f"expected a JSON object, got {type(report).__name__}")
+        downloaded = _download_json(report_uri)
+        if not isinstance(downloaded, dict):
+            raise TypeError(f"expected a JSON object, got {type(downloaded).__name__}")
+        report = downloaded
     except Exception as exc:  # noqa: BLE001 - rejection artifact must still be written
+        # Keep ``report`` as the empty mapping. A valid-JSON list/scalar must take
+        # the same persist-before-raise path as unreadable or invalid JSON rather
+        # than escaping below through ``report.get``.
         reasons.append(f"evaluator report unavailable or malformed: {exc}"[:300])
 
     try:

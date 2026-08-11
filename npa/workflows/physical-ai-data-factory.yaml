@@ -63,7 +63,12 @@ config:
   n_augmentations: "2"            # augmented variants sampled per source video
   refinement_iterations: "2"      # max evaluate/validate passes before reject
   grade_threshold: "0.75"         # min aggregate score to promote (else loop_back)
-  temporal_consistency_threshold: "0.8"  # reject >25% source-relative excess acceleration
+  # NPA temporal residual is advisory until a deployment calibrates its fixed
+  # noise floor. Set mode=required only with representative encoded clips.
+  temporal_consistency_mode: advisory
+  temporal_consistency_threshold: "0.8"
+  temporal_noise_floor: "0.25"
+  temporal_blur_ksize: "7"
   # Optional JSON normalized rectangles. Empty uses full frame + a 2x2 grid so
   # localized instability cannot hide inside a clean frame-wide average.
   temporal_regions_json: ""
@@ -227,11 +232,12 @@ states:
           the variant and scores hallucinated motion (CPU pixel work). It only
           contributes to the score for input-conditioned variants, where the two
           clips really are the same scene.
-      NPA also runs a source-relative temporal consistency companion check over
-      the full frame and localized regions. This separately attributed check
-      rejects excess temporal acceleration while allowing motion already present
-      in the source. Every motion-integrity hard check must pass; the aggregate
-      attribute score alone cannot override a failed hard check.
+      NPA also reports a source-relative temporal consistency companion diagnostic
+      over the full frame and localized regions. Its filtered, two-sided residual
+      exposes both added instability and collapsed source motion without dividing
+      by source motion. It is advisory by default; deployments may make it a hard
+      check only after calibrating the fixed noise floor on representative encoded
+      clips. The NVIDIA attribute and hallucination checks remain hard checks.
     toolRef: workbench.cosmos_evaluator.evaluate
     resources: cpu
     inputs:

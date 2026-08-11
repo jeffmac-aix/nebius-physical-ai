@@ -27,7 +27,12 @@ def test_generate_configs_writes_real_manifest(tmp_path: Path) -> None:
 
 
 def test_prompt_from_combo_is_appearance_only() -> None:
-    combo = {"cloth_color": "red", "surface": "wooden table", "lighting": "dim evening light", "background": "plain wall"}
+    combo = {
+        "cloth_color": "red",
+        "surface": "wooden table",
+        "lighting": "dim evening light",
+        "background": "plain wall",
+    }
     prompt = dfs.prompt_from_combo(combo)
     assert "red cloth" in prompt
     assert "wooden table" in prompt
@@ -48,7 +53,9 @@ def test_grade_gate_promotes_above_threshold(tmp_path: Path, monkeypatch) -> Non
         "npa.orchestration.npa_workflow.decisions.write_decision",
         lambda uri, decision: captured.update(uri=uri, decision=decision),
     )
-    decision = dfs.grade_gate(str(scores), str(tmp_path / "decision.json"), threshold=0.5)
+    decision = dfs.grade_gate(
+        str(scores), str(tmp_path / "decision.json"), threshold=0.5
+    )
     assert decision == "promote_checkpoint"
     assert captured["decision"] == "promote_checkpoint"
 
@@ -60,7 +67,10 @@ def test_grade_gate_loops_below_threshold(tmp_path: Path, monkeypatch) -> None:
         "npa.orchestration.npa_workflow.decisions.write_decision",
         lambda uri, decision: None,
     )
-    assert dfs.grade_gate(str(scores), str(tmp_path / "decision.json"), threshold=0.5) == "loop_back"
+    assert (
+        dfs.grade_gate(str(scores), str(tmp_path / "decision.json"), threshold=0.5)
+        == "loop_back"
+    )
 
 
 def test_grade_gate_accepts_string_threshold(tmp_path: Path, monkeypatch) -> None:
@@ -73,9 +83,15 @@ def test_grade_gate_accepts_string_threshold(tmp_path: Path, monkeypatch) -> Non
         lambda uri, decision: None,
     )
     # "0.5" (str) -> 0.6 >= 0.5 -> promote.
-    assert dfs.grade_gate(str(scores), str(tmp_path / "d.json"), threshold="0.5") == "promote_checkpoint"
+    assert (
+        dfs.grade_gate(str(scores), str(tmp_path / "d.json"), threshold="0.5")
+        == "promote_checkpoint"
+    )
     # non-numeric -> fallback 0.5 -> 0.6 >= 0.5 -> promote.
-    assert dfs.grade_gate(str(scores), str(tmp_path / "d.json"), threshold="bogus") == "promote_checkpoint"
+    assert (
+        dfs.grade_gate(str(scores), str(tmp_path / "d.json"), threshold="bogus")
+        == "promote_checkpoint"
+    )
 
 
 @pytest.mark.parametrize(
@@ -88,7 +104,9 @@ def test_grade_gate_accepts_string_threshold(tmp_path: Path, monkeypatch) -> Non
     ],
     ids=["non-numeric", "null", "nested", "not-an-object"],
 )
-def test_grade_gate_loops_back_on_a_malformed_report(tmp_path: Path, monkeypatch, report) -> None:
+def test_grade_gate_loops_back_on_a_malformed_report(
+    tmp_path: Path, monkeypatch, report
+) -> None:
     """A gate exists to make a decision, so a malformed score must not abort the loop.
 
     The report downloads cleanly here — only its ``score`` is unusable — so the
@@ -101,10 +119,15 @@ def test_grade_gate_loops_back_on_a_malformed_report(tmp_path: Path, monkeypatch
         "npa.orchestration.npa_workflow.decisions.write_decision",
         lambda uri, decision: None,
     )
-    assert dfs.grade_gate(str(scores), str(tmp_path / "d.json"), threshold=0.5) == "loop_back"
+    assert (
+        dfs.grade_gate(str(scores), str(tmp_path / "d.json"), threshold=0.5)
+        == "loop_back"
+    )
 
 
-def test_grade_gate_will_not_promote_a_degraded_report(tmp_path: Path, monkeypatch) -> None:
+def test_grade_gate_will_not_promote_a_degraded_report(
+    tmp_path: Path, monkeypatch
+) -> None:
     """A high score the evaluator itself flagged as degraded must not promote.
 
     The evaluator marks a run degraded when it lost object storage part-way, so the
@@ -117,24 +140,40 @@ def test_grade_gate_will_not_promote_a_degraded_report(tmp_path: Path, monkeypat
         "npa.orchestration.npa_workflow.decisions.write_decision",
         lambda uri, decision: None,
     )
-    assert dfs.grade_gate(str(scores), str(tmp_path / "d.json"), threshold=0.5) == "loop_back"
+    assert (
+        dfs.grade_gate(str(scores), str(tmp_path / "d.json"), threshold=0.5)
+        == "loop_back"
+    )
 
 
-def test_grade_gate_will_not_promote_when_a_hard_check_failed(tmp_path: Path, monkeypatch) -> None:
+def test_grade_gate_will_not_promote_when_a_hard_check_failed(
+    tmp_path: Path, monkeypatch
+) -> None:
     scores = tmp_path / "cosmos_evaluator.json"
-    scores.write_text(json.dumps({"score": 0.95, "status": "completed", "passed": False}))
+    scores.write_text(
+        json.dumps({"score": 0.95, "status": "completed", "passed": False})
+    )
     monkeypatch.setattr(
         "npa.orchestration.npa_workflow.decisions.write_decision",
         lambda uri, decision: None,
     )
-    assert dfs.grade_gate(str(scores), str(tmp_path / "d.json"), threshold=0.75) == "loop_back"
+    assert (
+        dfs.grade_gate(str(scores), str(tmp_path / "d.json"), threshold=0.75)
+        == "loop_back"
+    )
 
 
-def test_quality_disposition_accepts_only_a_complete_hard_check_pass(tmp_path: Path) -> None:
+def test_quality_disposition_accepts_only_a_complete_hard_check_pass(
+    tmp_path: Path,
+) -> None:
     scores = tmp_path / "cosmos_evaluator.json"
     disposition = tmp_path / "quality_disposition.json"
-    scores.write_text(json.dumps({"score": 0.81, "status": "completed", "passed": True}))
-    result = dfs.enforce_quality_disposition(str(scores), str(disposition), threshold="0.75")
+    scores.write_text(
+        json.dumps({"score": 0.81, "status": "completed", "passed": True})
+    )
+    result = dfs.enforce_quality_disposition(
+        str(scores), str(disposition), threshold="0.75"
+    )
     assert result["quality_status"] == "accepted"
     assert json.loads(disposition.read_text())["quality_status"] == "accepted"
 
@@ -142,12 +181,74 @@ def test_quality_disposition_accepts_only_a_complete_hard_check_pass(tmp_path: P
 def test_quality_disposition_persists_rejection_before_failing(tmp_path: Path) -> None:
     scores = tmp_path / "cosmos_evaluator.json"
     disposition = tmp_path / "quality_disposition.json"
-    scores.write_text(json.dumps({"score": 0.9, "status": "completed", "passed": False}))
+    scores.write_text(
+        json.dumps({"score": 0.9, "status": "completed", "passed": False})
+    )
     with pytest.raises(RuntimeError, match="quality rejected"):
         dfs.enforce_quality_disposition(str(scores), str(disposition), threshold=0.75)
     payload = json.loads(disposition.read_text())
     assert payload["quality_status"] == "rejected"
     assert payload["hard_checks_passed"] is False
+
+
+@pytest.mark.parametrize(
+    "report_contents",
+    [None, "not-json", '["valid", "json", "but-not-an-object"]'],
+    ids=["missing", "unparseable", "non-object"],
+)
+def test_quality_disposition_is_written_for_every_unreadable_report(
+    tmp_path: Path, report_contents: str | None
+) -> None:
+    scores = tmp_path / "cosmos_evaluator.json"
+    disposition = tmp_path / "quality_disposition.json"
+    if report_contents is not None:
+        scores.write_text(report_contents)
+    with pytest.raises(RuntimeError, match="quality rejected"):
+        dfs.enforce_quality_disposition(str(scores), str(disposition), threshold=0.75)
+    payload = json.loads(disposition.read_text())
+    assert payload["quality_status"] == "rejected"
+    assert payload["evaluator_status"] == "missing"
+    assert any("unavailable or malformed" in reason for reason in payload["reasons"])
+
+
+def test_quality_disposition_rejects_a_non_numeric_score_and_persists_reason(
+    tmp_path: Path,
+) -> None:
+    scores = tmp_path / "cosmos_evaluator.json"
+    disposition = tmp_path / "quality_disposition.json"
+    scores.write_text(
+        json.dumps({"score": "n/a", "status": "completed", "passed": True})
+    )
+    with pytest.raises(RuntimeError, match="quality rejected"):
+        dfs.enforce_quality_disposition(str(scores), str(disposition), threshold=0.75)
+    payload = json.loads(disposition.read_text())
+    assert payload["score"] == 0.0
+    assert "evaluator score is not numeric" in payload["reasons"]
+
+
+def test_quality_disposition_resolves_a_report_prefix(tmp_path: Path) -> None:
+    grade = tmp_path / "grade"
+    grade.mkdir()
+    (grade / "cosmos_evaluator.json").write_text(
+        json.dumps({"score": 0.9, "status": "completed", "passed": True})
+    )
+    disposition = tmp_path / "quality_disposition.json"
+    result = dfs.enforce_quality_disposition(
+        str(grade), str(disposition), threshold=0.75
+    )
+    assert result["quality_status"] == "accepted"
+    assert result["evaluator_report_uri"].endswith("grade/cosmos_evaluator.json")
+
+
+def test_quality_disposition_rejects_a_degraded_report(tmp_path: Path) -> None:
+    scores = tmp_path / "cosmos_evaluator.json"
+    disposition = tmp_path / "quality_disposition.json"
+    scores.write_text(json.dumps({"score": 1.0, "status": "degraded", "passed": True}))
+    with pytest.raises(RuntimeError, match="quality rejected"):
+        dfs.enforce_quality_disposition(str(scores), str(disposition), threshold=0.75)
+    payload = json.loads(disposition.read_text())
+    assert payload["quality_status"] == "rejected"
+    assert "evaluator status is degraded" in payload["reasons"]
 
 
 def test_grade_gate_falls_through_a_malformed_report_to_the_older_contract(
@@ -166,7 +267,9 @@ def test_grade_gate_falls_through_a_malformed_report_to_the_older_contract(
     )
 
 
-def test_download_json_missing_exact_file_does_not_substitute(tmp_path: Path, monkeypatch) -> None:
+def test_download_json_missing_exact_file_does_not_substitute(
+    tmp_path: Path, monkeypatch
+) -> None:
     """When the requested .json is missing and download falls back to the prefix
     dir, _download_json must raise, not silently return a different JSON."""
     import pytest
@@ -184,12 +287,16 @@ def test_download_json_missing_exact_file_does_not_substitute(tmp_path: Path, mo
         dfs._download_json("s3://bucket/grade/vlm_eval_stub.json")
 
 
-def test_grade_gate_missing_eval_loops_not_reads_decision(tmp_path: Path, monkeypatch) -> None:
+def test_grade_gate_missing_eval_loops_not_reads_decision(
+    tmp_path: Path, monkeypatch
+) -> None:
     """A missing eval result must loop_back, never mis-read decision.json as score."""
     prefix_dir = tmp_path / "grade"
     prefix_dir.mkdir()
     # A promote decision.json is present but the eval result is absent.
-    (prefix_dir / "decision.json").write_text(json.dumps({"decision": "promote_checkpoint"}))
+    (prefix_dir / "decision.json").write_text(
+        json.dumps({"decision": "promote_checkpoint"})
+    )
 
     class _FakeStorage:
         def download_path(self, uri, dest):  # noqa: ARG002
@@ -200,24 +307,36 @@ def test_grade_gate_missing_eval_loops_not_reads_decision(tmp_path: Path, monkey
         "npa.orchestration.npa_workflow.decisions.write_decision",
         lambda uri, decision: None,
     )
-    assert dfs.grade_gate("s3://bucket/grade/", "s3://bucket/grade/decision.json", 0.5) == "loop_back"
+    assert (
+        dfs.grade_gate("s3://bucket/grade/", "s3://bucket/grade/decision.json", 0.5)
+        == "loop_back"
+    )
 
 
-def test_grade_gate_reads_the_cosmos_evaluator_report(tmp_path: Path, monkeypatch) -> None:
+def test_grade_gate_reads_the_cosmos_evaluator_report(
+    tmp_path: Path, monkeypatch
+) -> None:
     """The gate must threshold on the Cosmos Evaluator score the evaluate stage writes."""
     from npa.workbench.cosmos_evaluator import RESULT_FILENAME
 
     prefix_dir = tmp_path / "grade"
     prefix_dir.mkdir()
-    (prefix_dir / RESULT_FILENAME).write_text(json.dumps({"score": 0.9, "passed": True}))
+    (prefix_dir / RESULT_FILENAME).write_text(
+        json.dumps({"score": 0.9, "passed": True})
+    )
     monkeypatch.setattr(
         "npa.orchestration.npa_workflow.decisions.write_decision",
         lambda uri, decision: None,
     )
-    assert dfs.grade_gate(str(prefix_dir), str(tmp_path / "decision.json"), 0.5) == "promote_checkpoint"
+    assert (
+        dfs.grade_gate(str(prefix_dir), str(tmp_path / "decision.json"), 0.5)
+        == "promote_checkpoint"
+    )
 
 
-def test_grade_gate_falls_back_to_the_older_vlm_eval_report(tmp_path: Path, monkeypatch) -> None:
+def test_grade_gate_falls_back_to_the_older_vlm_eval_report(
+    tmp_path: Path, monkeypatch
+) -> None:
     """Runs started before the evaluate stage existed must still grade."""
     from npa.workbench.vlm_eval import RESULT_FILENAME
 
@@ -228,7 +347,10 @@ def test_grade_gate_falls_back_to_the_older_vlm_eval_report(tmp_path: Path, monk
         "npa.orchestration.npa_workflow.decisions.write_decision",
         lambda uri, decision: None,
     )
-    assert dfs.grade_gate(str(prefix_dir), str(tmp_path / "decision.json"), 0.5) == "loop_back"
+    assert (
+        dfs.grade_gate(str(prefix_dir), str(tmp_path / "decision.json"), 0.5)
+        == "loop_back"
+    )
 
 
 def test_curate_merges_the_cosmos_curator_report(tmp_path: Path, monkeypatch) -> None:
@@ -272,8 +394,12 @@ def test_curate_merges_the_cosmos_curator_report(tmp_path: Path, monkeypatch) ->
     assert report["multiply"]["mode"] == "multi-variant"
 
 
-def test_curate_records_a_missing_curator_report_without_failing(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr(dfs, "_list_keys", lambda uri: ["p/cosmos_augmented/aug-0/augmented_video.mp4"])
+def test_curate_records_a_missing_curator_report_without_failing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        dfs, "_list_keys", lambda uri: ["p/cosmos_augmented/aug-0/augmented_video.mp4"]
+    )
     monkeypatch.setattr(dfs, "_upload_json", lambda payload, uri: uri)
     report = dfs.curate(
         "s3://b/p/cosmos_augmented/",
@@ -284,8 +410,12 @@ def test_curate_records_a_missing_curator_report_without_failing(tmp_path: Path,
     assert report["status"] == "curated"
 
 
-def test_curate_omits_the_curator_block_when_no_report_is_passed(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr(dfs, "_list_keys", lambda uri: ["p/cosmos_augmented/aug-0/augmented_video.mp4"])
+def test_curate_omits_the_curator_block_when_no_report_is_passed(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        dfs, "_list_keys", lambda uri: ["p/cosmos_augmented/aug-0/augmented_video.mp4"]
+    )
     monkeypatch.setattr(dfs, "_upload_json", lambda payload, uri: uri)
     report = dfs.curate("s3://b/p/cosmos_augmented/", str(tmp_path / "report.json"))
     assert "cosmos_curator" not in report
@@ -303,7 +433,11 @@ def test_curate_counts_augmented_set(tmp_path: Path, monkeypatch) -> None:
     ]
     monkeypatch.setattr(dfs, "_list_keys", lambda uri: keys)
     written = {}
-    monkeypatch.setattr(dfs, "_upload_json", lambda payload, uri: written.update(payload=payload, uri=uri) or uri)
+    monkeypatch.setattr(
+        dfs,
+        "_upload_json",
+        lambda payload, uri: written.update(payload=payload, uri=uri) or uri,
+    )
     report = dfs.curate("s3://b/p/cosmos_augmented/", "s3://b/p/curation/report.json")
     assert report["video_count"] == 1
     assert report["frame_count"] == 2
@@ -346,7 +480,9 @@ def _png(path: Path) -> Path:
     return path
 
 
-def test_publish_transfer_layout_interoperates_with_curate_and_viz(tmp_path: Path, monkeypatch) -> None:
+def test_publish_transfer_layout_interoperates_with_curate_and_viz(
+    tmp_path: Path, monkeypatch
+) -> None:
     """The real producer's S3 layout must flow through curate + build_run_rrd."""
     import pytest
 
@@ -389,7 +525,9 @@ def test_publish_transfer_layout_interoperates_with_curate_and_viz(tmp_path: Pat
     # (a) curate must parse the produced layout correctly.
     monkeypatch.setattr(dfs, "_list_keys", lambda uri: recorded)
     monkeypatch.setattr(dfs, "_upload_json", lambda payload, uri: uri)
-    report = dfs.curate("s3://bkt/run1/cosmos_augmented/", "s3://bkt/run1/curation/report.json")
+    report = dfs.curate(
+        "s3://bkt/run1/cosmos_augmented/", "s3://bkt/run1/curation/report.json"
+    )
     assert report["clip_ids"] == ["aug-run1"], report["clip_ids"]
     assert report["video_count"] == 1
     assert report["frame_count"] == 3
@@ -402,7 +540,9 @@ def test_publish_transfer_layout_interoperates_with_curate_and_viz(tmp_path: Pat
     assert out_rrd.is_file()
 
 
-def test_curate_reports_multi_variant_for_multiple_clips(tmp_path: Path, monkeypatch) -> None:
+def test_curate_reports_multi_variant_for_multiple_clips(
+    tmp_path: Path, monkeypatch
+) -> None:
     """N augmented clip dirs (multiply) must be counted and reported multi-variant."""
     keys = [
         "p/cosmos_augmented/manifest.json",
@@ -425,7 +565,9 @@ def test_curate_reports_multi_variant_for_multiple_clips(tmp_path: Path, monkeyp
     assert report["multiply"]["variant_count"] == 3
 
 
-def test_finalize_reports_multi_variant_from_clip_dirs(tmp_path: Path, monkeypatch) -> None:
+def test_finalize_reports_multi_variant_from_clip_dirs(
+    tmp_path: Path, monkeypatch
+) -> None:
     keys = [
         "physical-ai-data-factory/run1/input/video_0.mp4",
         "physical-ai-data-factory/run1/cosmos_augmented/manifest.json",
@@ -435,7 +577,9 @@ def test_finalize_reports_multi_variant_from_clip_dirs(tmp_path: Path, monkeypat
     ]
     monkeypatch.setattr(dfs, "_list_keys", lambda uri: keys)
     monkeypatch.setattr(dfs, "_upload_json", lambda payload, uri: uri)
-    report = dfs.finalize("s3://b/physical-ai-data-factory/run1/", "s3://b/.../final.json")
+    report = dfs.finalize(
+        "s3://b/physical-ai-data-factory/run1/", "s3://b/.../final.json"
+    )
     assert report["multiply_mode"] == "multi-variant"
     assert report["variant_count"] == 2
 
@@ -465,7 +609,10 @@ def test_finalize_aggregates_stage_artifacts(tmp_path: Path, monkeypatch) -> Non
     ]
     monkeypatch.setattr(dfs, "_list_keys", lambda uri: keys)
     monkeypatch.setattr(dfs, "_upload_json", lambda payload, uri: uri)
-    report = dfs.finalize("s3://b/physical-ai-data-factory/run1/", "s3://b/physical-ai-data-factory/run1/reports/final.json")
+    report = dfs.finalize(
+        "s3://b/physical-ai-data-factory/run1/",
+        "s3://b/physical-ai-data-factory/run1/reports/final.json",
+    )
     assert report["artifact_count"] == 3
     assert report["has_rrd"] is True
     assert report["stages"]["input"] == 1

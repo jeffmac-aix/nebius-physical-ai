@@ -43,10 +43,13 @@ Three NVIDIA components in that table are the real open-source projects:
   CPU only). The hallucination score only feeds the run score for
   input-conditioned variants; otherwise the clips are different scenes and it stays
   informational. NPA adds a separately attributed source-relative temporal
-  consistency check over the full frame and localized regions. This rejects excess
-  frame-to-frame surface variation without treating source camera or object motion
-  as a defect. The default temporal threshold is `0.8`, which allows at most 25%
-  source-relative excess acceleration in every checked region.
+  consistency diagnostic over the full frame and localized regions. It Gaussian-
+  filters decoded frames, compares signed temporal acceleration, and scores the
+  two-sided residual against a fixed noise floor. This exposes both added
+  instability and collapsed source motion without weakening as source motion rises.
+  It is `advisory` by default because encoded capture paths need calibration; set
+  `temporal_consistency_mode: required` only after tuning `temporal_noise_floor`
+  on representative clips.
 - **[Cosmos Curator](https://github.com/nvidia-cosmos/cosmos-curate)**
   (Apache-2.0) curates. The `cosmos-curate` stage drives upstream's own stages —
   `VideoDownloader` → `FixedStrideExtractorStage` → `ClipTranscodingStage` →
@@ -92,11 +95,21 @@ before submitting either first-class managed workflow.
 - **CPU:** config sampling, hallucination and temporal-consistency checks, Cosmos
   Curator curation, FiftyOne review, visualize, finalize.
 
-The quality gate is fail closed. Promotion requires the aggregate threshold and
-every motion-integrity hard check to pass. If refinement is exhausted, `quality-disposition`
+The quality gate is fail closed. Promotion requires every variant to pass attribute
+verification and, for input-conditioned variants, hallucination checking, plus the
+aggregate threshold. Temporal consistency joins those hard checks only in calibrated
+`required` mode. If refinement is exhausted, `quality-disposition`
 writes `grade/quality_disposition.json` with `quality_status: rejected` and stops
 the workflow before labeling or curation. Workflow execution status and dataset
 quality status therefore remain separate and auditable.
+
+The all-variant batch policy is intentionally conservative: the reference workflow
+does not yet quarantine failed variant directories before downstream labeling and
+curation, so it will not promote a mixed-quality prefix. A future partial-promotion
+mode must first route only accepted variants into a separate downstream prefix.
+Attribute verification remains an all-attributes hard check; its score still
+contributes to the aggregate. An unavailable VLM marks evaluation `degraded` and
+fails closed instead of falling back to a motion-only promotion.
 
 Each NVIDIA tool has its own workbench image, both CPU-only and both mode-based
 (`engine`, `smoke`, plus the tool's own commands):

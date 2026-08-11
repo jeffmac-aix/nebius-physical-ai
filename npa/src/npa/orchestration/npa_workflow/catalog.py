@@ -469,7 +469,7 @@ TOOL_CATALOG: dict[str, ToolEntry] = {
         description=(
             "Grade augmented variants with the REAL NVIDIA Cosmos Evaluator checks "
             "(hallucination + VLM attribute verification, Apache-2.0) plus the "
-            "NPA source-relative temporal consistency companion check."
+            "NPA source-relative temporal consistency companion diagnostic."
         ),
         argv_template=[
             "npa",
@@ -490,6 +490,12 @@ TOOL_CATALOG: dict[str, ToolEntry] = {
             "{{config.temporal_consistency_threshold}}",
             "--temporal-regions-json",
             "{{config.temporal_regions_json}}",
+            "--temporal-mode",
+            "{{config.temporal_consistency_mode}}",
+            "--temporal-noise-floor",
+            "{{config.temporal_noise_floor}}",
+            "--temporal-blur-ksize",
+            "{{config.temporal_blur_ksize}}",
             "--vlm-model",
             "{{config.caption_model}}",
             "--output",
