@@ -604,6 +604,13 @@ def test_launch_agent_relay_wires_private_cluster_public_agent_and_manifest(
             "tool": "leisaac-turn-control",
             "protocol": "UDP",
         },
+        {
+            "vm_id": "vm-agent",
+            "ports": (3478,),
+            "source": "8.8.8.8/32",
+            "tool": "leisaac-turn-control",
+            "protocol": "TCP",
+        },
     ]
     assert install_calls[0][0] == (ssh,)
     assert install_calls[0][1]["session_nonce"] == "a" * 64
@@ -735,7 +742,7 @@ def test_launch_rollback_attempts_every_cleanup_when_teardown_steps_raise(
     result = runner.invoke(app, _args())
 
     assert result.exit_code == 1
-    assert attempted == ["TURN", "relay", "ingress", "Kubernetes"]
+    assert attempted == ["TURN", "relay", "ingress", "ingress", "Kubernetes"]
     assert "primary publish failure" in result.output
     for label in attempted:
         assert f"{label} cleanup" in result.output
@@ -848,9 +855,18 @@ def test_destroy_uses_service_metadata_to_remove_only_its_agent_relay(
     assert turn_removals == [((ssh,), {"run_id": "live-relay"})]
     assert [item[1]["source"] for item in ingress_removals] == [
         "8.8.8.8/32",
+        "8.8.8.8/32",
         "9.9.8.0/22",
     ]
-    assert [item[1]["ports"] for item in ingress_removals] == [(3478,), (47999,)]
+    assert [item[1]["ports"] for item in ingress_removals] == [
+        (3478,),
+        (3478,),
+        (47999,),
+    ]
     assert all(item[0] == ("vm-agent",) for item in ingress_removals)
-    assert all(item[1]["protocol"] == "UDP" for item in ingress_removals)
+    assert [item[1]["protocol"] for item in ingress_removals] == [
+        "UDP",
+        "TCP",
+        "UDP",
+    ]
     assert k8s_removals == [("cluster", "leisaac", "leisaac-live-relay")]

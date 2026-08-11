@@ -510,7 +510,10 @@ def test_agent_relay_status_returns_only_derived_session_turn_credential() -> No
     assert payload["ice_transport_policy"] == "relay"
     assert payload["ice_servers"] == [
         {
-            "urls": ["turn:1.1.1.1:3478?transport=udp"],
+            "urls": [
+                "turn:1.1.1.1:3478?transport=udp",
+                "turn:1.1.1.1:3478?transport=tcp",
+            ],
             "username": "leisaac-live-1",
             "credential": hashlib.sha256(
                 ("npa-leisaac-turn:" + "a" * 64).encode()

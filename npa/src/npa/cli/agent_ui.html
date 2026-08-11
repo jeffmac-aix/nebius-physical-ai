@@ -3868,7 +3868,16 @@
         }
         const server = servers[0] || {};
         const urls = Array.isArray(server.urls) ? server.urls.map(String) : [String(server.urls || "")];
-        if (!urls.length || urls.some((url) => !url.startsWith("turn:") || !url.endsWith("?transport=udp")) || !server.username || !server.credential) {
+        const expectedTurnTransports = new Set(["udp", "tcp"]);
+        const actualTurnTransports = new Set(urls.map((url) => String(url).split("?transport=")[1] || ""));
+        if (
+          urls.length !== 2 ||
+          urls.some((url) => !url.startsWith("turn:")) ||
+          actualTurnTransports.size !== expectedTurnTransports.size ||
+          Array.from(expectedTurnTransports).some((transport) => !actualTurnTransports.has(transport)) ||
+          !server.username ||
+          !server.credential
+        ) {
           throw new Error("LeIsaac TURN configuration is invalid");
         }
         const NativePeerConnection = window.RTCPeerConnection;

@@ -519,6 +519,7 @@ def serve(config: dict[str, Any]) -> None:
     )
     status = _TCPServer(STATUS_LISTEN, backhaul, 8080)
     signaling = _TCPServer(SIGNAL_LISTEN, backhaul, 49100)
+    turn_tcp = _TCPServer(MEDIA_LISTEN, backhaul, 3478)
     control = _ControlServer(backhaul)
     stop = threading.Event()
 
@@ -536,6 +537,7 @@ def serve(config: dict[str, Any]) -> None:
     threads = [
         threading.Thread(target=status.serve_forever, daemon=True),
         threading.Thread(target=signaling.serve_forever, daemon=True),
+        threading.Thread(target=turn_tcp.serve_forever, daemon=True),
         threading.Thread(target=control.serve_forever, daemon=True),
         threading.Thread(target=expire_credential, daemon=True),
         threading.Thread(
@@ -554,9 +556,11 @@ def serve(config: dict[str, Any]) -> None:
     finally:
         status.shutdown()
         signaling.shutdown()
+        turn_tcp.shutdown()
         control.shutdown()
         status.server_close()
         signaling.server_close()
+        turn_tcp.server_close()
         control.server_close()
 
 

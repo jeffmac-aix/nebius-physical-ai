@@ -501,7 +501,10 @@ describe("NPA agent LeIsaac capability tab", () => {
         ice_transport_policy: "relay",
         ice_servers: [
           {
-            urls: ["turn:203.0.113.50:3478?transport=udp"],
+            urls: [
+              "turn:203.0.113.50:3478?transport=udp",
+              "turn:203.0.113.50:3478?transport=tcp",
+            ],
             username: "mock-run",
             credential: "ephemeral-test-credential",
           },
@@ -580,7 +583,10 @@ describe("NPA agent LeIsaac capability tab", () => {
         ice_transport_policy: "relay",
         ice_servers: [
           {
-            urls: ["turn:203.0.113.50:3478?transport=udp"],
+            urls: [
+              "turn:203.0.113.50:3478?transport=udp",
+              "turn:203.0.113.50:3478?transport=tcp",
+            ],
             username: "mock-run",
             credential: "ephemeral-test-credential",
           },
@@ -903,7 +909,10 @@ describe("NPA agent LeIsaac capability tab", () => {
       video_ws_url: "/api/leisaac/transport/video?run_id=mock-datachannel",
       ice_transport_policy: "relay",
       ice_servers: [{
-        urls: ["turn:203.0.113.50:3478?transport=udp"],
+        urls: [
+          "turn:203.0.113.50:3478?transport=udp",
+          "turn:203.0.113.50:3478?transport=tcp",
+        ],
         username: "bounded-test-user",
         credential: "bounded-test-credential",
       }],

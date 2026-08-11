@@ -380,7 +380,6 @@ lt-cred-mech
 stale-nonce=600
 total-quota={TURN_ALLOCATION_QUOTA}
 user-quota={TURN_ALLOCATION_QUOTA}
-no-tcp
 no-tls
 no-dtls
 no-cli
@@ -640,6 +639,11 @@ def deployment_manifest(
                         "name": "turn-control",
                         "containerPort": TURN_PORT,
                         "protocol": "UDP",
+                    },
+                    {
+                        "name": "turn-control-tcp",
+                        "containerPort": TURN_PORT,
+                        "protocol": "TCP",
                     },
                     {
                         "name": "turn-media",

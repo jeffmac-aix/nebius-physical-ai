@@ -977,17 +977,18 @@ def launch_cmd(
                 raise RuntimeError("LeIsaac agent relay has no SSH transport")
             media_server = _relay_media_server(context, namespace, name)
             for source in source_ranges:
-                ingress = ensure_ingress(
-                    vm_id=instance_id,
-                    ports=(TURN_PORT,),
-                    source=source,
-                    tool=_TURN_CONTROL_TOOL,
-                    protocol="UDP",
-                )
-                if ingress.changed:
-                    created_ingress_specs.append(
-                        (TURN_PORT, source, _TURN_CONTROL_TOOL, "UDP")
+                for protocol in ("UDP", "TCP"):
+                    ingress = ensure_ingress(
+                        vm_id=instance_id,
+                        ports=(TURN_PORT,),
+                        source=source,
+                        tool=_TURN_CONTROL_TOOL,
+                        protocol=protocol,
                     )
+                    if ingress.changed:
+                        created_ingress_specs.append(
+                            (TURN_PORT, source, _TURN_CONTROL_TOOL, protocol)
+                        )
             if prior_turn_peer_source:
                 remove_exact_npa_ingress_for_instance(
                     instance_id,
@@ -1183,25 +1184,27 @@ def destroy_cmd(
             _remove_agent_turn(ssh, run_id=run_id)
             _remove_agent_relay(ssh, run_id=run_id)
             ingress_specs = [
-                (TURN_PORT, source, _TURN_CONTROL_TOOL) for source in sources
+                (TURN_PORT, source, _TURN_CONTROL_TOOL, protocol)
+                for source in sources
+                for protocol in ("UDP", "TCP")
             ]
             if peer_source:
                 validated_peer = _turn_peer_source(peer_source)
                 ingress_specs.append(
-                    (TURN_RELAY_PORT, validated_peer, _TURN_MEDIA_TOOL)
+                    (TURN_RELAY_PORT, validated_peer, _TURN_MEDIA_TOOL, "UDP")
                 )
             else:
                 # Compatibility cleanup for sessions launched before TURN support.
                 ingress_specs.extend(
-                    (MEDIA_PORT, source, _RELAY_TOOL) for source in sources
+                    (MEDIA_PORT, source, _RELAY_TOOL, "UDP") for source in sources
                 )
-            for port, source, tool in ingress_specs:
+            for port, source, tool, protocol in ingress_specs:
                 remove_exact_npa_ingress_for_instance(
                     instance_id,
                     ports=(port,),
                     source=source,
                     tool=tool,
-                    protocol="UDP",
+                    protocol=protocol,
                 )
         except Exception as exc:  # noqa: BLE001 - CLI cleanup boundary
             _fail(f"agent relay cleanup failed; Kubernetes resources retained: {exc}")

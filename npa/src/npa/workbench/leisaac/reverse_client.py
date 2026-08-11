@@ -267,7 +267,7 @@ class Client:
             if len(payload) != 2:
                 raise ValueError("invalid open frame")
             port = struct.unpack("!H", payload)[0]
-            if port not in (8080, 49100):
+            if port not in (3478, 8080, 49100):
                 raise ValueError("invalid LeIsaac target port")
             stream = socket.create_connection(("127.0.0.1", port), timeout=10)
             stream.settimeout(None)
