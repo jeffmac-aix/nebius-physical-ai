@@ -29,6 +29,7 @@ _BACKHAUL_HEADER_SIZE = 9
 _BACKHAUL_MAX_FRAME = 4 * 1024 * 1024
 _WS_SESSION_COOKIES = {
     "control": "npa_leisaac_control_ws",
+    "signal": "npa_leisaac_signal_ws",
     "video": "npa_leisaac_video_ws",
 }
 _WS_SESSION_TTL_SECONDS = 120
@@ -1437,6 +1438,11 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
             status_code=204,
             headers={"Cache-Control": "private, no-store"},
         )
+        cookie_paths = {
+            "control": "/api/leisaac/transport/control",
+            "signal": "/api/leisaac/signal",
+            "video": "/api/leisaac/transport/video",
+        }
         for audience, cookie in _WS_SESSION_COOKIES.items():
             response.set_cookie(
                 cookie,
@@ -1447,7 +1453,7 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
                     audience,
                 ),
                 max_age=_WS_SESSION_TTL_SECONDS,
-                path=f"/api/leisaac/transport/{audience}",
+                path=cookie_paths[audience],
                 secure=True,
                 httponly=True,
                 samesite="strict",
@@ -2281,6 +2287,17 @@ def register_leisaac_routes(app: Any, deps: LeIsaacDeps) -> None:
             await websocket.close(code=1008)
             return
         run_id = str(websocket.query_params.get("run_id") or "")
+        client_address = _client_address(websocket.headers, websocket.client)
+        if not client_address or not _valid_ws_session(
+            ws_session_secret,
+            str(websocket.cookies.get(_WS_SESSION_COOKIES["signal"]) or ""),
+            run_id,
+            client_address,
+            "signal",
+        ):
+            LOG.warning("LeIsaac signaling rejected: valid session is required")
+            await websocket.close(code=1008)
+            return
         # Storage discovery and the loopback health request are synchronous.
         # In agent-relay mode their response also traverses the backhaul route
         # on this ASGI event loop, so running either call inline can deadlock

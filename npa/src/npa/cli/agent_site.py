@@ -223,6 +223,12 @@ def nginx_agent_site_body(
   # path.  This narrow authenticated prefix carries only WebSocket upgrades;
   # the backend independently allowlists the bare path and /sign_in.
   location ^~ /api/leisaac/signal {{
+    # API calls authenticate in the backend.  Without this explicit override,
+    # the more-specific location inherits server-level Basic Auth even though
+    # the general /api/ location disables it. Browser WebSocket handshakes do
+    # not inherit Cypress/HTTP navigation credentials and otherwise loop on
+    # 401 before the exact-origin backend policy can run.
+    auth_basic off;
     rewrite ^/api/(.*)$ /$1 break;
     proxy_pass http://127.0.0.1:{backend_port}/;
     proxy_http_version 1.1;

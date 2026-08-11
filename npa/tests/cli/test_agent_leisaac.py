@@ -693,10 +693,15 @@ def test_authenticated_backend_routes_gate_status_and_proxy_client(monkeypatch) 
     assert ws_session.status_code == 204
     assert ws_session.content == b""
     cookies = ws_session.headers.get_list("set-cookie")
-    assert len(cookies) == 2
+    assert len(cookies) == 3
     assert any(
         "npa_leisaac_control_ws=" in cookie
         and "Path=/api/leisaac/transport/control" in cookie
+        for cookie in cookies
+    )
+    assert any(
+        "npa_leisaac_signal_ws=" in cookie
+        and "Path=/api/leisaac/signal" in cookie
         for cookie in cookies
     )
     assert any(
@@ -993,10 +998,32 @@ def test_signaling_proxy_preserves_only_upstream_sign_in_path() -> None:
         ),
     )
     client = TestClient(api)
+    session_headers = {
+        "host": "testserver",
+        "origin": "https://testserver",
+        "x-forwarded-proto": "https",
+        "x-npa-leisaac-control": "1",
+        "x-real-ip": "8.8.8.8",
+    }
+    session = client.post(
+        "/leisaac/ws-session",
+        params={"run_id": raw_manifest["run_id"]},
+        headers=session_headers,
+    )
+    signal_cookie = next(
+        cookie
+        for cookie in session.headers.get_list("set-cookie")
+        if cookie.startswith("npa_leisaac_signal_ws=")
+    )
+    signal_token = signal_cookie.split("npa_leisaac_signal_ws=", 1)[1].split(
+        ";", 1
+    )[0]
     headers = {
         "x-forwarded-proto": "https",
         "origin": "https://testserver",
         "host": "testserver",
+        "x-real-ip": "8.8.8.8",
+        "cookie": f"npa_leisaac_signal_ws={signal_token}",
     }
     query = f"run_id={raw_manifest['run_id']}&peer_id=browser-1&version=2"
     with client.websocket_connect(

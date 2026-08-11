@@ -2487,6 +2487,7 @@
       let leisaacReconnectAttempts = 0;
       let leisaacReconnectTimer = null;
       let leisaacHeartbeatTimer = null;
+      let leisaacLastAuthorizationAt = 0;
       let leisaacActiveTransport = "disconnected";
       const leisaacVideoPending = { workspace: null, overview: null };
       const leisaacVideoDecoding = { workspace: false, overview: false };
@@ -4905,6 +4906,15 @@
       function startLeIsaacHeartbeat() {
         stopLeIsaacHeartbeat();
         const sendHeartbeat = () => {
+          if (
+            leisaacActiveTransport === "webrtc-native-h264" &&
+            performance.now() - leisaacLastAuthorizationAt >= 60000 &&
+            leisaacCapability
+          ) {
+            authorizeLeIsaacSocketPair(leisaacCapability).catch((error) => {
+              recordLeIsaacTransportFailure("webrtc-session-refresh", 0, error);
+            });
+          }
           if (leisaacActiveTransport === "jpeg-poll") {
             flushLeIsaacFallbackControls();
             return;
@@ -5280,6 +5290,7 @@
         if (response.status !== 204) {
           throw new Error("preferred transport authorization failed (HTTP " + response.status + ")");
         }
+        leisaacLastAuthorizationAt = performance.now();
       }
       async function connectLeIsaacPreferred(status, controlOnly = false) {
         let lastError = null;
