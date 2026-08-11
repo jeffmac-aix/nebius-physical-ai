@@ -532,9 +532,11 @@ sudo systemctl daemon-reload
     ssh.run_or_raise(command, label="remove LeIsaac agent relay")
 
 
-def _relay_status(ssh: SSHClient) -> dict[str, Any]:
+def _relay_status(ssh: SSHClient, *, session_nonce: str) -> dict[str, Any]:
     _code, stdout, _stderr = ssh.run_or_raise(
-        f"curl --fail --silent --show-error http://127.0.0.1:{RELAY_SERVICE_PORT}/status",
+        "curl --fail --silent --show-error "
+        f"-H {shlex.quote('X-NPA-LeIsaac-Nonce: ' + session_nonce)} "
+        f"http://127.0.0.1:{RELAY_SERVICE_PORT}/status",
         label="attest LeIsaac through the agent relay",
     )
     payload = json.loads(stdout)
@@ -575,8 +577,12 @@ sudo systemctl daemon-reload
     ssh.run_or_raise(command, label="remove LeIsaac TURN relay")
 
 
-def _status(signal_host: str) -> dict[str, Any]:
-    with urllib.request.urlopen(f"http://{signal_host}:8080/status") as response:  # noqa: S310 - validated LB IP
+def _status(signal_host: str, *, session_nonce: str) -> dict[str, Any]:
+    request = urllib.request.Request(  # noqa: S310 - validated LB IP
+        f"http://{signal_host}:8080/status",
+        headers={"X-NPA-LeIsaac-Nonce": session_nonce},
+    )
+    with urllib.request.urlopen(request) as response:  # noqa: S310 - validated LB IP
         payload = json.loads(response.read().decode("utf-8"))
     if not isinstance(payload, dict):
         raise RuntimeError("LeIsaac service returned a non-object health document")
@@ -1003,7 +1009,11 @@ def launch_cmd(
                     )
                 ],
             )
-        health = _relay_status(ssh) if ssh is not None else _status(signal_host)
+        health = (
+            _relay_status(ssh, session_nonce=nonce)
+            if ssh is not None
+            else _status(signal_host, session_nonce=nonce)
+        )
         if (
             health.get("state") != "ready"
             or health.get("task") != task

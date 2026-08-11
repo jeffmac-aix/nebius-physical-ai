@@ -406,7 +406,7 @@ def _patch_launch(monkeypatch):
     )
     monkeypatch.setattr(
         "npa.cli.workbench.leisaac._relay_status",
-        lambda *_args: {
+        lambda *_args, **_kwargs: {
             "state": "ready",
             "task": DEFAULT_TASK,
             "source_commit": "1651c321e9b0c1bb54233211fc7b3cd70d8373d5",
@@ -433,7 +433,7 @@ def _patch_launch(monkeypatch):
     # Make the attestation nonce exactly match the deterministic nonce above.
     monkeypatch.setattr(
         "npa.cli.workbench.leisaac._relay_status",
-        lambda *_args: {
+        lambda *_args, **_kwargs: {
             "state": "ready",
             "task": DEFAULT_TASK,
             "source_commit": "1651c321e9b0c1bb54233211fc7b3cd70d8373d5",
