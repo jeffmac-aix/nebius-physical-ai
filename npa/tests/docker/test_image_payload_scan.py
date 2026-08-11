@@ -90,6 +90,14 @@ ALLOWED_PATHS = [
 ]
 
 
+def test_leisaac_dockerfile_removes_parent_imageio_ffmpeg_payload() -> None:
+    dockerfile = (
+        REPO_ROOT / "npa" / "docker" / "workbench" / "leisaac" / "Dockerfile"
+    ).read_text(encoding="utf-8")
+    assert "pip uninstall -y moviepy imageio-ffmpeg" in dockerfile
+    assert "! /opt/npa/sim/venv/bin/python -m pip show moviepy imageio-ffmpeg" in dockerfile
+
+
 @pytest.mark.parametrize("path", PAYLOAD_PATHS)
 def test_scanner_flags_real_kit_payload(path: str) -> None:
     why = scanner.classify_path(path)

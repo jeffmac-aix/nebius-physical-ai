@@ -29,6 +29,9 @@ COPY docker/workbench/leisaac/THIRD_PARTY_NOTICES.md /opt/npa/licenses/leisaac/T
 # Upstream declares that SDK as mandatory even though v0.4.0 lazy-loads it only
 # for leader hardware. The packaging-only sed below removes that metadata edge;
 # real SO101Keyboard/task source stays byte-for-byte at the pinned commit.
+# The parent also installs moviepy and imageio-ffmpeg. LeIsaac records through
+# the distro ffmpeg binary, so the unused wrapper and bundled static binary are
+# removed below and guarded from returning.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg libxrandr2 \
     && rm -rf /var/lib/apt/lists/* \
@@ -57,7 +60,9 @@ RUN apt-get update \
       aiortc==1.15.0 \
       "uvicorn[standard]==0.46.0" \
     && /opt/npa/sim/venv/bin/python -m pip install --no-cache-dir --no-deps /opt/leisaac/source/leisaac \
+    && /opt/npa/sim/venv/bin/python -m pip uninstall -y moviepy imageio-ffmpeg \
     && ! /opt/npa/sim/venv/bin/python -m pip show feetech-servo-sdk \
+    && ! /opt/npa/sim/venv/bin/python -m pip show moviepy imageio-ffmpeg \
     && /opt/npa/sim/venv/bin/python -m pip check \
     && cp /opt/leisaac/LICENSE /opt/leisaac/APACHE-2.0.txt \
     && test -z "$(find /opt/npa/sim/venv -type f -path '*/imageio_ffmpeg/binaries/ffmpeg*' -print -quit)" \
