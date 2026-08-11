@@ -303,7 +303,6 @@ def test_agent_relay_client_is_secret_mounted_as_non_gpu_sidecar() -> None:
     )
     assert secret["kind"] == "Secret"
     assert secret["stringData"]["config.json"]
-    assert "listening-ip=0.0.0.0" in secret["stringData"]["turnserver.conf"]
     assert "listening-port=3478" in secret["stringData"]["turnserver.conf"]
     assert "min-port=47999" in secret["stringData"]["turnserver.conf"]
     assert "max-port=48015" in secret["stringData"]["turnserver.conf"]
@@ -336,6 +335,20 @@ def test_agent_relay_client_is_secret_mounted_as_non_gpu_sidecar() -> None:
     }
     turn = pod["containers"][2]
     assert turn["name"] == "turn"
+    assert turn["command"] == ["sh", "-c"]
+    assert "--listening-ip=${NPA_LEISAAC_POD_IP}" in turn["args"][0]
+    assert "--relay-ip=${NPA_LEISAAC_POD_IP}" in turn["args"][0]
+    assert turn["env"] == [
+        {
+            "name": "NPA_LEISAAC_POD_IP",
+            "valueFrom": {
+                "fieldRef": {
+                    "apiVersion": "v1",
+                    "fieldPath": "status.podIP",
+                }
+            },
+        }
+    ]
     assert "@sha256:" in turn["image"]
     assert {item["containerPort"] for item in turn["ports"]} == {
         TURN_PORT,
