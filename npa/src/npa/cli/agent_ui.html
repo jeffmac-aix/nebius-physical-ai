@@ -3888,6 +3888,8 @@
             iceTransportPolicy: "relay",
           });
           leisaacNativeMediaPeer = new NativePeerConnection(merged, constraints);
+          let candidateCount = 0;
+          let candidateError = null;
           const updatePeerEvidence = () => {
             const peer = leisaacNativeMediaPeer;
             if (!peer) return;
@@ -3896,6 +3898,12 @@
               ice_connection_state: String(peer.iceConnectionState || ""),
               ice_gathering_state: String(peer.iceGatheringState || ""),
               signaling_state: String(peer.signalingState || ""),
+              candidate_count: candidateCount,
+              candidate_error: candidateError,
+              configured_transports: (peer.getConfiguration().iceServers || [])
+                .flatMap((item) => Array.isArray(item.urls) ? item.urls : [item.urls])
+                .map((url) => String(url || "").split("?transport=")[1] || ""),
+              policy: String(peer.getConfiguration().iceTransportPolicy || ""),
             };
           };
           for (const eventName of [
@@ -3904,6 +3912,18 @@
             "icegatheringstatechange",
             "signalingstatechange",
           ]) leisaacNativeMediaPeer.addEventListener(eventName, updatePeerEvidence);
+          leisaacNativeMediaPeer.addEventListener("icecandidate", (event) => {
+            if (event.candidate) candidateCount += 1;
+            updatePeerEvidence();
+          });
+          leisaacNativeMediaPeer.addEventListener("icecandidateerror", (event) => {
+            candidateError = {
+              code: Number(event.errorCode || 0),
+              text: String(event.errorText || "").slice(0, 120),
+              transport: String(event.url || "").split("?transport=")[1] || "",
+            };
+            updatePeerEvidence();
+          });
           updatePeerEvidence();
           return leisaacNativeMediaPeer;
         }
