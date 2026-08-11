@@ -382,6 +382,7 @@ total-quota={TURN_ALLOCATION_QUOTA}
 user-quota={TURN_ALLOCATION_QUOTA}
 no-tls
 no-dtls
+no-ipv6
 no-cli
 no-multicast-peers
 pidfile=/tmp/npa-leisaac-turn.pid

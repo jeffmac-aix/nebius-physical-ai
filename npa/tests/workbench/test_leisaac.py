@@ -308,6 +308,7 @@ def test_agent_relay_client_is_secret_mounted_as_non_gpu_sidecar() -> None:
     assert "max-port=48015" in secret["stringData"]["turnserver.conf"]
     assert "total-quota=16" in secret["stringData"]["turnserver.conf"]
     assert "user-quota=16" in secret["stringData"]["turnserver.conf"]
+    assert "no-ipv6" in secret["stringData"]["turnserver.conf"]
     assert NONCE not in secret["stringData"]["turnserver.conf"]
     deployment = deployment_manifest(
         run_id="live-relay",
