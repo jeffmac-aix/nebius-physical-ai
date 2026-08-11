@@ -3868,10 +3868,10 @@
         }
         const server = servers[0] || {};
         const urls = Array.isArray(server.urls) ? server.urls.map(String) : [String(server.urls || "")];
-        const expectedTurnTransports = new Set(["udp", "tcp"]);
+        const expectedTurnTransports = new Set(["tcp"]);
         const actualTurnTransports = new Set(urls.map((url) => String(url).split("?transport=")[1] || ""));
         if (
-          urls.length !== 2 ||
+          urls.length !== 1 ||
           urls.some((url) => !url.startsWith("turn:")) ||
           actualTurnTransports.size !== expectedTurnTransports.size ||
           Array.from(expectedTurnTransports).some((transport) => !actualTurnTransports.has(transport)) ||

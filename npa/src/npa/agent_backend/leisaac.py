@@ -808,7 +808,6 @@ def status_payload(
             {
                 "urls": [
                     f"turn:{manifest['media_host']}:{LEISAAC_TURN_PORT}?transport=tcp",
-                    f"turn:{manifest['media_host']}:{LEISAAC_TURN_PORT}?transport=udp",
                 ],
                 "username": run_id,
                 "credential": credential,

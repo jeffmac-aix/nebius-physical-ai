@@ -502,7 +502,6 @@ describe("NPA agent LeIsaac capability tab", () => {
         ice_servers: [
           {
             urls: [
-              "turn:203.0.113.50:3478?transport=udp",
               "turn:203.0.113.50:3478?transport=tcp",
             ],
             username: "mock-run",
@@ -584,7 +583,6 @@ describe("NPA agent LeIsaac capability tab", () => {
         ice_servers: [
           {
             urls: [
-              "turn:203.0.113.50:3478?transport=udp",
               "turn:203.0.113.50:3478?transport=tcp",
             ],
             username: "mock-run",
@@ -727,7 +725,7 @@ describe("NPA agent LeIsaac capability tab", () => {
       .should("eq", "relay");
     cy.window()
       .its("__LEISAAC_PEER_CONFIG__.iceServers.0.urls.0")
-      .should("eq", "turn:203.0.113.50:3478?transport=udp");
+      .should("eq", "turn:203.0.113.50:3478?transport=tcp");
     cy.get("#leisaacStreamHost").trigger("keydown", { key: "W", code: "KeyW" });
     cy.get("#leisaacInputStatus")
       .should("contain.text", "Keyboard events sent: 1")
@@ -910,7 +908,6 @@ describe("NPA agent LeIsaac capability tab", () => {
       ice_transport_policy: "relay",
       ice_servers: [{
         urls: [
-          "turn:203.0.113.50:3478?transport=udp",
           "turn:203.0.113.50:3478?transport=tcp",
         ],
         username: "bounded-test-user",
