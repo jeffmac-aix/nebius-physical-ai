@@ -937,6 +937,22 @@ def _frame_stream_stalled(now: float | None = None) -> bool:
     return (time.time() if now is None else now) - oldest > FRAME_STALL_SECONDS
 
 
+def _runtime_stream_stalled(now: float | None = None) -> bool:
+    """Apply freshness checks only to transports that publish frame files.
+
+    Kit's native WebRTC renderer can stop advancing the simulator heartbeat
+    while it has no consumer.  Treating that expected idle state as a JPEG
+    publisher failure makes the supervisor withdraw readiness, which prevents
+    the browser from attaching and resuming the renderer.  The native path is
+    instead guarded by child-process and Kubernetes liveness; the file-age
+    watchdog remains mandatory for the JPEG fallback it was designed for.
+    """
+
+    if VIDEO_PATH["hardware"]:
+        return False
+    return _frame_stream_stalled(now)
+
+
 def _prepare_stall_recovery() -> int:
     """Revoke runtime-bound state before replacing a non-responsive simulator."""
 
@@ -1058,7 +1074,7 @@ def run_simulation() -> None:
                     and HEARTBEAT_PATH.is_file()
                     and HEARTBEAT_PATH.stat().st_size > 0
                 ):
-                    if _frame_stream_stalled():
+                    if _runtime_stream_stalled():
                         _prepare_stall_recovery()
                         update_state(
                             state="restarting",

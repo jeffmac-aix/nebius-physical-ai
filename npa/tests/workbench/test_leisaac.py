@@ -933,6 +933,22 @@ def test_frame_stall_revokes_controls_and_forces_safe_runtime_mode(
     assert server.FORCE_SAFE_RESTART.is_set() is False
 
 
+def test_native_video_idle_does_not_trigger_jpeg_frame_watchdog(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    server = _session_server_module()
+    heartbeat = tmp_path / "heartbeat"
+    heartbeat.write_text("1\n", encoding="utf-8")
+    monkeypatch.setattr(server, "HEARTBEAT_PATH", heartbeat)
+    monkeypatch.setattr(server, "FRAME_PATH", tmp_path / "frame.jpg")
+
+    server.VIDEO_PATH.update(hardware=False, fallback_reason="test")
+    assert server._runtime_stream_stalled(now=heartbeat.stat().st_mtime + 31)
+
+    server.VIDEO_PATH.update(hardware=True, fallback_reason="")
+    assert not server._runtime_stream_stalled(now=heartbeat.stat().st_mtime + 31)
+
+
 def test_custom_bundle_apply_is_mocked_at_s3_call_site_and_restart_safe(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
