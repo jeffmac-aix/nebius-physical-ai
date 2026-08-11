@@ -1292,6 +1292,8 @@ def build_skypilot_task_doc(
         "NPA_COSMOS_CONTROL",
         "NPA_COSMOS_CONTROL_WEIGHT",
         "NPA_COSMOS_GUIDANCE",
+        "NPA_COSMOS_VARIANT_PARALLELISM",
+        "NPA_COSMOS_DISABLE_CONTENT_GUARDRAILS",
     ):
         _cond_val = str(_os_cond.environ.get(_cond_var) or "").strip()
         if _cond_val:
