@@ -608,7 +608,7 @@ def test_launch_agent_relay_wires_private_cluster_public_agent_and_manifest(
             "vm_id": "vm-agent",
             "ports": (3478,),
             "source": "8.8.8.8/32",
-            "tool": "leisaac-turn-control",
+            "tool": "leisaac-turn-control-tcp",
             "protocol": "TCP",
         },
     ]

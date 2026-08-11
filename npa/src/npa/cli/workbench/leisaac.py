@@ -95,6 +95,7 @@ _RELAY_CONFIG = "/etc/npa/leisaac-relay.json"
 _RELAY_SCRIPT = "/opt/npa-agent/leisaac-agent-relay.py"
 _RELAY_UNIT = "npa-leisaac-relay.service"
 _TURN_CONTROL_TOOL = "leisaac-turn-control"
+_TURN_TCP_TOOL = "leisaac-turn-control-tcp"
 _TURN_MEDIA_TOOL = "leisaac-turn-media"
 _TURN_CONFIG = "/etc/npa/leisaac-turn.conf"
 _TURN_UNIT = "npa-leisaac-turn.service"
@@ -978,16 +979,19 @@ def launch_cmd(
             media_server = _relay_media_server(context, namespace, name)
             for source in source_ranges:
                 for protocol in ("UDP", "TCP"):
+                    ingress_tool = (
+                        _TURN_CONTROL_TOOL if protocol == "UDP" else _TURN_TCP_TOOL
+                    )
                     ingress = ensure_ingress(
                         vm_id=instance_id,
                         ports=(TURN_PORT,),
                         source=source,
-                        tool=_TURN_CONTROL_TOOL,
+                        tool=ingress_tool,
                         protocol=protocol,
                     )
                     if ingress.changed:
                         created_ingress_specs.append(
-                            (TURN_PORT, source, _TURN_CONTROL_TOOL, protocol)
+                            (TURN_PORT, source, ingress_tool, protocol)
                         )
             if prior_turn_peer_source:
                 remove_exact_npa_ingress_for_instance(
@@ -1184,7 +1188,12 @@ def destroy_cmd(
             _remove_agent_turn(ssh, run_id=run_id)
             _remove_agent_relay(ssh, run_id=run_id)
             ingress_specs = [
-                (TURN_PORT, source, _TURN_CONTROL_TOOL, protocol)
+                (
+                    TURN_PORT,
+                    source,
+                    _TURN_CONTROL_TOOL if protocol == "UDP" else _TURN_TCP_TOOL,
+                    protocol,
+                )
                 for source in sources
                 for protocol in ("UDP", "TCP")
             ]
