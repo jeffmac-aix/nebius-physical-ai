@@ -4,7 +4,9 @@ These back the ``run.shell`` stages of ``physical-ai-data-factory.yaml`` so ever
 stage does real work against S3 instead of an ``echo`` stub:
 
 - ``generate_configs``: sample appearance-only augmentation variables -> manifest.
-- ``grade_gate``: read the real VLM eval score and write a promote/loop decision.
+- ``grade_gate``: read the real evaluator result and write a promote/loop decision.
+- ``enforce_quality_disposition``: reject a run that exhausts refinement without
+  satisfying the score threshold and required motion-integrity checks.
 - ``curate``: build a real curation report over the augmented set (counts,
   per-attribute coverage, duplicate check).
 - ``finalize``: aggregate the run's stage artifacts into a real final report.
@@ -327,6 +329,7 @@ def grade_gate(scores_uri: str, decision_uri: str, threshold: float | str = 0.5)
         candidates = [f"{base}/{COSMOS_EVALUATOR_RESULT}", f"{base}/{VLM_EVAL_RESULT}"]
     score = 0.0
     status = "completed"
+    hard_checks_passed = False
     source = ""
     problems: list[str] = []
     for candidate in candidates:
@@ -343,17 +346,27 @@ def grade_gate(scores_uri: str, decision_uri: str, threshold: float | str = 0.5)
             # object storage part-way, say) describes the run's infrastructure, not
             # its variants. Promoting on it would ship an ungraded batch.
             candidate_status = str(report.get("status", "completed"))
+            # New evaluator reports carry an explicit all-hard-check disposition.
+            # Older VLM reports do not, so retain their score-only contract.
+            candidate_passed = report.get("passed", True)
+            if not isinstance(candidate_passed, bool):
+                raise TypeError("expected 'passed' to be a boolean")
         except Exception as exc:  # noqa: BLE001 - fall through to the older contract
             problems.append(f"{candidate.rsplit('/', 1)[-1]}: {exc}"[:150])
             continue
         score = candidate_score
         status = candidate_status
+        hard_checks_passed = candidate_passed
         source = candidate
         break
     if not source:
         print(json.dumps({"stage": "grade_gate", "warn": f"could not read a score ({'; '.join(problems)})"[:300]}))
     graded = status == "completed"
-    decision = "promote_checkpoint" if graded and score >= threshold else "loop_back"
+    decision = (
+        "promote_checkpoint"
+        if graded and hard_checks_passed and score >= threshold
+        else "loop_back"
+    )
     write_decision(decision_uri, decision)
     print(
         json.dumps(
@@ -364,10 +377,80 @@ def grade_gate(scores_uri: str, decision_uri: str, threshold: float | str = 0.5)
                 "decision": decision,
                 "source": source,
                 "report_status": status,
+                "hard_checks_passed": hard_checks_passed,
             }
         )
     )
     return decision
+
+
+def enforce_quality_disposition(
+    scores_uri: str,
+    disposition_uri: str,
+    threshold: float | str = 0.75,
+) -> dict[str, Any]:
+    """Persist an accepted/rejected quality disposition and fail closed on reject.
+
+    This state runs after the bounded refinement loop.  A loop can finish because
+    it promoted or because it exhausted its iterations; only the evaluator report
+    distinguishes those outcomes.  Persisting the disposition before raising keeps
+    rejected output auditable while preventing downstream labeling and curation.
+    """
+
+    from npa.workbench.cosmos_evaluator import RESULT_FILENAME
+
+    try:
+        numeric_threshold = float(threshold)
+    except (TypeError, ValueError):
+        numeric_threshold = 0.75
+    report_uri = (
+        scores_uri
+        if scores_uri.endswith(".json")
+        else f"{scores_uri.rstrip('/')}/{RESULT_FILENAME}"
+    )
+    reasons: list[str] = []
+    report: dict[str, Any] = {}
+    try:
+        downloaded = _download_json(report_uri)
+        if not isinstance(downloaded, dict):
+            raise TypeError(f"expected a JSON object, got {type(downloaded).__name__}")
+        report = downloaded
+    except Exception as exc:  # noqa: BLE001 - rejection artifact must still be written
+        # Keep ``report`` as the empty mapping. A valid-JSON list/scalar must take
+        # the same persist-before-raise path as unreadable or invalid JSON rather
+        # than escaping below through ``report.get``.
+        reasons.append(f"evaluator report unavailable or malformed: {exc}"[:300])
+
+    try:
+        score = float(report.get("score", 0.0))
+    except (TypeError, ValueError):
+        score = 0.0
+        reasons.append("evaluator score is not numeric")
+    evaluator_status = str(report.get("status", "missing"))
+    hard_checks_passed = report.get("passed") is True
+    if evaluator_status != "completed":
+        reasons.append(f"evaluator status is {evaluator_status}")
+    if score < numeric_threshold:
+        reasons.append("aggregate score is below threshold")
+    if not hard_checks_passed:
+        reasons.append("one or more required checks did not pass")
+
+    accepted = not reasons
+    payload = {
+        "schema": "npa.data_factory.quality_disposition.v1",
+        "quality_status": "accepted" if accepted else "rejected",
+        "evaluator_status": evaluator_status,
+        "score": score,
+        "threshold": numeric_threshold,
+        "hard_checks_passed": hard_checks_passed,
+        "evaluator_report_uri": report_uri,
+        "reasons": reasons,
+    }
+    payload["written_uri"] = _upload_json(payload, disposition_uri)
+    print(json.dumps(payload))
+    if not accepted:
+        raise RuntimeError("quality rejected after refinement; see quality disposition artifact")
+    return payload
 
 
 def curate(

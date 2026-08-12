@@ -324,6 +324,25 @@ def test_render_token_factory_uses_env_aws_endpoint(
         prepared.temp_dir.cleanup()
 
 
+def test_render_transfer_forwards_explicit_runtime_tuning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("NPA_SRC_S3_URI", "s3://example-bucket/npa-src/npa")
+    monkeypatch.setenv("NPA_COSMOS_VARIANT_PARALLELISM", "4")
+    monkeypatch.setenv("NPA_COSMOS_DISABLE_CONTENT_GUARDRAILS", "1")
+    spec = load_spec(REPO_ROOT / "npa" / "workflows" / "physical-ai-data-factory.yaml")
+    rendered = render_skypilot_yaml(
+        spec,
+        build_plan(spec, run_id="demo", assume_decision="promote_checkpoint"),
+        run_id="demo",
+        options=SkypilotRenderOptions(materialize_registry_secrets=False),
+    )
+    docs = [doc for doc in yaml.safe_load_all(rendered) if doc]
+    transfer = next(doc for doc in docs if "cosmos2 transfer" in doc.get("run", ""))
+    assert transfer["envs"]["NPA_COSMOS_VARIANT_PARALLELISM"] == "4"
+    assert transfer["envs"]["NPA_COSMOS_DISABLE_CONTENT_GUARDRAILS"] == "1"
+
+
 def test_render_vlm_eval_single_produces_serial_pipeline() -> None:
     spec = load_spec(NPA_SPECS / "vlm-eval-single.yaml")
     plan = build_plan(spec, run_id="demo")
