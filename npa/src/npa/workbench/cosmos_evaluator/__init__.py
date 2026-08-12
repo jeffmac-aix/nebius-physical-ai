@@ -21,6 +21,10 @@ Two checks are wired, both real:
   an NPA source-relative, two-sided residual for localized frame instability or
   motion collapse. It is advisory by default, reported separately, and is not
   attributed to the upstream project.
+- **Protected-appearance fidelity companion check** (:mod:`.appearance_fidelity`)
+  — a source-relative CIELAB comparison for excessive scene-wide colour cast,
+  localized material recolouring, or chroma-shift instability. It is advisory by
+  default and is not attributed to the upstream project.
 
 :func:`evaluate_run` is the stage entry point: it walks a Physical AI Data
 Factory run prefix, pairs every augmented variant with its recorded source clip and
@@ -35,6 +39,10 @@ from npa.workbench.cosmos_evaluator.attribute_verification import (
     AttributeVerificationCheck,
     AttributeVerificationResult,
     verify_attributes,
+)
+from npa.workbench.cosmos_evaluator.appearance_fidelity import (
+    AppearanceFidelityResult,
+    check_appearance_fidelity,
 )
 from npa.workbench.cosmos_evaluator.evaluate import (
     RESULT_FILENAME,
@@ -74,6 +82,7 @@ __all__ = [
     "UPSTREAM_REPO",
     "AttributeVerificationCheck",
     "AttributeVerificationResult",
+    "AppearanceFidelityResult",
     "ClipEvaluation",
     "CosmosEvaluatorError",
     "CosmosEvaluatorStorageError",
@@ -81,6 +90,7 @@ __all__ = [
     "HallucinationResult",
     "TemporalConsistencyResult",
     "check_hallucination",
+    "check_appearance_fidelity",
     "check_temporal_consistency",
     "evaluate_run",
     "report_uri_for",

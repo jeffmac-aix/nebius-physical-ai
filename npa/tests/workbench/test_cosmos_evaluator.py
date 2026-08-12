@@ -18,6 +18,7 @@ import numpy as np
 import pytest
 
 from npa.workbench.cosmos_evaluator import attribute_verification as av
+from npa.workbench.cosmos_evaluator import appearance_fidelity as appearance
 from npa.workbench.cosmos_evaluator import hallucination as hal
 from npa.workbench.cosmos_evaluator import temporal_consistency as temporal
 from npa.workbench.cosmos_evaluator.upstream import CosmosEvaluatorError
@@ -439,6 +440,170 @@ def test_temporal_consistency_decodes_real_encoded_video(tmp_path: Path) -> None
     assert result.passed is True
     assert result.score == 1.0
     assert result.total_frames >= 3
+
+
+# ---------------------------------------------------------------------------
+# NPA source-relative protected-appearance fidelity companion check
+# ---------------------------------------------------------------------------
+
+
+def _run_appearance_with_frames(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    source: list[np.ndarray],
+    augmented: list[np.ndarray],
+    **kwargs: Any,
+):
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    original = tmp_path / "original.mp4"
+    variant = tmp_path / "variant.mp4"
+    original.write_bytes(b"video")
+    variant.write_bytes(b"video")
+    monkeypatch.setattr(appearance, "_probe_size", lambda path: source[0].shape[:2])
+    streams = iter([source, augmented])
+    monkeypatch.setattr(
+        appearance,
+        "_iter_rgb_frames",
+        lambda path, height, width: _frame_stream(next(streams)),
+    )
+    return appearance.check_appearance_fidelity(
+        clip_id="clip-0",
+        original_video=original,
+        augmented_video=variant,
+        blur_ksize=1,
+        **kwargs,
+    )
+
+
+def test_appearance_fidelity_accepts_matching_frames(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    frames = [np.full((8, 10, 3), 100 + index, dtype=np.uint8) for index in range(4)]
+    result = _run_appearance_with_frames(
+        tmp_path, monkeypatch, frames, [frame.copy() for frame in frames]
+    )
+    assert result.passed is True
+    assert result.score == 1.0
+    assert result.frame_counts_match is True
+    assert len(result.regions) == 5
+
+
+def test_appearance_fidelity_accepts_bounded_global_photometric_shift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = [np.full((8, 10, 3), 100, dtype=np.uint8) for _ in range(4)]
+    augmented = [frame.copy() for frame in source]
+    for frame in augmented:
+        frame[:, :, 0] += 6
+        frame[:, :, 1] += 3
+        frame[:, :, 2] += 1
+    result = _run_appearance_with_frames(tmp_path, monkeypatch, source, augmented)
+    assert result.passed is True
+    assert result.score == 1.0
+
+
+def test_appearance_fidelity_rejects_excessive_global_colour_cast(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = [np.full((8, 10, 3), 100, dtype=np.uint8) for _ in range(4)]
+    augmented = [frame.copy() for frame in source]
+    for frame in augmented:
+        frame[:, :, 0] = 190
+        frame[:, :, 1] = 60
+        frame[:, :, 2] = 50
+    result = _run_appearance_with_frames(tmp_path, monkeypatch, source, augmented)
+    assert result.passed is False
+    assert result.score < 0.8
+    full = next(region for region in result.regions if region.region_id == "full-frame")
+    assert full.chroma_delta_p95 > result.global_chroma_tolerance
+
+
+def test_appearance_fidelity_rejects_localized_material_recolouring(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = [np.full((8, 10, 3), 100, dtype=np.uint8) for _ in range(4)]
+    augmented = [frame.copy() for frame in source]
+    for frame in augmented:
+        frame[4:, :5, 0] = 200
+        frame[4:, :5, 1:] = 40
+    result = _run_appearance_with_frames(tmp_path, monkeypatch, source, augmented)
+    assert result.passed is False
+    affected = next(region for region in result.regions if region.region_id == "tile-2")
+    assert affected.local_chroma_residual_p95 > result.local_chroma_tolerance
+
+
+def test_appearance_fidelity_rejects_chroma_shift_instability(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = [np.full((8, 10, 3), 100, dtype=np.uint8) for _ in range(5)]
+    augmented = [frame.copy() for frame in source]
+    for index, frame in enumerate(augmented):
+        if index % 2:
+            frame[:, :, 0] = 120
+            frame[:, :, 2] = 80
+    result = _run_appearance_with_frames(tmp_path, monkeypatch, source, augmented)
+    assert result.passed is False
+    assert any(
+        region.chroma_instability_p95
+        > result.chroma_instability_tolerance
+        for region in result.regions
+    )
+
+
+def test_appearance_fidelity_rejects_frame_count_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = [np.full((4, 4, 3), 100, dtype=np.uint8) for _ in range(4)]
+    augmented = [frame.copy() for frame in source[:3]]
+    result = _run_appearance_with_frames(tmp_path, monkeypatch, source, augmented)
+    assert result.frame_counts_match is False
+    assert result.passed is False
+
+
+def test_appearance_regions_accept_labels_and_validate_bounds() -> None:
+    parsed = appearance.parse_regions(
+        '[{"id":"protected","bounds":[0.1,0.2,0.8,0.9]}]'
+    )
+    assert parsed == [("protected", (0.1, 0.2, 0.8, 0.9))]
+    assert appearance.parse_regions("") == list(appearance.DEFAULT_REGIONS)
+    with pytest.raises(CosmosEvaluatorError, match="bounds"):
+        appearance.parse_regions("[[0,0,2,1]]")
+
+
+def test_appearance_fidelity_decodes_real_encoded_video(tmp_path: Path) -> None:
+    ffmpeg = shutil.which("ffmpeg")
+    ffprobe = shutil.which("ffprobe")
+    if not ffmpeg or not ffprobe:
+        pytest.skip(
+            "ffmpeg and ffprobe are required for the encoded-video integration test"
+        )
+    original = tmp_path / "original.mp4"
+    augmented = tmp_path / "augmented.mp4"
+    subprocess.run(
+        [
+            ffmpeg,
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=64x48:rate=6:duration=1",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            str(original),
+        ],
+        check=True,
+    )
+    shutil.copyfile(original, augmented)
+    result = appearance.check_appearance_fidelity(
+        clip_id="encoded", original_video=original, augmented_video=augmented
+    )
+    assert result.passed is True
+    assert result.score == 1.0
+    assert result.total_frames >= 1
 
 
 # ---------------------------------------------------------------------------
@@ -964,6 +1129,46 @@ def test_combine_scores_keeps_temporal_advisory_by_default() -> None:
     ) == (0.95, True)
 
 
+def test_combine_scores_treats_required_appearance_as_a_hard_check() -> None:
+    from npa.workbench.cosmos_evaluator.evaluate import _combine_scores
+
+    attribute = av.AttributeVerificationResult(
+        clip_id="c",
+        passed=True,
+        total_checks=1,
+        passed_checks=1,
+        failed_checks=0,
+        score=1.0,
+        question_model="llm",
+        vlm_model="vlm",
+    )
+    hallucination = hal.HallucinationResult(
+        clip_id="c",
+        passed=True,
+        threshold=0.75,
+        score=0.95,
+        total_frames=10,
+        total_hallucinated_dynamic_pixels=1,
+        total_augmented_dynamic_pixels=20,
+    )
+    appearance_result = appearance.AppearanceFidelityResult(
+        clip_id="c",
+        passed=False,
+        threshold=0.8,
+        score=0.2,
+        total_frames=10,
+        frame_counts_match=True,
+    )
+    assert _combine_scores(
+        attribute_result=attribute,
+        hallucination_result=hallucination,
+        input_conditioned=True,
+        hallucination_weight=0.5,
+        appearance_result=appearance_result,
+        appearance_required=True,
+    ) == (0.2, False)
+
+
 def test_combine_scores_is_zero_when_both_checks_are_missing() -> None:
     from npa.workbench.cosmos_evaluator.evaluate import _combine_scores
 
@@ -1135,6 +1340,76 @@ def test_input_conditioned_variant_without_a_source_fails_closed(
     assert any("source clip" in reason for reason in result.clips[0].skipped)
 
 
+def test_required_appearance_failure_rejects_an_input_conditioned_variant(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import npa.workbench.cosmos_evaluator.evaluate as evaluator
+
+    augment = tmp_path / "cosmos_augmented"
+    _write_variant(augment, "clip-a", {"lighting": "bright"}, conditioned=True)
+    (augment / "clip-a" / "augmented_video.mp4").write_bytes(b"video")
+    inputs = tmp_path / "input"
+    inputs.mkdir()
+    (inputs / "source.mp4").write_bytes(b"video")
+    attribute = av.AttributeVerificationResult(
+        clip_id="clip-a",
+        passed=True,
+        total_checks=1,
+        passed_checks=1,
+        failed_checks=0,
+        score=1.0,
+        question_model="llm",
+        vlm_model="vlm",
+    )
+    hallucination = hal.HallucinationResult(
+        clip_id="clip-a",
+        passed=True,
+        threshold=0.75,
+        score=1.0,
+        total_frames=10,
+        total_hallucinated_dynamic_pixels=0,
+        total_augmented_dynamic_pixels=10,
+    )
+    temporal_result = temporal.TemporalConsistencyResult(
+        clip_id="clip-a",
+        passed=True,
+        threshold=0.8,
+        score=1.0,
+        total_frames=10,
+        frame_counts_match=True,
+    )
+    appearance_result = appearance.AppearanceFidelityResult(
+        clip_id="clip-a",
+        passed=False,
+        threshold=0.8,
+        score=0.25,
+        total_frames=10,
+        frame_counts_match=True,
+    )
+    monkeypatch.setattr(evaluator, "verify_attributes", lambda **kwargs: attribute)
+    monkeypatch.setattr(
+        evaluator, "check_hallucination", lambda **kwargs: hallucination
+    )
+    monkeypatch.setattr(
+        evaluator, "check_temporal_consistency", lambda **kwargs: temporal_result
+    )
+    monkeypatch.setattr(
+        evaluator, "check_appearance_fidelity", lambda **kwargs: appearance_result
+    )
+    result = evaluator.evaluate_run(
+        augment_uri=str(augment),
+        output_uri=str(tmp_path / "grade"),
+        input_uri=str(inputs),
+        appearance_mode="required",
+        storage=object(),
+    )
+    assert result.status == "completed"
+    assert result.passed is False
+    assert result.clips[0].score == 0.25
+    assert result.clips[0].appearance_enforced is True
+    assert result.clips[0].appearance_fidelity is not None
+
+
 def test_temporal_check_stays_skipped_for_unconditioned_variants(
     tmp_path: Path,
 ) -> None:
@@ -1153,6 +1428,24 @@ def test_temporal_check_stays_skipped_for_unconditioned_variants(
     assert any("input-conditioned" in reason for reason in result.clips[0].skipped)
 
 
+def test_appearance_check_stays_skipped_for_unconditioned_variants(
+    tmp_path: Path,
+) -> None:
+    from npa.workbench.cosmos_evaluator import evaluate_run
+
+    augment = tmp_path / "cosmos_augmented"
+    _write_variant(augment, "clip-a", {"cloth_color": "blue"}, conditioned=False)
+    result = evaluate_run(
+        augment_uri=str(augment),
+        output_uri=str(tmp_path / "grade"),
+        client=FakeTokenFactory([_question_json("cloth_color", "blue", "red"), "A"]),
+        storage=object(),
+    )
+    assert result.clips[0].appearance_fidelity is None
+    assert result.clips[0].appearance_enforced is False
+    assert any("appearance fidelity" in reason for reason in result.clips[0].skipped)
+
+
 def test_evaluate_run_rejects_invalid_temporal_configuration(tmp_path: Path) -> None:
     from npa.workbench.cosmos_evaluator import evaluate_run
 
@@ -1161,6 +1454,18 @@ def test_evaluate_run_rejects_invalid_temporal_configuration(tmp_path: Path) -> 
             augment_uri=str(tmp_path / "augment"),
             output_uri=str(tmp_path / "grade"),
             temporal_threshold=1.1,
+            storage=object(),
+        )
+
+
+def test_evaluate_run_rejects_invalid_appearance_configuration(tmp_path: Path) -> None:
+    from npa.workbench.cosmos_evaluator import evaluate_run
+
+    with pytest.raises(CosmosEvaluatorError, match="appearance-threshold"):
+        evaluate_run(
+            augment_uri=str(tmp_path / "augment"),
+            output_uri=str(tmp_path / "grade"),
+            appearance_threshold=1.1,
             storage=object(),
         )
 

@@ -5,7 +5,7 @@
 ```text
 Usage: npa workbench cosmos-evaluator [OPTIONS] COMMAND [ARGS]...
 
-Cosmos Evaluator checks plus an NPA source-relative temporal diagnostic.
+Cosmos Evaluator checks plus NPA source-relative temporal and protected-appearance diagnostics.
 
 Options
 --help  Show this message and exit.

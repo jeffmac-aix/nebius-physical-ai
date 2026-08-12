@@ -16,7 +16,10 @@ import typer
 
 app = typer.Typer(
     name="cosmos-evaluator",
-    help="Cosmos Evaluator checks plus an NPA source-relative temporal diagnostic.",
+    help=(
+        "Cosmos Evaluator checks plus NPA source-relative temporal and "
+        "protected-appearance diagnostics."
+    ),
     no_args_is_help=True,
 )
 
@@ -27,6 +30,11 @@ class OutputFormat(str, Enum):
 
 
 class TemporalMode(str, Enum):
+    advisory = "advisory"
+    required = "required"
+
+
+class AppearanceMode(str, Enum):
     advisory = "advisory"
     required = "required"
 
@@ -105,6 +113,51 @@ def evaluate_cmd(
         "--temporal-blur-ksize",
         help="Positive odd Gaussian pre-filter kernel used before temporal comparison.",
     ),
+    appearance_threshold: float = typer.Option(
+        0.8,
+        "--appearance-threshold",
+        help="Protected-appearance score threshold; enforced only with --appearance-mode required.",
+    ),
+    appearance_regions_json: str = typer.Option(
+        "",
+        "--appearance-regions-json",
+        help="Optional JSON list of normalized protected regions; default is full frame plus a 2x2 grid.",
+    ),
+    appearance_mode: AppearanceMode = typer.Option(
+        AppearanceMode.advisory,
+        "--appearance-mode",
+        help="Keep protected-appearance fidelity advisory (default) or require it as a hard check.",
+    ),
+    appearance_luminance_tolerance: float = typer.Option(
+        18.0,
+        "--appearance-luminance-tolerance",
+        help="Allowed p95 CIELAB luminance drift before the appearance score falls.",
+    ),
+    appearance_global_chroma_tolerance: float = typer.Option(
+        8.0,
+        "--appearance-global-chroma-tolerance",
+        help="Allowed p95 scene-wide CIELAB chroma drift.",
+    ),
+    appearance_local_chroma_tolerance: float = typer.Option(
+        6.0,
+        "--appearance-local-chroma-tolerance",
+        help="Allowed p95 regional chroma residual after scene-wide shift.",
+    ),
+    appearance_chroma_instability_tolerance: float = typer.Option(
+        4.0,
+        "--appearance-chroma-instability-tolerance",
+        help="Allowed p95 frame-to-frame change in regional chroma shift.",
+    ),
+    appearance_blur_ksize: int = typer.Option(
+        7,
+        "--appearance-blur-ksize",
+        help="Positive odd Gaussian pre-filter kernel used before appearance comparison.",
+    ),
+    appearance_max_dimension: int = typer.Option(
+        256,
+        "--appearance-max-dimension",
+        help="Longest decoded frame edge used by the appearance comparison.",
+    ),
     question_model: str = typer.Option(
         "", "--question-model", help="Token Factory LLM for question generation."
     ),
@@ -137,6 +190,15 @@ def evaluate_cmd(
             temporal_mode=temporal_mode.value,
             temporal_noise_floor=temporal_noise_floor,
             temporal_blur_ksize=temporal_blur_ksize,
+            appearance_threshold=appearance_threshold,
+            appearance_regions_json=appearance_regions_json,
+            appearance_mode=appearance_mode.value,
+            appearance_luminance_tolerance=appearance_luminance_tolerance,
+            appearance_global_chroma_tolerance=appearance_global_chroma_tolerance,
+            appearance_local_chroma_tolerance=appearance_local_chroma_tolerance,
+            appearance_chroma_instability_tolerance=appearance_chroma_instability_tolerance,
+            appearance_blur_ksize=appearance_blur_ksize,
+            appearance_max_dimension=appearance_max_dimension,
             question_model=question_model,
             vlm_model=vlm_model,
             max_clips=max_clips,

@@ -470,6 +470,8 @@ TOOL_CATALOG: dict[str, ToolEntry] = {
             "Grade augmented variants with the REAL NVIDIA Cosmos Evaluator checks "
             "(hallucination + VLM attribute verification, Apache-2.0) plus the "
             "NPA source-relative temporal consistency companion diagnostic."
+            " It also reports source-relative protected-appearance fidelity for "
+            "excessive global colour cast or localized material recolouring."
         ),
         argv_template=[
             "npa",
@@ -496,6 +498,24 @@ TOOL_CATALOG: dict[str, ToolEntry] = {
             "{{config.temporal_noise_floor}}",
             "--temporal-blur-ksize",
             "{{config.temporal_blur_ksize}}",
+            "--appearance-threshold",
+            "{{config.appearance_fidelity_threshold}}",
+            "--appearance-regions-json",
+            "{{config.appearance_regions_json}}",
+            "--appearance-mode",
+            "{{config.appearance_fidelity_mode}}",
+            "--appearance-luminance-tolerance",
+            "{{config.appearance_luminance_tolerance}}",
+            "--appearance-global-chroma-tolerance",
+            "{{config.appearance_global_chroma_tolerance}}",
+            "--appearance-local-chroma-tolerance",
+            "{{config.appearance_local_chroma_tolerance}}",
+            "--appearance-chroma-instability-tolerance",
+            "{{config.appearance_chroma_instability_tolerance}}",
+            "--appearance-blur-ksize",
+            "{{config.appearance_blur_ksize}}",
+            "--appearance-max-dimension",
+            "{{config.appearance_max_dimension}}",
             "--vlm-model",
             "{{config.caption_model}}",
             "--output",

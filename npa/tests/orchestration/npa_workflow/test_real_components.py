@@ -120,6 +120,15 @@ def test_evaluate_runs_the_real_cosmos_evaluator() -> None:
         "--temporal-noise-floor",
         "--temporal-blur-ksize",
         "--temporal-regions-json",
+        "--appearance-mode",
+        "--appearance-threshold",
+        "--appearance-regions-json",
+        "--appearance-luminance-tolerance",
+        "--appearance-global-chroma-tolerance",
+        "--appearance-local-chroma-tolerance",
+        "--appearance-chroma-instability-tolerance",
+        "--appearance-blur-ksize",
+        "--appearance-max-dimension",
     ):
         assert option in argv
 
@@ -134,6 +143,8 @@ def test_evaluate_runs_the_real_cosmos_evaluator() -> None:
     assert float(_spec()["config"]["grade_threshold"]) >= 0.75
     assert float(_spec()["config"]["temporal_consistency_threshold"]) >= 0.8
     assert _spec()["config"]["temporal_consistency_mode"] == "advisory"
+    assert float(_spec()["config"]["appearance_fidelity_threshold"]) >= 0.8
+    assert _spec()["config"]["appearance_fidelity_mode"] == "advisory"
 
 
 def test_curation_runs_the_real_cosmos_curator_before_review() -> None:

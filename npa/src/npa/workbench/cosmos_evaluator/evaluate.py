@@ -13,7 +13,11 @@ The blueprint's augment stage publishes one directory per scenario variant::
 - the **hallucination** check against the run's source clip, when one is
   resolvable, and
 - an NPA **source-relative temporal consistency** companion diagnostic that
-  measures both excess frame-to-frame variation and collapsed source motion.
+  measures both excess frame-to-frame variation and collapsed source motion,
+  and
+- an NPA **source-relative protected-appearance fidelity** companion check that
+  distinguishes bounded global photometric changes from excessive or localized
+  material recolouring.
 
 It writes a single ``npa.cosmos_evaluator.report.v1`` document. The blueprint's
 quality gate requires both its aggregate ``score`` and explicit ``passed``
@@ -35,6 +39,17 @@ from urllib.parse import urlparse
 from npa.workbench.cosmos_evaluator.attribute_verification import (
     AttributeVerificationResult,
     verify_attributes,
+)
+from npa.workbench.cosmos_evaluator.appearance_fidelity import (
+    DEFAULT_BLUR_KSIZE as APPEARANCE_BLUR_KSIZE,
+    DEFAULT_CHROMA_INSTABILITY_TOLERANCE as APPEARANCE_CHROMA_INSTABILITY_TOLERANCE,
+    DEFAULT_GLOBAL_CHROMA_TOLERANCE as APPEARANCE_GLOBAL_CHROMA_TOLERANCE,
+    DEFAULT_LOCAL_CHROMA_TOLERANCE as APPEARANCE_LOCAL_CHROMA_TOLERANCE,
+    DEFAULT_LUMINANCE_TOLERANCE as APPEARANCE_LUMINANCE_TOLERANCE,
+    DEFAULT_MAX_DIMENSION as APPEARANCE_MAX_DIMENSION,
+    DEFAULT_THRESHOLD as APPEARANCE_FIDELITY_THRESHOLD,
+    AppearanceFidelityResult,
+    check_appearance_fidelity,
 )
 from npa.workbench.cosmos_evaluator.hallucination import (
     DEFAULT_THRESHOLD as HALLUCINATION_THRESHOLD,
@@ -65,6 +80,7 @@ METADATA_NAME = "metadata.json"
 CONFIG_MANIFEST_NAME = "manifest.json"
 VIDEO_SUFFIXES = frozenset({".mp4", ".mov", ".webm", ".mkv", ".avi"})
 TEMPORAL_MODES = frozenset({"advisory", "required"})
+APPEARANCE_MODES = frozenset({"advisory", "required"})
 
 # Weight on the hallucination score when the variant really is a re-render of the
 # run's own footage. Without input conditioning the two clips show different
@@ -87,10 +103,12 @@ class ClipEvaluation:
     input_conditioned: bool
     status: str = "completed"
     temporal_enforced: bool = False
+    appearance_enforced: bool = False
     variables: dict[str, str] = field(default_factory=dict)
     attribute_verification: dict[str, Any] | None = None
     hallucination: dict[str, Any] | None = None
     temporal_consistency: dict[str, Any] | None = None
+    appearance_fidelity: dict[str, Any] | None = None
     skipped: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -113,6 +131,7 @@ class EvaluateRunResult:
     generated_at: str
     batch_policy: str = "all-variants"
     temporal_mode: str = "advisory"
+    appearance_mode: str = "advisory"
     engines: list[str] = field(default_factory=list)
     clips: list[ClipEvaluation] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
@@ -145,6 +164,15 @@ def evaluate_run(
     temporal_mode: str = "advisory",
     temporal_noise_floor: float = TEMPORAL_NOISE_FLOOR,
     temporal_blur_ksize: int = TEMPORAL_BLUR_KSIZE,
+    appearance_threshold: float = APPEARANCE_FIDELITY_THRESHOLD,
+    appearance_regions_json: str = "",
+    appearance_mode: str = "advisory",
+    appearance_luminance_tolerance: float = APPEARANCE_LUMINANCE_TOLERANCE,
+    appearance_global_chroma_tolerance: float = APPEARANCE_GLOBAL_CHROMA_TOLERANCE,
+    appearance_local_chroma_tolerance: float = APPEARANCE_LOCAL_CHROMA_TOLERANCE,
+    appearance_chroma_instability_tolerance: float = APPEARANCE_CHROMA_INSTABILITY_TOLERANCE,
+    appearance_blur_ksize: int = APPEARANCE_BLUR_KSIZE,
+    appearance_max_dimension: int = APPEARANCE_MAX_DIMENSION,
     question_model: str = "",
     vlm_model: str = "",
     max_clips: int = 0,
@@ -171,6 +199,29 @@ def evaluate_run(
         raise CosmosEvaluatorError(
             "--temporal-blur-ksize must be a positive odd integer"
         )
+    if not 0.0 < appearance_threshold <= 1.0:
+        raise CosmosEvaluatorError(
+            "--appearance-threshold must be greater than 0.0 and at most 1.0"
+        )
+    if appearance_mode not in APPEARANCE_MODES:
+        raise CosmosEvaluatorError("--appearance-mode must be advisory or required")
+    for option, value in (
+        ("--appearance-luminance-tolerance", appearance_luminance_tolerance),
+        ("--appearance-global-chroma-tolerance", appearance_global_chroma_tolerance),
+        ("--appearance-local-chroma-tolerance", appearance_local_chroma_tolerance),
+        (
+            "--appearance-chroma-instability-tolerance",
+            appearance_chroma_instability_tolerance,
+        ),
+    ):
+        if value <= 0.0:
+            raise CosmosEvaluatorError(f"{option} must be greater than 0.0")
+    if appearance_blur_ksize < 1 or appearance_blur_ksize % 2 == 0:
+        raise CosmosEvaluatorError(
+            "--appearance-blur-ksize must be a positive odd integer"
+        )
+    if appearance_max_dimension < 16:
+        raise CosmosEvaluatorError("--appearance-max-dimension must be at least 16")
 
     store = storage if storage is not None else _storage()
     warnings: list[str] = []
@@ -214,6 +265,15 @@ def evaluate_run(
                         temporal_mode=temporal_mode,
                         temporal_noise_floor=temporal_noise_floor,
                         temporal_blur_ksize=temporal_blur_ksize,
+                        appearance_threshold=appearance_threshold,
+                        appearance_regions_json=appearance_regions_json,
+                        appearance_mode=appearance_mode,
+                        appearance_luminance_tolerance=appearance_luminance_tolerance,
+                        appearance_global_chroma_tolerance=appearance_global_chroma_tolerance,
+                        appearance_local_chroma_tolerance=appearance_local_chroma_tolerance,
+                        appearance_chroma_instability_tolerance=appearance_chroma_instability_tolerance,
+                        appearance_blur_ksize=appearance_blur_ksize,
+                        appearance_max_dimension=appearance_max_dimension,
                         question_model=question_model,
                         vlm_model=vlm_model,
                         warnings=warnings,
@@ -240,7 +300,11 @@ def evaluate_run(
         {
             str(result.get("engine", ""))
             for clip in evaluations
-            for result in (clip.hallucination, clip.temporal_consistency)
+            for result in (
+                clip.hallucination,
+                clip.temporal_consistency,
+                clip.appearance_fidelity,
+            )
             if result
         }
         - {""}
@@ -264,6 +328,7 @@ def evaluate_run(
         threshold=threshold,
         generated_at=datetime.now(timezone.utc).isoformat(),
         temporal_mode=temporal_mode,
+        appearance_mode=appearance_mode,
         engines=engines,
         clips=evaluations,
         warnings=warnings,
@@ -286,6 +351,15 @@ def _evaluate_clip(
     temporal_mode: str,
     temporal_noise_floor: float,
     temporal_blur_ksize: int,
+    appearance_threshold: float,
+    appearance_regions_json: str,
+    appearance_mode: str,
+    appearance_luminance_tolerance: float,
+    appearance_global_chroma_tolerance: float,
+    appearance_local_chroma_tolerance: float,
+    appearance_chroma_instability_tolerance: float,
+    appearance_blur_ksize: int,
+    appearance_max_dimension: int,
     question_model: str,
     vlm_model: str,
     warnings: list[str],
@@ -412,6 +486,38 @@ def _evaluate_clip(
             if temporal_mode == "required":
                 degraded = True
 
+    appearance_result: AppearanceFidelityResult | None = None
+    if not input_conditioned:
+        skipped.append(
+            "appearance fidelity only applies to input-conditioned variants"
+        )
+    elif video is None:
+        skipped.append("appearance fidelity needs the augmented video")
+    elif source_clip is None:
+        skipped.append("appearance fidelity needs a source clip")
+    else:
+        try:
+            appearance_result = check_appearance_fidelity(
+                clip_id=clip_id,
+                original_video=source_clip,
+                augmented_video=video,
+                threshold=appearance_threshold,
+                regions=appearance_regions_json,
+                luminance_tolerance=appearance_luminance_tolerance,
+                global_chroma_tolerance=appearance_global_chroma_tolerance,
+                local_chroma_tolerance=appearance_local_chroma_tolerance,
+                chroma_instability_tolerance=appearance_chroma_instability_tolerance,
+                blur_ksize=appearance_blur_ksize,
+                max_dimension=appearance_max_dimension,
+            )
+        except Exception as exc:  # noqa: BLE001 - keep grading remaining variants
+            message = f"appearance fidelity check failed for {clip_id}: {exc}"[:300]
+            _log.warning(message, exc_info=True)
+            warnings.append(message)
+            skipped.append("appearance fidelity check failed")
+            if appearance_mode == "required":
+                degraded = True
+
     score, passed = _combine_scores(
         attribute_result=attribute_result,
         hallucination_result=hallucination_result,
@@ -419,6 +525,8 @@ def _evaluate_clip(
         hallucination_weight=hallucination_weight,
         temporal_result=temporal_result,
         temporal_required=input_conditioned and temporal_mode == "required",
+        appearance_result=appearance_result,
+        appearance_required=input_conditioned and appearance_mode == "required",
         score_threshold=threshold,
     )
     return ClipEvaluation(
@@ -428,10 +536,14 @@ def _evaluate_clip(
         input_conditioned=input_conditioned,
         status="degraded" if degraded else "completed",
         temporal_enforced=input_conditioned and temporal_mode == "required",
+        appearance_enforced=input_conditioned and appearance_mode == "required",
         variables=variables,
         attribute_verification=attribute_result.to_dict() if attribute_result else None,
         hallucination=hallucination_result.to_dict() if hallucination_result else None,
         temporal_consistency=temporal_result.to_dict() if temporal_result else None,
+        appearance_fidelity=(
+            appearance_result.to_dict() if appearance_result else None
+        ),
         skipped=skipped,
     )
 
@@ -444,6 +556,8 @@ def _combine_scores(
     hallucination_weight: float,
     temporal_result: TemporalConsistencyResult | None = None,
     temporal_required: bool = False,
+    appearance_result: AppearanceFidelityResult | None = None,
+    appearance_required: bool = False,
     score_threshold: float = 0.0,
 ) -> tuple[float, bool]:
     """Blend the two check scores into the number the quality gate reads.
@@ -480,6 +594,11 @@ def _combine_scores(
             return 0.0, False
         blended = min(blended, temporal_result.score)
         passed = passed and temporal_result.passed
+    if appearance_required:
+        if appearance_result is None:
+            return 0.0, False
+        blended = min(blended, appearance_result.score)
+        passed = passed and appearance_result.passed
     score = round(blended, 6)
     return score, passed and score >= score_threshold
 

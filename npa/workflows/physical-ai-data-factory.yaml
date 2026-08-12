@@ -15,7 +15,8 @@ kind: Workflow
 #                                       appearance-only re-render; GPU tier)
 #            Evaluate & Validate      -> grade loop         (NVIDIA Cosmos Evaluator
 #                                       checks + NPA source-relative temporal
-#                                       consistency, then a fail-closed gate)
+#                                       consistency + appearance fidelity, then
+#                                       a fail-closed gate)
 #   Stage 3  Pseudo-Label Augmented  -> annotate-augmented (re-caption the augmented
 #                                       clips so the amplified set ships labeled)
 #   Stage 4  Curation                -> cosmos-curate      (NVIDIA Cosmos Curator:
@@ -49,7 +50,7 @@ metadata:
   description: >
     NVIDIA Physical AI Data Factory implemented on Nebius + SkyPilot without OSMO:
     config-gen -> annotate (Token Factory VLM) -> augment (Cosmos Transfer 2.5, GPU)
-    -> evaluate/validate gate loop (Cosmos Evaluator + temporal consistency) ->
+    -> evaluate/validate gate loop (Cosmos Evaluator + source-relative fidelity) ->
     fail-closed quality disposition -> re-label augmented ->
     Cosmos Curator curation -> FiftyOne review -> finalize. Pure composition of
     existing workbench tools; artifacts land under one S3 run prefix for NPA-agent
@@ -72,6 +73,23 @@ config:
   # Optional JSON normalized rectangles. Empty uses full frame + a 2x2 grid so
   # localized instability cannot hide inside a clean frame-wide average.
   temporal_regions_json: ""
+  # Source-relative protected-appearance fidelity separates intended bounded
+  # exposure/white-balance changes from excessive global colour cast, localized
+  # material recolouring, and frame-to-frame chroma drift. Keep it advisory for
+  # generic workflows that intentionally recolour arbitrary scene regions. Set
+  # mode=required and, when appropriate, provide normalized protected rectangles
+  # for deployments whose prompts promise stable base colours/material identity.
+  appearance_fidelity_mode: advisory
+  appearance_fidelity_threshold: "0.8"
+  appearance_luminance_tolerance: "18.0"
+  appearance_global_chroma_tolerance: "8.0"
+  appearance_local_chroma_tolerance: "6.0"
+  appearance_chroma_instability_tolerance: "4.0"
+  appearance_blur_ksize: "7"
+  appearance_max_dimension: "256"
+  # Empty uses full frame + a 2x2 grid. A deployment can instead name normalized
+  # rectangles, e.g. [{"id":"protected-0","bounds":[0.1,0.1,0.4,0.5]}].
+  appearance_regions_json: ""
   default_decision: loop_back
 
   # --- Cosmos Curator knobs (Stage 4) ---
@@ -238,6 +256,12 @@ states:
       by source motion. It is advisory by default; deployments may make it a hard
       check only after calibrating the fixed noise floor on representative encoded
       clips. The NVIDIA attribute and hallucination checks remain hard checks.
+      A separate source-relative protected-appearance check reports p95 CIELAB
+      luminance/chroma drift, localized chroma residual after the scene-wide shift,
+      and frame-to-frame chroma-shift instability. It is advisory by default so
+      workflows that intentionally recolour materials are not silently blocked;
+      deployments that promise stable base colours may set it to required and
+      optionally restrict it to normalized protected regions.
     toolRef: workbench.cosmos_evaluator.evaluate
     resources: cpu
     inputs:
