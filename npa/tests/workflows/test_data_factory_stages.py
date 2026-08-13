@@ -61,6 +61,57 @@ def test_generate_configs_is_deterministic_by_seed(tmp_path: Path) -> None:
     assert a["augmentations"] == b["augmentations"]
 
 
+def test_prepare_refinement_uses_baseline_then_adapts_failed_retry(
+    tmp_path: Path,
+) -> None:
+    grade = tmp_path / "grade"
+    grade.mkdir()
+    refinement = tmp_path / "configs" / "refinement.json"
+
+    baseline = dfs.prepare_refinement(str(grade), str(refinement))
+    assert baseline["attempt"] == 0
+    assert baseline["adapted_from_prior_evaluation"] is False
+    assert baseline["settings"] == {"control_weight": 1.0, "guidance": 3.0}
+
+    (grade / "cosmos_evaluator.json").write_text(
+        json.dumps(
+            {
+                "status": "completed",
+                "score": 0.4,
+                "passed": False,
+                "clips": [
+                    {
+                        "passed": False,
+                        "appearance_fidelity": {"passed": False},
+                        "hallucination": {"passed": True},
+                    }
+                ],
+            }
+        )
+    )
+    retry = dfs.prepare_refinement(str(grade), str(refinement))
+    assert retry["attempt"] == 1
+    assert retry["adapted_from_prior_evaluation"] is True
+    assert retry["settings"] == {"control_weight": 1.5, "guidance": 2.25}
+    assert retry["failed_checks"] == ["appearance_fidelity"]
+    assert (tmp_path / "configs" / "refinement-attempt-01.json").is_file()
+
+
+def test_prepare_refinement_can_record_a_non_adaptive_policy(tmp_path: Path) -> None:
+    scores = tmp_path / "cosmos_evaluator.json"
+    scores.write_text(json.dumps({"score": 0.1, "passed": False}))
+    result = dfs.prepare_refinement(
+        str(scores),
+        str(tmp_path / "refinement.json"),
+        enabled="false",
+        base_control_weight="0.8",
+        base_guidance="2.0",
+    )
+    assert result["adaptive"] is False
+    assert result["adapted_from_prior_evaluation"] is False
+    assert result["settings"] == {"control_weight": 0.8, "guidance": 2.0}
+
+
 def test_grade_gate_promotes_above_threshold(tmp_path: Path, monkeypatch) -> None:
     scores = tmp_path / "vlm_eval_stub.json"
     scores.write_text(json.dumps({"score": 0.8}))

@@ -91,6 +91,21 @@ config:
   augment_subject: "the input robot clips"  # included in sampled Cosmos prompts
   refinement_iterations: "2"      # max evaluate/validate passes before reject
   grade_threshold: "0.75"         # min aggregate score to promote (else loop_back)
+  # A retry must not replay identical inference settings. Before every render,
+  # prepare-refinement reads the prior evaluator report. Failed attempts increase
+  # input structure control and reduce prompt guidance within these bounds.
+  adaptive_refinement_enabled: "true"
+  cosmos_control: edge
+  cosmos_control_weight: "1.0"
+  cosmos_guidance: "3.0"
+  refinement_control_weight_step: "0.5"
+  refinement_max_control_weight: "1.75"
+  refinement_guidance_step: "0.75"
+  refinement_min_guidance: "1.5"
+  # Optional source-chroma restoration inside appearance_regions_json. This
+  # keeps generated luminance/illumination while protecting identity-bearing
+  # material colour. Leave off unless the deployment supplies meaningful regions.
+  protected_chroma_mode: "off"
   # NPA temporal residual is advisory until a deployment calibrates its fixed
   # noise floor. Set mode=required only with representative encoded clips.
   temporal_consistency_mode: advisory
@@ -149,6 +164,7 @@ config:
   rollouts_uri: "s3://{{config.bucket}}/{{config.prefix}}/cosmos_augmented/"
   scores_uri: "s3://{{config.bucket}}/{{config.prefix}}/grade/"
   decision_uri: "s3://{{config.bucket}}/{{config.prefix}}/grade/decision.json"
+  refinement_uri: "s3://{{config.bucket}}/{{config.prefix}}/configs/refinement.json"
   quality_disposition_uri: "s3://{{config.bucket}}/{{config.prefix}}/grade/quality_disposition.json"
   augmented_frames_uri: "s3://{{config.bucket}}/{{config.prefix}}/cosmos_augmented/"
   labeled_augmented_uri: "s3://{{config.bucket}}/{{config.prefix}}/labeled_augmented/"
@@ -260,6 +276,33 @@ states:
         schema: npa.token_factory.captions.v1
     next: grade
 
+  prepare-refinement:
+    description: >
+      Build an auditable per-attempt Cosmos policy. The baseline is used on the
+      first pass; after a failed evaluation the next pass raises edge-control
+      strength and lowers prompt guidance instead of replaying identical inference.
+    needs: [annotate-original]
+    resources: cpu
+    run:
+      argv:
+        - python3
+        - -c
+        - >-
+          import sys; from npa.workflows.data_factory_stages import prepare_refinement;
+          prepare_refinement(*sys.argv[1:])
+        - "{{config.scores_uri}}"
+        - "{{config.refinement_uri}}"
+        - "{{config.adaptive_refinement_enabled}}"
+        - "{{config.cosmos_control_weight}}"
+        - "{{config.cosmos_guidance}}"
+        - "{{config.refinement_control_weight_step}}"
+        - "{{config.refinement_max_control_weight}}"
+        - "{{config.refinement_guidance_step}}"
+        - "{{config.refinement_min_guidance}}"
+    outputs:
+      - uri: "{{config.refinement_uri}}"
+        schema: npa.data_factory.refinement.v1
+
   augment:
     description: >
       Stage 2b - Augment & Multiply. Cosmos Transfer 2.5 runs ONE inference per
@@ -275,7 +318,7 @@ states:
       This is a member of the `grade`
       refinement loop: on a loop_back decision the loop re-runs augment (re-render),
       re-verify, and re-gate, so a failed batch is actually re-augmented.
-    needs: [annotate-original]
+    needs: [prepare-refinement]
     toolRef: workbench.cosmos2.transfer_execute
     resources: gpu
     inputs:
@@ -287,8 +330,9 @@ states:
 
   grade:
     description: >
-      Augment & Evaluate refinement loop. Each iteration: augment (Cosmos Transfer
-      2.5, GPU) -> evaluate (Cosmos Evaluator) -> quality-gate. Loops back to
+      Augment & Evaluate refinement loop. Each iteration: prepare an adaptive
+      render policy -> augment (Cosmos Transfer 2.5, GPU) -> evaluate (Cosmos
+      Evaluator) -> quality-gate. Loops back to
       RE-AUGMENT on failure, up to refinement_iterations, and breaks as soon as the
       gate promotes. augment lives INSIDE the loop so loop_back genuinely re-renders
       (the gate's loop_back decision drives another augment pass via loop.until).
@@ -297,6 +341,7 @@ states:
       max: "{{config.refinement_iterations}}"
       until: promote_checkpoint
     sequence:
+      - prepare-refinement
       - augment
       - evaluate
       - quality-gate

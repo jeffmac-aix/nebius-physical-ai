@@ -92,7 +92,21 @@ def test_agent_generated_paidf_runs_named_real_components() -> None:
         generate_data_factory_yaml(user_text="fan out 2 variants on 2 GPUs")
     )
     states = spec["states"]
-    assert states["grade"]["sequence"] == ["augment", "evaluate", "quality-gate"]
+    assert states["grade"]["sequence"] == [
+        "prepare-refinement",
+        "augment",
+        "evaluate",
+        "quality-gate",
+    ]
+    assert "prepare_refinement" in states["prepare-refinement"]["run"]["argv"][2]
+    for option in (
+        "--refinement-uri",
+        "--control-weight",
+        "--guidance",
+        "--protected-chroma-mode",
+        "--protected-regions-json",
+    ):
+        assert option in TOOL_CATALOG["workbench.cosmos2.transfer_execute"].argv_template
     assert states["evaluate"]["toolRef"] == "workbench.cosmos_evaluator.evaluate"
     assert states["cosmos-curate"]["toolRef"] == "workbench.cosmos_curate.curate"
     assert states["curate"]["toolRef"] == "workbench.fiftyone.curate_augmented"
@@ -174,7 +188,12 @@ def test_evaluate_runs_the_real_cosmos_evaluator() -> None:
 
     loop = states["grade"]["loop"]
     assert loop["until"] == "promote_checkpoint"
-    assert states["grade"]["sequence"] == ["augment", "evaluate", "quality-gate"]
+    assert states["grade"]["sequence"] == [
+        "prepare-refinement",
+        "augment",
+        "evaluate",
+        "quality-gate",
+    ]
     assert states["grade"]["next"] == "quality-disposition"
     assert states["annotate-augmented"]["needs"] == ["quality-disposition"]
     assert (

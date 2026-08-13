@@ -91,6 +91,47 @@ def _first_augmentation(configs_uri: str) -> dict:
     return combos[0] if combos else {}
 
 
+def _load_refinement(refinement_uri: str) -> dict[str, Any]:
+    """Load and validate the run-scoped adaptive refinement policy."""
+
+    if not refinement_uri:
+        return {}
+    from npa.workflows.data_factory_stages import _download_json
+
+    payload = _download_json(refinement_uri)
+    if not isinstance(payload, dict):
+        raise typer.BadParameter("refinement artifact must be a JSON object")
+    settings = payload.get("settings")
+    if not isinstance(settings, dict):
+        raise typer.BadParameter("refinement artifact has no settings object")
+    try:
+        control_weight = float(settings["control_weight"])
+        guidance = float(settings["guidance"])
+        attempt = int(payload.get("attempt", 0))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise typer.BadParameter(
+            "refinement artifact settings must contain numeric control_weight and guidance"
+        ) from exc
+    if control_weight < 0.0 or guidance < 0.0 or attempt < 0:
+        raise typer.BadParameter("refinement artifact settings cannot be negative")
+    return {
+        "schema": str(payload.get("schema") or ""),
+        "attempt": attempt,
+        "adapted_from_prior_evaluation": bool(
+            payload.get("adapted_from_prior_evaluation")
+        ),
+        "failed_checks": [
+            str(item)
+            for item in payload.get("failed_checks", [])
+            if isinstance(item, str)
+        ],
+        "settings": {
+            "control_weight": control_weight,
+            "guidance": guidance,
+        },
+    }
+
+
 _VIDEO_EXTS = (".mp4", ".mov", ".webm", ".mkv", ".avi")
 _IMAGE_EXTS = (".png", ".jpg", ".jpeg")
 
@@ -363,6 +404,21 @@ def transfer_cmd(
     ),
     control_weight: float = typer.Option(1.0, "--control-weight", help="Control weight for input-conditioning."),
     guidance: float = typer.Option(3.0, "--guidance", help="Classifier-free guidance for input-conditioning."),
+    refinement_uri: str = typer.Option(
+        "",
+        "--refinement-uri",
+        help="Run-scoped adaptive-refinement JSON; its validated settings override control/guidance.",
+    ),
+    protected_chroma_mode: str = typer.Option(
+        "off",
+        "--protected-chroma-mode",
+        help="Optional protected-region color policy: off or source-chroma.",
+    ),
+    protected_regions_json: str = typer.Option(
+        "",
+        "--protected-regions-json",
+        help="JSON normalized rectangles used only when protected chroma mode is source-chroma.",
+    ),
 ) -> None:
     """Build a transfer manifest; pass --execute for real vendor output.
 
@@ -441,6 +497,20 @@ def transfer_cmd(
             control_weight = float(_cw)
         if _g:
             guidance = float(_g)
+        refinement = _load_refinement(refinement_uri)
+        if refinement:
+            settings = refinement["settings"]
+            control_weight = float(settings["control_weight"])
+            guidance = float(settings["guidance"])
+        protected_chroma_mode = protected_chroma_mode.strip().lower()
+        if protected_chroma_mode not in {"off", "source-chroma"}:
+            raise typer.BadParameter(
+                "--protected-chroma-mode must be off or source-chroma"
+            )
+        if protected_chroma_mode == "source-chroma" and not protected_regions_json:
+            raise typer.BadParameter(
+                "--protected-chroma-mode source-chroma requires --protected-regions-json"
+            )
 
         if data_factory_mode and output_uri.strip().startswith("s3://"):
             # Augment & MULTIPLY. Run one REAL Cosmos Transfer 2.5 inference per
@@ -451,6 +521,7 @@ def transfer_cmd(
             # image). The per-clip layout is what data_factory curate /
             # build_run_rrd / provenance consume.
             from npa.workbench.cosmos.transfer import (
+                preserve_source_chroma,
                 publish_transfer_clip,
                 write_run_manifest,
             )
@@ -481,7 +552,16 @@ def transfer_cmd(
                     cuda_visible_devices=device,
                     variant_tag=variant_run,
                 )
+                if protected_chroma_mode == "source-chroma":
+                    result = preserve_source_chroma(
+                        result,
+                        source_video=local_input,
+                        regions_json=protected_regions_json,
+                    )
                 result["conditioning_clip_uri"] = conditioning_clip_uri
+                result["refinement"] = refinement
+                result["effective_control_weight"] = control_weight
+                result["effective_guidance"] = guidance
                 return result
 
             # Fan the GPU-bound diffusions out across the pod's GPUs, then publish
@@ -550,6 +630,17 @@ def transfer_cmd(
                 control_weight=control_weight,
                 guidance=guidance,
             )
+            if protected_chroma_mode == "source-chroma":
+                from npa.workbench.cosmos.transfer import preserve_source_chroma
+
+                transfer = preserve_source_chroma(
+                    transfer,
+                    source_video=local_input,
+                    regions_json=protected_regions_json,
+                )
+            transfer["refinement"] = refinement
+            transfer["effective_control_weight"] = control_weight
+            transfer["effective_guidance"] = guidance
             payload["status"] = TRANSFER_MANIFEST_STATUS
             payload["output_kind"] = "video"
             payload["output_video"] = transfer["video_path"]

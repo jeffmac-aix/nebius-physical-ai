@@ -198,6 +198,25 @@ writes `grade/quality_disposition.json` with `quality_status: rejected` and stop
 the workflow before labeling or curation. Workflow execution status and dataset
 quality status therefore remain separate and auditable.
 
+Refinement is adaptive by default. `prepare-refinement` writes
+`configs/refinement.json` before each render and keeps immutable
+`refinement-attempt-NN.json` copies. The first pass uses the configured
+`cosmos_control_weight` and `cosmos_guidance`; after a failed evaluation, each
+retry raises edge-control strength and lowers prompt guidance within the configured
+min/max bounds. Transfer metadata records the effective values and failed check
+names, so a retry is not an unauditable replay of identical inference settings.
+
+Edge control preserves structure and motion, not source color. Deployments that
+must protect identity-bearing material colors can set
+`protected_chroma_mode: source-chroma` and provide normalized rectangles through
+`appearance_regions_json`. Cosmos still generates the video, but the transfer
+stage aligns regional Cb/Cr to the source inside feathered protected regions while
+retaining generated luma and texture, so exposure and illumination changes remain
+without copying source pixels. The mode is off by
+default: rectangles are a coarse MP4-only protection surface, and semantic masks
+or simulator passes are preferable when available. A decode or frame-count mismatch
+fails closed rather than publishing partially protected output.
+
 The all-variant batch policy is intentionally conservative: the reference workflow
 does not yet quarantine failed variant directories before downstream labeling and
 curation, so it will not promote a mixed-quality prefix. A future partial-promotion
@@ -383,7 +402,7 @@ not guarantees. For practical warm/cold ranges and recovery guidance, see
 ```
 s3://<bucket>/physical-ai-data-factory/<run-id>/
   input/               # source.mp4 + conditioning clip/frames + provenance
-  configs/             # Stage 1 sampled augmentation manifest  -> json
+  configs/             # Stage 1 manifest + adaptive refinement provenance -> json
   labeled_original/    # Stage 2a VLM captions                  -> json
   cosmos_augmented/    # Stage 2b augmented clips + metadata    -> video / json
   grade/               # evaluator, decision, quality disposition -> json

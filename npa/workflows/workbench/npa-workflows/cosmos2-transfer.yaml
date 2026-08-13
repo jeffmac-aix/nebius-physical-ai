@@ -31,6 +31,14 @@ config:
   # Optional Config-Gen manifest. The transfer input itself is always required and
   # is converted into an on-the-fly edge control; no upstream media is bundled.
   configs_uri: ""
+  # PAIDF-specific policy hooks are empty/off here; keeping the defaults makes
+  # the shared transfer_execute toolRef safe for standalone transfer workflows.
+  cosmos_control: edge
+  cosmos_control_weight: "1.0"
+  cosmos_guidance: "3.0"
+  refinement_uri: ""
+  protected_chroma_mode: "off"
+  appearance_regions_json: ""
 
 resources:
   transfer-gpu:

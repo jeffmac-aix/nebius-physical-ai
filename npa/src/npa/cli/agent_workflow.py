@@ -1310,6 +1310,15 @@ def _data_factory_spec() -> dict[str, Any]:
                 "variant_parallelism": "4",
                 "refinement_iterations": "2",
                 "grade_threshold": "0.75",
+                "adaptive_refinement_enabled": "true",
+                "cosmos_control": "edge",
+                "cosmos_control_weight": "1.0",
+                "cosmos_guidance": "3.0",
+                "refinement_control_weight_step": "0.5",
+                "refinement_max_control_weight": "1.75",
+                "refinement_guidance_step": "0.75",
+                "refinement_min_guidance": "1.5",
+                "protected_chroma_mode": "off",
                 "default_decision": "loop_back",
                 "temporal_consistency_mode": "advisory",
                 "temporal_consistency_threshold": "0.8",
@@ -1349,6 +1358,7 @@ def _data_factory_spec() -> dict[str, Any]:
                 "rollouts_uri": "s3://{{config.bucket}}/{{config.prefix}}/cosmos_augmented/",
                 "scores_uri": "s3://{{config.bucket}}/{{config.prefix}}/grade/",
                 "decision_uri": "s3://{{config.bucket}}/{{config.prefix}}/grade/decision.json",
+                "refinement_uri": "s3://{{config.bucket}}/{{config.prefix}}/configs/refinement.json",
                 "quality_disposition_uri": "s3://{{config.bucket}}/{{config.prefix}}/grade/quality_disposition.json",
                 "augmented_frames_uri": "s3://{{config.bucket}}/{{config.prefix}}/cosmos_augmented/",
                 "labeled_augmented_uri": "s3://{{config.bucket}}/{{config.prefix}}/labeled_augmented/",
@@ -1445,6 +1455,46 @@ def _data_factory_spec() -> dict[str, Any]:
                         "next": "grade",
                     }
                 ),
+                "prepare-refinement": OrderedDict(
+                    {
+                        "description": (
+                            "Prepare an auditable adaptive Cosmos policy. Failed retries "
+                            "increase edge-control strength and reduce prompt guidance."
+                        ),
+                        "needs": ["annotate-original"],
+                        "resources": "cpu",
+                        "run": OrderedDict(
+                            {
+                                "argv": [
+                                    "python3",
+                                    "-c",
+                                    (
+                                        "import sys; from npa.workflows.data_factory_stages "
+                                        "import prepare_refinement; "
+                                        "prepare_refinement(*sys.argv[1:])"
+                                    ),
+                                    "{{config.scores_uri}}",
+                                    "{{config.refinement_uri}}",
+                                    "{{config.adaptive_refinement_enabled}}",
+                                    "{{config.cosmos_control_weight}}",
+                                    "{{config.cosmos_guidance}}",
+                                    "{{config.refinement_control_weight_step}}",
+                                    "{{config.refinement_max_control_weight}}",
+                                    "{{config.refinement_guidance_step}}",
+                                    "{{config.refinement_min_guidance}}",
+                                ]
+                            }
+                        ),
+                        "outputs": [
+                            OrderedDict(
+                                {
+                                    "uri": "{{config.refinement_uri}}",
+                                    "schema": "npa.data_factory.refinement.v1",
+                                }
+                            )
+                        ],
+                    }
+                ),
                 "augment": OrderedDict(
                     {
                         "description": (
@@ -1455,7 +1505,7 @@ def _data_factory_spec() -> dict[str, Any]:
                             "A supported video under config.trigger_uri is mandatory. Member of the "
                             "grade refinement loop, so loop_back genuinely re-renders."
                         ),
-                        "needs": ["annotate-original"],
+                        "needs": ["prepare-refinement"],
                         "toolRef": "workbench.cosmos2.transfer_execute",
                         "resources": "gpu",
                         "inputs": [
@@ -1490,7 +1540,12 @@ def _data_factory_spec() -> dict[str, Any]:
                                 "until": "promote_checkpoint",
                             }
                         ),
-                        "sequence": ["augment", "evaluate", "quality-gate"],
+                        "sequence": [
+                            "prepare-refinement",
+                            "augment",
+                            "evaluate",
+                            "quality-gate",
+                        ],
                         "next": "quality-disposition",
                     }
                 ),
