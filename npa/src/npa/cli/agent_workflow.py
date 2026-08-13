@@ -1624,10 +1624,87 @@ def _data_factory_spec() -> dict[str, Any]:
                     {
                         "description": (
                             "Fail closed after the refinement loop: persist an auditable "
-                            "accepted/rejected disposition before rejecting a degraded, "
-                            "below-threshold, or hard-check-failing batch."
+                            "accepted/rejected disposition and route rejected runs through "
+                            "evidence-only Rerun visualization before failing."
                         ),
+                        "writesDecision": True,
                         "needs": ["grade"],
+                        "resources": "cpu",
+                        "run": OrderedDict(
+                            {
+                                "argv": [
+                                    "python3",
+                                    "-c",
+                                    (
+                                        "import sys; from npa.workflows.data_factory_stages "
+                                        "import write_quality_disposition; "
+                                        "write_quality_disposition(*sys.argv[1:])"
+                                    ),
+                                    "{{config.scores_uri}}",
+                                    "{{config.quality_disposition_uri}}",
+                                    "{{config.decision_uri}}",
+                                    "{{config.grade_threshold}}",
+                                ]
+                            }
+                        ),
+                        "outputs": [
+                            OrderedDict(
+                                {
+                                    "uri": "{{config.quality_disposition_uri}}",
+                                    "schema": "npa.data_factory.quality_disposition.v1",
+                                }
+                            ),
+                            OrderedDict(
+                                {
+                                    "uri": "{{config.decision_uri}}",
+                                    "schema": "npa.sim2real.threshold_decision.v1",
+                                }
+                            ),
+                        ],
+                        "transitions": [
+                            OrderedDict(
+                                {
+                                    "when": "promote_checkpoint",
+                                    "goto": "annotate-augmented",
+                                }
+                            ),
+                            OrderedDict(
+                                {
+                                    "when": "loop_back",
+                                    "goto": "visualize-rejected",
+                                }
+                            ),
+                        ],
+                    }
+                ),
+                "visualize-rejected": OrderedDict(
+                    {
+                        "description": (
+                            "Build reports/sim2real.rrd for a rejected run from the available "
+                            "input, augmented frames, evaluator report, gate decision, and "
+                            "quality disposition. Missing downstream artifacts are skipped."
+                        ),
+                        "needs": ["quality-disposition"],
+                        "resources": "cpu",
+                        "toolRef": "workbench.nurec.visualize",
+                        "outputs": [
+                            OrderedDict(
+                                {
+                                    "uri": "{{config.rrd_uri}}",
+                                    "schema": "npa.sim2real.rerun.v1",
+                                }
+                            )
+                        ],
+                        "next": "reject-quality",
+                    }
+                ),
+                "reject-quality": OrderedDict(
+                    {
+                        "description": (
+                            "Fail only after the rejected run's disposition and Rerun evidence "
+                            "are durable, preserving fail-closed promotion semantics."
+                        ),
+                        "needs": ["visualize-rejected"],
                         "resources": "cpu",
                         "run": OrderedDict(
                             {
@@ -1645,15 +1722,7 @@ def _data_factory_spec() -> dict[str, Any]:
                                 ]
                             }
                         ),
-                        "outputs": [
-                            OrderedDict(
-                                {
-                                    "uri": "{{config.quality_disposition_uri}}",
-                                    "schema": "npa.data_factory.quality_disposition.v1",
-                                }
-                            )
-                        ],
-                        "next": "annotate-augmented",
+                        "terminal": True,
                     }
                 ),
                 "annotate-augmented": OrderedDict(

@@ -20,6 +20,7 @@ SIM2REAL_DEMO = (
     / "npa-workflows"
     / "sim2real-vlm-rl-demo.yaml"
 )
+PAIDF = SPECS / "physical-ai-data-factory.yaml"
 
 
 def test_dynamic_execute_reads_decision_for_promote(monkeypatch) -> None:
@@ -67,3 +68,47 @@ def test_dynamic_execute_reads_decision_for_loop_back(monkeypatch) -> None:
         states.count("rollouts")
         == spec.config["inner_iterations"] * spec.config["outer_iterations"]
     )
+
+
+def test_paidf_promoted_runtime_takes_full_visualization_path(monkeypatch) -> None:
+    spec = load_spec(PAIDF)
+    monkeypatch.setattr(
+        "npa.orchestration.npa_workflow.interpreter._execute_step",
+        lambda step, execute=True: {"state": step.state, "status": "ok"},
+    )
+
+    report = run_workflow(
+        spec,
+        run_id="paidf-promoted",
+        execute=True,
+        decision_reader=lambda _bucket, _key: json.dumps(
+            {"decision": DECISION_PROMOTE}
+        ),
+    )
+
+    states = [step["state"] for step in report["steps"]]
+    assert states[-2:] == ["visualize", "finalize"]
+    assert "visualize-rejected" not in states
+    assert "reject-quality" not in states
+
+
+def test_paidf_rejected_runtime_writes_rrd_before_rejecting(monkeypatch) -> None:
+    spec = load_spec(PAIDF)
+    monkeypatch.setattr(
+        "npa.orchestration.npa_workflow.interpreter._execute_step",
+        lambda step, execute=True: {"state": step.state, "status": "ok"},
+    )
+
+    report = run_workflow(
+        spec,
+        run_id="paidf-rejected",
+        execute=True,
+        decision_reader=lambda _bucket, _key: json.dumps(
+            {"decision": DECISION_LOOP_BACK}
+        ),
+    )
+
+    states = [step["state"] for step in report["steps"]]
+    assert states[-2:] == ["visualize-rejected", "reject-quality"]
+    assert "annotate-augmented" not in states
+    assert states.index("quality-disposition") < states.index("visualize-rejected")

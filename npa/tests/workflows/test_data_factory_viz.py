@@ -105,8 +105,22 @@ def test_load_stage_docs_covers_all_pipeline_stages(tmp_path: Path) -> None:
         "clips": ["aug-0", "aug-1"], "variants": [{"clip": "aug-0"}, {"clip": "aug-1"}],
     }))
     (run / "grade").mkdir(parents=True)
-    (run / "grade" / "vlm_eval_stub.json").write_text(json.dumps({"score": 0.82, "model": "Qwen/Qwen2.5-VL-72B-Instruct"}))
-    (run / "grade" / "decision.json").write_text(json.dumps({"decision": "promote_checkpoint"}))
+    (run / "grade" / "cosmos_evaluator.json").write_text(
+        json.dumps({"score": 0.72, "status": "completed", "passed": False})
+    )
+    (run / "grade" / "decision.json").write_text(
+        json.dumps({"decision": "loop_back_to_inner_loop"})
+    )
+    (run / "grade" / "quality_disposition.json").write_text(
+        json.dumps(
+            {
+                "quality_status": "rejected",
+                "score": 0.72,
+                "threshold": 0.75,
+                "reasons": ["aggregate score is below threshold"],
+            }
+        )
+    )
     (run / "curation").mkdir(parents=True)
     (run / "curation" / "report.json").write_text(json.dumps({"augmented_clips": 2, "multiply": {"mode": "multi-variant"}}))
     (run / "reports").mkdir(parents=True)
@@ -127,8 +141,10 @@ def test_load_stage_docs_covers_all_pipeline_stages(tmp_path: Path) -> None:
     assert "Upstream real sample" in docs["pipeline/0_input_provenance"]
     assert "normalized_conditioning_clip" in docs["pipeline/0_input_provenance"]
     # Hallucination / attribute-verify grade + gate decision are both present.
-    assert "0.82" in docs["pipeline/3_grade"]
-    assert "promote_checkpoint" in docs["pipeline/3_grade"]
+    assert "0.72" in docs["pipeline/3_grade"]
+    assert "loop_back_to_inner_loop" in docs["pipeline/3_grade"]
+    assert "rejected" in docs["pipeline/3_grade"]
+    assert "aggregate score is below threshold" in docs["pipeline/3_grade"]
     # Stage log lists each stage.
     assert "augment" in docs["pipeline/0_log"]
     assert "grade" in docs["pipeline/0_log"]

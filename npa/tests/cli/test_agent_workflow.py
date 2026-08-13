@@ -259,6 +259,8 @@ def test_generate_data_factory_yaml_validates_and_plans() -> None:
         "evaluate",
         "quality-gate",
         "quality-disposition",
+        "visualize-rejected",
+        "reject-quality",
         "annotate-augmented",
         "cosmos-curate",
         "curate",
@@ -266,7 +268,11 @@ def test_generate_data_factory_yaml_validates_and_plans() -> None:
         "finalize",
     }
     assert expected.issubset(set(result["states"]))
-    plan = plan_workflow_yaml_text(yaml_text, run_id="paidf-demo")
+    plan = plan_workflow_yaml_text(
+        yaml_text,
+        run_id="paidf-demo",
+        assume_decision="promote_checkpoint",
+    )
     assert plan["ok"] is True
     tool_refs = [step.get("tool_ref") for step in plan["steps"]]
     assert "workbench.cosmos2.transfer_execute" in tool_refs
@@ -281,6 +287,21 @@ def test_generate_data_factory_yaml_validates_and_plans() -> None:
     assert generated["config"]["appearance_fidelity_mode"] == "advisory"
     assert generated["states"]["grade"]["next"] == "quality-disposition"
     assert generated["states"]["annotate-augmented"]["needs"] == ["quality-disposition"]
+    assert generated["states"]["quality-disposition"]["transitions"] == [
+        {"when": "promote_checkpoint", "goto": "annotate-augmented"},
+        {"when": "loop_back", "goto": "visualize-rejected"},
+    ]
+    assert generated["states"]["visualize-rejected"]["toolRef"] == (
+        "workbench.nurec.visualize"
+    )
+    rejected_plan = plan_workflow_yaml_text(
+        yaml_text,
+        run_id="paidf-rejected",
+        assume_decision="loop_back",
+    )
+    rejected_states = [step["state"] for step in rejected_plan["steps"]]
+    assert rejected_states[-2:] == ["visualize-rejected", "reject-quality"]
+    assert "annotate-augmented" not in rejected_states
     assert "supported video" in generated["states"]["augment"]["description"].lower()
 
 

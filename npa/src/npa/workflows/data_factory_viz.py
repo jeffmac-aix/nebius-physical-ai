@@ -511,19 +511,41 @@ def _load_stage_docs(local: Path) -> dict[str, str]:
     grade_dir = local / "grade"
     grade_docs: list[str] = []
     try:
+        from npa.workbench.cosmos_evaluator import (
+            RESULT_FILENAME as _cosmos_evaluator_result_filename,
+        )
+    except Exception:  # noqa: BLE001
+        _cosmos_evaluator_result_filename = "cosmos_evaluator.json"
+    try:
         from npa.workbench.vlm_eval import RESULT_FILENAME as _vlm_result_filename
     except Exception:  # noqa: BLE001
         _vlm_result_filename = "vlm_eval_stub.json"
-    for name in (_vlm_result_filename, "vlm_eval.json"):
+    for name in (
+        _cosmos_evaluator_result_filename,
+        _vlm_result_filename,
+        "vlm_eval.json",
+    ):
         ev = _read_json(grade_dir / name)
         if isinstance(ev, dict):
-            grade_docs.append(_json_block("Attribute verification / hallucination check (VLM)", ev))
-            stage_log.append(f"grade: vlm score={ev.get('score')}, model={ev.get('model', 'n/a')}")
+            grade_docs.append(
+                _json_block("Evaluator — integrity and appearance checks", ev)
+            )
+            stage_log.append(
+                f"grade: score={ev.get('score')}, status={ev.get('status', 'n/a')}"
+            )
             break
     dec = _read_json(grade_dir / "decision.json")
     if isinstance(dec, dict):
         grade_docs.append(_json_block("Quality gate decision", dec))
         stage_log.append(f"grade: decision={dec.get('decision', 'n/a')}")
+    disposition = _read_json(grade_dir / "quality_disposition.json")
+    if isinstance(disposition, dict):
+        grade_docs.append(_json_block("Final quality disposition", disposition))
+        stage_log.append(
+            "grade: disposition="
+            f"{disposition.get('quality_status', 'n/a')}, "
+            f"score={disposition.get('score', 'n/a')}"
+        )
     if grade_docs:
         docs["pipeline/3_grade"] = "\n".join(grade_docs)
 

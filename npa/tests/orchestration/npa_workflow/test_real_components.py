@@ -117,7 +117,9 @@ def test_agent_generated_paidf_runs_named_real_components() -> None:
         in TOOL_CATALOG["workbench.fiftyone.curate_augmented"].argv_template
     )
     assert states["visualize"]["toolRef"] == "workbench.nurec.visualize"
+    assert states["visualize-rejected"]["toolRef"] == "workbench.nurec.visualize"
     assert "pip install" not in str(states["visualize"])
+    assert "pip install" not in str(states["visualize-rejected"])
 
 
 def test_blueprint_run_shell_stages_are_real() -> None:
@@ -198,8 +200,18 @@ def test_evaluate_runs_the_real_cosmos_evaluator() -> None:
     ]
     assert states["grade"]["next"] == "quality-disposition"
     assert states["annotate-augmented"]["needs"] == ["quality-disposition"]
-    assert (
-        "enforce_quality_disposition" in states["quality-disposition"]["run"]["shell"]
+    disposition = states["quality-disposition"]
+    disposition_command = " ".join(disposition["run"]["argv"])
+    assert disposition["writesDecision"] is True
+    assert "write_quality_disposition" in disposition_command
+    assert disposition["transitions"] == [
+        {"when": "promote_checkpoint", "goto": "annotate-augmented"},
+        {"when": "loop_back", "goto": "visualize-rejected"},
+    ]
+    assert states["visualize-rejected"]["next"] == "reject-quality"
+    assert states["visualize-rejected"]["outputs"][0]["uri"] == "{{config.rrd_uri}}"
+    assert "enforce_quality_disposition" in " ".join(
+        states["reject-quality"]["run"]["argv"]
     )
     assert float(_spec()["config"]["grade_threshold"]) >= 0.75
     assert float(_spec()["config"]["temporal_consistency_threshold"]) >= 0.8
