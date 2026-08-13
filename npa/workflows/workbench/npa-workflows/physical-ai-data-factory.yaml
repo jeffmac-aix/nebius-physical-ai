@@ -102,11 +102,13 @@ config:
   refinement_max_control_weight: "1.0"
   refinement_guidance_step: "1.0"
   refinement_min_guidance: "1.0"
-  # Optional source-chroma restoration inside appearance_regions_json. This
-  # keeps generated luminance/illumination while protecting identity-bearing
-  # material colour. Leave off unless the deployment supplies meaningful regions.
+  # Optional per-pixel source-chroma restoration inside dedicated protected
+  # regions. This keeps generated luminance/illumination while protecting
+  # identity-bearing material colour. Leave off unless meaningful regions exist.
   protected_chroma_mode: "off"
   protected_chroma_regions_json: ""
+  protected_luma_max_delta: "32"
+  protected_feather_pixels: "12"
   # NPA temporal residual is advisory until a deployment calibrates its fixed
   # noise floor. Set mode=required only with representative encoded clips.
   temporal_consistency_mode: advisory

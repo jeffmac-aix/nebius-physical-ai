@@ -102,13 +102,17 @@ def preserve_source_chroma(
     source_video: str,
     regions_json: str,
     feather_pixels: int = 12,
+    luma_max_delta: int = 32,
 ) -> dict[str, Any]:
     """Restore source chroma in protected regions while retaining generated light.
 
     Cosmos still generates every frame. This optional deterministic post-process
-    aligns only the regional Cb/Cr center inside feathered normalized rectangles;
-    generated luma and texture are retained, so illumination/exposure augmentation
-    remains visible without copying source pixels or creating motion ghosts.
+    restores source Cb/Cr per pixel inside feathered normalized rectangles;
+    generated luma is retained within a bounded per-pixel distance from source,
+    so mild illumination/exposure augmentation remains visible while extreme
+    darkening or brightening fails to alter protected identity colors. Exact
+    frame-count and geometry alignment are required to avoid color ghosts across
+    moving boundaries.
     Frame-count or decode mismatches fail closed instead of publishing partially
     corrected output.
     """
@@ -116,6 +120,8 @@ def preserve_source_chroma(
     regions = _parse_protected_regions(regions_json)
     if feather_pixels < 1:
         raise ProtectedChromaError("protected chroma feather must be positive")
+    if not 0 <= luma_max_delta <= 255:
+        raise ProtectedChromaError("protected luma max delta must be within 0..255")
     source = Path(source_video)
     augmented = Path(str(transfer.get("video_path") or ""))
     if not source.is_file() or not augmented.is_file():
@@ -126,11 +132,12 @@ def preserve_source_chroma(
     script = r'''
 import av, json, numpy as np, sys
 from pathlib import Path
-source_path, augmented_path, frames_dir_text, regions_text, feather_text = sys.argv[1:]
+source_path, augmented_path, frames_dir_text, regions_text, feather_text, luma_delta_text = sys.argv[1:]
 frames_dir = Path(frames_dir_text)
 regions = json.loads(regions_text)
 regions = [r.get("bounds") if isinstance(r, dict) else r for r in regions]
 feather = int(feather_text)
+luma_delta = int(luma_delta_text)
 src_container = av.open(source_path)
 aug_container = av.open(augmented_path)
 aug_stream = aug_container.streams.video[0]
@@ -164,18 +171,15 @@ for aug_frame in aug_frames:
     srcf, augf = src.astype(np.float32), aug.astype(np.float32)
     src_cb = 128.0 - 0.168736 * srcf[..., 0] - 0.331264 * srcf[..., 1] + 0.5 * srcf[..., 2]
     src_cr = 128.0 + 0.5 * srcf[..., 0] - 0.418688 * srcf[..., 1] - 0.081312 * srcf[..., 2]
+    src_y = 0.299 * srcf[..., 0] + 0.587 * srcf[..., 1] + 0.114 * srcf[..., 2]
     y = 0.299 * augf[..., 0] + 0.587 * augf[..., 1] + 0.114 * augf[..., 2]
     aug_cb = 128.0 - 0.168736 * augf[..., 0] - 0.331264 * augf[..., 1] + 0.5 * augf[..., 2]
     aug_cr = 128.0 + 0.5 * augf[..., 0] - 0.418688 * augf[..., 1] - 0.081312 * augf[..., 2]
-    cb, cr = aug_cb.copy(), aug_cr.copy()
-    for mask in masks:
-        core = mask >= 0.75
-        if not np.any(core):
-            core = mask > 0.0
-        delta_cb = float(np.median(src_cb[core] - aug_cb[core]))
-        delta_cr = float(np.median(src_cr[core] - aug_cr[core]))
-        cb += delta_cb * mask
-        cr += delta_cr * mask
+    alpha = np.maximum.reduce(masks)
+    bounded_y = np.clip(y, src_y - float(luma_delta), src_y + float(luma_delta))
+    y = y * (1.0 - alpha) + bounded_y * alpha
+    cb = aug_cb * (1.0 - alpha) + src_cb * alpha
+    cr = aug_cr * (1.0 - alpha) + src_cr * alpha
     rgb = np.stack((
         y + 1.402 * (cr - 128.0),
         y - 0.344136 * (cb - 128.0) - 0.714136 * (cr - 128.0),
@@ -209,6 +213,7 @@ print(json.dumps({"frames": count, "fps": float(rate)}))
                     frames_dir,
                     regions_json,
                     str(feather_pixels),
+                    str(luma_max_delta),
                 ],
                 check=True,
                 capture_output=True,
@@ -262,9 +267,10 @@ print(json.dumps({"frames": count, "fps": float(rate)}))
     result["video_bytes"] = output.stat().st_size
     result["protected_chroma"] = {
         "mode": "source-chroma",
-        "method": "regional-median-chroma-alignment",
+        "method": "feathered-per-pixel-source-chroma",
         "region_count": len(regions),
         "feather_pixels": feather_pixels,
+        "luma_max_delta": luma_max_delta,
         "frame_count": frame_count,
     }
     return result
