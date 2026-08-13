@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 
 import pytest
+import typer
 from typer.testing import CliRunner
 
 from npa.cli.main import app
@@ -141,13 +142,29 @@ def test_load_refinement_validates_numeric_settings(tmp_path: Path) -> None:
                 "attempt": 1,
                 "adapted_from_prior_evaluation": True,
                 "failed_checks": ["appearance_fidelity"],
-                "settings": {"control_weight": 1.5, "guidance": 2.25},
+                "settings": {"control_weight": 1.0, "guidance": 2},
             }
         )
     )
     loaded = cosmos2._load_refinement(str(policy))
     assert loaded["attempt"] == 1
-    assert loaded["settings"] == {"control_weight": 1.5, "guidance": 2.25}
+    assert loaded["settings"] == {"control_weight": 1.0, "guidance": 2}
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        {"control_weight": 1.1, "guidance": 2},
+        {"control_weight": 0.8, "guidance": 2.5},
+    ],
+)
+def test_load_refinement_rejects_values_cosmos_cannot_load(
+    tmp_path: Path, settings: dict[str, float]
+) -> None:
+    policy = tmp_path / "refinement.json"
+    policy.write_text(json.dumps({"attempt": 1, "settings": settings}))
+    with pytest.raises(typer.BadParameter):
+        cosmos2._load_refinement(str(policy))
 
 
 def test_run_cosmos_transfer_conditions_on_input(tmp_path: Path, monkeypatch) -> None:

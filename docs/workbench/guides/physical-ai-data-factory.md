@@ -225,6 +225,9 @@ Refinement is adaptive by default. `prepare-refinement` writes
 retry raises edge-control strength and lowers prompt guidance within the configured
 min/max bounds. Transfer metadata records the effective values and failed check
 names, so a retry is not an unauditable replay of identical inference settings.
+The planner validates Cosmos Transfer's native constraints before reserving a GPU:
+edge-control weights stay within `0..1`, and guidance remains a non-negative
+integer.
 
 Edge control preserves structure and motion, not source color. Deployments that
 must protect identity-bearing material colors can set

@@ -124,13 +124,22 @@ def _load_refinement(refinement_uri: str) -> dict[str, Any]:
         raise typer.BadParameter("refinement artifact has no settings object")
     try:
         control_weight = float(settings["control_weight"])
-        guidance = float(settings["guidance"])
+        guidance_number = float(settings["guidance"])
         attempt = int(payload.get("attempt", 0))
     except (KeyError, TypeError, ValueError) as exc:
         raise typer.BadParameter(
             "refinement artifact settings must contain numeric control_weight and guidance"
         ) from exc
-    if control_weight < 0.0 or guidance < 0.0 or attempt < 0:
+    if not 0.0 <= control_weight <= 1.0:
+        raise typer.BadParameter(
+            "refinement control_weight must be between 0 and 1"
+        )
+    if guidance_number < 0.0 or not guidance_number.is_integer():
+        raise typer.BadParameter(
+            "refinement guidance must be a non-negative integer"
+        )
+    guidance = int(guidance_number)
+    if attempt < 0:
         raise typer.BadParameter("refinement artifact settings cannot be negative")
     return {
         "schema": str(payload.get("schema") or ""),
