@@ -539,18 +539,12 @@ def prepare_refinement(
     return payload
 
 
-def enforce_quality_disposition(
+def _persist_quality_disposition(
     scores_uri: str,
     disposition_uri: str,
     threshold: float | str = 0.75,
 ) -> dict[str, Any]:
-    """Persist an accepted/rejected quality disposition and fail closed on reject.
-
-    This state runs after the bounded refinement loop.  A loop can finish because
-    it promoted or because it exhausted its iterations; only the evaluator report
-    distinguishes those outcomes.  Persisting the disposition before raising keeps
-    rejected output auditable while preventing downstream labeling and curation.
-    """
+    """Persist and return the final accepted/rejected quality disposition."""
 
     from npa.workbench.cosmos_evaluator import RESULT_FILENAME
 
@@ -602,9 +596,54 @@ def enforce_quality_disposition(
         "reasons": reasons,
     }
     payload["written_uri"] = _upload_json(payload, disposition_uri)
+    return payload
+
+
+def write_quality_disposition(
+    scores_uri: str,
+    disposition_uri: str,
+    decision_uri: str,
+    threshold: float | str = 0.75,
+) -> dict[str, Any]:
+    """Persist disposition and route accepted/rejected runs without raising.
+
+    Rejected runs must reach the evidence-only Rerun stage before the workflow
+    fails closed. This function therefore records the final disposition and a
+    canonical transition decision; ``enforce_quality_disposition`` remains the
+    rejecting action after that evidence has been materialized.
+    """
+
+    from npa.orchestration.npa_workflow.decisions import write_decision
+
+    payload = _persist_quality_disposition(scores_uri, disposition_uri, threshold)
+    decision = (
+        "promote_checkpoint" if payload["quality_status"] == "accepted" else "loop_back"
+    )
+    write_decision(decision_uri, decision)
+    payload["decision"] = decision
     print(json.dumps(payload))
-    if not accepted:
-        raise RuntimeError("quality rejected after refinement; see quality disposition artifact")
+    return payload
+
+
+def enforce_quality_disposition(
+    scores_uri: str,
+    disposition_uri: str,
+    threshold: float | str = 0.75,
+) -> dict[str, Any]:
+    """Persist an accepted/rejected quality disposition and fail closed on reject.
+
+    This state runs after the bounded refinement loop.  A loop can finish because
+    it promoted or because it exhausted its iterations; only the evaluator report
+    distinguishes those outcomes.  Persisting the disposition before raising keeps
+    rejected output auditable while preventing downstream labeling and curation.
+    """
+
+    payload = _persist_quality_disposition(scores_uri, disposition_uri, threshold)
+    print(json.dumps(payload))
+    if payload["quality_status"] != "accepted":
+        raise RuntimeError(
+            "quality rejected after refinement; see quality disposition artifact"
+        )
     return payload
 
 

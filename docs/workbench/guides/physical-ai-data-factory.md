@@ -27,7 +27,7 @@ NVIDIA blueprint (OSMO) → NPA stage (toolRef / run):
 | Stage 3 Pseudo-Label Augmented | `annotate-augmented` | `npa workbench token-factory caption` (run.shell) | Token Factory |
 | Stage 4a Curation | `cosmos-curate` | `workbench.cosmos_curate.curate` | CPU |
 | Stage 4b Curation review | `curate` | `workbench.fiftyone.curate_augmented` (required FiftyOne Brain) | CPU |
-| Visualize | `visualize` | `data_factory_viz.build_run_rrd` | CPU |
+| Visualize | `visualize` / `visualize-rejected` | `data_factory_viz.build_run_rrd` (full accepted run or partial rejection evidence) | CPU |
 | Finalize | `finalize` | `data_factory_stages.finalize` | CPU |
 
 Three NVIDIA components in that table are the real open-source projects:
@@ -434,6 +434,21 @@ so the run renders in the NPA agent's **embedded Rerun viewer** — the agent
 prefers `reports/sim2real.rrd`, so selecting the run and loading it (or clicking
 the `.rrd` in the artifact browser) shows it in the Rerun panel.
 
+After refinement, `quality-disposition` branches on the persisted final result.
+Accepted runs continue through re-captioning and curation before `visualize`.
+Rejected runs first execute `visualize-rejected`, which records the available
+input/augmented frames, evaluator result, decision, and rejection disposition,
+then `reject-quality` fails the workflow. This preserves fail-closed promotion
+without losing the RRD needed to inspect why the run was rejected. A failure that
+occurs before usable input or augmented frames exist still cannot produce an RRD.
+
+PAIDF does **not** currently use Segment Anything (SAM or SAM2). Input video
+conditioning uses derived `edge` or `vis` controls, while the evaluator performs
+its own comparison-mask analysis. Token Factory VLM captioning also does not emit
+semantic segmentation masks. Adding SAM would require an explicit workbench stage,
+packaged model weights with licensing review, a versioned mask artifact contract,
+and tests; it should not be inferred from the word “mask” in evaluator reports.
+
 ## View input / intermediate / output in the NPA agent
 
 The agent discovers runs from its artifact bucket. If the agent's base prefix is
@@ -453,10 +468,9 @@ Input clips render as `video`, extracted frames as `image`, and every stage's
 labels/reports as `json` — so the full input → intermediate → output flow is
 browsable in the agent.
 
-> **Dataset provenance and the full Rerun recording only appear once the run gets past
-> annotate → augment → curate → visualize.** With an empty `input/` the run stops
-> at `annotate-original` (only `configs/manifest.json` is written), so there is no
-> `cosmos_augmented/`, no `curation/report.json` for the dataset tab, and no
-> `reports/sim2real.rrd` for the Rerun panel. Stage input frames first (see the
-> callout above) so the pipeline reaches curate/visualize and those panels
-> populate.
+> **An RRD needs decodable input or augmented frames.** With an empty `input/` the
+> run stops at `annotate-original` (only `configs/manifest.json` is written), so
+> there is no frame evidence from which to build `reports/sim2real.rrd`. Once
+> augmentation has produced frames, both accepted and quality-rejected paths
+> materialize the recording; only accepted runs include the downstream curation
+> and final report panels.

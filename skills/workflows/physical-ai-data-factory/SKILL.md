@@ -44,7 +44,7 @@ is pure composition of existing toolRefs; only add real tools with tests.
 | Pseudo-Label Augmented | `annotate-augmented` | `npa workbench token-factory caption` (run.shell) | Token Factory |
 | Curation | `cosmos-curate` | `workbench.cosmos_curate.curate` (real Cosmos Curator stages → `clips/` + `metas/v0/`) | CPU |
 | Curation review | `curate` | `workbench.fiftyone.curate_augmented` (real FiftyOne Brain, fail closed, merges the curator report) | CPU |
-| Visualize | `visualize` | `workbench.nurec.visualize` → `data_factory_viz.build_run_rrd` → `reports/sim2real.rrd` | CPU, prebuilt `npa-rerun-viewer` image |
+| Visualize | `visualize` (accepted) / `visualize-rejected` (rejected evidence) | `workbench.nurec.visualize` → `data_factory_viz.build_run_rrd` → `reports/sim2real.rrd` | CPU, prebuilt `npa-rerun-viewer` image |
 | Finalize | `finalize` | `data_factory_stages.finalize` (real aggregate report) | CPU |
 
 Every stage invokes a real component (enforced by `test_real_components.py` and
@@ -285,9 +285,16 @@ not change these disk requirements.
   failures stop before automatic provisioning and never fall back. The catalog's
   mandatory `--condition-on-input` makes the staged conditioning clip the real
   Cosmos control. Consequently the Dataset & provenance tab and the full
-  `reports/sim2real.rrd` Rerun
-  recording only appear once the run gets past annotate → augment → curate →
-  visualize.
+  `reports/sim2real.rrd` Rerun recording is built after grading on both outcomes:
+  accepted runs include downstream captions/curation/finalization when available;
+  rejected runs get a partial evidence recording before the explicit fail-closed
+  state. Runs that fail before usable input/augmented frames exist cannot produce
+  an RRD.
+- **SAM is not part of this blueprint.** PAIDF currently derives `edge` or `vis`
+  control from the input video and uses Cosmos Evaluator's comparison masks. It
+  does not invoke Segment Anything (SAM/SAM2), and VLM captioning is not semantic
+  segmentation. A future SAM integration must be an explicit real workbench stage
+  with model licensing, image packaging, mask artifacts, and tests.
 Run either NVIDIA component on its own, against a run prefix or local files:
 
 ```bash
@@ -404,12 +411,13 @@ npa workbench cosmos-curate curate-videos --input-dir ./clips --output-dir ./cur
   augment stage "multiplies": it runs one inference per sampled combo and emits
   one clip dir per variant (`publish_transfer_clip` per clip + a single
   `write_run_manifest`), so N sampled combos → N clip dirs.
-- **Full pipeline in the Rerun panel:** `build_run_rrd` logs the run's input
+- **Full or rejected-evidence pipeline in the Rerun panel:** `build_run_rrd` logs the run's input
   frames and each augmented clip's frames/label PLUS a static text doc per stage
   — sampled scenarios (config), the attribute-verify / hallucination grade + gate
-  decision, the curation report, the finalize aggregate, and a stage log — under
-  the `pipeline/*` entities, so the whole pipeline (logs, hallucination check,
-  input + output images) is viewable in one embedded Rerun recording.
+  decision, final quality disposition, any curation/finalize reports, and a stage
+  log — under the `pipeline/*` entities. Rejected runs take `visualize-rejected`
+  before `reject-quality`, so the evidence survives while promotion remains
+  fail-closed.
 - **Viewing in the NPA agent:** every stage lands under one S3 run prefix
   (`input/ configs/ labeled_original/ cosmos_augmented/ grade/ labeled_augmented/
   curation/ reports/`). The `visualize` stage writes `reports/sim2real.rrd`,

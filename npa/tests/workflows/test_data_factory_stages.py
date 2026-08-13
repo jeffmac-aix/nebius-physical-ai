@@ -265,6 +265,50 @@ def test_quality_disposition_accepts_only_a_complete_hard_check_pass(
     assert json.loads(disposition.read_text())["quality_status"] == "accepted"
 
 
+@pytest.mark.parametrize(
+    ("report", "expected_status", "expected_decision"),
+    [
+        (
+            {"score": 0.81, "status": "completed", "passed": True},
+            "accepted",
+            "promote_checkpoint",
+        ),
+        (
+            {"score": 0.74, "status": "completed", "passed": True},
+            "rejected",
+            "loop_back",
+        ),
+    ],
+)
+def test_write_quality_disposition_routes_without_raising(
+    tmp_path: Path,
+    monkeypatch,
+    report: dict,
+    expected_status: str,
+    expected_decision: str,
+) -> None:
+    scores = tmp_path / "cosmos_evaluator.json"
+    disposition = tmp_path / "quality_disposition.json"
+    scores.write_text(json.dumps(report))
+    decisions: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        "npa.orchestration.npa_workflow.decisions.write_decision",
+        lambda uri, decision: decisions.append((uri, decision)),
+    )
+
+    result = dfs.write_quality_disposition(
+        str(scores),
+        str(disposition),
+        "s3://example/grade/decision.json",
+        threshold=0.75,
+    )
+
+    assert result["quality_status"] == expected_status
+    assert result["decision"] == expected_decision
+    assert json.loads(disposition.read_text())["quality_status"] == expected_status
+    assert decisions == [("s3://example/grade/decision.json", expected_decision)]
+
+
 def test_quality_disposition_persists_rejection_before_failing(tmp_path: Path) -> None:
     scores = tmp_path / "cosmos_evaluator.json"
     disposition = tmp_path / "quality_disposition.json"
