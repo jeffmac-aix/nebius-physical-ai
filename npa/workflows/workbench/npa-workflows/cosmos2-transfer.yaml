@@ -38,6 +38,7 @@ config:
   cosmos_guidance: "3.0"
   refinement_uri: ""
   protected_chroma_mode: "off"
+  protected_chroma_regions_json: ""
   appearance_regions_json: ""
 
 resources:

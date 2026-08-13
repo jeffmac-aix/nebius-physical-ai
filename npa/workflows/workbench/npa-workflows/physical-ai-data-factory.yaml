@@ -106,6 +106,7 @@ config:
   # keeps generated luminance/illumination while protecting identity-bearing
   # material colour. Leave off unless the deployment supplies meaningful regions.
   protected_chroma_mode: "off"
+  protected_chroma_regions_json: ""
   # NPA temporal residual is advisory until a deployment calibrates its fixed
   # noise floor. Set mode=required only with representative encoded clips.
   temporal_consistency_mode: advisory

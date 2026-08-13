@@ -209,13 +209,18 @@ names, so a retry is not an unauditable replay of identical inference settings.
 Edge control preserves structure and motion, not source color. Deployments that
 must protect identity-bearing material colors can set
 `protected_chroma_mode: source-chroma` and provide normalized rectangles through
-`appearance_regions_json`. Cosmos still generates the video, but the transfer
+`protected_chroma_regions_json`. Cosmos still generates the video, but the transfer
 stage aligns regional Cb/Cr to the source inside feathered protected regions while
 retaining generated luma and texture, so exposure and illumination changes remain
 without copying source pixels. The mode is off by
 default: rectangles are a coarse MP4-only protection surface, and semantic masks
 or simulator passes are preferable when available. A decode or frame-count mismatch
 fails closed rather than publishing partially protected output.
+
+`protected_chroma_regions_json` is deliberately separate from
+`appearance_regions_json`: the former changes transfer pixels, while the latter
+only selects evaluator measurements. A deployment may use the same rectangles for
+both, but PAIDF does not couple those policies implicitly.
 
 The all-variant batch policy is intentionally conservative: the reference workflow
 does not yet quarantine failed variant directories before downstream labeling and

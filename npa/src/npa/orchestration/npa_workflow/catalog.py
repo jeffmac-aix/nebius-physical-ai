@@ -411,7 +411,7 @@ TOOL_CATALOG: dict[str, ToolEntry] = {
             "--protected-chroma-mode",
             "{{config.protected_chroma_mode}}",
             "--protected-regions-json",
-            "{{config.appearance_regions_json}}",
+            "{{config.protected_chroma_regions_json}}",
             "--condition-on-input",
             "--execute",
         ],
