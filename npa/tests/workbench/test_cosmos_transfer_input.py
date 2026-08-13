@@ -83,6 +83,73 @@ def test_spec_for_input_video_builds_edge_control(tmp_path: Path) -> None:
     assert modality2 == "depth"
 
 
+def test_parse_protected_regions_accepts_labeled_normalized_rectangles() -> None:
+    assert tx._parse_protected_regions(
+        '[{"id":"identity-bearing-material","bounds":[0.1,0.2,0.8,0.9]}]'
+    ) == [(0.1, 0.2, 0.8, 0.9)]
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["", "{}", "[]", "[[0,0,2,1]]", '[{"bounds":[0,0,1]}]'],
+)
+def test_parse_protected_regions_fails_closed_on_invalid_input(value: str) -> None:
+    with pytest.raises(tx.ProtectedChromaError):
+        tx._parse_protected_regions(value)
+
+
+def test_preserve_source_chroma_records_effective_provenance(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source = tmp_path / "source.mp4"
+    generated = tmp_path / "generated.mp4"
+    source.write_bytes(b"source")
+    generated.write_bytes(b"generated")
+
+    def fake_run(command, **kwargs):  # noqa: ANN001
+        assert kwargs["check"] is True
+        if command[0] == "ffmpeg":
+            Path(command[-1]).write_bytes(b"corrected-video")
+            return tx.subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        return tx.subprocess.CompletedProcess(
+            command, 0, stdout='{"frames": 7, "fps": 30.0}\n', stderr=""
+        )
+
+    monkeypatch.setattr(tx, "cosmos_transfer_repo", lambda: tmp_path)
+    monkeypatch.setattr(tx.subprocess, "run", fake_run)
+    result = tx.preserve_source_chroma(
+        {"video_path": str(generated), "video_bytes": generated.stat().st_size},
+        source_video=str(source),
+        regions_json="[[0.1,0.1,0.9,0.9]]",
+    )
+    assert Path(result["video_path"]).read_bytes() == b"corrected-video"
+    assert result["protected_chroma"] == {
+        "mode": "source-chroma",
+        "method": "regional-median-chroma-alignment",
+        "region_count": 1,
+        "feather_pixels": 12,
+        "frame_count": 7,
+    }
+
+
+def test_load_refinement_validates_numeric_settings(tmp_path: Path) -> None:
+    policy = tmp_path / "refinement.json"
+    policy.write_text(
+        json.dumps(
+            {
+                "schema": "npa.data_factory.refinement.v1",
+                "attempt": 1,
+                "adapted_from_prior_evaluation": True,
+                "failed_checks": ["appearance_fidelity"],
+                "settings": {"control_weight": 1.5, "guidance": 2.25},
+            }
+        )
+    )
+    loaded = cosmos2._load_refinement(str(policy))
+    assert loaded["attempt"] == 1
+    assert loaded["settings"] == {"control_weight": 1.5, "guidance": 2.25}
+
+
 def test_run_cosmos_transfer_conditions_on_input(tmp_path: Path, monkeypatch) -> None:
     repo = tmp_path / "repo"
     (repo / "examples").mkdir(parents=True)
@@ -220,6 +287,10 @@ def test_publish_marks_real_gpu_mode_and_conditioning(
             "conditioning_clip_uri": "s3://bkt/run1/input/conditioning.mp4",
             "control": "edge",
             "content_guardrails_enabled": False,
+            "protected_chroma": {"mode": "source-chroma", "region_count": 2},
+            "refinement": {"attempt": 1},
+            "effective_control_weight": 1.5,
+            "effective_guidance": 2.25,
         },
         "s3://bkt/run1/cosmos_augmented/",
         run_id="run1",
@@ -238,6 +309,10 @@ def test_publish_marks_real_gpu_mode_and_conditioning(
     assert meta["conditioned_input"] == "robot_input.mp4"
     assert meta["content_guardrails_enabled"] is False
     assert meta["conditioning_clip_uri"] == "s3://bkt/run1/input/conditioning.mp4"
+    assert meta["protected_chroma"]["mode"] == "source-chroma"
+    assert meta["refinement"]["attempt"] == 1
+    assert meta["effective_control_weight"] == 1.5
+    assert meta["effective_guidance"] == 2.25
 
 
 def test_multi_variant_publish_writes_one_clip_per_combo(

@@ -17,12 +17,14 @@ from __future__ import annotations
 
 import glob
 import hashlib
+import json
 import logging
 import os
 import re
 import secrets
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -133,6 +135,215 @@ def resolve_control_weight(control_weight: float | str) -> float:
     except ControlContractError as exc:
         raise ControlModalityError(str(exc)) from exc
     return weight
+
+
+class ProtectedChromaError(RuntimeError):
+    """Raised when configured protected-region color preservation cannot complete."""
+
+
+def _parse_protected_regions(value: str) -> list[tuple[float, float, float, float]]:
+    """Parse normalized protected rectangles for source-chroma restoration."""
+
+    try:
+        raw = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise ProtectedChromaError("protected regions must be valid JSON") from exc
+    if not isinstance(raw, list) or not raw:
+        raise ProtectedChromaError("source-chroma mode requires protected regions")
+    regions: list[tuple[float, float, float, float]] = []
+    for index, item in enumerate(raw):
+        bounds: Any = item.get("bounds") if isinstance(item, dict) else item
+        if not isinstance(bounds, (list, tuple)) or len(bounds) != 4:
+            raise ProtectedChromaError(
+                f"protected region {index} must have four normalized bounds"
+            )
+        try:
+            x0, y0, x1, y1 = (float(part) for part in bounds)
+        except (TypeError, ValueError) as exc:
+            raise ProtectedChromaError(
+                f"protected region {index} has non-numeric bounds"
+            ) from exc
+        if not (0.0 <= x0 < x1 <= 1.0 and 0.0 <= y0 < y1 <= 1.0):
+            raise ProtectedChromaError(
+                f"protected region {index} bounds must satisfy "
+                "0 <= x0 < x1 <= 1 and 0 <= y0 < y1 <= 1"
+            )
+        regions.append((x0, y0, x1, y1))
+    return regions
+
+
+def preserve_source_chroma(
+    transfer: dict[str, Any],
+    *,
+    source_video: str,
+    regions_json: str,
+    feather_pixels: int = 12,
+) -> dict[str, Any]:
+    """Restore source chroma in protected regions while retaining generated light.
+
+    Cosmos still generates every frame. This optional deterministic post-process
+    aligns only the regional Cb/Cr center inside feathered normalized rectangles;
+    generated luma and texture are retained, so illumination/exposure augmentation
+    remains visible without copying source pixels or creating motion ghosts.
+    Frame-count or decode mismatches fail closed instead of publishing partially
+    corrected output.
+    """
+
+    regions = _parse_protected_regions(regions_json)
+    if feather_pixels < 1:
+        raise ProtectedChromaError("protected chroma feather must be positive")
+    source = Path(source_video)
+    augmented = Path(str(transfer.get("video_path") or ""))
+    if not source.is_file() or not augmented.is_file():
+        raise ProtectedChromaError(
+            "protected chroma needs readable source and augmented videos"
+        )
+    output = augmented.with_name(f"{augmented.stem}-source-chroma.mp4")
+    script = r'''
+import av, json, numpy as np, sys
+from pathlib import Path
+source_path, augmented_path, frames_dir_text, regions_text, feather_text = sys.argv[1:]
+frames_dir = Path(frames_dir_text)
+regions = json.loads(regions_text)
+regions = [r.get("bounds") if isinstance(r, dict) else r for r in regions]
+feather = int(feather_text)
+src_container = av.open(source_path)
+aug_container = av.open(augmented_path)
+aug_stream = aug_container.streams.video[0]
+rate = aug_stream.average_rate or aug_stream.base_rate or 30
+width, height = int(aug_stream.width), int(aug_stream.height)
+masks = []
+for bounds in regions:
+    x0 = max(0, min(width - 1, int(round(float(bounds[0]) * width))))
+    y0 = max(0, min(height - 1, int(round(float(bounds[1]) * height))))
+    x1 = max(x0 + 1, min(width, int(round(float(bounds[2]) * width))))
+    y1 = max(y0 + 1, min(height, int(round(float(bounds[3]) * height))))
+    yy, xx = np.ogrid[y0:y1, x0:x1]
+    distance = np.minimum(
+        np.minimum(xx - x0, x1 - 1 - xx),
+        np.minimum(yy - y0, y1 - 1 - yy),
+    ).astype(np.float32)
+    alpha = np.clip((distance + 1.0) / float(feather), 0.0, 1.0)
+    mask = np.zeros((height, width), dtype=np.float32)
+    mask[y0:y1, x0:x1] = alpha
+    masks.append(mask)
+src_frames = iter(src_container.decode(video=0))
+aug_frames = iter(aug_container.decode(video=0))
+count = 0
+for aug_frame in aug_frames:
+    try:
+        src_frame = next(src_frames)
+    except StopIteration as exc:
+        raise RuntimeError("source has fewer frames than augmented clip") from exc
+    src = src_frame.reformat(width=width, height=height, format="rgb24").to_ndarray()
+    aug = aug_frame.reformat(width=width, height=height, format="rgb24").to_ndarray()
+    srcf, augf = src.astype(np.float32), aug.astype(np.float32)
+    src_cb = 128.0 - 0.168736 * srcf[..., 0] - 0.331264 * srcf[..., 1] + 0.5 * srcf[..., 2]
+    src_cr = 128.0 + 0.5 * srcf[..., 0] - 0.418688 * srcf[..., 1] - 0.081312 * srcf[..., 2]
+    y = 0.299 * augf[..., 0] + 0.587 * augf[..., 1] + 0.114 * augf[..., 2]
+    aug_cb = 128.0 - 0.168736 * augf[..., 0] - 0.331264 * augf[..., 1] + 0.5 * augf[..., 2]
+    aug_cr = 128.0 + 0.5 * augf[..., 0] - 0.418688 * augf[..., 1] - 0.081312 * augf[..., 2]
+    cb, cr = aug_cb.copy(), aug_cr.copy()
+    for mask in masks:
+        core = mask >= 0.75
+        if not np.any(core):
+            core = mask > 0.0
+        delta_cb = float(np.median(src_cb[core] - aug_cb[core]))
+        delta_cr = float(np.median(src_cr[core] - aug_cr[core]))
+        cb += delta_cb * mask
+        cr += delta_cr * mask
+    rgb = np.stack((
+        y + 1.402 * (cr - 128.0),
+        y - 0.344136 * (cb - 128.0) - 0.714136 * (cr - 128.0),
+        y + 1.772 * (cb - 128.0),
+    ), axis=-1)
+    frame = av.VideoFrame.from_ndarray(np.clip(rgb, 0, 255).astype(np.uint8), format="rgb24")
+    frame.to_image().save(frames_dir / f"frame-{count:06d}.png")
+    count += 1
+try:
+    next(src_frames)
+except StopIteration:
+    pass
+else:
+    raise RuntimeError("source has more frames than augmented clip")
+aug_container.close(); src_container.close()
+if count == 0:
+    raise RuntimeError("no frames decoded")
+print(json.dumps({"frames": count, "fps": float(rate)}))
+'''
+    try:
+        with tempfile.TemporaryDirectory(
+            prefix="npa-protected-chroma-", dir=str(augmented.parent)
+        ) as frames_dir:
+            completed = subprocess.run(
+                [
+                    str(_venv_python(cosmos_transfer_repo())),
+                    "-c",
+                    script,
+                    str(source),
+                    str(augmented),
+                    frames_dir,
+                    regions_json,
+                    str(feather_pixels),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            try:
+                decoded = json.loads(str(completed.stdout).strip().splitlines()[-1])
+                frame_count = int(decoded["frames"])
+                fps = float(decoded["fps"])
+            except (IndexError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise ProtectedChromaError(
+                    "protected source-chroma decoder returned invalid metadata"
+                ) from exc
+            subprocess.run(
+                [
+                    "ffmpeg",
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-y",
+                    "-framerate",
+                    str(fps),
+                    "-i",
+                    str(Path(frames_dir) / "frame-%06d.png"),
+                    "-an",
+                    "-c:v",
+                    "libx264",
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-crf",
+                    "18",
+                    "-movflags",
+                    "+faststart",
+                    str(output),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+    except ProtectedChromaError:
+        raise
+    except (OSError, subprocess.CalledProcessError) as exc:
+        detail = str(getattr(exc, "stderr", "") or exc).strip()
+        raise ProtectedChromaError(
+            f"protected source-chroma restoration failed: {detail}"[:300]
+        ) from exc
+    if not output.is_file() or output.stat().st_size <= 0:
+        raise ProtectedChromaError("protected source-chroma restoration wrote no video")
+    result = dict(transfer)
+    result["video_path"] = str(output)
+    result["video_bytes"] = output.stat().st_size
+    result["protected_chroma"] = {
+        "mode": "source-chroma",
+        "method": "regional-median-chroma-alignment",
+        "region_count": len(regions),
+        "feather_pixels": feather_pixels,
+        "frame_count": frame_count,
+    }
+    return result
 
 
 def _spec_for_input_video(
@@ -612,6 +823,10 @@ def publish_transfer_clip(
     content_guardrails_enabled = bool(
         transfer.get("content_guardrails_enabled", True)
     )
+    protected_chroma = transfer.get("protected_chroma") or {"mode": "off"}
+    refinement = transfer.get("refinement") or {}
+    effective_control_weight = transfer.get("effective_control_weight")
+    effective_guidance = transfer.get("effective_guidance")
     conditioning_clip_uri = str(transfer.get("conditioning_clip_uri") or "")
 
     control_uris: dict[str, str] = {}
@@ -657,6 +872,10 @@ def publish_transfer_clip(
             "control_uris": control_uris,
             "control_evidence": control_evidence,
             "content_guardrails_enabled": content_guardrails_enabled,
+            "protected_chroma": protected_chroma,
+            "refinement": refinement,
+            "effective_control_weight": effective_control_weight,
+            "effective_guidance": effective_guidance,
         }
         cm = Path(tmp) / "metadata.json"
 
@@ -728,6 +947,10 @@ def publish_transfer_clip(
         "control_frames": control_frames,
         "control_evidence": control_evidence,
         "content_guardrails_enabled": content_guardrails_enabled,
+        "protected_chroma": protected_chroma,
+        "refinement": refinement,
+        "effective_control_weight": effective_control_weight,
+        "effective_guidance": effective_guidance,
         "variables": variables or {},
     }
 
@@ -1173,6 +1396,10 @@ def build_run_manifest(
         "content_guardrails_enabled": bool(
             first.get("content_guardrails_enabled", True)
         ),
+        "protected_chroma": first.get("protected_chroma", {"mode": "off"}),
+        "refinement": first.get("refinement", {}),
+        "effective_control_weight": first.get("effective_control_weight"),
+        "effective_guidance": first.get("effective_guidance"),
         "variants": [
             {
                 "clip": c.get("clip", ""),
@@ -1182,6 +1409,10 @@ def build_run_manifest(
                 "frame_count": int(c.get("frame_count", 0) or 0),
                 "augmented_video_uri": c.get("augmented_video_uri", ""),
                 "control_uris": c.get("control_uris", {}),
+                "protected_chroma": c.get("protected_chroma", {"mode": "off"}),
+                "refinement": c.get("refinement", {}),
+                "effective_control_weight": c.get("effective_control_weight"),
+                "effective_guidance": c.get("effective_guidance"),
             }
             for index, c in enumerate(clips)
         ],
@@ -1869,6 +2100,7 @@ __all__ = [
     "FrameExtractionError",
     "INPUT_AUTO_CONTROLS",
     "INPUT_CONTROLS",
+    "ProtectedChromaError",
     "REFERENCE_AUGMENT_MODE",
     "REFERENCE_AUGMENT_STATUS",
     "PUBLICATION_CLAIM_STATUS",
@@ -1878,6 +2110,7 @@ __all__ = [
     "TRANSFER_MANIFEST_FILENAME",
     "TRANSFER_MANIFEST_MODE",
     "TRANSFER_MANIFEST_SCHEMA",
+    "preserve_source_chroma",
     "TRANSFER_MANIFEST_STATUS",
     "augmented_frames_index_uri_for",
     "attempt_output_uri_for",

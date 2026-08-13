@@ -4,6 +4,8 @@ These back the ``run.shell`` stages of ``physical-ai-data-factory.yaml`` so ever
 stage does real work against S3 instead of an ``echo`` stub:
 
 - ``generate_configs``: sample appearance-only augmentation variables -> manifest.
+- ``prepare_refinement``: turn the prior evaluator result into a different,
+  auditable Cosmos control/guidance policy for the next render attempt.
 - ``grade_gate``: read the real evaluator result and write a promote/loop decision.
 - ``enforce_quality_disposition``: reject a run that exhausts refinement without
   satisfying the score threshold and required motion-integrity checks.
@@ -488,6 +490,139 @@ def grade_gate(scores_uri: str, decision_uri: str, threshold: float | str = 0.5)
         )
     )
     return decision
+
+
+def prepare_refinement(
+    scores_uri: str,
+    refinement_uri: str,
+    enabled: str | bool = "true",
+    base_control_weight: float | str = 1.0,
+    base_guidance: float | str = 3.0,
+    control_weight_step: float | str = 0.5,
+    max_control_weight: float | str = 1.75,
+    guidance_step: float | str = 0.75,
+    min_guidance: float | str = 1.5,
+) -> dict[str, Any]:
+    """Write the effective Cosmos settings for this refinement attempt.
+
+    The first loop iteration records the configured baseline. Later iterations
+    read the previous evaluator report and strengthen input structure control
+    while reducing prompt guidance. This makes a refinement loop materially
+    different from replaying an identical inference command. The current policy
+    and immutable per-attempt copies are retained as run provenance.
+
+    This policy is intentionally generic: it reacts only to checker names and
+    numeric scores, never to scene labels or deployment-specific semantics.
+    """
+
+    from npa.workbench.cosmos_evaluator import RESULT_FILENAME
+
+    def _number(value: Any, fallback: float) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return fallback
+
+    base_control = max(0.0, _number(base_control_weight, 1.0))
+    base_cfg = max(0.0, _number(base_guidance, 3.0))
+    control_step = max(0.0, _number(control_weight_step, 0.5))
+    control_ceiling = max(base_control, _number(max_control_weight, 1.75))
+    cfg_step = max(0.0, _number(guidance_step, 0.75))
+    cfg_floor = min(base_cfg, max(0.0, _number(min_guidance, 1.5)))
+
+    previous: dict[str, Any] = {}
+    try:
+        candidate = _download_json(refinement_uri)
+        if isinstance(candidate, dict):
+            previous = candidate
+    except Exception:  # noqa: BLE001 - first attempt has no policy artifact yet
+        pass
+
+    report_uri = (
+        scores_uri
+        if scores_uri.endswith(".json")
+        else f"{scores_uri.rstrip('/')}/{RESULT_FILENAME}"
+    )
+    report: dict[str, Any] = {}
+    try:
+        candidate = _download_json(report_uri)
+        if isinstance(candidate, dict):
+            report = candidate
+    except Exception:  # noqa: BLE001 - first attempt has no evaluator report yet
+        pass
+
+    prior_attempt = -1
+    try:
+        prior_attempt = int(previous.get("attempt", -1))
+    except (TypeError, ValueError):
+        prior_attempt = -1
+    # If execution resumes after evaluation but before the policy artifact was
+    # written, still adapt instead of accidentally replaying the baseline.
+    attempt = max(0, prior_attempt + 1, 1 if report else 0)
+
+    adaptive = _is_truthy(enabled)
+    prior_passed = report.get("passed") is True
+    should_adapt = adaptive and bool(report) and not prior_passed
+    effective_control = base_control
+    effective_guidance = base_cfg
+    if should_adapt:
+        effective_control = min(
+            control_ceiling, base_control + control_step * max(1, attempt)
+        )
+        effective_guidance = max(
+            cfg_floor, base_cfg - cfg_step * max(1, attempt)
+        )
+
+    failed_checks: set[str] = set()
+    for clip in report.get("clips", []) if isinstance(report.get("clips"), list) else []:
+        if not isinstance(clip, dict) or clip.get("passed") is True:
+            continue
+        for key in (
+            "attribute_verification",
+            "hallucination",
+            "temporal_consistency",
+            "appearance_fidelity",
+        ):
+            result = clip.get(key)
+            if isinstance(result, dict) and result.get("passed") is False:
+                failed_checks.add(key)
+
+    try:
+        prior_score = float(report.get("score", 0.0)) if report else None
+    except (TypeError, ValueError):
+        prior_score = None
+    payload = {
+        "schema": "npa.data_factory.refinement.v1",
+        "attempt": attempt,
+        "adaptive": adaptive,
+        "adapted_from_prior_evaluation": should_adapt,
+        "prior_evaluator_report_uri": report_uri if report else "",
+        "prior_score": prior_score,
+        "prior_passed": prior_passed if report else None,
+        "failed_checks": sorted(failed_checks),
+        "settings": {
+            "control_weight": round(effective_control, 6),
+            "guidance": round(effective_guidance, 6),
+        },
+        "policy": {
+            "base_control_weight": base_control,
+            "control_weight_step": control_step,
+            "max_control_weight": control_ceiling,
+            "base_guidance": base_cfg,
+            "guidance_step": cfg_step,
+            "min_guidance": cfg_floor,
+        },
+    }
+    payload["written_uri"] = _upload_json(payload, refinement_uri)
+    if refinement_uri.endswith(".json"):
+        history_uri = (
+            f"{refinement_uri[:-5]}-attempt-{attempt:02d}.json"
+        )
+        payload["history_uri"] = _upload_json(payload, history_uri)
+        # Refresh the current pointer so it includes the immutable history URI.
+        payload["written_uri"] = _upload_json(payload, refinement_uri)
+    print(json.dumps(payload))
+    return payload
 
 
 def enforce_quality_disposition(
