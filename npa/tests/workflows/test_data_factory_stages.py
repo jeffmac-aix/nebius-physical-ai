@@ -71,7 +71,7 @@ def test_prepare_refinement_uses_baseline_then_adapts_failed_retry(
     baseline = dfs.prepare_refinement(str(grade), str(refinement))
     assert baseline["attempt"] == 0
     assert baseline["adapted_from_prior_evaluation"] is False
-    assert baseline["settings"] == {"control_weight": 1.0, "guidance": 3.0}
+    assert baseline["settings"] == {"control_weight": 0.75, "guidance": 3}
 
     (grade / "cosmos_evaluator.json").write_text(
         json.dumps(
@@ -92,7 +92,7 @@ def test_prepare_refinement_uses_baseline_then_adapts_failed_retry(
     retry = dfs.prepare_refinement(str(grade), str(refinement))
     assert retry["attempt"] == 1
     assert retry["adapted_from_prior_evaluation"] is True
-    assert retry["settings"] == {"control_weight": 1.5, "guidance": 2.25}
+    assert retry["settings"] == {"control_weight": 1.0, "guidance": 2}
     assert retry["failed_checks"] == ["appearance_fidelity"]
     assert (tmp_path / "configs" / "refinement-attempt-01.json").is_file()
 
@@ -110,6 +110,26 @@ def test_prepare_refinement_can_record_a_non_adaptive_policy(tmp_path: Path) -> 
     assert result["adaptive"] is False
     assert result["adapted_from_prior_evaluation"] is False
     assert result["settings"] == {"control_weight": 0.8, "guidance": 2.0}
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"base_control_weight": "1.1"}, "between 0 and 1"),
+        ({"max_control_weight": "1.1"}, "between base_control_weight and 1"),
+        ({"base_guidance": "2.5"}, "non-negative integer"),
+        ({"guidance_step": "0.5"}, "non-negative integer"),
+    ],
+)
+def test_prepare_refinement_rejects_values_cosmos_cannot_load(
+    tmp_path: Path, kwargs: dict[str, str], message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        dfs.prepare_refinement(
+            str(tmp_path / "grade"),
+            str(tmp_path / "refinement.json"),
+            **kwargs,
+        )
 
 
 def test_grade_gate_promotes_above_threshold(tmp_path: Path, monkeypatch) -> None:

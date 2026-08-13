@@ -390,12 +390,12 @@ def prepare_refinement(
     scores_uri: str,
     refinement_uri: str,
     enabled: str | bool = "true",
-    base_control_weight: float | str = 1.0,
+    base_control_weight: float | str = 0.75,
     base_guidance: float | str = 3.0,
-    control_weight_step: float | str = 0.5,
-    max_control_weight: float | str = 1.75,
-    guidance_step: float | str = 0.75,
-    min_guidance: float | str = 1.5,
+    control_weight_step: float | str = 0.25,
+    max_control_weight: float | str = 1.0,
+    guidance_step: float | str = 1.0,
+    min_guidance: float | str = 1.0,
 ) -> dict[str, Any]:
     """Write the effective Cosmos settings for this refinement attempt.
 
@@ -411,18 +411,35 @@ def prepare_refinement(
 
     from npa.workbench.cosmos_evaluator import RESULT_FILENAME
 
-    def _number(value: Any, fallback: float) -> float:
+    def _number(name: str, value: Any) -> float:
         try:
             return float(value)
-        except (TypeError, ValueError):
-            return fallback
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{name} must be numeric") from exc
 
-    base_control = max(0.0, _number(base_control_weight, 1.0))
-    base_cfg = max(0.0, _number(base_guidance, 3.0))
-    control_step = max(0.0, _number(control_weight_step, 0.5))
-    control_ceiling = max(base_control, _number(max_control_weight, 1.75))
-    cfg_step = max(0.0, _number(guidance_step, 0.75))
-    cfg_floor = min(base_cfg, max(0.0, _number(min_guidance, 1.5)))
+    def _guidance(name: str, value: Any) -> int:
+        number = _number(name, value)
+        if number < 0.0 or not number.is_integer():
+            raise ValueError(f"{name} must be a non-negative integer")
+        return int(number)
+
+    base_control = _number("base_control_weight", base_control_weight)
+    control_step = _number("control_weight_step", control_weight_step)
+    control_ceiling = _number("max_control_weight", max_control_weight)
+    if not 0.0 <= base_control <= 1.0:
+        raise ValueError("base_control_weight must be between 0 and 1")
+    if control_step < 0.0:
+        raise ValueError("control_weight_step must be non-negative")
+    if not base_control <= control_ceiling <= 1.0:
+        raise ValueError(
+            "max_control_weight must be between base_control_weight and 1"
+        )
+
+    base_cfg = _guidance("base_guidance", base_guidance)
+    cfg_step = _guidance("guidance_step", guidance_step)
+    cfg_floor = _guidance("min_guidance", min_guidance)
+    if cfg_floor > base_cfg:
+        raise ValueError("min_guidance cannot exceed base_guidance")
 
     previous: dict[str, Any] = {}
     try:
@@ -496,7 +513,7 @@ def prepare_refinement(
         "failed_checks": sorted(failed_checks),
         "settings": {
             "control_weight": round(effective_control, 6),
-            "guidance": round(effective_guidance, 6),
+            "guidance": effective_guidance,
         },
         "policy": {
             "base_control_weight": base_control,

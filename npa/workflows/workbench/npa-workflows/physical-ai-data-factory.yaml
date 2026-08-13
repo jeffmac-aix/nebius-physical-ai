@@ -96,12 +96,12 @@ config:
   # input structure control and reduce prompt guidance within these bounds.
   adaptive_refinement_enabled: "true"
   cosmos_control: edge
-  cosmos_control_weight: "1.0"
+  cosmos_control_weight: "0.75"
   cosmos_guidance: "3.0"
-  refinement_control_weight_step: "0.5"
-  refinement_max_control_weight: "1.75"
-  refinement_guidance_step: "0.75"
-  refinement_min_guidance: "1.5"
+  refinement_control_weight_step: "0.25"
+  refinement_max_control_weight: "1.0"
+  refinement_guidance_step: "1.0"
+  refinement_min_guidance: "1.0"
   # Optional source-chroma restoration inside appearance_regions_json. This
   # keeps generated luminance/illumination while protecting identity-bearing
   # material colour. Leave off unless the deployment supplies meaningful regions.
