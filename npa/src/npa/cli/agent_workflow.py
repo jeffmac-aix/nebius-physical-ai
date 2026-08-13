@@ -1328,6 +1328,7 @@ def _data_factory_spec() -> dict[str, Any]:
                 "refinement_guidance_step": "0.75",
                 "refinement_min_guidance": "1.5",
                 "protected_chroma_mode": "off",
+                "protected_chroma_regions_json": "",
                 "default_decision": "loop_back",
                 "temporal_consistency_mode": "advisory",
                 "temporal_consistency_threshold": "0.8",

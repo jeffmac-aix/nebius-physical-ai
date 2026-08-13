@@ -204,6 +204,10 @@ def test_evaluate_runs_the_real_cosmos_evaluator() -> None:
     assert _spec()["config"]["temporal_consistency_mode"] == "advisory"
     assert float(_spec()["config"]["appearance_fidelity_threshold"]) >= 0.8
     assert _spec()["config"]["appearance_fidelity_mode"] == "advisory"
+    assert "protected_chroma_regions_json" in _spec()["config"]
+    transfer_argv = TOOL_CATALOG["workbench.cosmos2.transfer_execute"].argv_template
+    protected_index = transfer_argv.index("--protected-regions-json")
+    assert transfer_argv[protected_index + 1] == "{{config.protected_chroma_regions_json}}"
 
 
 def test_curation_runs_the_real_cosmos_curator_before_review() -> None:
