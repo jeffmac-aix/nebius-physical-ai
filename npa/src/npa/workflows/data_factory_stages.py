@@ -21,11 +21,14 @@ pip-installed in the rendered task, so the blueprint invokes them inline via
 from __future__ import annotations
 
 import json
+import logging
 import random
 import tempfile
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
+
+LOGGER = logging.getLogger(__name__)
 
 # Appearance-only variables that remain coherent for a replaceable physical
 # scene. The input video is authoritative for geometry, objects, camera, and motion.
@@ -446,8 +449,8 @@ def prepare_refinement(
         candidate = _download_json(refinement_uri)
         if isinstance(candidate, dict):
             previous = candidate
-    except Exception:  # noqa: BLE001 - first attempt has no policy artifact yet
-        pass
+    except Exception as exc:  # noqa: BLE001 - missing on first attempt
+        LOGGER.debug("no prior refinement policy at %s: %s", refinement_uri, exc)
 
     report_uri = (
         scores_uri
@@ -459,8 +462,8 @@ def prepare_refinement(
         candidate = _download_json(report_uri)
         if isinstance(candidate, dict):
             report = candidate
-    except Exception:  # noqa: BLE001 - first attempt has no evaluator report yet
-        pass
+    except Exception as exc:  # noqa: BLE001 - missing on first attempt
+        LOGGER.debug("no prior evaluator report at %s: %s", report_uri, exc)
 
     prior_attempt = -1
     try:
