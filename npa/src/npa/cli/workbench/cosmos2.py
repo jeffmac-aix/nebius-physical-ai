@@ -1283,6 +1283,16 @@ def transfer_cmd(
         "--protected-regions-json",
         help="JSON normalized rectangles used only when protected chroma mode is source-chroma.",
     ),
+    protected_luma_max_delta: int = typer.Option(
+        32,
+        "--protected-luma-max-delta",
+        help="Maximum per-pixel protected-region luma change from source (0..255).",
+    ),
+    protected_feather_pixels: int = typer.Option(
+        12,
+        "--protected-feather-pixels",
+        help="Inward feather width for protected rectangle boundaries.",
+    ),
 ) -> None:
     """Build a transfer manifest; pass --execute for real vendor output.
 
@@ -1433,6 +1443,10 @@ def transfer_cmd(
             raise typer.BadParameter(
                 "--protected-chroma-mode source-chroma requires --protected-regions-json"
             )
+        if not 0 <= protected_luma_max_delta <= 255:
+            raise typer.BadParameter("--protected-luma-max-delta must be within 0..255")
+        if protected_feather_pixels < 1:
+            raise typer.BadParameter("--protected-feather-pixels must be positive")
 
         if data_factory_mode and output_uri.strip().startswith("s3://"):
             # Augment & MULTIPLY. Run one REAL Cosmos Transfer 2.5 inference per
@@ -1519,6 +1533,8 @@ def transfer_cmd(
                         result,
                         source_video=local_input,
                         regions_json=protected_regions_json,
+                        feather_pixels=protected_feather_pixels,
+                        luma_max_delta=protected_luma_max_delta,
                     )
                 result["conditioning_clip_uri"] = conditioning_clip_uri
                 result["refinement"] = refinement
@@ -1685,6 +1701,8 @@ def transfer_cmd(
                     transfer,
                     source_video=local_input,
                     regions_json=protected_regions_json,
+                    feather_pixels=protected_feather_pixels,
+                    luma_max_delta=protected_luma_max_delta,
                 )
             transfer["refinement"] = refinement
             transfer["effective_control_weight"] = control_weight

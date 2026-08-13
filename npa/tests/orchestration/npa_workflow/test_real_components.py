@@ -105,6 +105,8 @@ def test_agent_generated_paidf_runs_named_real_components() -> None:
         "--guidance",
         "--protected-chroma-mode",
         "--protected-regions-json",
+        "--protected-luma-max-delta",
+        "--protected-feather-pixels",
     ):
         assert option in TOOL_CATALOG["workbench.cosmos2.transfer_execute"].argv_template
     assert states["evaluate"]["toolRef"] == "workbench.cosmos_evaluator.evaluate"
@@ -205,9 +207,15 @@ def test_evaluate_runs_the_real_cosmos_evaluator() -> None:
     assert float(_spec()["config"]["appearance_fidelity_threshold"]) >= 0.8
     assert _spec()["config"]["appearance_fidelity_mode"] == "advisory"
     assert "protected_chroma_regions_json" in _spec()["config"]
+    assert _spec()["config"]["protected_luma_max_delta"] == "32"
+    assert _spec()["config"]["protected_feather_pixels"] == "12"
     transfer_argv = TOOL_CATALOG["workbench.cosmos2.transfer_execute"].argv_template
     protected_index = transfer_argv.index("--protected-regions-json")
     assert transfer_argv[protected_index + 1] == "{{config.protected_chroma_regions_json}}"
+    luma_index = transfer_argv.index("--protected-luma-max-delta")
+    assert transfer_argv[luma_index + 1] == "{{config.protected_luma_max_delta}}"
+    feather_index = transfer_argv.index("--protected-feather-pixels")
+    assert transfer_argv[feather_index + 1] == "{{config.protected_feather_pixels}}"
 
 
 def test_curation_runs_the_real_cosmos_curator_before_review() -> None:

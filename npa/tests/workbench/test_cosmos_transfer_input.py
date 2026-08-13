@@ -9,8 +9,12 @@ No GPU / cosmos runtime is touched; the inference subprocess is mocked.
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 import typer
 from typer.testing import CliRunner
@@ -126,11 +130,86 @@ def test_preserve_source_chroma_records_effective_provenance(
     assert Path(result["video_path"]).read_bytes() == b"corrected-video"
     assert result["protected_chroma"] == {
         "mode": "source-chroma",
-        "method": "regional-median-chroma-alignment",
+        "method": "feathered-per-pixel-source-chroma",
         "region_count": 1,
         "feather_pixels": 12,
+        "luma_max_delta": 32,
         "frame_count": 7,
     }
+
+
+def test_preserve_source_chroma_decodes_encoded_video_and_keeps_generated_luma(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        pytest.skip("ffmpeg is required for the encoded-video integration test")
+    source = tmp_path / "source.mp4"
+    generated = tmp_path / "generated.mp4"
+    for path, color in ((source, "0x3c78b4"), (generated, "0x28140a")):
+        subprocess.run(
+            [
+                ffmpeg,
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                f"color=c={color}:size=64x48:rate=6:duration=1",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                str(path),
+            ],
+            check=True,
+        )
+    monkeypatch.setattr(tx, "_venv_python", lambda _repo: Path(sys.executable))
+    result = tx.preserve_source_chroma(
+        {"video_path": str(generated), "video_bytes": generated.stat().st_size},
+        source_video=str(source),
+        regions_json="[[0,0,1,1]]",
+        feather_pixels=1,
+    )
+
+    def first_rgb(path: Path) -> np.ndarray:
+        raw = subprocess.check_output(
+            [
+                ffmpeg,
+                "-loglevel",
+                "error",
+                "-i",
+                str(path),
+                "-frames:v",
+                "1",
+                "-f",
+                "rawvideo",
+                "-pix_fmt",
+                "rgb24",
+                "-",
+            ]
+        )
+        return np.frombuffer(raw, dtype=np.uint8).reshape(48, 64, 3).astype(np.float32)
+
+    def ycbcr_means(frame: np.ndarray) -> tuple[float, float, float]:
+        red, green, blue = frame[..., 0], frame[..., 1], frame[..., 2]
+        y = 0.299 * red + 0.587 * green + 0.114 * blue
+        cb = 128.0 - 0.168736 * red - 0.331264 * green + 0.5 * blue
+        cr = 128.0 + 0.5 * red - 0.418688 * green - 0.081312 * blue
+        return float(y.mean()), float(cb.mean()), float(cr.mean())
+
+    source_y, source_cb, source_cr = ycbcr_means(first_rgb(source))
+    generated_y, generated_cb, generated_cr = ycbcr_means(first_rgb(generated))
+    restored_y, restored_cb, restored_cr = ycbcr_means(
+        first_rgb(Path(result["video_path"]))
+    )
+    assert abs(source_cb - generated_cb) > 10
+    assert abs(source_cr - generated_cr) > 10
+    assert abs(restored_cb - source_cb) < 5
+    assert abs(restored_cr - source_cr) < 5
+    assert abs(restored_y - generated_y) > 40
+    assert 20 < abs(restored_y - source_y) < 37
 
 
 def test_load_refinement_validates_numeric_settings(tmp_path: Path) -> None:

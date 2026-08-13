@@ -39,6 +39,8 @@ config:
   refinement_uri: ""
   protected_chroma_mode: "off"
   protected_chroma_regions_json: ""
+  protected_luma_max_delta: "32"
+  protected_feather_pixels: "12"
   appearance_regions_json: ""
 
   # Conditioning shape. edge is the on-the-fly Canny default; seg swaps in a

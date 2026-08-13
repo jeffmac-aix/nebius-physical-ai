@@ -1329,6 +1329,8 @@ def _data_factory_spec() -> dict[str, Any]:
                 "refinement_min_guidance": "1.0",
                 "protected_chroma_mode": "off",
                 "protected_chroma_regions_json": "",
+                "protected_luma_max_delta": "32",
+                "protected_feather_pixels": "12",
                 "default_decision": "loop_back",
                 "temporal_consistency_mode": "advisory",
                 "temporal_consistency_threshold": "0.8",
