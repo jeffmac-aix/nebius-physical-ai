@@ -276,6 +276,69 @@ def test_npa_version_fast_path_skips_heavy_imports() -> None:
     )
 
 
+def test_cosmos2_capability_path_skips_the_platform_command_tree() -> None:
+    """The purpose-built Cosmos image can run its CLI without platform extras."""
+
+    probe = """
+import importlib.abc
+import os
+import sys
+
+blocked = {"httpx", "kubernetes", "paramiko", "rerun"}
+
+class BlockPlatformExtras(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname.partition(".")[0] in blocked:
+            raise RuntimeError(f"platform-only import attempted: {fullname}")
+        return None
+
+os.environ["NPA_SKIP_EAGER_IMPORTS"] = "1"
+sys.meta_path.insert(0, BlockPlatformExtras())
+sys.argv = ["npa", "workbench", "cosmos2", "transfer", "--help"]
+from npa.cli.entry import main
+main()
+"""
+    proc = subprocess.run(
+        [sys.executable, "-c", probe],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "--segmentation-mode" in proc.stdout
+
+
+def test_cosmos2_capability_path_consumes_mounted_command_name() -> None:
+    """The standalone image entrypoint must parse options after ``transfer``."""
+
+    probe = """
+import sys
+from npa.workbench.cosmos import cli
+
+captured = {}
+
+def fake_app(*, args, prog_name):
+    captured["args"] = args
+    captured["prog_name"] = prog_name
+
+cli.app = fake_app
+sys.argv = [
+    "npa", "workbench", "cosmos2", "transfer",
+    "--input-uri", "local:///input", "--output-uri", "local:///output",
+]
+from npa.cli.entry import main
+main()
+print(captured)
+"""
+    proc = subprocess.run(
+        [sys.executable, "-c", probe],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "'args': ['--input-uri', 'local:///input'" in proc.stdout
+    assert "'prog_name': 'npa workbench cosmos2 transfer'" in proc.stdout
+
+
 def test_quickstart_first_success_fixture_is_packaged() -> None:
     """The fixture the quickstart points at must ship inside the package."""
     assert DEFAULT_SAMPLE_BENCHMARK_PATH.exists(), (

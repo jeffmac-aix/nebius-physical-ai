@@ -33,7 +33,7 @@ except the explicitly public composition primitives `infra.fleet.deploy`,
 | `workbench.token_factory.caption` | `npa workbench token-factory caption` | `config.images_uri` | `config.captions_uri` | no |
 | `workbench.token_factory.generate` | `npa workbench token-factory generate` | `config.prompts_uri` | `config.generations_uri` | no |
 | `workbench.cosmos2.transfer` | `npa workbench cosmos2 transfer` | `config.trigger_uri` | `config.augment_uri` | no |
-| `workbench.cosmos2.transfer_execute` | `npa workbench cosmos2 transfer --execute` | supported video or PNG/JPEG frames under `config.trigger_uri` (required) | `config.augment_uri` | yes (real, input-conditioned Cosmos Transfer 2.5 on GPU; uploads video + frames to S3 and fails closed without input) |
+| `workbench.cosmos2.transfer_execute` | `npa workbench cosmos2 transfer --execute` | supported video or PNG/JPEG frames under `config.trigger_uri` (required); optional run-scoped `config.segmentation_uri` when `segmentation_mode=sam2-auto` | `config.augment_uri` plus optional frame-aligned SAM2 masks | yes (real, input-conditioned Cosmos Transfer 2.5 on GPU; optional official Meta SAM2 runs once per immutable run input and its masks are reused across variants/retries; both paths fail closed) |
 | `workbench.cosmos2.transfer_conditioned_execute` | `npa workbench cosmos2 transfer --execute --condition-on-input` | `config.trigger_uri` | `config.augment_uri` | yes (real input-conditioned Cosmos Transfer 2.5; publishes exact frames in the canonical manifest) |
 | `workbench.cosmos3.generate` | `npa workbench cosmos3 generate` | `config.prompt`, `config.cosmos3_mode`, `config.cosmos3_checkpoint` | `config.output_uri` | yes (real Cosmos 3 omni-model generation on GPU in `npa-cosmos3`; gated weights download at runtime with the operator's HF token) |
 | `workbench.cosmos3.reason` | `npa workbench cosmos3 reason` | `config.scene_uri` | `config.reason_uri` | no |
@@ -111,6 +111,13 @@ OSS onboarding ladder (BYOF → workflow → first-class tool):
 
 Add new entries in `npa/src/npa/orchestration/npa_workflow/catalog.py` when
 exposing a tool to workflow specs, then update this table.
+
+`workbench.cosmos2.transfer_execute` retains defaults for every option added by
+the PAIDF refinement and SAM2 integration. Existing external specs that provide
+only `trigger_uri`, `augment_uri`, and `configs_uri` continue to validate and
+render with the established effective control weight of `1.0`, guidance `3.0`,
+and optional protection/segmentation disabled. Explicit spec config takes
+precedence over these compatibility defaults.
 
 ## Tokens
 

@@ -210,7 +210,11 @@ images:
       CUDA build/runtime bases. Git LFS smudging is disabled; upstream assets, example media,
       checkpoints, caches, and Git metadata are removed and build-guarded. Gated
       NVIDIA Open Model License weights are fetched only at runtime with the
-      operator's HF_TOKEN into a mounted cache. PAIDF's CC-BY-4.0 RoboPro starter
+      operator's HF_TOKEN into a mounted cache. Optional SAM2 removes the
+      lockfile's unaffiliated PyPI repackaging and installs Meta's official
+      Apache-2.0 source at immutable commit
+      2b90b9f5ceec907a1c18123530e92e794ad901a4; its public Apache-2.0 checkpoint
+      is runtime-fetched and never baked. PAIDF's CC-BY-4.0 RoboPro starter
       is likewise not baked into this or any image: the operator-side NPA CLI
       fetches the immutable object, enforces its SHA-256, and stages it to the
       run. The upstream Cosmos repository's ambiguously licensed example media
@@ -326,8 +330,16 @@ images:
     dockerfile: rerun-viewer/Dockerfile
     tier: job
     ports: [9090]
-    final_user: nobody
+    notes: >-
+      Command-passthrough entrypoint supports SkyPilot Kubernetes setup as the
+      non-root ubuntu user; an empty argv starts the interactive Rerun server.
+    passwordless_root_exemption: >-
+      SkyPilot's Kubernetes bootstrap installs and starts its in-pod SSH runtime
+      as the non-root ubuntu user. The image deletes all build-time SSH host keys,
+      disables password and root login, starts no SSH service by default, and
+      uses the grant only inside an explicitly orchestrated ephemeral worker.
     redistribution: public
+    skypilot_bootstrap_contract: skypilot-0.12.2-v1
   foxglove-embed:
     dockerfile: foxglove-embed/Dockerfile
     tier: service

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from npa.orchestration.npa_workflow.errors import NpaWorkflowError
 
@@ -13,6 +13,9 @@ class ToolEntry:
     argv_template: list[str]
     description: str = ""
     stub: bool = False
+    # Additive defaults keep an existing external spec renderable when a public
+    # toolRef gains optional CLI flags. Explicit spec config always wins.
+    config_defaults: dict[str, str] = field(default_factory=dict)
 
 
 # Public composable entries intentionally available to customer-authored specs,
@@ -387,6 +390,26 @@ TOOL_CATALOG: dict[str, ToolEntry] = {
     "workbench.cosmos2.transfer_execute": ToolEntry(
         name="workbench.cosmos2.transfer_execute",
         description="Run the REAL Cosmos-Transfer2.5 model (GPU) and upload augmented video + frames to S3.",
+        config_defaults={
+            "cosmos_control": "edge",
+            "cosmos_control_weight": "1.0",
+            "cosmos_guidance": "3.0",
+            "refinement_uri": "",
+            "protected_chroma_mode": "off",
+            "protected_chroma_regions_json": "",
+            "protected_luma_max_delta": "32",
+            "protected_feather_pixels": "12",
+            "segmentation_mode": "off",
+            "segmentation_uri": "",
+            "sam2_model": "facebook/sam2.1-hiera-tiny",
+            "sam2_model_revision": "de431c4043854a71d8101e17995dfe596bf101a5",
+            "sam2_points_per_side": "16",
+            "sam2_predicted_iou_threshold": "0.86",
+            "sam2_stability_threshold": "0.92",
+            "sam2_min_area_fraction": "0.002",
+            "sam2_max_area_fraction": "0.65",
+            "sam2_max_objects": "6",
+        },
         argv_template=[
             "npa",
             "workbench",
@@ -416,6 +439,26 @@ TOOL_CATALOG: dict[str, ToolEntry] = {
             "{{config.protected_luma_max_delta}}",
             "--protected-feather-pixels",
             "{{config.protected_feather_pixels}}",
+            "--segmentation-mode",
+            "{{config.segmentation_mode}}",
+            "--segmentation-uri",
+            "{{config.segmentation_uri}}",
+            "--sam2-model",
+            "{{config.sam2_model}}",
+            "--sam2-model-revision",
+            "{{config.sam2_model_revision}}",
+            "--sam2-points-per-side",
+            "{{config.sam2_points_per_side}}",
+            "--sam2-predicted-iou-threshold",
+            "{{config.sam2_predicted_iou_threshold}}",
+            "--sam2-stability-threshold",
+            "{{config.sam2_stability_threshold}}",
+            "--sam2-min-area-fraction",
+            "{{config.sam2_min_area_fraction}}",
+            "--sam2-max-area-fraction",
+            "{{config.sam2_max_area_fraction}}",
+            "--sam2-max-objects",
+            "{{config.sam2_max_objects}}",
             "--condition-on-input",
             "--execute",
         ],
@@ -2107,3 +2150,9 @@ def validate_tool_ref(tool_ref: str) -> ToolEntry:
 
 def argv_for_tool(tool_ref: str) -> list[str]:
     return list(validate_tool_ref(tool_ref).argv_template)
+
+
+def config_defaults_for_tool(tool_ref: str) -> dict[str, str]:
+    """Return a copy of additive defaults for an existing public toolRef."""
+
+    return dict(validate_tool_ref(tool_ref).config_defaults)

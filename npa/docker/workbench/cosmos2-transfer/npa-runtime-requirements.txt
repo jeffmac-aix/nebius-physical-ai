@@ -1,0 +1,6 @@
+# Exact PyPI wheel URLs for the lightweight capability-local NPA CLI. The Cosmos
+# lock already supplies Click, Rich, and typing-extensions. URL fragments make uv
+# verify the reviewed wheel bytes while --no-deps preserves that locked closure.
+https://files.pythonhosted.org/packages/3e/30/e900b21425a860e195f32e37657aa1f7c7f2b1bfb26f03ca209b90933c06/annotated_doc-0.0.5-py3-none-any.whl#sha256=117bac03a25ede5df5440e855b32d556049ca169ead221505badf432fed4b101
+https://files.pythonhosted.org/packages/e0/f9/0595336914c5619e5f28a1fb793285925a8cd4b432c9da0a987836c7f822/shellingham-1.5.4-py2.py3-none-any.whl#sha256=7ecfff8f2fd72616f7481040475a65b2bf8af90a56c89140852d1120324e8686
+https://files.pythonhosted.org/packages/43/89/9518bc0c3929bee36b3a4a8e3daddd6e03f92f9961c66d4983b837160543/typer-0.27.1-py3-none-any.whl#sha256=53150287edd11baeb4e4722c8e394fcdf8181c0ae89485cba8d25c778d5edd56

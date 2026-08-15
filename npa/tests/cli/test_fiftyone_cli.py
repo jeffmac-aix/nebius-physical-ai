@@ -32,6 +32,7 @@ from npa.clients.config import (
     WorkbenchConfig,
 )
 from npa.clients.serverless import EndpointNotFoundError
+from npa.deploy.images import supported_tool_version
 
 
 runner = CliRunner()
@@ -535,7 +536,7 @@ def test_fiftyone_deploy_runtime_container_starts_image(tmp_path: Path, mocker) 
     deploy_container.assert_called_once()
     assert deploy_container.call_args.kwargs["container_name"] == "npa-fiftyone"
     assert deploy_container.call_args.kwargs["image_ref"].endswith(
-        "/npa-fiftyone:1.15.0.post1"
+        f"/npa-fiftyone:{supported_tool_version('fiftyone')}"
     )
     assert deploy_container.call_args.kwargs["gpu"] is False
     wb_cfg = write_config.call_args_list[0].args[0]["projects"]["proj"]["workbenches"]["curate-container"]

@@ -22,7 +22,7 @@ NVIDIA blueprint (OSMO) → NPA stage (toolRef / run):
 | --- | --- | --- | --- |
 | Stage 1 Config Generation | `generate-configs` | `run.shell` (sample appearance-only variables) | CPU |
 | Stage 2a Understand & Annotate | `annotate-original` | `workbench.token_factory.caption` | Token Factory (zero-GPU) |
-| Stage 2b Augment & Multiply | `augment` | `workbench.cosmos2.transfer_execute` | GPU (Cosmos Transfer 2.5) |
+| Stage 2b Augment & Multiply | `augment` | `workbench.cosmos2.transfer_execute` | GPU (Cosmos Transfer 2.5; optional upstream Meta SAM2 masks) |
 | Evaluate & Validate | `grade` loop + `quality-disposition` | Cosmos Evaluator + NPA source-relative temporal/appearance fidelity + fail-closed disposition | Token Factory + CPU |
 | Stage 3 Pseudo-Label Augmented | `annotate-augmented` | `npa workbench token-factory caption` (run.shell) | Token Factory |
 | Stage 4a Curation | `cosmos-curate` | `workbench.cosmos_curate.curate` | CPU |
@@ -122,10 +122,10 @@ license every Git LFS media asset or establish that every sample is a real
 capture. Those media files are neither bundled nor silently fetched. See
 `npa/docker/workbench/cosmos2-transfer/REDISTRIBUTION.md`.
 
-Selection precedence is strict: one explicit local or S3 object wins; conflicting
-selectors fail; no selector chooses the starter; `--seed-fixture` is the only
-synthetic geometry path. User input is labeled “User-supplied input”—NPA does not
-invent an authenticity or license claim for it.
+Selection precedence is strict: one explicit local file, S3 object, or S3
+LeRobotDataset prefix wins; conflicting selectors fail; no selector chooses the
+starter; `--seed-fixture` is the only synthetic geometry path. Operator input is
+labeled without inventing an authenticity or license claim for it.
 
 ```bash
 RUN_ID="$(npa workbench workflow prepare-run "$SPEC" --project "$PROJECT")"
@@ -142,6 +142,13 @@ npa workbench workflow submit "$SPEC" --run-id "$RUN_ID" --runtime \
 # Replace with one S3 object
 npa workbench workflow submit "$SPEC" --run-id "$RUN_ID" --runtime \
   --var bucket="$BUCKET" --input-uri s3://source-bucket/path/capture.mp4 \
+  --assume-decision promote_checkpoint
+
+# Replace with one episode/camera video from an S3 LeRobotDataset prefix.
+# Omit --lerobot-camera for deterministic lexically-first-video selection.
+npa workbench workflow submit "$SPEC" --run-id "$RUN_ID" --runtime \
+  --var bucket="$BUCKET" --lerobot-uri s3://source-bucket/datasets/robot-run/ \
+  --lerobot-camera observation.images.front --lerobot-episode 0 \
   --assume-decision promote_checkpoint
 
 # Developers/tests only — explicitly synthetic
@@ -200,14 +207,25 @@ quality status therefore remain separate and auditable.
 
 Refinement is adaptive by default. `prepare-refinement` writes
 `configs/refinement.json` before each render and keeps immutable
-`refinement-attempt-NN.json` copies. The first pass uses the configured
-`cosmos_control_weight` and `cosmos_guidance`; after a failed evaluation, each
-retry raises edge-control strength and lowers prompt guidance within the configured
-min/max bounds. Transfer metadata records the effective values and failed check
-names, so a retry is not an unauditable replay of identical inference settings.
+`refinement-attempt-NN.json` copies plus commit markers. The established first-pass
+control weight remains `1.0`; after a failed evaluation the default retry lowers
+prompt guidance, while a custom baseline below its configured ceiling may also
+raise edge-control strength. Each retry selects a different in-bounds pair; once
+the declared monotonic schedule is exhausted, refinement fails closed instead of
+toggling back to a previous policy. A configuration with no possible first retry
+fails before GPU work. Transfer metadata records the effective values and failed
+check names, so a retry is not an unauditable replay of identical inference settings.
 The planner validates Cosmos Transfer's native constraints before reserving a GPU:
 edge-control weights stay within `0..1`, and guidance remains a non-negative
 integer.
+
+This baseline is a compatibility choice, not a claim that stronger structural
+conditioning always improves evaluator score. Prior live refinement evidence was
+non-monotonic, so PAIDF retains `1.0` for the first pass and changes guidance on
+retry; operators should tune only from comparable A/B evidence. Cosmos precedence
+is explicit CLI values, then `NPA_COSMOS_*` environment overrides, then the
+validated run-scoped refinement artifact. The final artifact wins so ambient
+worker settings cannot mutate a committed retry.
 
 Edge control preserves structure and motion, not source color. Deployments that
 must protect identity-bearing material colors can set
@@ -221,6 +239,33 @@ extreme darkening or brightening is suppressed. Use
 default: rectangles are a coarse MP4-only protection surface, and semantic masks
 or simulator passes are preferable when available. A decode or frame-count mismatch
 fails closed rather than publishing partially protected output.
+
+For object-shaped protection instead of coarse rectangles, set
+`segmentation_mode: sam2-auto`. It invokes the real upstream Meta SAM2 runtime
+once per source clip, emits one binary PNG mask per frame under the versioned
+`segmentation_uri`, and reuses those masks across all Cosmos variants and bounded
+refinement retries. Automatic mode discovers stable first-frame foreground
+proposals; raw prompt coordinates
+are intentionally not accepted through workflow config or rendered argv. The
+mask drives the same source-chroma/luma-bounded fidelity policy at pixel precision
+with feathered boundaries. Missing frames, empty eligible proposals, checkpoint
+mismatch, decode failure, or upload failure stops the augment stage.
+
+The default is `segmentation_mode: off`, which neither downloads nor invokes
+SAM2 and preserves the original PAIDF/Cosmos behavior. The official
+`facebook/sam2.1-hiera-tiny` checkpoint is pinned by immutable revision for the
+default speed/quality tradeoff; tune proposal thresholds and `max_objects` from
+measured coverage and downstream evaluator results rather than assuming that
+more masks improve a domain. The image replaces the Cosmos lock's unaffiliated
+PyPI repackaging with Meta's immutable official source; its Apache-2.0 source,
+BSD helper notice, and checkpoint boundary are recorded in the Cosmos Transfer
+redistribution notice.
+
+For an A/B comparison, give both fresh runs the same non-sensitive
+`augmentation_seed`. Config generation will then sample identical appearance
+prompts even though the run IDs differ, making evaluator and throughput deltas
+attributable to the optional component rather than a different workload. An empty
+value retains the existing run-ID-derived sampling behavior.
 
 `protected_chroma_regions_json` is deliberately separate from
 `appearance_regions_json`: the former changes transfer pixels, while the latter
@@ -441,13 +486,15 @@ input/augmented frames, evaluator result, decision, and rejection disposition,
 then `reject-quality` fails the workflow. This preserves fail-closed promotion
 without losing the RRD needed to inspect why the run was rejected. A failure that
 occurs before usable input or augmented frames exist still cannot produce an RRD.
+The accepted branch begins with `require-accepted-quality`, which re-checks the
+durable disposition. This additional guard is what keeps a one-shot serial plan
+using a preview assumption from running accepted-only stages when the real report
+was rejected; runtime execution follows the same guarded branch.
 
-PAIDF does **not** currently use Segment Anything (SAM or SAM2). Input video
-conditioning uses derived `edge` or `vis` controls, while the evaluator performs
-its own comparison-mask analysis. Token Factory VLM captioning also does not emit
-semantic segmentation masks. Adding SAM would require an explicit workbench stage,
-packaged model weights with licensing review, a versioned mask artifact contract,
-and tests; it should not be inferred from the word “mask” in evaluator reports.
+PAIDF uses Segment Anything only when `segmentation_mode` explicitly selects
+`sam2-auto`. These frame-aligned protected-content masks are
+distinct from Cosmos Evaluator's comparison masks and from Token Factory VLM
+captions. The default/off path remains entirely non-SAM.
 
 ## View input / intermediate / output in the NPA agent
 

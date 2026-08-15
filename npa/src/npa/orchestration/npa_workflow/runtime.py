@@ -1068,6 +1068,7 @@ class SkyPilotWaveExecutor:
                     job_name,
                     job_id=job_id,
                     isolated_config_dir=self.options.isolated_config_dir,
+                    config_path=self.options.config_path,
                     sky_bin=self.options.sky_bin or None,
                 )
             except Exception as exc:  # noqa: BLE001 - fail closed below

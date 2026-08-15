@@ -857,8 +857,8 @@ def render_task_run_script(command: Sequence[str], *, preamble: str = "") -> str
         # succeeds), the overlay lands in the vendor interpreter, and the stage runs the stale
         # CLI. Live job 284: `No such command 'cosmos2'. Did you mean 'cosmos'?` — from an npa
         # predating the subcommand, while the recorded interpreter had the current one.
-        '  printf \'#!/bin/sh\\nexec "%s" -c "from npa.cli.main import app_entry; '
-        'app_entry()" "$@"\\n\' "$npa_python" > /tmp/npa-shim/npa\n'
+        '  printf \'#!/bin/sh\\nexec "%s" -m npa "$@"\\n\' '
+        '"$npa_python" > /tmp/npa-shim/npa\n'
         "  chmod +x /tmp/npa-shim/npa\n"
         '  export PATH="/tmp/npa-shim:$PATH"\n'
         # Console scripts installed next to that interpreter must be resolvable by
@@ -1412,10 +1412,13 @@ def plan_image_pull_secrets(
     run_id: str,
     options: SkypilotRenderOptions,
 ) -> dict[str, tuple[str, ...]]:
-    """Return declared Kubernetes pull-secret names for each exact image path.
+    """Return effective Kubernetes pull-secret names for each exact image path.
 
     If an image is also used by a non-Kubernetes step, its mapping is empty: a
     Kubernetes secret cannot prove that VM execution path can pull the image.
+    Nebius registry tasks receive ``npa-nebius-registry`` during rendering, so
+    expose the same implicit authority here even when the source workflow does
+    not repeat that renderer-owned implementation detail.
     """
 
     paths: dict[str, list[tuple[str, ...] | None]] = {}
@@ -1447,6 +1450,8 @@ def plan_image_pull_secrets(
             for item in raw_names
             if isinstance(item, dict) and str(item.get("name") or "").strip()
         )
+        if _is_nebius_registry_image(image):
+            names = tuple(dict.fromkeys((*names, "npa-nebius-registry")))
         paths.setdefault(image, []).append(names)
     return {
         image: ()
@@ -1516,8 +1521,10 @@ def build_skypilot_task_doc(
             )
         envs["NPA_SIM2REAL_SOURCE_SHA"] = expected_source_sha
     envs.update(isaac_eula_envs(str(scheduler_task.get("tool_ref") or "")))
-    # Optional tuning passthrough. The first-class transfer_execute toolRef always
-    # conditions on the workflow input; these variables can tune that real path.
+    # Optional tuning passthrough. Cosmos resolves explicit argv first, these env
+    # values second, and a validated run-scoped refinement artifact last. Thus the
+    # env values tune direct/first-pass execution but intentionally cannot override
+    # a committed retry policy.
     import os as _os_cond
 
     for _cond_var in (

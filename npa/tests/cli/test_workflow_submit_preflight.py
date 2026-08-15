@@ -234,6 +234,40 @@ def test_paidf_input_selectors_conflict_before_preflight() -> None:
     assert "missing prerequisites" not in result.output
 
 
+def test_paidf_lerobot_selector_is_planned_without_object_store_access(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("NPA_SRC_S3_URI", "s3://real-bucket/npa-src/npa")
+
+    result = _submit(
+        "--plan-only",
+        "--lerobot-uri",
+        "s3://source-bucket/datasets/robot-run/",
+        "--lerobot-camera",
+        "observation.images.front",
+        "--lerobot-episode",
+        "3",
+        "--var",
+        "bucket=real-bucket",
+        "--output-format",
+        "json",
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["lifecycle_state"] == "PLAN_ONLY"
+    assert "Operator-supplied LeRobotDataset" not in result.output
+    assert "input_source_format" not in result.output  # metadata, not an argv shim
+
+
+def test_paidf_lerobot_only_selectors_fail_without_dataset_uri() -> None:
+    result = _submit("--plan-only", "--lerobot-camera", "front")
+
+    assert result.exit_code == 1
+    assert "require --lerobot-uri" in result.output
+    assert "missing prerequisites" not in result.output
+
+
 def test_paidf_fixture_is_explicit_in_rendered_plan(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -255,7 +289,8 @@ def test_paidf_fixture_is_explicit_in_rendered_plan(
     generate = next(
         step for step in plan["steps"] if step["state"] == "generate-configs"
     )
-    assert generate["argv"][-2] == "true"
+    assert generate["argv"][-3] == "true"
+    assert generate["argv"][-1] == ""
     assert "--condition-on-input" in result.output
 
 

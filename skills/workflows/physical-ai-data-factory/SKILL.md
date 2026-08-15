@@ -233,9 +233,10 @@ Token Factory model.
 SPEC=npa/workflows/workbench/npa-workflows/physical-ai-data-factory.yaml
 npa workbench workflow validate-spec "$SPEC" --json
 # --var bucket= is required for a meaningful plan; without it the spec's
-# `example-bucket` placeholder is planned (plan-spec warns).
+# `example-bucket` placeholder is planned (plan-spec warns). The shipped
+# plan_assume_decision previews the accepted path; runtime still reads S3.
 npa workbench workflow plan-spec "$SPEC" --run-id demo \
-  --assume-decision promote_checkpoint --var bucket=<bucket> --json
+  --var bucket=<bucket> --json
 
 # Prerequisites, in order, on a fresh machine/account:
 npa skypilot bootstrap                          # persists skypilot.sky_bin
@@ -257,8 +258,10 @@ The secret names above are resolved from the environment first and then the
 selected project's configured NPA credentials; operators do not re-export values
 already stored by `npa configure`. With no input selector, submit fetches,
 checksum-verifies, caches, normalizes, and stages the pinned real RoboPro starter.
-Use `--input-video` or `--input-uri` to replace it; use `--seed-fixture` only for
-explicitly synthetic developer/test input.
+Use `--input-video`, `--input-uri`, or `--lerobot-uri` to replace it; LeRobot
+selection may add an exact `--lerobot-camera` and non-negative
+`--lerobot-episode`, and materializes only the chosen observation video. Use
+`--seed-fixture` only for explicitly synthetic developer/test input.
 The one-variant override keeps the first real run decisive; omit it for the
 spec's default two-variant multiply or raise it with the requested GPU count.
 
@@ -278,7 +281,9 @@ not change these disk requirements.
 
 - **Prepare a verified video before GPU work.** The submit path selects the
   pinned RoboPro physical capture by default, or an explicit `--input-video` /
-  `--input-uri`; it validates H.264 MP4 media, verifies the default digest,
+  `--input-uri` / `--lerobot-uri`; LeRobot inputs validate `meta/info.json`, a
+  declared video feature, and the selected episode before media staging. It
+  validates H.264 MP4 media, verifies the default digest,
   caches/reuses safely, stages `source.mp4`, and derives the exact
   `conditioning.mp4` plus caption frames. `--seed-fixture` is the only synthetic
   geometry path. Conflicts, offline cache misses, invalid media, or checksum
@@ -290,11 +295,27 @@ not change these disk requirements.
   rejected runs get a partial evidence recording before the explicit fail-closed
   state. Runs that fail before usable input/augmented frames exist cannot produce
   an RRD.
-- **SAM is not part of this blueprint.** PAIDF currently derives `edge` or `vis`
-  control from the input video and uses Cosmos Evaluator's comparison masks. It
-  does not invoke Segment Anything (SAM/SAM2), and VLM captioning is not semantic
-  segmentation. A future SAM integration must be an explicit real workbench stage
-  with model licensing, image packaging, mask artifacts, and tests.
+- **SAM2 is explicit and optional.** `segmentation_mode: off` is the default and
+  keeps the non-SAM path unchanged. `sam2-auto` invokes upstream Meta SAM2 in the
+  Cosmos GPU task once per source clip, publishes an exact
+  frame-aligned mask contract, and reuses it across augmentation variants for
+  protected source-chroma/luma-bounded compositing. Raw prompt coordinates are
+  not a workflow config surface. Keep the official source and model revisions
+  immutable and fail closed on an incomplete mask sequence. The SAM2 masks are
+  distinct from Cosmos Evaluator comparison masks.
+- **Control A/B prompt sampling.** Set the same non-sensitive
+  `augmentation_seed` on two fresh runs when measuring an optional component.
+  Empty preserves deterministic run-ID-derived sampling.
+- **Refinement policy and precedence.** The first pass retains Cosmos Transfer's
+  established `control_weight=1.0` with guidance `3`. A failed gate consumes the
+  durable decision/report contract and must select a different in-bounds pair
+  (the default retry lowers guidance). Attempts are immutable JSON objects with
+  commit markers; only the current pointer is mutable. Explicit CLI values are
+  overridden by `NPA_COSMOS_*` conditioning variables, and a validated refinement
+  artifact overrides both so ambient worker settings cannot change a committed
+  retry. Prior live evidence showed that stronger control is non-monotonic with
+  attribute score, so this is compatibility policy rather than an improvement
+  claim.
 Run either NVIDIA component on its own, against a run prefix or local files:
 
 ```bash

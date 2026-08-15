@@ -20,13 +20,14 @@ ROOT = Path(__file__).resolve().parents[3]
 IMAGE_DIR = ROOT / "npa" / "docker" / "workbench" / "cosmos2-transfer"
 DOCKERFILE = IMAGE_DIR / "Dockerfile"
 SOURCE_SHA = "67d56b7d550a3911024a32dc23ae0bae5258e633"
+SAM2_SOURCE_SHA = "2b90b9f5ceec907a1c18123530e92e794ad901a4"
 BUILD_BASE_SHA = (
     "sha256:3986465b3dd3b4d602c07061f2cff417e0bfb24810129408d4eb12e111015a6c"
 )
 RUNTIME_BASE_SHA = (
     "sha256:9175fa92f96de35a8cfb9493f0dfcf9435c7a597e9d95ad41d2cae382a95e3f9"
 )
-EXACT_TAG = "2.5.1-skypilot-ready-20260801T053000Z"
+EXACT_TAG = "2.5.1-sam2-skypilot-ready-20260815-review5"
 
 
 def _dockerfile() -> str:
@@ -36,6 +37,7 @@ def _dockerfile() -> str:
 def test_source_base_uv_and_python_are_immutable() -> None:
     text = _dockerfile()
     assert f"COSMOS_TRANSFER_REVISION={SOURCE_SHA}" in text
+    assert f"SAM2_REVISION={SAM2_SOURCE_SHA}" in text
     assert f"cudnn-devel-ubuntu24.04@{BUILD_BASE_SHA}" in text
     assert f"cudnn-runtime-ubuntu24.04@{RUNTIME_BASE_SHA}" in text
     assert "FROM ${CUDA_RUNTIME_IMAGE} AS runtime" in text
@@ -50,6 +52,10 @@ def test_source_base_uv_and_python_are_immutable() -> None:
     assert "security.ubuntu.com" not in text
     assert "developer.download.nvidia.com" not in text
     assert "uv sync --locked --no-dev --no-editable --extra=cu128" in text
+    assert "uv pip uninstall --python .venv/bin/python sam2" in text
+    assert "SAM2_BUILD_CUDA=0 uv pip install" in text
+    assert "https://github.com/facebookresearch/sam2.git" in text
+    assert 'version("SAM-2") == "1.0"' in text
     assert "apt-get upgrade -y" in text
 
 
@@ -193,6 +199,23 @@ def test_final_runtime_is_non_root_relocated_and_cache_writable_by_design() -> N
     assert "COPY --from=build --chown=1000:1000 /opt/cosmos /opt/cosmos" in text
     assert 'exec /opt/cosmos/cosmos-transfer2.5/.venv/bin/python "$@"' in text
     assert "> /usr/local/bin/python3" in text
+    assert (
+        "ln -sfn /opt/cosmos/cosmos-transfer2.5/.venv/bin/npa /usr/local/bin/npa"
+        in text
+    )
+    assert "npa-runtime-requirements.txt" in text
+    assert "--requirement /tmp/npa-runtime-requirements.txt" in text
+    assert 'importlib.metadata.version(\"typer\") == \"0.27.1\"' in text
+    requirements = (IMAGE_DIR / "npa-runtime-requirements.txt").read_text()
+    assert "annotated_doc-0.0.5-py3-none-any.whl" in requirements
+    assert "shellingham-1.5.4-py2.py3-none-any.whl" in requirements
+    assert "typer-0.27.1-py3-none-any.whl" in requirements
+    assert requirements.count("#sha256=") == 3
+    assert 'test "$(command -v npa)" = /usr/local/bin/npa' in text
+    assert "npa workbench cosmos2 transfer --help" in text
+    assert "rm -rf /opt/cosmos/model-cache/xdg/uv" in text
+    assert "chown -R ubuntu:ubuntu /opt/cosmos/model-cache" in text
+    assert "/opt/cosmos/model-cache/xdg/uv/.npa-write-probe" in text
     assert 'python3 -c "import cosmos_transfer2"' in text
     assert "python3 -m pip --version" in text
     assert "COPY --from=uv-bin /uv /usr/local/bin/uv" in text
@@ -330,8 +353,14 @@ def test_redistribution_record_covers_every_artifact_category() -> None:
         "Python dependencies",
         "Live-test input",
         SOURCE_SHA,
+        SAM2_SOURCE_SHA,
         BUILD_BASE_SHA,
         RUNTIME_BASE_SHA,
     ):
         assert item in record
     assert "not legal advice" in record
+    assert "sam2==1.1.0" in record
+    assert "unaffiliated PyPI repackaging" in record
+    assert "SAM-2 1.0" in record
+    assert "facebook/sam2.1-hiera-tiny" in record
+    assert "Default/off runs do not fetch or invoke SAM2" in record

@@ -71,7 +71,7 @@ def test_non_sonic_workbench_images_resolve_from_supported_tools() -> None:
     assert (
         container_image_for_tool("cosmos2-transfer")
         == "cr.eu-north1.nebius.cloud/e00cm0vc6t09m0z5gw/"
-        "npa-cosmos2-transfer:2.5.1-skypilot-ready-20260801T053000Z"
+        "npa-cosmos2-transfer:2.5.1-sam2-skypilot-ready-20260815-review5"
     )
     assert (
         container_image_for_tool("cosmos3")
@@ -110,6 +110,16 @@ def test_packaged_supported_tool_versions_match_pyproject() -> None:
     data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
 
     assert SUPPORTED_TOOL_VERSIONS == data["tool"]["npa"]["supported-tools"]
+
+
+def test_paidf_worker_defaults_select_bootstrap_capable_releases() -> None:
+    for tool in (
+        "cosmos-curate",
+        "cosmos-evaluator",
+        "fiftyone",
+        "rerun-viewer",
+    ):
+        assert "skypilot-v1" in SUPPORTED_TOOL_VERSIONS[tool]
 
 
 def test_byo_workflow_images_have_pushed_defaults(monkeypatch) -> None:

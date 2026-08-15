@@ -250,7 +250,15 @@ def run_workflow(
 def _make_context(spec: NpaWorkflowSpec, *, run_id: str) -> RunContext:
     run = {"id": run_id, "prefix": f"{spec.name}/{run_id}", **dict(spec.run_defaults)}
     run["id"] = run_id
-    config = _resolve_config_strings(dict(spec.config), run=run)
+    config_with_tool_defaults = dict(spec.config)
+    from npa.orchestration.npa_workflow.catalog import config_defaults_for_tool
+
+    for state in spec.states.values():
+        if not state.tool_ref:
+            continue
+        for key, value in config_defaults_for_tool(state.tool_ref).items():
+            config_with_tool_defaults.setdefault(key, value)
+    config = _resolve_config_strings(config_with_tool_defaults, run=run)
     if config.get("prefix"):
         run["prefix"] = resolve_tokens(str(config["prefix"]), config=config, run=run)
     return RunContext(config=config, run=run)
