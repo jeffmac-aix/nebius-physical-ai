@@ -19,20 +19,24 @@ from npa.fleet.mig import (
     GPU_GFD_VERSION,
     GPU_MIG_MANAGER_VERSION,
     GPU_OPERATOR_VERSION,
-    MigSpecError,
     MigNodeStatus,
-    MigVerificationReport,
+    MigSpecError,
     MigVerificationError,
+    MigVerificationReport,
     _active_gpu_workloads,
     _collect_hardware,
-    _reconcile_stale_mig_taints,
-    _restart_discovery_operands,
+    _ensure_device_plugin_mig_gate,
     _kubectl_env,
+    _reconcile_ondelete_driver,
+    _reconcile_stale_mig_taints,
+    _replace_driver_pod,
+    _restart_discovery_operands,
+    _run_mig_cuda_smoke,
     inspect_mig_state,
     wait_for_mig_ready,
 )
-from npa.fleet.spec import ClusterSpec, FleetSpecError, NodePoolSpec
 from npa.fleet.quotas import required_quotas
+from npa.fleet.spec import ClusterSpec, FleetSpecError, NodePoolSpec
 from npa.fleet.tfvars import render_tfvars
 
 
@@ -101,8 +105,8 @@ def test_enabled_mig_renders_pinned_compatibility_tuple() -> None:
     assert 'k8s_version = "1.34"' in tfvars
     assert 'mig_strategy                 = "mixed"' in tfvars
     assert 'mig_parted_config            = "all-balanced"' in tfvars
-    assert "gpu_mig_with_reboot         = true" in tfvars
-    assert "gpu_operator_rdma_enabled   = false" in tfvars
+    assert "gpu_mig_with_reboot          = true" in tfvars
+    assert "gpu_operator_rdma_enabled    = false" in tfvars
     assert "custom_driver                = true" in tfvars
     assert "gpu_nodes_driverfull_image   = false" in tfvars
     assert 'gpu_disk_size = "128"' in tfvars
@@ -125,6 +129,13 @@ def test_enabled_mig_rejects_explicit_managed_image_driver_mode() -> None:
     data = _mapping(mig={"enabled": True})
     data["defaults"]["gpu_driver_mode"] = "managed-image"
     with pytest.raises(FleetSpecError, match="requires the pinned GPU Operator"):
+        spec_from_mapping(data).projects[0].clusters[0].validate()
+
+
+def test_enabled_mig_requires_deploy_cuda_smoke() -> None:
+    data = _mapping(mig={"enabled": True})
+    data["defaults"]["gpu_cuda_smoke"] = False
+    with pytest.raises(FleetSpecError, match="requires gpu_cuda_smoke=true"):
         spec_from_mapping(data).projects[0].clusters[0].validate()
 
 
@@ -183,10 +194,54 @@ def test_enabled_mig_rejects_wrong_platform_missing_pool_and_kubernetes() -> Non
             mig=MigSpec(),
         ).validate()
 
-    with pytest.raises(FleetSpecError, match="exactly two GPU workers"):
+    with pytest.raises(FleetSpecError, match="only for RTX PRO 6000"):
         ClusterSpec(
             name="cpu",
             cpu_nodes=NodePoolSpec(count=1),
+            mig=MigSpec(),
+        ).validate()
+
+    with pytest.raises(MigSpecError, match="positive GPU worker count"):
+        MigSpec().validate(
+            platform="gpu-rtx6000",
+            preset="1gpu-24vcpu-218gb",
+            gpu_nodes=0,
+            capacity_block_group="capacityblockgroup-test",
+            disk_size_gib=128,
+            k8s_version="1.34",
+        )
+
+    with pytest.raises(MigSpecError, match="tested one-GPU preset"):
+        MigSpec().validate(
+            platform="gpu-rtx6000",
+            preset="",
+            gpu_nodes=0,
+            capacity_block_group="capacityblockgroup-test",
+            disk_size_gib=128,
+            k8s_version="1.34",
+        )
+
+    with pytest.raises(FleetSpecError, match="only for RTX PRO 6000"):
+        ClusterSpec(
+            name="wrong-platform-zero-workers",
+            gpu_nodes=NodePoolSpec(
+                count=0,
+                platform="gpu-l40s",
+                preset="1gpu-24vcpu-218gb",
+                capacity_block_group="capacityblockgroup-test",
+            ),
+            mig=MigSpec(),
+        ).validate()
+
+    with pytest.raises(FleetSpecError, match="positive GPU worker count"):
+        ClusterSpec(
+            name="zero-workers",
+            gpu_nodes=NodePoolSpec(
+                count=0,
+                platform="gpu-rtx6000",
+                preset="1gpu-24vcpu-218gb",
+                capacity_block_group="capacityblockgroup-test",
+            ),
             mig=MigSpec(),
         ).validate()
 
@@ -505,12 +560,12 @@ def test_wait_reconciles_stale_resources_once_then_requires_two_snapshots(
     reports = iter((stale, exact, exact))
     restarts: list[bool] = []
     monkeypatch.setattr(
-        "npa.fleet.mig._ensure_device_plugin_mig_gate", lambda *_a: True
+        "npa.fleet.mig._ensure_device_plugin_mig_gate", lambda *_a, **_k: True
     )
     monkeypatch.setattr("npa.fleet.mig.verify_mig_cluster", lambda **_k: next(reports))
     monkeypatch.setattr(
         "npa.fleet.mig._restart_discovery_operands",
-        lambda *_a: restarts.append(True),
+        lambda *_a, **_k: restarts.append(True),
     )
     monkeypatch.setattr("npa.fleet.mig.time.sleep", lambda _seconds: None)
     report = wait_for_mig_ready(
@@ -530,7 +585,7 @@ def test_wait_fails_after_repeated_immutable_hardware_incompatibility(
         errors=("node gpu-node-0: unsupported vBIOS '98.00.00.00.00'",),
     )
     monkeypatch.setattr(
-        "npa.fleet.mig._ensure_device_plugin_mig_gate", lambda *_a: True
+        "npa.fleet.mig._ensure_device_plugin_mig_gate", lambda *_a, **_k: True
     )
     monkeypatch.setattr("npa.fleet.mig.verify_mig_cluster", lambda **_k: incompatible)
     monkeypatch.setattr("npa.fleet.mig.time.sleep", lambda _seconds: None)
@@ -540,6 +595,594 @@ def test_wait_fails_after_repeated_immutable_hardware_incompatibility(
             kubeconfig=Path("/tmp/kubeconfig"),
             expected_nodes=1,
         )
+
+
+def test_wait_runs_cuda_smoke_after_two_exact_snapshots(monkeypatch) -> None:  # noqa: ANN001
+    exact = _wait_report(ready=True, errors=())
+    reports = iter((exact, exact))
+    events: list[str] = []
+    monkeypatch.setattr(
+        "npa.fleet.mig._ensure_device_plugin_mig_gate", lambda *_a, **_k: True
+    )
+
+    def verify(**_kwargs):  # noqa: ANN003, ANN202
+        events.append("snapshot")
+        return next(reports)
+
+    def smoke(**_kwargs):  # noqa: ANN003, ANN202
+        events.append("smoke")
+        return {"resource": "nvidia.com/mig-1g.24gb", "vectoradd": "passed"}
+
+    monkeypatch.setattr("npa.fleet.mig.verify_mig_cluster", verify)
+    monkeypatch.setattr("npa.fleet.mig._run_mig_cuda_smoke", smoke)
+    report = wait_for_mig_ready(
+        kubectl_bin="kubectl",
+        kubeconfig=Path("/tmp/kubeconfig"),
+        expected_nodes=1,
+        timeout_seconds=60,
+        cuda_smoke_image="cuda-vectoradd:test",
+        sleep_fn=lambda _seconds: None,
+        monotonic_fn=lambda: 100.0,
+    )
+    assert events == ["snapshot", "snapshot", "smoke"]
+    assert report.cuda_smoke == {
+        "resource": "nvidia.com/mig-1g.24gb",
+        "vectoradd": "passed",
+    }
+
+
+def test_wait_times_out_on_recurring_nonconvergent_state(monkeypatch) -> None:  # noqa: ANN001
+    pending = _wait_report(
+        ready=False,
+        errors=("node gpu-node-0: MIG config state is 'pending', expected 'success'",),
+    )
+    clock = [100.0]
+
+    def sleep(seconds: float) -> None:
+        clock[0] += seconds
+
+    monkeypatch.setattr(
+        "npa.fleet.mig._ensure_device_plugin_mig_gate", lambda *_a, **_k: True
+    )
+    monkeypatch.setattr("npa.fleet.mig.verify_mig_cluster", lambda **_k: pending)
+    with pytest.raises(
+        MigVerificationError,
+        match=r"did not converge within 20s.*MIG config state is 'pending'",
+    ):
+        wait_for_mig_ready(
+            kubectl_bin="kubectl",
+            kubeconfig=Path("/tmp/kubeconfig"),
+            expected_nodes=1,
+            reconcile=False,
+            timeout_seconds=20,
+            sleep_fn=sleep,
+            monotonic_fn=lambda: clock[0],
+        )
+
+
+def test_wait_times_out_after_one_stale_resource_reconciliation(
+    monkeypatch,
+) -> None:  # noqa: ANN001
+    stale = _wait_report(
+        ready=False,
+        errors=(
+            "node gpu-node-0: nvidia.com/gpu capacity/allocatable=1/0, expected 0/0",
+        ),
+    )
+    clock = [100.0]
+    restarts: list[bool] = []
+
+    def sleep(seconds: float) -> None:
+        clock[0] += seconds
+
+    monkeypatch.setattr(
+        "npa.fleet.mig._ensure_device_plugin_mig_gate", lambda *_a, **_k: True
+    )
+    monkeypatch.setattr("npa.fleet.mig.verify_mig_cluster", lambda **_k: stale)
+    monkeypatch.setattr(
+        "npa.fleet.mig._restart_discovery_operands",
+        lambda *_a, **_k: restarts.append(True),
+    )
+    with pytest.raises(
+        MigVerificationError,
+        match=r"did not converge within 20s.*capacity/allocatable=1/0",
+    ):
+        wait_for_mig_ready(
+            kubectl_bin="kubectl",
+            kubeconfig=Path("/tmp/kubeconfig"),
+            expected_nodes=1,
+            timeout_seconds=20,
+            sleep_fn=sleep,
+            monotonic_fn=lambda: clock[0],
+        )
+    assert restarts == [True]
+
+
+def test_discovery_restart_recomputes_one_shared_deadline(monkeypatch) -> None:
+    clock = [100.0]
+    observed_timeouts: list[float] = []
+
+    def run(command, **kwargs):  # noqa: ANN001, ANN202
+        observed_timeouts.append(kwargs["timeout"])
+        clock[0] += 1.0
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr("npa.fleet.mig.subprocess.run", run)
+    _restart_discovery_operands(
+        "kubectl",
+        Path("/tmp/kubeconfig"),
+        deadline=104.0,
+        monotonic_fn=lambda: clock[0],
+    )
+    assert observed_timeouts == [4.0, 3.0, 2.0, 1.0]
+
+
+def test_wait_bounds_a_hung_verification_query(monkeypatch) -> None:  # noqa: ANN001
+    observed_timeouts: list[float] = []
+
+    def run(command, **kwargs):  # noqa: ANN001, ANN202
+        observed_timeouts.append(kwargs["timeout"])
+        raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+    monkeypatch.setattr("npa.fleet.mig.subprocess.run", run)
+    with pytest.raises(MigVerificationError, match="TimeoutExpired"):
+        wait_for_mig_ready(
+            kubectl_bin="kubectl",
+            kubeconfig=Path("/tmp/kubeconfig"),
+            expected_nodes=1,
+            reconcile=False,
+            timeout_seconds=7,
+            monotonic_fn=lambda: 10.0,
+        )
+    assert observed_timeouts == [7.0]
+
+
+def test_driver_replacement_timeout_is_actionable(monkeypatch) -> None:  # noqa: ANN001
+    clock = [10.0]
+    commands: list[list[str]] = []
+
+    def run(command, **_kwargs):  # noqa: ANN001, ANN202
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    def sleep(seconds: float) -> None:
+        clock[0] += seconds
+
+    monkeypatch.setattr("npa.fleet.mig.subprocess.run", run)
+    monkeypatch.setattr(
+        "npa.fleet.mig._kubectl_json",
+        lambda *_a, **_k: {
+            "items": [
+                {
+                    "metadata": {"uid": "old"},
+                    "spec": {"nodeName": "gpu-node-0"},
+                    "status": {"phase": "Running", "containerStatuses": []},
+                }
+            ]
+        },
+    )
+    with pytest.raises(
+        MigVerificationError,
+        match="timed out waiting for the replacement NVIDIA driver pod.*uncordoned",
+    ):
+        _replace_driver_pod(
+            kubectl_bin="kubectl",
+            kubeconfig=Path("/tmp/kubeconfig"),
+            pod_name="driver-old",
+            pod_uid="old",
+            node="gpu-node-0",
+            deadline=30.0,
+            sleep_fn=sleep,
+            monotonic_fn=lambda: clock[0],
+        )
+    assert commands[0][-5:] == [
+        "delete",
+        "pod",
+        "driver-old",
+        "-n",
+        "gpu-operator",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("already_cordoned", "expected_commands"),
+    [(False, ["cordon", "uncordon"]), (True, [])],
+)
+def test_driver_reconciliation_restores_only_its_own_cordon(
+    monkeypatch, already_cordoned: bool, expected_commands: list[str]
+) -> None:  # noqa: ANN001
+    driver_pods = {
+        "items": [
+            {
+                "metadata": {
+                    "namespace": "gpu-operator",
+                    "name": "driver-old",
+                    "uid": "old",
+                    "labels": {"app": "nvidia-driver-daemonset"},
+                },
+                "spec": {"nodeName": "gpu-node-0"},
+                "status": {"phase": "Running"},
+            }
+        ]
+    }
+
+    def kubectl_json(_bin, _config, args, **_kwargs):  # noqa: ANN001, ANN202
+        if args[:2] == ["get", "node"]:
+            return {"spec": {"unschedulable": already_cordoned}}
+        return driver_pods
+
+    commands: list[str] = []
+
+    def run(command, **_kwargs):  # noqa: ANN001, ANN202
+        commands.append(command[3])
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr("npa.fleet.mig._kubectl_json", kubectl_json)
+    monkeypatch.setattr("npa.fleet.mig.subprocess.run", run)
+    monkeypatch.setattr(
+        "npa.fleet.mig._replace_driver_pod",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            MigVerificationError("driver replacement deadline expired")
+        ),
+    )
+    with pytest.raises(MigVerificationError, match="deadline expired"):
+        _reconcile_ondelete_driver(
+            "kubectl",
+            Path("/tmp/kubeconfig"),
+            deadline=30.0,
+            sleep_fn=lambda _seconds: None,
+            monotonic_fn=lambda: 0.0,
+        )
+    assert commands == expected_commands
+
+
+def test_driver_reconciliation_uncordons_after_ambiguous_cordon_timeout(
+    monkeypatch,
+) -> None:  # noqa: ANN001
+    driver_pods = {
+        "items": [
+            {
+                "metadata": {
+                    "namespace": "gpu-operator",
+                    "name": "driver-old",
+                    "uid": "old",
+                    "labels": {"app": "nvidia-driver-daemonset"},
+                },
+                "spec": {"nodeName": "gpu-node-0"},
+                "status": {"phase": "Running"},
+            }
+        ]
+    }
+
+    def kubectl_json(_bin, _config, args, **_kwargs):  # noqa: ANN001, ANN202
+        if args[:2] == ["get", "node"]:
+            return {"spec": {"unschedulable": False}}
+        return driver_pods
+
+    commands: list[str] = []
+
+    def run(command, **kwargs):  # noqa: ANN001, ANN202
+        operation = command[3]
+        commands.append(operation)
+        if operation == "cordon":
+            raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr("npa.fleet.mig._kubectl_json", kubectl_json)
+    monkeypatch.setattr("npa.fleet.mig.subprocess.run", run)
+    with pytest.raises(
+        MigVerificationError,
+        match="could not cordon.*TimeoutExpired",
+    ):
+        _reconcile_ondelete_driver(
+            "kubectl",
+            Path("/tmp/kubeconfig"),
+            deadline=30.0,
+            sleep_fn=lambda _seconds: None,
+            monotonic_fn=lambda: 0.0,
+        )
+    assert commands == ["cordon", "uncordon"]
+
+
+def test_device_plugin_gate_preserves_every_existing_selector_term(
+    monkeypatch,
+) -> None:  # noqa: ANN001
+    daemonset = {
+        "metadata": {"resourceVersion": "123"},
+        "spec": {
+            "template": {
+                "spec": {
+                    "affinity": {
+                        "nodeAffinity": {
+                            "requiredDuringSchedulingIgnoredDuringExecution": {
+                                "nodeSelectorTerms": [
+                                    {
+                                        "matchExpressions": [
+                                            {
+                                                "key": "nvidia.com/gpu.deploy.operands",
+                                                "operator": "In",
+                                                "values": ["true"],
+                                            }
+                                        ]
+                                    },
+                                    {
+                                        "matchFields": [
+                                            {
+                                                "key": "metadata.name",
+                                                "operator": "NotIn",
+                                                "values": ["retired-node"],
+                                            }
+                                        ]
+                                    },
+                                ]
+                            }
+                        }
+                    }
+                }
+            }
+        },
+    }
+    patches: list[dict] = []
+    monkeypatch.setattr("npa.fleet.mig._kubectl_json", lambda *_a, **_k: daemonset)
+
+    def run(command, **_kwargs):  # noqa: ANN001, ANN202
+        patches.append(json.loads(command[-1]))
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr("npa.fleet.mig.subprocess.run", run)
+    assert _ensure_device_plugin_mig_gate("kubectl", Path("/tmp/kubeconfig"))
+    terms = patches[0]["spec"]["template"]["spec"]["affinity"]["nodeAffinity"][
+        "requiredDuringSchedulingIgnoredDuringExecution"
+    ]["nodeSelectorTerms"]
+    assert patches[0]["metadata"]["resourceVersion"] == "123"
+    assert terms[0]["matchExpressions"][0]["key"] == "nvidia.com/gpu.deploy.operands"
+    assert terms[1]["matchFields"][0]["values"] == ["retired-node"]
+    assert all(
+        term["matchExpressions"][-1]
+        == {
+            "key": "nvidia.com/mig.config.state",
+            "operator": "In",
+            "values": ["success"],
+        }
+        for term in terms
+    )
+
+
+def test_representative_mig_cuda_smoke_requests_limits_and_cleans_up(
+    monkeypatch,
+) -> None:  # noqa: ANN001
+    commands: list[list[str]] = []
+    manifest: dict = {}
+
+    def run(command, **kwargs):  # noqa: ANN001, ANN202
+        commands.append(command)
+        if "apply" in command:
+            manifest.update(json.loads(kwargs["input"]))
+            return subprocess.CompletedProcess(command, 0, "created", "")
+        if "logs" in command:
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                "Test PASSED\nNPA_MIG_VISIBLE=MIG-01234567-89ab-cdef-0123-456789abcdef\n"
+                "  MIG 1g.24gb Device 0: (UUID: "
+                "MIG-01234567-89ab-cdef-0123-456789abcdef)\n"
+                "0MiB / 24192MiB\n",
+                "",
+            )
+        return subprocess.CompletedProcess(command, 0, "deleted", "")
+
+    monkeypatch.setattr("npa.fleet.mig.subprocess.run", run)
+    monkeypatch.setattr(
+        "npa.fleet.mig._kubectl_json",
+        lambda *_a, **_k: {
+            "spec": {"nodeName": "gpu-node-0"},
+            "status": {
+                "phase": "Succeeded",
+                "containerStatuses": [
+                    {"state": {"terminated": {"exitCode": 0, "reason": "Completed"}}}
+                ],
+            },
+        },
+    )
+    monkeypatch.setattr(
+        "npa.fleet.mig.uuid.uuid4",
+        lambda: type("UUID", (), {"hex": "0123456789abcdef"})(),
+    )
+    result = _run_mig_cuda_smoke(
+        kubectl_bin="kubectl",
+        kubeconfig=Path("/tmp/kubeconfig"),
+        image="cuda-vectoradd:test",
+        deadline=100.0,
+        sleep_fn=lambda _seconds: None,
+        monotonic_fn=lambda: 0.0,
+    )
+    resources = manifest["spec"]["containers"][0]["resources"]
+    assert manifest["spec"]["runtimeClassName"] == "nvidia"
+    assert resources == {
+        "requests": {"nvidia.com/mig-1g.24gb": 1},
+        "limits": {"nvidia.com/mig-1g.24gb": 1},
+    }
+    assert result["vectoradd"] == "passed"
+    assert result["profile"] == "1g.24gb"
+    assert result["mig_uuid"].startswith("MIG-")
+    assert "delete" in commands[-1]
+    assert "--wait=true" in commands[-1]
+    assert any(argument.startswith("--timeout=") for argument in commands[-1])
+    assert manifest["spec"]["activeDeadlineSeconds"] > 0
+
+
+@pytest.mark.parametrize(
+    ("logs", "message"),
+    [
+        ("MIG 1g.24gb Device 0: (UUID: MIG-0123456789abcdef)\n", "Test PASSED"),
+        (
+            "Test PASSED\nNPA_MIG_VISIBLE=GPU-0123456789abcdef\n"
+            "MIG 1g.24gb Device 0: (UUID: MIG-0123456789abcdef)\n"
+            "0MiB / 24192MiB\n",
+            "inconsistent allocated-device identity",
+        ),
+        (
+            "Test PASSED\nNPA_MIG_VISIBLE=MIG-0123456789abcdef\n"
+            "MIG 2g.48gb Device 0: (UUID: MIG-0123456789abcdef)\n",
+            "did not report its allocated.*requested 1g.24gb profile",
+        ),
+    ],
+)
+def test_representative_mig_cuda_smoke_fails_closed_on_missing_evidence(
+    monkeypatch, logs: str, message: str
+) -> None:  # noqa: ANN001
+    def run(command, **_kwargs):  # noqa: ANN001, ANN202
+        if "logs" in command:
+            return subprocess.CompletedProcess(command, 0, logs, "")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr("npa.fleet.mig.subprocess.run", run)
+    monkeypatch.setattr(
+        "npa.fleet.mig._kubectl_json",
+        lambda *_args, **_kwargs: {
+            "spec": {"nodeName": "gpu-node-0"},
+            "status": {"phase": "Succeeded", "containerStatuses": []},
+        },
+    )
+
+    with pytest.raises(MigVerificationError, match=message):
+        _run_mig_cuda_smoke(
+            kubectl_bin="kubectl",
+            kubeconfig=Path("/tmp/kubeconfig"),
+            image="cuda-vectoradd:test",
+            deadline=100.0,
+            sleep_fn=lambda _seconds: None,
+            monotonic_fn=lambda: 0.0,
+        )
+
+
+def test_representative_mig_cuda_smoke_fails_if_cleanup_fails(monkeypatch) -> None:
+    def run(command, **_kwargs):  # noqa: ANN001, ANN202
+        if "logs" in command:
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                "Test PASSED\nNPA_MIG_VISIBLE=MIG-0123456789abcdef\n"
+                "MIG 1g.24gb Device 0: (UUID: MIG-0123456789abcdef)\n"
+                "0MiB / 24192MiB\n",
+                "",
+            )
+        if "delete" in command:
+            return subprocess.CompletedProcess(command, 1, "", "cleanup failed")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr("npa.fleet.mig.subprocess.run", run)
+    monkeypatch.setattr(
+        "npa.fleet.mig._kubectl_json",
+        lambda *_args, **_kwargs: {
+            "spec": {"nodeName": "gpu-node-0"},
+            "status": {"phase": "Succeeded", "containerStatuses": []},
+        },
+    )
+
+    with pytest.raises(MigVerificationError, match="smoke passed.*cleanup failed"):
+        _run_mig_cuda_smoke(
+            kubectl_bin="kubectl",
+            kubeconfig=Path("/tmp/kubeconfig"),
+            image="cuda-vectoradd:test",
+            deadline=100.0,
+            sleep_fn=lambda _seconds: None,
+            monotonic_fn=lambda: 0.0,
+        )
+
+
+def test_representative_mig_cuda_smoke_accepts_cdi_identity(monkeypatch) -> None:
+    def run(command, **_kwargs):  # noqa: ANN001, ANN202
+        if "logs" in command:
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                "Test PASSED\nNPA_MIG_VISIBLE=void\n"
+                "MIG 1g.24gb Device 0: (UUID: MIG-0123456789abcdef)\n"
+                "0MiB / 24192MiB\n",
+                "",
+            )
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr("npa.fleet.mig.subprocess.run", run)
+    monkeypatch.setattr(
+        "npa.fleet.mig._kubectl_json",
+        lambda *_args, **_kwargs: {
+            "spec": {"nodeName": "gpu-node-0"},
+            "status": {"phase": "Succeeded", "containerStatuses": []},
+        },
+    )
+    result = _run_mig_cuda_smoke(
+        kubectl_bin="kubectl",
+        kubeconfig=Path("/tmp/kubeconfig"),
+        image="cuda-vectoradd:test",
+        deadline=100.0,
+        sleep_fn=lambda _seconds: None,
+        monotonic_fn=lambda: 0.0,
+    )
+    assert result["mig_uuid"] == "MIG-0123456789abcdef"
+    assert result["memory_mib"] == 24192
+
+
+def test_representative_mig_cuda_smoke_rejects_ambiguous_cdi_view(
+    monkeypatch,
+) -> None:  # noqa: ANN001
+    def run(command, **_kwargs):  # noqa: ANN001, ANN202
+        if "logs" in command:
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                "Test PASSED\nNPA_MIG_VISIBLE=void\n"
+                "MIG 1g.24gb Device 0: (UUID: MIG-0123456789abcdef)\n"
+                "MIG 1g.24gb Device 1: (UUID: MIG-fedcba9876543210)\n"
+                "0MiB / 24192MiB\n",
+                "",
+            )
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr("npa.fleet.mig.subprocess.run", run)
+    monkeypatch.setattr(
+        "npa.fleet.mig._kubectl_json",
+        lambda *_args, **_kwargs: {
+            "spec": {"nodeName": "gpu-node-0"},
+            "status": {"phase": "Succeeded", "containerStatuses": []},
+        },
+    )
+    with pytest.raises(MigVerificationError, match="exactly one hardware MIG"):
+        _run_mig_cuda_smoke(
+            kubectl_bin="kubectl",
+            kubeconfig=Path("/tmp/kubeconfig"),
+            image="cuda-vectoradd:test",
+            deadline=100.0,
+            sleep_fn=lambda _seconds: None,
+            monotonic_fn=lambda: 0.0,
+        )
+
+
+def test_representative_mig_cuda_smoke_cleans_up_after_ambiguous_create_timeout(
+    monkeypatch,
+) -> None:  # noqa: ANN001
+    commands: list[list[str]] = []
+
+    def run(command, **kwargs):  # noqa: ANN001, ANN202
+        commands.append(command)
+        if "apply" in command:
+            raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+        return subprocess.CompletedProcess(command, 0, "deleted", "")
+
+    monkeypatch.setattr("npa.fleet.mig.subprocess.run", run)
+    with pytest.raises(MigVerificationError, match="could not create.*TimeoutExpired"):
+        _run_mig_cuda_smoke(
+            kubectl_bin="kubectl",
+            kubeconfig=Path("/tmp/kubeconfig"),
+            image="cuda-vectoradd:test",
+            deadline=100.0,
+            sleep_fn=lambda _seconds: None,
+            monotonic_fn=lambda: 0.0,
+        )
+    assert "apply" in commands[0]
+    assert "delete" in commands[1]
+    assert "--wait=true" in commands[1]
 
 
 def test_active_gpu_workloads_block_driver_replacement() -> None:
@@ -578,12 +1221,12 @@ def test_wait_fails_actionably_when_driver_update_has_active_gpu_workload(
         ),
     )
     monkeypatch.setattr(
-        "npa.fleet.mig._ensure_device_plugin_mig_gate", lambda *_a: True
+        "npa.fleet.mig._ensure_device_plugin_mig_gate", lambda *_a, **_k: True
     )
     monkeypatch.setattr("npa.fleet.mig.verify_mig_cluster", lambda **_k: pending)
     monkeypatch.setattr(
         "npa.fleet.mig._reconcile_ondelete_driver",
-        lambda *_a: (_ for _ in ()).throw(
+        lambda *_a, **_k: (_ for _ in ()).throw(
             MigVerificationError(
                 "NVIDIA driver OnDelete replacement is blocked by active GPU "
                 "workload(s): training/cuda; delete those workloads explicitly"

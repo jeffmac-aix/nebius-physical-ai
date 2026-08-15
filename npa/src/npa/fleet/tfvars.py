@@ -10,10 +10,13 @@ its provider domain for the target region, and drive it with a rendered
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Final
 
 from npa.cluster.gpu_driver import (
     CANONICAL_RECIPE_CAPABILITIES,
+    GpuDriverStrategyError,
     RecipeGpuDriverCapabilities,
+    inspect_recipe_declared_variables,
     inspect_recipe_gpu_driver_capabilities,
     recipe_driver_tfvars,
     resolve_gpu_driver_strategy,
@@ -28,6 +31,18 @@ from npa.fleet.mig import (
 from npa.fleet.spec import ClusterSpec
 
 _EU_DOMAIN = "api.eu.nebius.cloud:443"
+
+MIG_RECIPE_VARIABLES: Final[frozenset[str]] = frozenset(
+    {
+        "gpu_operator_version",
+        "gpu_driver_version",
+        "gpu_device_plugin_version",
+        "gpu_gfd_version",
+        "gpu_mig_manager_version",
+        "gpu_mig_with_reboot",
+        "gpu_operator_rdma_enabled",
+    }
+)
 
 
 def provider_domain(region: str) -> str:
@@ -45,6 +60,22 @@ def patch_provider_domain(provider_tf: str, region: str) -> str:
 def _tfstr(value: str) -> str:
     escaped = value.replace("\\", "\\\\").replace('"', '\\"')
     return f'"{escaped}"'
+
+
+def validate_recipe_mig_compatibility(cluster: ClusterSpec, recipe_dir: Path) -> None:
+    """Fail before Terraform when an alternate recipe would drop MIG pins."""
+
+    if not (cluster.mig and cluster.mig.enabled):
+        return
+    declared = inspect_recipe_declared_variables(recipe_dir)
+    missing = sorted(MIG_RECIPE_VARIABLES - declared)
+    if missing:
+        quoted = ", ".join(repr(name) for name in missing)
+        raise GpuDriverStrategyError(
+            f"{recipe_dir} cannot honor RTX PRO 6000 MIG: variables.tf is missing "
+            f"required Terraform variable(s) {quoted}. Use the vendored recipe or "
+            "a compatible --k8s-training-ref/--k8s-training-dir."
+        )
 
 
 def render_tfvars(
@@ -80,6 +111,8 @@ def render_tfvars(
     lines.append("gpu_nodes_preemptible        = false")
     mig = cluster.mig
     mig_enabled = bool(mig and mig.enabled)
+    if recipe_dir is not None:
+        validate_recipe_mig_compatibility(cluster, recipe_dir)
     lines.append(
         f"mig_strategy                 = {_tfstr(mig.strategy if mig_enabled else 'none')}"
     )
@@ -117,10 +150,10 @@ def render_tfvars(
         )
         # RTX PRO Blackwell requires MIG mode and geometry reconciliation across
         # a driver unload/reboot. Keep this explicit and platform-scoped.
-        lines.append("gpu_mig_with_reboot         = true")
+        lines.append("gpu_mig_with_reboot          = true")
         # The single-GPU RTX PRO preset has no InfiniBand fabric. Keep the RDMA
         # driver path off; enabling it adds unnecessary host-module churn.
-        lines.append("gpu_operator_rdma_enabled   = false")
+        lines.append("gpu_operator_rdma_enabled    = false")
 
     cpu_count = cpu.count if cpu else 0
     lines.append(f"cpu_nodes_fixed_count = {cpu_count}")

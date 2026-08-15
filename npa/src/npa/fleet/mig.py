@@ -12,8 +12,10 @@ import json
 import os
 import re
 import subprocess
+import sys
 import time
-from dataclasses import dataclass
+import uuid
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Final
 
@@ -30,7 +32,9 @@ GPU_DRIVER_VERSION: Final = "580.173.02"
 GPU_DEVICE_PLUGIN_VERSION: Final = "v0.19.3"
 GPU_GFD_VERSION: Final = "v0.19.3"
 GPU_MIG_MANAGER_VERSION: Final = "v0.14.2"
+GPU_CONTAINER_TOOLKIT_VERSION: Final = "v1.19.1"
 GPU_CUDA_VERSION: Final = "13.0"
+_CLEANUP_TIMEOUT_SECONDS: Final = 30.0
 
 SUPPORTED_MIG_STRATEGY: Final = "mixed"
 SUPPORTED_MIG_CONFIG: Final = "all-balanced"
@@ -95,6 +99,7 @@ class MigVerificationReport:
     operator_state: str
     operator_version: str
     hardware: tuple[MigHardwareStatus, ...] = ()
+    cuda_smoke: dict[str, Any] | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -131,6 +136,7 @@ class MigVerificationReport:
                 }
                 for item in self.hardware
             ],
+            "cuda_smoke": self.cuda_smoke,
             "errors": list(self.errors),
         }
 
@@ -168,10 +174,6 @@ class MigSpec:
                     "disabled MIG requires strategy 'none' and an empty config"
                 )
             return
-        if gpu_nodes <= 0:
-            raise MigSpecError(
-                f"RTX PRO 6000 MIG requires exactly two GPU workers; got {gpu_nodes}"
-            )
         if platform != RTX_PRO_6000_PLATFORM:
             raise MigSpecError(
                 "hardware MIG is currently supported only for RTX PRO 6000 "
@@ -181,6 +183,11 @@ class MigSpec:
             raise MigSpecError(
                 "RTX PRO 6000 MIG requires the tested one-GPU preset "
                 f"{RTX_PRO_6000_PRESET!r}; got {preset!r}"
+            )
+        if gpu_nodes <= 0:
+            raise MigSpecError(
+                "RTX PRO 6000 MIG requires a positive GPU worker count; "
+                f"got {gpu_nodes}"
             )
         if gpu_nodes != 2:
             raise MigSpecError(
@@ -455,7 +462,7 @@ def inspect_mig_state(
         "nvidia-mig-manager": GPU_MIG_MANAGER_VERSION,
         "gpu-feature-discovery": GPU_GFD_VERSION,
         "nvidia-device-plugin-daemonset": GPU_DEVICE_PLUGIN_VERSION,
-        "nvidia-container-toolkit-daemonset": "v1.19.1",
+        "nvidia-container-toolkit-daemonset": GPU_CONTAINER_TOOLKIT_VERSION,
     }
     ds_items = daemonsets_payload.get("items")
     if not isinstance(ds_items, list):
@@ -541,7 +548,12 @@ def inspect_mig_state(
 
 
 def _kubectl_json(
-    kubectl_bin: str, kubeconfig: Path, args: list[str]
+    kubectl_bin: str,
+    kubeconfig: Path,
+    args: list[str],
+    *,
+    timeout_seconds: float | None = None,
+    allow_not_found: bool = False,
 ) -> dict[str, Any]:
     command = [kubectl_bin, "--kubeconfig", str(kubeconfig), *args, "-o", "json"]
     try:
@@ -551,12 +563,15 @@ def _kubectl_json(
             capture_output=True,
             text=True,
             env=_kubectl_env(),
+            timeout=timeout_seconds,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise MigVerificationError(
             f"could not execute kubectl for {' '.join(args)}: {type(exc).__name__}"
         ) from exc
     if result.returncode != 0:
+        if allow_not_found and "notfound" in result.stderr.replace(" ", "").lower():
+            return {}
         # Provider stderr can include endpoints or auth details; retain only the
         # exit status and operation, never copy it into diagnostics.
         raise MigVerificationError(
@@ -575,7 +590,13 @@ def _kubectl_json(
     return payload
 
 
-def _kubectl_text(kubectl_bin: str, kubeconfig: Path, args: list[str]) -> str:
+def _kubectl_text(
+    kubectl_bin: str,
+    kubeconfig: Path,
+    args: list[str],
+    *,
+    timeout_seconds: float | None = None,
+) -> str:
     command = [kubectl_bin, "--kubeconfig", str(kubeconfig), *args]
     try:
         result = subprocess.run(
@@ -584,6 +605,7 @@ def _kubectl_text(kubectl_bin: str, kubeconfig: Path, args: list[str]) -> str:
             capture_output=True,
             text=True,
             env=_kubectl_env(),
+            timeout=timeout_seconds,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise MigVerificationError(
@@ -596,9 +618,26 @@ def _kubectl_text(kubectl_bin: str, kubeconfig: Path, args: list[str]) -> str:
     return result.stdout
 
 
+def _remaining_timeout(
+    deadline: float | None, monotonic_fn: Callable[[], float]
+) -> float | None:
+    if deadline is None:
+        return None
+    remaining = deadline - monotonic_fn()
+    if remaining <= 0:
+        raise MigVerificationError("MIG verification deadline expired")
+    return max(0.001, remaining)
+
+
 def _collect_hardware(
-    kubectl_bin: str, kubeconfig: Path, *, expected_nodes: int
+    kubectl_bin: str,
+    kubeconfig: Path,
+    *,
+    expected_nodes: int,
+    timeout_seconds: float | None = None,
+    monotonic_fn: Callable[[], float] = time.monotonic,
 ) -> tuple[tuple[MigHardwareStatus, ...], tuple[str, ...]]:
+    deadline = monotonic_fn() + timeout_seconds if timeout_seconds is not None else None
     pods_payload = _kubectl_json(
         kubectl_bin,
         kubeconfig,
@@ -610,6 +649,7 @@ def _collect_hardware(
             "-l",
             "app=nvidia-driver-daemonset",
         ],
+        timeout_seconds=_remaining_timeout(deadline, monotonic_fn),
     )
     pods = pods_payload.get("items")
     if not isinstance(pods, list):
@@ -653,6 +693,7 @@ def _collect_hardware(
                     f"--query-gpu={query}",
                     "--format=csv,noheader,nounits",
                 ],
+                timeout_seconds=_remaining_timeout(deadline, monotonic_fn),
             ).strip()
         except MigVerificationError:
             errors.append(
@@ -690,6 +731,7 @@ def _collect_hardware(
                     "nvidia-smi",
                     "-L",
                 ],
+                timeout_seconds=_remaining_timeout(deadline, monotonic_fn),
             )
         except MigVerificationError:
             errors.append(
@@ -714,6 +756,7 @@ def _collect_hardware(
                     "--",
                     "nvidia-smi",
                 ],
+                timeout_seconds=_remaining_timeout(deadline, monotonic_fn),
             )
         except MigVerificationError:
             errors.append(
@@ -781,31 +824,49 @@ def _collect_hardware(
 
 
 def verify_mig_cluster(
-    *, kubectl_bin: str, kubeconfig: Path, expected_nodes: int
+    *,
+    kubectl_bin: str,
+    kubeconfig: Path,
+    expected_nodes: int,
+    timeout_seconds: float | None = None,
+    monotonic_fn: Callable[[], float] = time.monotonic,
 ) -> MigVerificationReport:
     """Collect and validate one live MIG control-plane snapshot."""
 
+    deadline = monotonic_fn() + timeout_seconds if timeout_seconds is not None else None
     report = inspect_mig_state(
-        _kubectl_json(kubectl_bin, kubeconfig, ["get", "nodes"]),
+        _kubectl_json(
+            kubectl_bin,
+            kubeconfig,
+            ["get", "nodes"],
+            timeout_seconds=_remaining_timeout(deadline, monotonic_fn),
+        ),
         _kubectl_json(
             kubectl_bin,
             kubeconfig,
             ["get", "clusterpolicies.nvidia.com"],
+            timeout_seconds=_remaining_timeout(deadline, monotonic_fn),
         ),
         _kubectl_json(
             kubectl_bin,
             kubeconfig,
             ["get", "daemonsets", "-n", "gpu-operator"],
+            timeout_seconds=_remaining_timeout(deadline, monotonic_fn),
         ),
         _kubectl_json(
             kubectl_bin,
             kubeconfig,
             ["get", "deployment", "gpu-operator", "-n", "gpu-operator"],
+            timeout_seconds=_remaining_timeout(deadline, monotonic_fn),
         ),
         expected_nodes=expected_nodes,
     )
     hardware, hardware_errors = _collect_hardware(
-        kubectl_bin, kubeconfig, expected_nodes=expected_nodes
+        kubectl_bin,
+        kubeconfig,
+        expected_nodes=expected_nodes,
+        timeout_seconds=_remaining_timeout(deadline, monotonic_fn),
+        monotonic_fn=monotonic_fn,
     )
     errors = (*report.errors, *hardware_errors)
     return MigVerificationReport(
@@ -818,7 +879,13 @@ def verify_mig_cluster(
     )
 
 
-def _restart_discovery_operands(kubectl_bin: str, kubeconfig: Path) -> None:
+def _restart_discovery_operands(
+    kubectl_bin: str,
+    kubeconfig: Path,
+    *,
+    deadline: float | None = None,
+    monotonic_fn: Callable[[], float] = time.monotonic,
+) -> None:
     """Reconcile GFD before device-plugin registration, never simultaneously."""
 
     base = [kubectl_bin, "--kubeconfig", str(kubeconfig), "rollout"]
@@ -828,13 +895,21 @@ def _restart_discovery_operands(kubectl_bin: str, kubeconfig: Path) -> None:
         ("restart", "daemonset/nvidia-device-plugin-daemonset"),
         ("status", "daemonset/nvidia-device-plugin-daemonset"),
     ):
-        result = subprocess.run(
-            [*base, operation, daemonset, "-n", "gpu-operator"],
-            check=False,
-            capture_output=True,
-            text=True,
-            env=_kubectl_env(),
-        )
+        try:
+            result = subprocess.run(
+                [*base, operation, daemonset, "-n", "gpu-operator"],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=_kubectl_env(),
+                timeout=_remaining_timeout(deadline, monotonic_fn),
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise MigVerificationError(
+                f"could not {operation} NVIDIA "
+                f"{daemonset.removeprefix('daemonset/')} before the MIG "
+                f"deployment health deadline ({type(exc).__name__})"
+            ) from exc
         if result.returncode != 0:
             raise MigVerificationError(
                 f"could not {operation} NVIDIA {daemonset.removeprefix('daemonset/')} "
@@ -843,10 +918,21 @@ def _restart_discovery_operands(kubectl_bin: str, kubeconfig: Path) -> None:
             )
 
 
-def _reconcile_stale_mig_taints(kubectl_bin: str, kubeconfig: Path) -> int:
+def _reconcile_stale_mig_taints(
+    kubectl_bin: str,
+    kubeconfig: Path,
+    *,
+    deadline: float | None = None,
+    monotonic_fn: Callable[[], float] = time.monotonic,
+) -> int:
     """Remove only the obsolete MIG-readiness taint from successful GPU nodes."""
 
-    nodes = _kubectl_json(kubectl_bin, kubeconfig, ["get", "nodes"])
+    nodes = _kubectl_json(
+        kubectl_bin,
+        kubeconfig,
+        ["get", "nodes"],
+        timeout_seconds=_remaining_timeout(deadline, monotonic_fn),
+    )
     removed = 0
     for node in nodes.get("items", []):
         if not isinstance(node, dict):
@@ -893,23 +979,31 @@ def _reconcile_stale_mig_taints(kubectl_bin: str, kubeconfig: Path) -> int:
                 ],
                 separators=(",", ":"),
             )
-            result = subprocess.run(
-                [
-                    kubectl_bin,
-                    "--kubeconfig",
-                    str(kubeconfig),
-                    "patch",
-                    "node",
-                    name,
-                    "--type=json",
-                    "-p",
-                    patch,
-                ],
-                check=False,
-                capture_output=True,
-                text=True,
-                env=_kubectl_env(),
-            )
+            try:
+                result = subprocess.run(
+                    [
+                        kubectl_bin,
+                        "--kubeconfig",
+                        str(kubeconfig),
+                        "patch",
+                        "node",
+                        name,
+                        "--type=json",
+                        "-p",
+                        patch,
+                    ],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    env=_kubectl_env(),
+                    timeout=_remaining_timeout(deadline, monotonic_fn),
+                )
+            except (OSError, subprocess.SubprocessError) as exc:
+                raise MigVerificationError(
+                    f"could not remove the stale MIG readiness taint from node "
+                    f"{name} before the deployment health deadline "
+                    f"({type(exc).__name__})"
+                ) from exc
             if result.returncode != 0:
                 raise MigVerificationError(
                     f"could not remove the stale MIG readiness taint from node {name} "
@@ -957,10 +1051,22 @@ def _active_gpu_workloads(pods_payload: dict[str, Any]) -> tuple[str, ...]:
     return tuple(sorted(set(active)))
 
 
-def _reconcile_ondelete_driver(kubectl_bin: str, kubeconfig: Path) -> None:
+def _reconcile_ondelete_driver(
+    kubectl_bin: str,
+    kubeconfig: Path,
+    *,
+    deadline: float,
+    sleep_fn: Callable[[float], None],
+    monotonic_fn: Callable[[], float],
+) -> None:
     """Replace OnDelete driver pods one node at a time after a workload-free gate."""
 
-    all_pods = _kubectl_json(kubectl_bin, kubeconfig, ["get", "pods", "-A"])
+    all_pods = _kubectl_json(
+        kubectl_bin,
+        kubeconfig,
+        ["get", "pods", "-A"],
+        timeout_seconds=_remaining_timeout(deadline, monotonic_fn),
+    )
     active = _active_gpu_workloads(all_pods)
     if active:
         raise MigVerificationError(
@@ -987,24 +1093,50 @@ def _reconcile_ondelete_driver(kubectl_bin: str, kubeconfig: Path) -> None:
         old_name = str(metadata.get("name") or "")
         old_uid = str(metadata.get("uid") or "")
         node = str(pod.get("spec", {}).get("nodeName") or "")
-        cordon = subprocess.run(
-            [kubectl_bin, "--kubeconfig", str(kubeconfig), "cordon", node],
-            check=False,
-            capture_output=True,
-            text=True,
-            env=_kubectl_env(),
+        node_payload = _kubectl_json(
+            kubectl_bin,
+            kubeconfig,
+            ["get", "node", node],
+            timeout_seconds=_remaining_timeout(deadline, monotonic_fn),
         )
-        if cordon.returncode != 0:
-            raise MigVerificationError(
-                f"could not cordon node {node} before NVIDIA driver replacement "
-                f"(kubectl exit status {cordon.returncode})"
-            )
+        cordoned_here = not bool(node_payload.get("spec", {}).get("unschedulable"))
         primary_error: BaseException | None = None
         try:
+            if cordoned_here:
+                try:
+                    cordon = subprocess.run(
+                        [
+                            kubectl_bin,
+                            "--kubeconfig",
+                            str(kubeconfig),
+                            "cordon",
+                            node,
+                        ],
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                        env=_kubectl_env(),
+                        timeout=_remaining_timeout(deadline, monotonic_fn),
+                    )
+                except (OSError, subprocess.SubprocessError) as exc:
+                    raise MigVerificationError(
+                        f"could not cordon node {node} before the MIG deployment "
+                        f"health deadline ({type(exc).__name__})"
+                    ) from exc
+                if cordon.returncode != 0:
+                    raise MigVerificationError(
+                        f"could not cordon node {node} before NVIDIA driver "
+                        f"replacement (kubectl exit status {cordon.returncode})"
+                    )
             # Close the scheduling race between the global workload check and
             # the cordon. NPA never deletes an application workload implicitly.
             active_after_cordon = _active_gpu_workloads(
-                _kubectl_json(kubectl_bin, kubeconfig, ["get", "pods", "-A"])
+                _kubectl_json(
+                    kubectl_bin,
+                    kubeconfig,
+                    ["get", "pods", "-A"],
+                    timeout_seconds=_remaining_timeout(deadline, monotonic_fn),
+                )
             )
             if active_after_cordon:
                 raise MigVerificationError(
@@ -1020,35 +1152,60 @@ def _reconcile_ondelete_driver(kubectl_bin: str, kubeconfig: Path) -> None:
                 pod_name=old_name,
                 pod_uid=old_uid,
                 node=node,
+                deadline=deadline,
+                sleep_fn=sleep_fn,
+                monotonic_fn=monotonic_fn,
             )
         except BaseException as exc:
             primary_error = exc
-        uncordon = subprocess.run(
-            [kubectl_bin, "--kubeconfig", str(kubeconfig), "uncordon", node],
-            check=False,
-            capture_output=True,
-            text=True,
-            env=_kubectl_env(),
-        )
+        uncordon = None
+        uncordon_error = ""
+        if cordoned_here:
+            try:
+                uncordon = subprocess.run(
+                    [kubectl_bin, "--kubeconfig", str(kubeconfig), "uncordon", node],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    env=_kubectl_env(),
+                    timeout=_CLEANUP_TIMEOUT_SECONDS,
+                )
+                if uncordon.returncode != 0:
+                    uncordon_error = f"kubectl exit status {uncordon.returncode}"
+            except (OSError, subprocess.SubprocessError) as exc:
+                uncordon_error = type(exc).__name__
         if primary_error is not None:
-            if uncordon.returncode != 0:
+            if uncordon_error:
                 raise MigVerificationError(
                     f"{primary_error}; additionally could not uncordon node {node} "
-                    f"(kubectl exit status {uncordon.returncode})"
+                    f"({uncordon_error})"
                 ) from primary_error
             raise primary_error
-        if uncordon.returncode != 0:
+        if uncordon_error:
             raise MigVerificationError(
                 f"NVIDIA driver replacement completed but node {node} could not be "
-                f"uncordoned (kubectl exit status {uncordon.returncode})"
+                f"uncordoned ({uncordon_error})"
             )
 
 
 def _replace_driver_pod(
-    *, kubectl_bin: str, kubeconfig: Path, pod_name: str, pod_uid: str, node: str
+    *,
+    kubectl_bin: str,
+    kubeconfig: Path,
+    pod_name: str,
+    pod_uid: str,
+    node: str,
+    deadline: float,
+    sleep_fn: Callable[[float], None] = time.sleep,
+    monotonic_fn: Callable[[], float] = time.monotonic,
 ) -> None:
     """Delete one OnDelete driver pod and wait for its ready replacement."""
 
+    if monotonic_fn() >= deadline:
+        raise MigVerificationError(
+            f"MIG deployment health deadline expired before driver pod {pod_name} "
+            f"on node {node} could be replaced"
+        )
     command = [
         kubectl_bin,
         "--kubeconfig",
@@ -1059,31 +1216,47 @@ def _replace_driver_pod(
         "-n",
         "gpu-operator",
     ]
-    result = subprocess.run(
-        command,
-        check=False,
-        capture_output=True,
-        text=True,
-        env=_kubectl_env(),
-    )
+    try:
+        result = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            env=_kubectl_env(),
+            timeout=max(0.001, deadline - monotonic_fn()),
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise MigVerificationError(
+            f"could not delete NVIDIA driver pod {pod_name} on node {node} before "
+            f"the MIG deployment health deadline ({type(exc).__name__})"
+        ) from exc
     if result.returncode != 0:
         raise MigVerificationError(
             f"could not replace NVIDIA driver pod on node {node} "
             f"(kubectl exit status {result.returncode})"
         )
-    while True:
-        replacement_payload = _kubectl_json(
-            kubectl_bin,
-            kubeconfig,
-            [
-                "get",
-                "pods",
-                "-n",
-                "gpu-operator",
-                "-l",
-                "app=nvidia-driver-daemonset",
-            ],
-        )
+    while monotonic_fn() < deadline:
+        try:
+            replacement_payload = _kubectl_json(
+                kubectl_bin,
+                kubeconfig,
+                [
+                    "get",
+                    "pods",
+                    "-n",
+                    "gpu-operator",
+                    "-l",
+                    "app=nvidia-driver-daemonset",
+                ],
+                timeout_seconds=max(0.001, deadline - monotonic_fn()),
+            )
+        except MigVerificationError as exc:
+            if monotonic_fn() >= deadline:
+                raise MigVerificationError(
+                    "timed out querying the replacement NVIDIA driver pod on node "
+                    f"{node} before the MIG deployment health deadline"
+                ) from exc
+            raise
         replacement = next(
             (
                 candidate
@@ -1103,10 +1276,22 @@ def _replace_driver_pod(
         )
         if replacement is not None:
             return
-        time.sleep(10)
+        sleep_fn(min(10.0, max(0.0, deadline - monotonic_fn())))
+    raise MigVerificationError(
+        "timed out waiting for the replacement NVIDIA driver pod on node "
+        f"{node} to become Running and ready before the MIG deployment health "
+        "deadline; the node will be uncordoned and the next deploy can resume "
+        "reconciliation"
+    )
 
 
-def _ensure_device_plugin_mig_gate(kubectl_bin: str, kubeconfig: Path) -> bool:
+def _ensure_device_plugin_mig_gate(
+    kubectl_bin: str,
+    kubeconfig: Path,
+    *,
+    deadline: float | None = None,
+    monotonic_fn: Callable[[], float] = time.monotonic,
+) -> bool:
     """Keep the device plugin off a node until MIG Manager reports success.
 
     Without this affinity the mixed-strategy plugin can briefly register a whole
@@ -1114,33 +1299,96 @@ def _ensure_device_plugin_mig_gate(kubectl_bin: str, kubeconfig: Path) -> bool:
     GI/CI geometry. Kubelet retains that obsolete capacity even after the plugin
     switches to MIG resources. The Operator preserves this pod-spec field when
     reconciling its DaemonSet.
+
+    Kubernetes strategic merge replaces ``nodeSelectorTerms`` because that list
+    has no merge key. To preserve every Operator/platform placement constraint,
+    NPA reads the current terms and AND-appends the MIG-success expression to
+    each one. Terms are OR-ed, so adding a separate term would bypass the gate.
     """
+
+    try:
+        daemonset = _kubectl_json(
+            kubectl_bin,
+            kubeconfig,
+            ["get", "daemonset/nvidia-device-plugin-daemonset", "-n", "gpu-operator"],
+            timeout_seconds=_remaining_timeout(deadline, monotonic_fn),
+            allow_not_found=True,
+        )
+    except MigVerificationError as exc:
+        if "notfound" in str(exc).replace(" ", "").lower():
+            return False
+        raise
+    if not daemonset:
+        return False
+    resource_version = str(daemonset.get("metadata", {}).get("resourceVersion") or "")
+    if not resource_version:
+        raise MigVerificationError(
+            "NVIDIA device plugin DaemonSet has no resourceVersion; refusing an "
+            "unconditional node-affinity replacement"
+        )
+    required = {
+        "key": "nvidia.com/mig.config.state",
+        "operator": "In",
+        "values": ["success"],
+    }
+    affinity = (
+        daemonset.get("spec", {})
+        .get("template", {})
+        .get("spec", {})
+        .get("affinity", {})
+    )
+    existing_terms = (
+        affinity.get("nodeAffinity", {})
+        .get("requiredDuringSchedulingIgnoredDuringExecution", {})
+        .get("nodeSelectorTerms", [])
+    )
+    if not isinstance(existing_terms, list):
+        raise MigVerificationError(
+            "NVIDIA device plugin node affinity has non-list nodeSelectorTerms"
+        )
+    terms = existing_terms or [{"matchExpressions": []}]
+    gated_terms: list[dict[str, Any]] = []
+    for raw_term in terms:
+        if not isinstance(raw_term, dict):
+            raise MigVerificationError(
+                "NVIDIA device plugin node affinity contains an invalid selector term"
+            )
+        term = dict(raw_term)
+        expressions = term.get("matchExpressions", [])
+        if not isinstance(expressions, list):
+            raise MigVerificationError(
+                "NVIDIA device plugin node affinity contains invalid matchExpressions"
+            )
+        term["matchExpressions"] = [
+            expression
+            for expression in expressions
+            if not (
+                isinstance(expression, dict)
+                and expression.get("key") == required["key"]
+            )
+        ] + [required]
+        gated_terms.append(term)
 
     patch = json.dumps(
         {
+            # nodeSelectorTerms has no strategic-merge key, so this patch must
+            # replace the list reconstructed above. The resourceVersion makes
+            # that replacement optimistic: a concurrent Operator/user update
+            # conflicts instead of being overwritten.
+            "metadata": {"resourceVersion": resource_version},
             "spec": {
                 "template": {
                     "spec": {
                         "affinity": {
                             "nodeAffinity": {
                                 "requiredDuringSchedulingIgnoredDuringExecution": {
-                                    "nodeSelectorTerms": [
-                                        {
-                                            "matchExpressions": [
-                                                {
-                                                    "key": "nvidia.com/mig.config.state",
-                                                    "operator": "In",
-                                                    "values": ["success"],
-                                                }
-                                            ]
-                                        }
-                                    ]
+                                    "nodeSelectorTerms": gated_terms
                                 }
                             }
                         }
                     }
                 }
-            }
+            },
         },
         separators=(",", ":"),
     )
@@ -1156,21 +1404,312 @@ def _ensure_device_plugin_mig_gate(kubectl_bin: str, kubeconfig: Path) -> bool:
         "-p",
         patch,
     ]
-    result = subprocess.run(
-        command,
-        check=False,
-        capture_output=True,
-        text=True,
-        env=_kubectl_env(),
-    )
+    try:
+        result = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            env=_kubectl_env(),
+            timeout=_remaining_timeout(deadline, monotonic_fn),
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise MigVerificationError(
+            "could not install the MIG-success scheduling gate on the NVIDIA "
+            f"device plugin ({type(exc).__name__})"
+        ) from exc
     if result.returncode == 0:
         return True
-    if "notfound" in result.stderr.replace(" ", "").lower():
-        return False
     raise MigVerificationError(
         "could not install the MIG-success scheduling gate on the NVIDIA device "
         f"plugin (kubectl exit status {result.returncode})"
     )
+
+
+def _cleanup_mig_cuda_smoke_pod(
+    *,
+    kubectl_bin: str,
+    kubeconfig: Path,
+    pod_name: str,
+    deadline: float,
+    monotonic_fn: Callable[[], float],
+) -> str:
+    """Delete a smoke pod within the caller's deadline; return a safe error."""
+
+    cleanup_timeout = deadline - monotonic_fn()
+    if cleanup_timeout <= 0:
+        return "deployment health deadline expired before pod deletion"
+    try:
+        cleanup = subprocess.run(
+            [
+                kubectl_bin,
+                "--kubeconfig",
+                str(kubeconfig),
+                "delete",
+                "pod",
+                pod_name,
+                "-n",
+                "default",
+                "--ignore-not-found=true",
+                "--wait=true",
+                f"--timeout={max(1, int(cleanup_timeout))}s",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=_kubectl_env(),
+            timeout=max(0.001, cleanup_timeout),
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return type(exc).__name__
+    if cleanup.returncode != 0:
+        return f"kubectl exit status {cleanup.returncode}"
+    return ""
+
+
+def _run_mig_cuda_smoke(
+    *,
+    kubectl_bin: str,
+    kubeconfig: Path,
+    image: str,
+    deadline: float,
+    sleep_fn: Callable[[float], None],
+    monotonic_fn: Callable[[], float],
+) -> dict[str, Any]:
+    """Run one representative CUDA workload on an advertised hardware MIG slice."""
+
+    now = monotonic_fn()
+    remaining = deadline - now
+    cleanup_reserve = min(_CLEANUP_TIMEOUT_SECONDS, max(1.0, remaining / 10.0))
+    work_deadline = deadline - cleanup_reserve
+    if now >= work_deadline:
+        raise MigVerificationError(
+            "MIG readiness converged but too little time remained before the "
+            "deployment health deadline to run and clean up the required CUDA smoke"
+        )
+    resource = next(
+        resource
+        for resource, count in RTX_PRO_6000_ALL_BALANCED_RESOURCES.items()
+        if resource.startswith("nvidia.com/mig-") and count > 0
+    )
+    pod_name = f"npa-mig-cuda-smoke-{uuid.uuid4().hex[:10]}"
+    manifest = {
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {
+            "name": pod_name,
+            "namespace": "default",
+            "labels": {"app.kubernetes.io/managed-by": "npa-fleet-mig"},
+        },
+        "spec": {
+            "restartPolicy": "Never",
+            "runtimeClassName": "nvidia",
+            "activeDeadlineSeconds": max(1, int(work_deadline - now)),
+            "terminationGracePeriodSeconds": 5,
+            "containers": [
+                {
+                    "name": "vectoradd",
+                    "image": image,
+                    "command": ["/bin/bash", "-c"],
+                    "args": [
+                        "set -eu; /cuda-samples/vectorAdd; "
+                        "printf 'NPA_MIG_VISIBLE=%s\\n' "
+                        '"${NVIDIA_VISIBLE_DEVICES:-}"; nvidia-smi -L; nvidia-smi'
+                    ],
+                    "resources": {
+                        "requests": {resource: 1},
+                        "limits": {resource: 1},
+                    },
+                    "securityContext": {
+                        "allowPrivilegeEscalation": False,
+                        "capabilities": {"drop": ["ALL"]},
+                    },
+                }
+            ],
+        },
+    }
+    try:
+        create = subprocess.run(
+            [kubectl_bin, "--kubeconfig", str(kubeconfig), "apply", "-f", "-"],
+            input=json.dumps(manifest),
+            check=False,
+            capture_output=True,
+            text=True,
+            env=_kubectl_env(),
+            timeout=_remaining_timeout(work_deadline, monotonic_fn),
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        cleanup_error = _cleanup_mig_cuda_smoke_pod(
+            kubectl_bin=kubectl_bin,
+            kubeconfig=kubeconfig,
+            pod_name=pod_name,
+            deadline=deadline,
+            monotonic_fn=monotonic_fn,
+        )
+        raise MigVerificationError(
+            "could not create the representative MIG CUDA smoke pod before the "
+            f"deployment health deadline ({type(exc).__name__})"
+            + (
+                f"; additionally pod cleanup failed ({cleanup_error}); delete "
+                f"default/{pod_name} before retrying"
+                if cleanup_error
+                else ""
+            )
+        ) from exc
+    if create.returncode != 0:
+        cleanup_error = _cleanup_mig_cuda_smoke_pod(
+            kubectl_bin=kubectl_bin,
+            kubeconfig=kubeconfig,
+            pod_name=pod_name,
+            deadline=deadline,
+            monotonic_fn=monotonic_fn,
+        )
+        raise MigVerificationError(
+            f"could not create representative MIG CUDA smoke pod for {resource} "
+            f"(kubectl exit status {create.returncode})"
+            + (
+                f"; additionally pod cleanup failed ({cleanup_error}); delete "
+                f"default/{pod_name} before retrying"
+                if cleanup_error
+                else ""
+            )
+        )
+    phase = ""
+    node = ""
+    failure_detail = ""
+    try:
+        while monotonic_fn() < work_deadline:
+            pod = _kubectl_json(
+                kubectl_bin,
+                kubeconfig,
+                ["get", "pod", pod_name, "-n", "default"],
+                timeout_seconds=_remaining_timeout(work_deadline, monotonic_fn),
+            )
+            status = pod.get("status", {})
+            phase = str(status.get("phase") or "")
+            node = str(pod.get("spec", {}).get("nodeName") or "")
+            if phase in {"Succeeded", "Failed"}:
+                terminated = [
+                    item.get("state", {}).get("terminated", {})
+                    for item in status.get("containerStatuses", [])
+                    if isinstance(item, dict)
+                ]
+                failure_detail = ", ".join(
+                    str(item.get("reason") or f"exit {item.get('exitCode')}")
+                    for item in terminated
+                    if item.get("exitCode", 0) != 0
+                )
+                break
+            sleep_fn(min(2.0, max(0.0, work_deadline - monotonic_fn())))
+
+        try:
+            logs = subprocess.run(
+                [
+                    kubectl_bin,
+                    "--kubeconfig",
+                    str(kubeconfig),
+                    "logs",
+                    pod_name,
+                    "-n",
+                    "default",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=_kubectl_env(),
+                timeout=_remaining_timeout(work_deadline, monotonic_fn),
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise MigVerificationError(
+                "could not collect representative MIG CUDA smoke logs before the "
+                f"deployment health deadline ({type(exc).__name__})"
+            ) from exc
+        output = logs.stdout or ""
+        if phase != "Succeeded" or logs.returncode != 0:
+            detail = output[-1000:] or (logs.stderr or "")[-1000:]
+            raise MigVerificationError(
+                "representative MIG CUDA smoke failed: "
+                f"resource={resource}, node={node or '<unscheduled>'}, "
+                f"phase={phase or 'timeout'}"
+                + (f", reason={failure_detail}" if failure_detail else "")
+                + (f"; logs: {detail}" if detail else "")
+            )
+        if "Test PASSED" not in output:
+            raise MigVerificationError(
+                "representative MIG CUDA smoke exited successfully without required "
+                "'Test PASSED' evidence"
+            )
+        profile = resource.removeprefix("nvidia.com/mig-")
+        visible = re.search(r"(?m)^NPA_MIG_VISIBLE=([^\r\n]*)$", output)
+        visible_value = visible.group(1).strip() if visible else ""
+        instances = re.findall(
+            r"(?im)^\s*MIG\s+(\S+)\s+Device\s+\d+:.*"
+            r"UUID:\s*(MIG-[0-9A-Fa-f-]{16,})\)",
+            output,
+        )
+        if len(instances) != 1:
+            raise MigVerificationError(
+                "representative MIG CUDA smoke did not expose exactly one hardware "
+                f"MIG instance in-container (observed {len(instances)}); refusing "
+                "whole-GPU or ambiguous allocation"
+            )
+        observed_profile, identity = instances[0]
+        if observed_profile.lower() != profile.lower():
+            raise MigVerificationError(
+                "representative MIG CUDA smoke did not report its allocated "
+                f"{identity} as the requested {profile} profile in-container"
+            )
+        # The device plugin may inject the allocation through CDI. In that mode
+        # NVIDIA_VISIBLE_DEVICES is deliberately ``void`` and the container's
+        # restricted nvidia-smi view is authoritative. In legacy envvar mode
+        # the exact MIG UUID must agree with that view.
+        if visible_value != "void" and visible_value != identity:
+            raise MigVerificationError(
+                "representative MIG CUDA smoke has inconsistent allocated-device "
+                "identity: NVIDIA_VISIBLE_DEVICES is neither the sole in-container "
+                "MIG UUID nor the CDI sentinel 'void'"
+            )
+        memory = re.search(r"\d+MiB\s*/\s*(\d+)MiB", output)
+        memory_mib = int(memory.group(1)) if memory else 0
+        expected_memory = {
+            "1g.24gb": (23_000, 25_000),
+            "2g.48gb": (47_000, 50_000),
+        }[profile]
+        if not expected_memory[0] <= memory_mib <= expected_memory[1]:
+            raise MigVerificationError(
+                "representative MIG CUDA smoke did not report framebuffer memory "
+                f"for the requested {profile} profile (observed {memory_mib} MiB)"
+            )
+        return {
+            "resource": resource,
+            "profile": profile,
+            "node": node,
+            "pod": pod_name,
+            "phase": phase,
+            "vectoradd": "passed",
+            "mig_uuid": identity,
+            "memory_mib": memory_mib,
+        }
+    finally:
+        primary_error = sys.exc_info()[1]
+        cleanup_error = _cleanup_mig_cuda_smoke_pod(
+            kubectl_bin=kubectl_bin,
+            kubeconfig=kubeconfig,
+            pod_name=pod_name,
+            deadline=deadline,
+            monotonic_fn=monotonic_fn,
+        )
+        if cleanup_error and primary_error is not None:
+            raise MigVerificationError(
+                f"{primary_error}; additionally representative MIG CUDA smoke pod "
+                f"cleanup failed ({cleanup_error}); delete default/{pod_name} before "
+                "retrying"
+            ) from primary_error
+        if cleanup_error:
+            raise MigVerificationError(
+                "representative MIG CUDA smoke passed but its pod cleanup failed "
+                f"({cleanup_error}); delete default/{pod_name} before retrying"
+            )
 
 
 def wait_for_mig_ready(
@@ -1179,18 +1718,27 @@ def wait_for_mig_ready(
     kubeconfig: Path,
     expected_nodes: int,
     reconcile: bool = True,
+    timeout_seconds: int = 3600,
+    cuda_smoke_image: str | None = None,
     on_status: Callable[[str], None] | None = None,
+    sleep_fn: Callable[[float], None] | None = None,
+    monotonic_fn: Callable[[], float] | None = None,
 ) -> MigVerificationReport:
     """Wait for two stable exact snapshots, repairing the known discovery race.
 
-    No wall-clock deadline is imposed. Authentication/API failures raise
-    immediately; ordinary Operator convergence continues until interrupted.
+    Authentication/API failures raise immediately; ordinary Operator convergence
+    is bounded by the cluster's configured GPU health timeout.
     Once geometry and labels are successful, stale kubelet resources trigger a
     single ordered GFD/device-plugin restart. The exact obsolete MIG readiness
     taint may be removed from an otherwise successful GPU node; arbitrary node
     taints and node status are never patched.
     """
 
+    if timeout_seconds <= 0:
+        raise ValueError("MIG readiness timeout must be positive")
+    sleep_fn = sleep_fn or time.sleep
+    monotonic_fn = monotonic_fn or time.monotonic
+    deadline = monotonic_fn() + timeout_seconds
     stable = 0
     restarted = False
     driver_reconciled = False
@@ -1198,9 +1746,17 @@ def wait_for_mig_ready(
     plugin_gate_installed = not reconcile
     previous_errors: tuple[str, ...] | None = None
     while stable < 2:
+        if monotonic_fn() >= deadline:
+            detail = "; ".join(previous_errors or ()) or "no exact snapshot observed"
+            raise MigVerificationError(
+                f"MIG readiness did not converge within {timeout_seconds}s: {detail}"
+            )
         if not plugin_gate_installed:
             plugin_gate_installed = _ensure_device_plugin_mig_gate(
-                kubectl_bin, kubeconfig
+                kubectl_bin,
+                kubeconfig,
+                deadline=deadline,
+                monotonic_fn=monotonic_fn,
             )
             if plugin_gate_installed and on_status:
                 on_status("NVIDIA device plugin is gated on mig.config.state=success")
@@ -1208,6 +1764,8 @@ def wait_for_mig_ready(
             kubectl_bin=kubectl_bin,
             kubeconfig=kubeconfig,
             expected_nodes=expected_nodes,
+            timeout_seconds=max(0.001, deadline - monotonic_fn()),
+            monotonic_fn=monotonic_fn,
         )
         if report.ready:
             stable += 1
@@ -1260,7 +1818,13 @@ def wait_for_mig_ready(
                         "NVIDIA OnDelete driver update is pending; checking for "
                         "active GPU workloads before one-node-at-a-time replacement"
                     )
-                _reconcile_ondelete_driver(kubectl_bin, kubeconfig)
+                _reconcile_ondelete_driver(
+                    kubectl_bin,
+                    kubeconfig,
+                    deadline=deadline,
+                    sleep_fn=sleep_fn,
+                    monotonic_fn=monotonic_fn,
+                )
                 driver_reconciled = True
                 continue
             stale_taint_only = bool(report.errors) and all(
@@ -1273,7 +1837,12 @@ def wait_for_mig_ready(
                         "MIG is ready but a stale replacement-node readiness taint "
                         "blocks scheduling; removing only that exact taint"
                     )
-                _reconcile_stale_mig_taints(kubectl_bin, kubeconfig)
+                _reconcile_stale_mig_taints(
+                    kubectl_bin,
+                    kubeconfig,
+                    deadline=deadline,
+                    monotonic_fn=monotonic_fn,
+                )
                 taints_reconciled = True
                 continue
             resource_only = bool(report.errors) and all(
@@ -1289,8 +1858,25 @@ def wait_for_mig_ready(
                         "MIG geometry is ready but kubelet resources are stale; "
                         "restarting GFD and the NVIDIA device plugin once"
                     )
-                _restart_discovery_operands(kubectl_bin, kubeconfig)
+                _restart_discovery_operands(
+                    kubectl_bin,
+                    kubeconfig,
+                    deadline=deadline,
+                    monotonic_fn=monotonic_fn,
+                )
                 restarted = True
         if stable < 2:
-            time.sleep(10)
+            sleep_fn(min(10.0, max(0.0, deadline - monotonic_fn())))
+    if cuda_smoke_image:
+        if on_status:
+            on_status("running representative hardware MIG CUDA smoke")
+        smoke = _run_mig_cuda_smoke(
+            kubectl_bin=kubectl_bin,
+            kubeconfig=kubeconfig,
+            image=cuda_smoke_image,
+            deadline=deadline,
+            sleep_fn=sleep_fn,
+            monotonic_fn=monotonic_fn,
+        )
+        report = replace(report, cuda_smoke=smoke)
     return report

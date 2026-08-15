@@ -35,6 +35,12 @@ use the pinned custom GPU Operator path and reject an explicit
 `gpu_driver_mode: managed-image`; non-MIG fleets retain the repository's normal
 automatic managed-image/operator driver selection.
 
+An alternate `--k8s-training-ref`, `--k8s-training-dir`, or package-fallback
+recipe is checked before quota, project, subnet, or Terraform mutation. MIG
+deploy fails if that resolved recipe does not declare every required Operator,
+driver, device-plugin, GFD, MIG Manager, reboot, and RDMA input; non-MIG recipes
+retain their previous compatibility behavior.
+
 Deployment does not become `deployed` merely because Terraform and Helm return.
 NPA waits for two exact consecutive snapshots of:
 
@@ -47,6 +53,15 @@ NPA waits for two exact consecutive snapshots of:
 - `nvidia.com/mig.config.state=success` and the expected product labels;
 - capacity **and** allocatable values of 2/2 for `mig-1g.24gb`, 1/1 for
   `mig-2g.48gb`, and 0/0 for `nvidia.com/gpu` on every GPU worker.
+
+The two snapshots, any driver-pod reconciliation, and the required final CUDA
+smoke share the cluster's `gpu_health_timeout_minutes` deadline. The smoke asks
+the scheduler for one `nvidia.com/mig-1g.24gb` device with equal requests and
+limits, runs vectorAdd, proves an in-container `1g.24gb` MIG UUID with
+`nvidia-smi -L`, checks its 24 GiB framebuffer identity (including CDI's
+`NVIDIA_VISIBLE_DEVICES=void` mode), and waits for deletion of its uniquely
+named pod. An enabled MIG policy rejects `gpu_cuda_smoke: false` because a
+control-plane snapshot alone does not prove a usable allocation.
 
 If geometry is successful but kubelet retains stale resources, NPA waits for a
 GFD restart to complete before restarting the NVIDIA device plugin, then waits

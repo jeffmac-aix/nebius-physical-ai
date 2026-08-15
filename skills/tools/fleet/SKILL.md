@@ -225,7 +225,9 @@ depends on it.
    For GPU clusters it also inspects the materialized recipe's variables and
    `gpu_settings` wiring. If the selected managed-driver mode/preset cannot be
    represented, deployment fails with an actionable compatibility error rather
-   than silently reverting to the operator driver.
+   than silently reverting to the operator driver. MIG-enabled targets also
+   require all seven pinned Operator/lifecycle variables in the resolved recipe;
+   this check runs before quota, project, subnet, or Terraform mutation.
 8. **Status / teardown**: `npa fleet status --spec fleet.yaml`; `npa fleet
    destroy --spec fleet.yaml` (prompts; `--yes`/`-y` or `--force` to skip).
 9. **MIG readiness is part of deploy.** A MIG-enabled cluster is not marked
@@ -240,7 +242,10 @@ depends on it.
    requests an `nvidia.com/*` resource; operators must delete those workloads
    explicitly. Nonzero `nvidia.com/gpu` in either capacity or allocatable,
    cordoned/NotReady nodes, or stale Operator/DaemonSet generations are always
-   failures.
+   failures. Readiness, driver replacement, and a mandatory representative
+   `mig-1g.24gb` CUDA vectorAdd/MIG-identity smoke share
+   `gpu_health_timeout_minutes`; timeout or smoke cleanup failure leaves the
+   cluster in validation-failed state instead of reporting deployment success.
 
 ## Add / remove clusters and projects
 

@@ -17,6 +17,7 @@ import pytest
 from typer.testing import CliRunner
 
 from npa.cli.main import app
+from npa.cluster.gpu_driver import GpuDriverStrategyError
 from npa.fleet import MigSpec, spec_from_mapping
 from npa.fleet.mig import MigVerificationError
 from npa.fleet.spec import (
@@ -27,7 +28,12 @@ from npa.fleet.spec import (
     ProjectSpec,
     load_spec,
 )
-from npa.fleet.tfvars import patch_provider_domain, provider_domain, render_tfvars
+from npa.fleet.tfvars import (
+    MIG_RECIPE_VARIABLES,
+    patch_provider_domain,
+    provider_domain,
+    render_tfvars,
+)
 
 runner = CliRunner()
 
@@ -830,6 +836,106 @@ def _fake_recipe(tmp_path, provider_body: str):
     return root
 
 
+def _mig_cluster() -> ClusterSpec:
+    return ClusterSpec(
+        name="mig",
+        gpu_nodes=NodePoolSpec(
+            count=2,
+            platform="gpu-rtx6000",
+            preset="1gpu-24vcpu-218gb",
+            disk_size_gib=128,
+            capacity_block_group="capacityblockgroup-test",
+        ),
+        mig=MigSpec(),
+    )
+
+
+def _declare_mig_recipe_variables(recipe_root: Path) -> None:
+    names = (
+        "gpu_operator_version",
+        "gpu_driver_version",
+        "gpu_device_plugin_version",
+        "gpu_gfd_version",
+        "gpu_mig_manager_version",
+        "gpu_mig_with_reboot",
+        "gpu_operator_rdma_enabled",
+    )
+    recipe = recipe_root / "k8s-training"
+    (recipe / "variables.tf").write_text(
+        "".join(f'variable "{name}" {{}}\n' for name in names)
+    )
+    (recipe / "helm.tf").write_text('module "gpu-operator" {}\n')
+
+
+def test_mig_recipe_variable_preflight_accepts_supported_root(tmp_path) -> None:
+    root = _fake_recipe(tmp_path, 'provider "nebius" {}\n')
+    _declare_mig_recipe_variables(root)
+
+    tfvars = render_tfvars(_mig_cluster(), recipe_dir=root / "k8s-training")
+
+    assert 'gpu_operator_version         = "v26.3.3"' in tfvars
+
+
+@pytest.mark.parametrize("missing_variable", sorted(MIG_RECIPE_VARIABLES))
+def test_mig_recipe_variable_preflight_rejects_unsupported_root(
+    tmp_path, missing_variable: str
+) -> None:
+    root = _fake_recipe(tmp_path, 'provider "nebius" {}\n')
+    _declare_mig_recipe_variables(root)
+    variables = root / "k8s-training" / "variables.tf"
+    variables.write_text(
+        variables.read_text().replace(f'variable "{missing_variable}" {{}}\n', "")
+    )
+
+    with pytest.raises(
+        GpuDriverStrategyError,
+        match=rf"missing required Terraform variable.*{missing_variable}",
+    ):
+        render_tfvars(_mig_cluster(), recipe_dir=root / "k8s-training")
+
+
+def test_non_mig_recipe_keeps_backward_compatibility(tmp_path) -> None:
+    root = _fake_recipe(tmp_path, 'provider "nebius" {}\n')
+
+    tfvars = render_tfvars(
+        ClusterSpec(name="cpu", cpu_nodes=NodePoolSpec(count=1)),
+        recipe_dir=root / "k8s-training",
+    )
+
+    assert 'mig_strategy                 = "none"' in tfvars
+
+
+def test_deploy_rejects_incompatible_mig_recipe_before_project_mutation(
+    tmp_path, monkeypatch
+) -> None:
+    from npa.fleet import lifecycle as L
+
+    root = _fake_recipe(tmp_path, 'provider "nebius" {}\n')
+    spec = FleetSpec(
+        name="mig",
+        tenant_id="tenant-test",
+        region="us-central1",
+        ssh_public_key="ssh-test",
+        projects=[ProjectSpec(project_id="project-test", clusters=[_mig_cluster()])],
+    )
+    resolved: list[str] = []
+    monkeypatch.setattr(L, "_require_bin", lambda binary: binary)
+    monkeypatch.setattr(L, "_assert_terraform_version", lambda _binary: "1.12.0")
+    monkeypatch.setattr(L, "_resolve_recipe_root", lambda *_args, **_kwargs: root)
+    monkeypatch.setattr(
+        L,
+        "resolve_project_id",
+        lambda *_args, **_kwargs: (resolved.append("project"), ("project-test", False))[
+            1
+        ],
+    )
+
+    with pytest.raises(GpuDriverStrategyError, match="cannot honor RTX PRO 6000 MIG"):
+        L.deploy_fleet(spec, work_root=tmp_path / "work", preflight=False)
+
+    assert resolved == []
+
+
 def test_prepare_install_dir_patches_eu_domain(tmp_path) -> None:
     from npa.fleet import lifecycle as L
 
@@ -1338,15 +1444,17 @@ def test_deploy_one_mig_cluster_retains_applied_state_when_readiness_fails(
             capacity_block_group="capacityblockgroup-test",
         ),
         mig=MigSpec(),
+        gpu_health_timeout_minutes=7,
+        gpu_cuda_smoke_image="cuda-vectoradd:review",
     )
     monkeypatch.setattr(L, "_require_bin", lambda binary: binary)
-    monkeypatch.setattr(
-        L,
-        "wait_for_mig_ready",
-        lambda **_kwargs: (_ for _ in ()).throw(
-            MigVerificationError("stale whole-GPU capacity")
-        ),
-    )
+    observed: dict = {}
+
+    def fail_mig(**kwargs):  # noqa: ANN003, ANN202
+        observed.update(kwargs)
+        raise MigVerificationError("stale whole-GPU capacity")
+
+    monkeypatch.setattr(L, "wait_for_mig_ready", fail_mig)
     result = L._deploy_one_cluster(
         spec=FleetSpec(name="f"),
         project=ProjectSpec(name="a"),
@@ -1368,6 +1476,8 @@ def test_deploy_one_mig_cluster_retains_applied_state_when_readiness_fails(
     assert result["status"] == "deployed-mig-not-ready"
     assert result["cluster_id"] == "mk8s-1"
     assert "stale whole-GPU capacity" in result["error"]
+    assert observed["timeout_seconds"] == 420
+    assert observed["cuda_smoke_image"] == "cuda-vectoradd:review"
     sidecar = json.loads((tmp_path / "a" / "mig" / L._ENV_SIDECAR).read_text())
     assert sidecar["status"] == "deployed-mig-not-ready"
     assert sidecar["cluster_id"] == "mk8s-1"

@@ -47,7 +47,12 @@ from npa.cluster.gpu_health import GpuHealthConfig, validate_gpu_health
 from npa.fleet.quotas import preflight_region, shortfall_message
 from npa.fleet.mig import MigVerificationError, wait_for_mig_ready
 from npa.fleet.spec import ClusterSpec, FleetSpec, NodePoolSpec, ProjectSpec
-from npa.fleet.tfvars import patch_provider_domain, provider_domain, render_tfvars
+from npa.fleet.tfvars import (
+    patch_provider_domain,
+    provider_domain,
+    render_tfvars,
+    validate_recipe_mig_compatibility,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -401,9 +406,7 @@ def _get_project(
 _PROVIDER_FIELD_MISSING = object()
 
 
-def _provider_field(
-    payload: object, *spellings: str
-) -> object:
+def _provider_field(payload: object, *spellings: str) -> object:
     """Read one provider field defensively across wire-format spellings.
 
     Multiple spellings are accepted only when their values agree. Missing or
@@ -1588,6 +1591,15 @@ def deploy_fleet(
         k8s_training_dir, ref=k8s_training_ref, work_root=work_root, on_status=on_status
     )
     _log(on_status, f"k8s-training recipe root: {recipe_root}")
+    for project in spec.projects:
+        if not _project_in_scope(project, only_projects, prefix):
+            continue
+        for cluster in project.clusters:
+            if only_clusters and cluster.name not in only_clusters:
+                continue
+            validate_recipe_mig_compatibility(
+                cluster, recipe_root / _K8S_TRAINING_SUBDIR
+            )
 
     cli_env = _nebius_cli_env()
     results: list[dict[str, Any]] = []
@@ -1913,9 +1925,7 @@ def _is_verified_unchanged_target(
         return False
     cluster_metadata = provider_cluster.get("metadata", {}) or {}
     cluster_status = provider_cluster.get("status", {}) or {}
-    cluster_parent_id = _provider_field(
-        cluster_metadata, "parent_id", "parentId"
-    )
+    cluster_parent_id = _provider_field(cluster_metadata, "parent_id", "parentId")
     if (
         str(cluster_metadata.get("id") or "") != cluster_id
         or str(
@@ -1983,9 +1993,7 @@ def _provider_node_group_matches_pool(
         if reservation_ids_value is _PROVIDER_FIELD_MISSING
         else reservation_ids_value
     )
-    fixed_node_count_value = _provider_field(
-        spec, "fixed_node_count", "fixedNodeCount"
-    )
+    fixed_node_count_value = _provider_field(spec, "fixed_node_count", "fixedNodeCount")
     preemptible = _provider_field(template, "preemptible")
     try:
         fixed_node_count = int(fixed_node_count_value)
@@ -2229,6 +2237,8 @@ def _deploy_one_cluster(
                     kubeconfig=kubeconfig_path,
                     expected_nodes=cluster.gpu_count(),
                     reconcile=True,
+                    timeout_seconds=cluster.gpu_health_timeout_minutes * 60,
+                    cuda_smoke_image=cluster.gpu_cuda_smoke_image,
                     on_status=(
                         (lambda message: _log(on_status, f"[{label}] {message}"))
                         if on_status

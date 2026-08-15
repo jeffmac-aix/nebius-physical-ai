@@ -177,7 +177,8 @@ class ClusterSpec:
             raise FleetSpecError(
                 f"cluster name must be a lowercase DNS-1123 label: {self.name!r}"
             )
-        if self.cpu_count() <= 0 and self.gpu_count() <= 0:
+        mig_enabled = bool(self.mig and self.mig.enabled)
+        if self.cpu_count() <= 0 and self.gpu_count() <= 0 and not mig_enabled:
             raise FleetSpecError(
                 f"cluster {self.name!r}: needs at least one CPU or GPU node"
             )
@@ -208,7 +209,7 @@ class ClusterSpec:
                 raise FleetSpecError(
                     f"cluster {self.name!r}: gpu_nodes.preset must include a positive GPU count"
                 )
-        if gpu and gpu.capacity_block_group:
+        if gpu and gpu.capacity_block_group and not mig_enabled:
             if gpu.count <= 0 or not gpu.is_gpu():
                 raise FleetSpecError(
                     f"cluster {self.name!r}: capacity_block_group requires a GPU node pool"
@@ -272,6 +273,11 @@ class ClusterSpec:
                     f"cluster {self.name!r}: RTX PRO 6000 MIG requires the pinned "
                     "GPU Operator driver path; gpu_driver_mode='managed-image' is "
                     "incompatible"
+                )
+            if self.mig.enabled and not self.gpu_cuda_smoke:
+                raise FleetSpecError(
+                    f"cluster {self.name!r}: RTX PRO 6000 MIG requires "
+                    "gpu_cuda_smoke=true so deploy verifies a real MIG allocation"
                 )
         try:
             resolve_gpu_driver_strategy(

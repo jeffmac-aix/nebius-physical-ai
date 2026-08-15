@@ -558,6 +558,7 @@ def verify_mig_cmd(
                 kubeconfig=resolved_kubeconfig,
                 expected_nodes=selected_cluster.gpu_count(),
                 reconcile=reconcile,
+                timeout_seconds=selected_cluster.gpu_health_timeout_minutes * 60,
                 on_status=(
                     (lambda message: typer.echo(f"  - {message}", err=True))
                     if output == OutputFormat.json
