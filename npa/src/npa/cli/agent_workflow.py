@@ -1298,6 +1298,7 @@ def _data_factory_spec() -> dict[str, Any]:
         "config_runtime": OrderedDict(
             {
                 "prefix": "physical-ai-data-factory/{{run.id}}",
+                "plan_assume_decision": "promote_checkpoint",
                 "seed_fixture": "false",
                 "seed_default_input": "false",
                 # What to augment: a free-form hint surfaced as the augment prompt /
@@ -1321,7 +1322,7 @@ def _data_factory_spec() -> dict[str, Any]:
                 "grade_threshold": "0.75",
                 "adaptive_refinement_enabled": "true",
                 "cosmos_control": "edge",
-                "cosmos_control_weight": "0.75",
+                "cosmos_control_weight": "1.0",
                 "cosmos_guidance": "3.0",
                 "refinement_control_weight_step": "0.25",
                 "refinement_max_control_weight": "1.0",
@@ -1331,6 +1332,16 @@ def _data_factory_spec() -> dict[str, Any]:
                 "protected_chroma_regions_json": "",
                 "protected_luma_max_delta": "32",
                 "protected_feather_pixels": "12",
+                "segmentation_mode": "off",
+                "augmentation_seed": "",
+                "sam2_model": "facebook/sam2.1-hiera-tiny",
+                "sam2_model_revision": "de431c4043854a71d8101e17995dfe596bf101a5",
+                "sam2_points_per_side": "16",
+                "sam2_predicted_iou_threshold": "0.86",
+                "sam2_stability_threshold": "0.92",
+                "sam2_min_area_fraction": "0.002",
+                "sam2_max_area_fraction": "0.65",
+                "sam2_max_objects": "6",
                 "default_decision": "loop_back",
                 "temporal_consistency_mode": "advisory",
                 "temporal_consistency_threshold": "0.8",
@@ -1374,6 +1385,7 @@ def _data_factory_spec() -> dict[str, Any]:
                 "scores_uri": "s3://{{config.bucket}}/{{config.prefix}}/grade/",
                 "decision_uri": "s3://{{config.bucket}}/{{config.prefix}}/grade/decision.json",
                 "refinement_uri": "s3://{{config.bucket}}/{{config.prefix}}/configs/refinement.json",
+                "segmentation_uri": "s3://{{config.bucket}}/{{config.prefix}}/segmentation/",
                 "quality_disposition_uri": "s3://{{config.bucket}}/{{config.prefix}}/grade/quality_disposition.json",
                 "augmented_frames_uri": "s3://{{config.bucket}}/{{config.prefix}}/cosmos_augmented/",
                 "labeled_augmented_uri": "s3://{{config.bucket}}/{{config.prefix}}/labeled_augmented/",
@@ -1394,6 +1406,26 @@ def _data_factory_spec() -> dict[str, Any]:
                         "accelerators": "RTXPRO-6000-BLACKWELL-SERVER-EDITION:4",
                         "cpus": 16,
                         "memory": "128Gi",
+                        "kubernetes": OrderedDict(
+                            {
+                                "pod_config": OrderedDict(
+                                    {
+                                        "spec": OrderedDict(
+                                            {
+                                                "containers": [
+                                                    OrderedDict(
+                                                        {
+                                                            "name": "ray-node",
+                                                            "imagePullPolicy": "IfNotPresent",
+                                                        }
+                                                    )
+                                                ]
+                                            }
+                                        )
+                                    }
+                                )
+                            }
+                        ),
                     }
                 ),
                 "cpu": OrderedDict(
@@ -1428,6 +1460,7 @@ def _data_factory_spec() -> dict[str, Any]:
                                     "{{config.seed_default_input}}",
                                     "{{config.seed_fixture}}",
                                     "{{config.augment_subject}}",
+                                    "{{config.augmentation_seed}}",
                                 ]
                             }
                         ),
@@ -1474,7 +1507,7 @@ def _data_factory_spec() -> dict[str, Any]:
                     {
                         "description": (
                             "Prepare an auditable adaptive Cosmos policy. Failed retries "
-                            "increase edge-control strength and reduce prompt guidance."
+                            "must change guidance and/or edge-control within declared bounds."
                         ),
                         "needs": ["annotate-original"],
                         "resources": "cpu",
@@ -1497,6 +1530,8 @@ def _data_factory_spec() -> dict[str, Any]:
                                     "{{config.refinement_max_control_weight}}",
                                     "{{config.refinement_guidance_step}}",
                                     "{{config.refinement_min_guidance}}",
+                                    "{{config.decision_uri}}",
+                                    "{{config.grade_threshold}}",
                                 ]
                             }
                         ),
@@ -1606,7 +1641,8 @@ def _data_factory_spec() -> dict[str, Any]:
                                 "shell": (
                                     'python3 -c "from npa.workflows.data_factory_stages import '
                                     "grade_gate; grade_gate('{{config.scores_uri}}', "
-                                    "'{{config.decision_uri}}', '{{config.grade_threshold}}')\""
+                                    "'{{config.decision_uri}}', '{{config.grade_threshold}}', "
+                                    "'{{config.refinement_uri}}')\""
                                 )
                             }
                         ),
@@ -1665,7 +1701,7 @@ def _data_factory_spec() -> dict[str, Any]:
                             OrderedDict(
                                 {
                                     "when": "promote_checkpoint",
-                                    "goto": "annotate-augmented",
+                                    "goto": "require-accepted-quality",
                                 }
                             ),
                             OrderedDict(
@@ -1675,6 +1711,33 @@ def _data_factory_spec() -> dict[str, Any]:
                                 }
                             ),
                         ],
+                    }
+                ),
+                "require-accepted-quality": OrderedDict(
+                    {
+                        "description": (
+                            "Re-check the durable accepted disposition before any "
+                            "accepted-only stage, including one-shot static plans."
+                        ),
+                        "needs": ["quality-disposition"],
+                        "resources": "cpu",
+                        "run": OrderedDict(
+                            {
+                                "argv": [
+                                    "python3",
+                                    "-c",
+                                    (
+                                        "import sys; from npa.workflows.data_factory_stages "
+                                        "import enforce_quality_disposition; "
+                                        "enforce_quality_disposition(*sys.argv[1:])"
+                                    ),
+                                    "{{config.scores_uri}}",
+                                    "{{config.quality_disposition_uri}}",
+                                    "{{config.grade_threshold}}",
+                                ]
+                            }
+                        ),
+                        "next": "annotate-augmented",
                     }
                 ),
                 "visualize-rejected": OrderedDict(
@@ -1731,7 +1794,7 @@ def _data_factory_spec() -> dict[str, Any]:
                             "Stage 3 - Pseudo-Label Augmented. Re-caption the promoted augmented "
                             "clips with the same hosted VLM so the amplified set ships labeled."
                         ),
-                        "needs": ["quality-disposition"],
+                        "needs": ["require-accepted-quality"],
                         "resources": "cpu",
                         "run": OrderedDict(
                             {

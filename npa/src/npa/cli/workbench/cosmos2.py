@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import secrets
 import socket
+import tempfile
 import threading
 import time
 from typing import Any, Optional
@@ -81,26 +82,33 @@ def _all_augmentations(configs_uri: str) -> list[dict]:
     manifest is authoritative: an unreadable or empty manifest must not silently
     collapse a requested multi-variant/gang run into one default render.
     """
-    uri = (
-        configs_uri
-        if configs_uri.endswith(".json")
-        else configs_uri.rstrip("/") + "/manifest.json"
-    )
     try:
         from npa.workflows.data_factory_stages import _download_json
 
-        manifest = _download_json(uri)
-        combos = manifest.get("augmentations") or []
-    except Exception as exc:  # noqa: BLE001 - normalize storage/provider errors
-        raise typer.BadParameter(
-            f"configured augmentation manifest could not be read at {uri!r}"
-        ) from exc
-    valid = [c for c in combos if isinstance(c, dict)]
-    if not valid:
-        raise typer.BadParameter(
-            f"configured augmentation manifest at {uri!r} has no augmentation objects"
+        uri = (
+            configs_uri
+            if configs_uri.endswith(".json")
+            else configs_uri.rstrip("/") + "/manifest.json"
         )
-    return valid
+        manifest = _download_json(uri)
+    except Exception:  # noqa: BLE001 - sanitized operator boundary
+        raise typer.BadParameter(
+            "could not read the configured augmentation manifest"
+        ) from None
+    if not isinstance(manifest, dict):
+        raise typer.BadParameter(
+            "configured augmentation manifest must be a JSON object"
+        )
+    raw_combos = manifest.get("augmentations")
+    if not isinstance(raw_combos, list) or not raw_combos:
+        raise typer.BadParameter(
+            "configured augmentation manifest contains no augmentation variants"
+        )
+    if not all(isinstance(combo, dict) for combo in raw_combos):
+        raise typer.BadParameter(
+            "configured augmentation manifest contains an invalid variant"
+        )
+    return list(raw_combos)
 
 
 def _first_augmentation(configs_uri: str) -> dict:
@@ -110,22 +118,35 @@ def _first_augmentation(configs_uri: str) -> dict:
 
 
 def _load_refinement(refinement_uri: str) -> dict[str, Any]:
-    """Load and validate the run-scoped adaptive refinement policy."""
+    """Load only a commit-marked run-scoped adaptive refinement policy."""
 
     if not refinement_uri:
         return {}
-    from npa.workflows.data_factory_stages import _download_json
+    from npa.workflows.data_factory_stages import (
+        RefinementStateError,
+        _download_json,
+        _verify_committed_refinement,
+    )
 
-    payload = _download_json(refinement_uri)
+    try:
+        payload = _download_json(refinement_uri)
+    except Exception as exc:  # noqa: BLE001 - sanitized CLI boundary
+        raise typer.BadParameter(
+            "could not read the committed refinement artifact"
+        ) from exc
     if not isinstance(payload, dict):
         raise typer.BadParameter("refinement artifact must be a JSON object")
-    settings = payload.get("settings")
+    try:
+        immutable = _verify_committed_refinement(payload)
+    except RefinementStateError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    settings = immutable.get("settings")
     if not isinstance(settings, dict):
         raise typer.BadParameter("refinement artifact has no settings object")
     try:
         control_weight = float(settings["control_weight"])
         guidance_number = float(settings["guidance"])
-        attempt = int(payload.get("attempt", 0))
+        attempt = int(immutable.get("attempt", 0))
     except (KeyError, TypeError, ValueError) as exc:
         raise typer.BadParameter(
             "refinement artifact settings must contain numeric control_weight and guidance"
@@ -142,14 +163,14 @@ def _load_refinement(refinement_uri: str) -> dict[str, Any]:
     if attempt < 0:
         raise typer.BadParameter("refinement artifact settings cannot be negative")
     return {
-        "schema": str(payload.get("schema") or ""),
+        "schema": str(immutable.get("schema") or ""),
         "attempt": attempt,
         "adapted_from_prior_evaluation": bool(
-            payload.get("adapted_from_prior_evaluation")
+            immutable.get("adapted_from_prior_evaluation")
         ),
         "failed_checks": [
             str(item)
-            for item in payload.get("failed_checks", [])
+            for item in immutable.get("failed_checks", [])
             if isinstance(item, str)
         ],
         "settings": {
@@ -1184,6 +1205,48 @@ def _persist_generated_conditioning_clip(
     return StorageClient.from_environment().upload_file(str(path), uri)
 
 
+def _safe_paidf_cli_result(payload: dict[str, Any]) -> dict[str, Any]:
+    """Return aggregate stage evidence without prompts, paths, IDs, or hashes."""
+
+    segmentation = payload.get("segmentation")
+    safe_segmentation: dict[str, Any] = {"mode": "off"}
+    if isinstance(segmentation, dict) and segmentation.get("mode") != "off":
+        safe_segmentation = {
+            key: segmentation[key]
+            for key in (
+                "mode",
+                "engine",
+                "component",
+                "component_version",
+                "frame_count",
+                "object_count",
+                "mask_coverage",
+                "runtime",
+                "cache_status",
+            )
+            if key in segmentation
+        }
+    safe = {
+        key: payload[key]
+        for key in (
+            "status",
+            "mode",
+            "output_kind",
+            "frame_count",
+            "variant_count",
+            "multiply_mode",
+            "variant_parallelism",
+            "node_count",
+            "node_rank",
+            "shard_variant_count",
+            "input_conditioned",
+        )
+        if key in payload
+    }
+    safe["segmentation"] = safe_segmentation
+    return safe
+
+
 @app.command("transfer")
 def transfer_cmd(
     input_uri: str = typer.Option(..., "--input-uri", help="Input frames, assets, or rollout URI."),
@@ -1271,7 +1334,10 @@ def transfer_cmd(
     refinement_uri: str = typer.Option(
         "",
         "--refinement-uri",
-        help="Run-scoped adaptive-refinement JSON; its validated settings override control/guidance.",
+        help=(
+            "Run-scoped adaptive-refinement JSON; its validated settings override "
+            "both CLI and NPA_COSMOS_* control/guidance values."
+        ),
     ),
     protected_chroma_mode: str = typer.Option(
         "off",
@@ -1292,6 +1358,60 @@ def transfer_cmd(
         12,
         "--protected-feather-pixels",
         help="Inward feather width for protected rectangle boundaries.",
+    ),
+    segmentation_mode: str = typer.Option(
+        "off",
+        "--segmentation-mode",
+        help=(
+            "Optional real protected-content segmentation: off or sam2-auto. "
+            "SAM2 generates frame-aligned masks once, then reuses them across "
+            "augmentation variants."
+        ),
+    ),
+    segmentation_uri: str = typer.Option(
+        "",
+        "--segmentation-uri",
+        help="Versioned S3 prefix for SAM2 masks and lineage evidence.",
+    ),
+    sam2_model: str = typer.Option(
+        "facebook/sam2.1-hiera-tiny",
+        "--sam2-model",
+        help="Official upstream Meta SAM2 Hugging Face model id.",
+    ),
+    sam2_model_revision: str = typer.Option(
+        "de431c4043854a71d8101e17995dfe596bf101a5",
+        "--sam2-model-revision",
+        help="Immutable Hugging Face revision for the SAM2 checkpoint.",
+    ),
+    sam2_points_per_side: int = typer.Option(
+        16,
+        "--sam2-points-per-side",
+        help="SAM2 auto-mask sampling density (4..64).",
+    ),
+    sam2_predicted_iou_threshold: float = typer.Option(
+        0.86,
+        "--sam2-predicted-iou-threshold",
+        help="SAM2 automatic-mask predicted-IoU threshold (0..1).",
+    ),
+    sam2_stability_threshold: float = typer.Option(
+        0.92,
+        "--sam2-stability-threshold",
+        help="SAM2 automatic-mask stability threshold (0..1).",
+    ),
+    sam2_min_area_fraction: float = typer.Option(
+        0.002,
+        "--sam2-min-area-fraction",
+        help="Minimum eligible automatic-mask area as a frame fraction.",
+    ),
+    sam2_max_area_fraction: float = typer.Option(
+        0.65,
+        "--sam2-max-area-fraction",
+        help="Maximum eligible automatic-mask area as a frame fraction.",
+    ),
+    sam2_max_objects: int = typer.Option(
+        6,
+        "--sam2-max-objects",
+        help="Maximum first-frame SAM2 objects to propagate (1..32).",
     ),
 ) -> None:
     """Build a transfer manifest; pass --execute for real vendor output.
@@ -1435,11 +1555,54 @@ def transfer_cmd(
             control_weight = float(settings["control_weight"])
             guidance = float(settings["guidance"])
         protected_chroma_mode = protected_chroma_mode.strip().lower()
+        segmentation_mode = segmentation_mode.strip().lower()
+        from npa.workbench.cosmos.sam2_masks import Sam2MaskConfig, Sam2MaskError
+
+        sam2_config = Sam2MaskConfig(
+            mode=segmentation_mode,
+            model_id=sam2_model,
+            model_revision=sam2_model_revision,
+            points_per_side=sam2_points_per_side,
+            predicted_iou_threshold=sam2_predicted_iou_threshold,
+            stability_threshold=sam2_stability_threshold,
+            min_area_fraction=sam2_min_area_fraction,
+            max_area_fraction=sam2_max_area_fraction,
+            max_objects=sam2_max_objects,
+        )
+        if segmentation_mode != "off":
+            try:
+                sam2_config.validate()
+            except Sam2MaskError as exc:
+                raise typer.BadParameter(str(exc)) from exc
+            if not segmentation_uri.startswith("s3://"):
+                raise typer.BadParameter(
+                    "SAM2 segmentation requires --segmentation-uri as an s3:// prefix"
+                )
+            if not run_id.strip():
+                raise typer.BadParameter(
+                    "SAM2 segmentation requires --run-id to bind mask reuse to one run"
+                )
+            if protected_regions_json:
+                raise typer.BadParameter(
+                    "SAM2 masks and --protected-regions-json are mutually exclusive"
+                )
+            if requested_nodes > 1:
+                raise typer.BadParameter(
+                    "SAM2 auto segmentation requires one augment node; use the "
+                    "supported multi-GPU variant fan-out on that node"
+                )
+            # SAM2 masks protect their selected pixels with the same chroma
+            # compositor as rectangular regions, but are frame aligned.
+            protected_chroma_mode = "source-chroma"
         if protected_chroma_mode not in {"off", "source-chroma"}:
             raise typer.BadParameter(
                 "--protected-chroma-mode must be off or source-chroma"
             )
-        if protected_chroma_mode == "source-chroma" and not protected_regions_json:
+        if (
+            protected_chroma_mode == "source-chroma"
+            and segmentation_mode == "off"
+            and not protected_regions_json
+        ):
             raise typer.BadParameter(
                 "--protected-chroma-mode source-chroma requires --protected-regions-json"
             )
@@ -1447,6 +1610,72 @@ def transfer_cmd(
             raise typer.BadParameter("--protected-luma-max-delta must be within 0..255")
         if protected_feather_pixels < 1:
             raise typer.BadParameter("--protected-feather-pixels must be positive")
+
+        sam2_temp: tempfile.TemporaryDirectory[str] | None = None
+        sam2_masks_dir = ""
+        segmentation_evidence: dict[str, Any] = {"mode": "off"}
+        if segmentation_mode != "off":
+            if not local_input:
+                raise typer.BadParameter(
+                    "SAM2 segmentation requires an input-conditioned source video"
+                )
+            from npa.clients.storage import StorageClient
+            from npa.workbench.cosmos.sam2_masks import (
+                generate_sam2_video_masks,
+                load_published_sam2_masks,
+                publish_sam2_masks,
+            )
+
+            sam2_temp = tempfile.TemporaryDirectory(prefix="npa-paidf-sam2-")
+            try:
+                sam2_storage = StorageClient.from_environment()
+                sam2_result = load_published_sam2_masks(
+                    segmentation_uri,
+                    sam2_temp.name,
+                    config=sam2_config,
+                    run_id=run_id,
+                    storage_client=sam2_storage,
+                )
+                segmentation_cache_status = "reused"
+                if sam2_result is None:
+                    sam2_result = generate_sam2_video_masks(
+                        local_input,
+                        sam2_temp.name,
+                        config=sam2_config,
+                        run_id=run_id,
+                    )
+                    published_segmentation = publish_sam2_masks(
+                        sam2_result,
+                        segmentation_uri,
+                        storage_client=sam2_storage,
+                    )
+                    segmentation_cache_status = "generated"
+                else:
+                    published_segmentation = sam2_result.manifest
+            except Exception as exc:  # noqa: BLE001 - sanitized fail-closed boundary
+                sam2_temp.cleanup()
+                detail = str(exc) if isinstance(exc, Sam2MaskError) else "runtime error"
+                raise typer.BadParameter(
+                    f"configured SAM2 segmentation failed closed: {detail}"
+                ) from exc
+            sam2_masks_dir = str(sam2_result.masks_dir)
+            segmentation_evidence = {
+                "mode": segmentation_mode,
+                "engine": published_segmentation["engine"],
+                "component": published_segmentation["component"],
+                "component_version": published_segmentation["component_version"],
+                "component_source": published_segmentation["component_source"],
+                "component_revision": published_segmentation["component_revision"],
+                "license": published_segmentation["license"],
+                "config": published_segmentation["config"],
+                "frame_count": published_segmentation["frame_count"],
+                "object_count": published_segmentation["object_count"],
+                "mask_coverage": published_segmentation["mask_coverage"],
+                "runtime": published_segmentation["runtime"],
+                "cache_status": segmentation_cache_status,
+                "manifest_uri": published_segmentation["manifest_uri"],
+                "masks_uri": published_segmentation["masks_uri"],
+            }
 
         if data_factory_mode and output_uri.strip().startswith("s3://"):
             # Augment & MULTIPLY. Run one REAL Cosmos Transfer 2.5 inference per
@@ -1533,6 +1762,8 @@ def transfer_cmd(
                         result,
                         source_video=local_input,
                         regions_json=protected_regions_json,
+                        masks_dir=sam2_masks_dir,
+                        segmentation=segmentation_evidence,
                         feather_pixels=protected_feather_pixels,
                         luma_max_delta=protected_luma_max_delta,
                     )
@@ -1670,6 +1901,7 @@ def transfer_cmd(
             payload["control_prompt"] = manifest["control_prompt"]
             payload["mask_prompt"] = manifest["mask_prompt"]
             payload["control_uris"] = manifest["control_uris"]
+            payload["segmentation"] = segmentation_evidence
             if control_output_uri:
                 payload["control_output_uri"] = control_output_uri
             if local_input:
@@ -1677,6 +1909,10 @@ def transfer_cmd(
                 payload["control"] = manifest["control"]
             # attribute-verify reads --input-path {{augmented_frames_uri}} (the prefix).
             payload["augmented_frames_uri"] = output_uri
+            # Keep the temporary directory alive until every variant has consumed
+            # its frame-aligned masks, then remove all source-derived local data.
+            if sam2_temp is not None:
+                sam2_temp.cleanup()
         else:
             # Single inference: generic transfer (sim2real / cosmos-gate / fanout)
             # or a non-S3 output. Unchanged field convention.
@@ -1701,6 +1937,8 @@ def transfer_cmd(
                     transfer,
                     source_video=local_input,
                     regions_json=protected_regions_json,
+                    masks_dir=sam2_masks_dir,
+                    segmentation=segmentation_evidence,
                     feather_pixels=protected_feather_pixels,
                     luma_max_delta=protected_luma_max_delta,
                 )
@@ -1714,6 +1952,7 @@ def transfer_cmd(
             payload["control_spec"] = transfer["spec"]
             payload["prompt"] = str(variables.get("prompt") or "")
             payload["input_conditioned"] = bool(local_input)
+            payload["segmentation"] = segmentation_evidence
             if local_input:
                 payload["input_video"] = local_input
                 payload["control"] = transfer.get("control", control)
@@ -1743,6 +1982,8 @@ def transfer_cmd(
                 payload["mode"] = TRANSFER_MANIFEST_MODE
                 payload["augmented_video_uri"] = transfer["video_path"]
                 payload["augmented_frames_uri"] = output_uri
+            if sam2_temp is not None:
+                sam2_temp.cleanup()
     else:
         # No heavy model runtime: run a genuine reference augmentation that
         # writes real augmented image frames to output_uri (not a descriptor stub).
@@ -1759,4 +2000,5 @@ def transfer_cmd(
 
     if output_json is not None:
         payload = write_manifest(payload, output_json)
-    typer.echo(json.dumps(payload, indent=2, sort_keys=True))
+    cli_payload = _safe_paidf_cli_result(payload) if configs_uri else payload
+    typer.echo(json.dumps(cli_payload, indent=2, sort_keys=True))

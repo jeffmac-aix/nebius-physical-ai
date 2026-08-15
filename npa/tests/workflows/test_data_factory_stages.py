@@ -128,17 +128,42 @@ def test_generate_configs_is_deterministic_by_seed(tmp_path: Path) -> None:
     assert a["augmentations"] == b["augmentations"]
 
 
+def test_generate_configs_supports_a_shared_controlled_comparison_seed(
+    tmp_path: Path,
+) -> None:
+    baseline = dfs.generate_configs(
+        str(tmp_path / "baseline.json"),
+        n_augmentations=3,
+        seed="baseline-run",
+        augmentation_seed="controlled-comparison-v1",
+    )
+    component = dfs.generate_configs(
+        str(tmp_path / "component.json"),
+        n_augmentations=3,
+        seed="component-run",
+        augmentation_seed="controlled-comparison-v1",
+    )
+
+    assert baseline["augmentations"] == component["augmentations"]
+    assert baseline["augmentation_seed"] == "controlled-comparison-v1"
+
+
 def test_prepare_refinement_uses_baseline_then_adapts_failed_retry(
     tmp_path: Path,
 ) -> None:
     grade = tmp_path / "grade"
     grade.mkdir()
     refinement = tmp_path / "configs" / "refinement.json"
+    decision = tmp_path / "grade" / "decision.json"
 
-    baseline = dfs.prepare_refinement(str(grade), str(refinement))
+    baseline = dfs.prepare_refinement(
+        str(grade), str(refinement), decision_uri=str(decision)
+    )
     assert baseline["attempt"] == 0
     assert baseline["adapted_from_prior_evaluation"] is False
-    assert baseline["settings"] == {"control_weight": 0.75, "guidance": 3}
+    assert baseline["settings"] == {"control_weight": 1.0, "guidance": 3}
+    assert (tmp_path / "configs" / "refinement-attempt-00.json").is_file()
+    assert (tmp_path / "configs" / "refinement-attempt-00.commit.json").is_file()
 
     (grade / "cosmos_evaluator.json").write_text(
         json.dumps(
@@ -156,7 +181,13 @@ def test_prepare_refinement_uses_baseline_then_adapts_failed_retry(
             }
         )
     )
-    retry = dfs.prepare_refinement(str(grade), str(refinement))
+    assert (
+        dfs.grade_gate(str(grade), str(decision), 0.75, str(refinement))
+        == "loop_back"
+    )
+    retry = dfs.prepare_refinement(
+        str(grade), str(refinement), decision_uri=str(decision)
+    )
     assert retry["attempt"] == 1
     assert retry["adapted_from_prior_evaluation"] is True
     assert retry["settings"] == {"control_weight": 1.0, "guidance": 2}
@@ -164,9 +195,41 @@ def test_prepare_refinement_uses_baseline_then_adapts_failed_retry(
     assert (tmp_path / "configs" / "refinement-attempt-01.json").is_file()
 
 
+def test_prepare_refinement_replays_a_committed_adapted_attempt_idempotently(
+    tmp_path: Path,
+) -> None:
+    grade = tmp_path / "grade"
+    grade.mkdir()
+    refinement = tmp_path / "configs" / "refinement.json"
+    decision = grade / "decision.json"
+    dfs.prepare_refinement(
+        str(grade), str(refinement), decision_uri=str(decision)
+    )
+    (grade / "cosmos_evaluator.json").write_text(
+        json.dumps({"status": "completed", "score": 0.4, "passed": False})
+    )
+    assert (
+        dfs.grade_gate(str(grade), str(decision), 0.75, str(refinement))
+        == "loop_back"
+    )
+    retry = dfs.prepare_refinement(
+        str(grade), str(refinement), decision_uri=str(decision)
+    )
+    history = tmp_path / "configs" / "refinement-attempt-01.json"
+    marker = tmp_path / "configs" / "refinement-attempt-01.commit.json"
+    before = (refinement.read_bytes(), history.read_bytes(), marker.read_bytes())
+
+    repeated = dfs.prepare_refinement(
+        str(grade), str(refinement), decision_uri=str(decision)
+    )
+
+    assert repeated == retry
+    assert (refinement.read_bytes(), history.read_bytes(), marker.read_bytes()) == before
+    assert not (tmp_path / "configs" / "refinement-attempt-02.json").exists()
+
+
 def test_prepare_refinement_can_record_a_non_adaptive_policy(tmp_path: Path) -> None:
-    scores = tmp_path / "cosmos_evaluator.json"
-    scores.write_text(json.dumps({"score": 0.1, "passed": False}))
+    scores = tmp_path / "grade"
     result = dfs.prepare_refinement(
         str(scores),
         str(tmp_path / "refinement.json"),
@@ -177,6 +240,128 @@ def test_prepare_refinement_can_record_a_non_adaptive_policy(tmp_path: Path) -> 
     assert result["adaptive"] is False
     assert result["adapted_from_prior_evaluation"] is False
     assert result["settings"] == {"control_weight": 0.8, "guidance": 2.0}
+
+
+@pytest.mark.parametrize(
+    "report",
+    [
+        {"status": "completed", "score": 0.74, "passed": True},
+        {"status": "degraded", "score": 0.99, "passed": True},
+    ],
+    ids=["passed-below-score", "passed-non-completed"],
+)
+def test_prepare_refinement_adapts_exactly_when_quality_gate_retries(
+    tmp_path: Path, report: dict
+) -> None:
+    grade = tmp_path / "grade"
+    grade.mkdir()
+    refinement = tmp_path / "configs" / "refinement.json"
+    decision = grade / "decision.json"
+    dfs.prepare_refinement(
+        str(grade), str(refinement), decision_uri=str(decision)
+    )
+    (grade / "cosmos_evaluator.json").write_text(json.dumps(report))
+    assert (
+        dfs.grade_gate(str(grade), str(decision), 0.75, str(refinement))
+        == "loop_back"
+    )
+
+    retry = dfs.prepare_refinement(
+        str(grade), str(refinement), decision_uri=str(decision)
+    )
+
+    assert retry["attempt"] == 1
+    assert retry["adapted_from_prior_evaluation"] is True
+    assert retry["settings"] == {"control_weight": 1.0, "guidance": 2}
+
+
+def test_prepare_refinement_changes_every_retry_then_fails_closed_at_saturation(
+    tmp_path: Path,
+) -> None:
+    grade = tmp_path / "grade"
+    grade.mkdir()
+    refinement = tmp_path / "configs" / "refinement.json"
+    decision = grade / "decision.json"
+    current = dfs.prepare_refinement(
+        str(grade), str(refinement), decision_uri=str(decision)
+    )
+    effective_pairs = [
+        (current["settings"]["control_weight"], current["settings"]["guidance"])
+    ]
+
+    for evaluation_cycle in range(1, 3):
+        (grade / "cosmos_evaluator.json").write_text(
+            json.dumps(
+                {
+                    "status": "completed",
+                    "score": 0.1,
+                    "passed": False,
+                    "evaluation_cycle": evaluation_cycle,
+                }
+            )
+        )
+        assert (
+            dfs.grade_gate(str(grade), str(decision), 0.75, str(refinement))
+            == "loop_back"
+        )
+        current = dfs.prepare_refinement(
+            str(grade), str(refinement), decision_uri=str(decision)
+        )
+        pair = (
+            current["settings"]["control_weight"],
+            current["settings"]["guidance"],
+        )
+        assert pair != effective_pairs[-1]
+        assert current["attempt"] == evaluation_cycle
+        effective_pairs.append(pair)
+
+    pointer_before = refinement.read_bytes()
+    (grade / "cosmos_evaluator.json").write_text(
+        json.dumps(
+            {
+                "status": "completed",
+                "score": 0.1,
+                "passed": False,
+                "evaluation_cycle": 3,
+            }
+        )
+    )
+    assert (
+        dfs.grade_gate(str(grade), str(decision), 0.75, str(refinement))
+        == "loop_back"
+    )
+    with pytest.raises(dfs.RefinementStateError, match="schedule is exhausted"):
+        dfs.prepare_refinement(
+            str(grade), str(refinement), decision_uri=str(decision)
+        )
+    assert refinement.read_bytes() == pointer_before
+    assert not (tmp_path / "configs" / "refinement-attempt-03.json").exists()
+
+
+def test_prepare_refinement_does_not_create_a_retry_after_promotion(
+    tmp_path: Path,
+) -> None:
+    grade = tmp_path / "grade"
+    grade.mkdir()
+    refinement = tmp_path / "configs" / "refinement.json"
+    decision = grade / "decision.json"
+    baseline = dfs.prepare_refinement(
+        str(grade), str(refinement), decision_uri=str(decision)
+    )
+    (grade / "cosmos_evaluator.json").write_text(
+        json.dumps({"status": "completed", "score": 0.9, "passed": True})
+    )
+    assert (
+        dfs.grade_gate(str(grade), str(decision), 0.75, str(refinement))
+        == "promote_checkpoint"
+    )
+
+    promoted = dfs.prepare_refinement(
+        str(grade), str(refinement), decision_uri=str(decision)
+    )
+
+    assert promoted == baseline
+    assert not (tmp_path / "configs" / "refinement-attempt-01.json").exists()
 
 
 @pytest.mark.parametrize(
@@ -199,19 +384,109 @@ def test_prepare_refinement_rejects_values_cosmos_cannot_load(
         )
 
 
-def test_grade_gate_promotes_above_threshold(tmp_path: Path, monkeypatch) -> None:
+def test_prepare_refinement_propagates_non_not_found_reads_safely(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    refinement = tmp_path / "private-object-name.json"
+    original = dfs._download_json
+
+    def fail_read(uri: str):
+        if uri == str(refinement):
+            raise PermissionError(f"private provider detail for {uri}")
+        return original(uri)
+
+    monkeypatch.setattr(dfs, "_download_json", fail_read)
+
+    with pytest.raises(dfs.RefinementStateError) as captured:
+        dfs.prepare_refinement(str(tmp_path / "grade"), str(refinement))
+
+    assert "read failed (PermissionError)" in str(captured.value)
+    assert "private-object-name" not in str(captured.value)
+
+
+def test_prepare_refinement_fails_closed_on_malformed_prior_state(
+    tmp_path: Path,
+) -> None:
+    refinement = tmp_path / "private-object-name.json"
+    refinement.write_text("not-json")
+
+    with pytest.raises(dfs.RefinementStateError) as captured:
+        dfs.prepare_refinement(str(tmp_path / "grade"), str(refinement))
+
+    message = str(captured.value)
+    assert "read failed (JSONDecodeError)" in message
+    assert "private-object-name" not in message
+
+
+def test_prepare_refinement_is_idempotent_only_with_commit_proof(
+    tmp_path: Path,
+) -> None:
+    refinement = tmp_path / "configs" / "refinement.json"
+    baseline = dfs.prepare_refinement(str(tmp_path / "grade"), str(refinement))
+    history = tmp_path / "configs" / "refinement-attempt-00.json"
+    marker = tmp_path / "configs" / "refinement-attempt-00.commit.json"
+    before_history = history.read_bytes()
+    before_marker = marker.read_bytes()
+
+    repeated = dfs.prepare_refinement(str(tmp_path / "grade"), str(refinement))
+
+    assert repeated == baseline
+    assert history.read_bytes() == before_history
+    assert marker.read_bytes() == before_marker
+
+
+def test_prepare_refinement_repairs_exact_history_after_marker_write_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    refinement = tmp_path / "configs" / "refinement.json"
+    original = dfs._put_immutable_json
+    failed_once = False
+
+    def fail_marker(payload: dict, uri: str, *, label: str) -> str:
+        nonlocal failed_once
+        if label == "refinement commit marker" and not failed_once:
+            failed_once = True
+            raise dfs.RefinementStateError("injected marker failure")
+        return original(payload, uri, label=label)
+
+    monkeypatch.setattr(dfs, "_put_immutable_json", fail_marker)
+    with pytest.raises(dfs.RefinementStateError, match="injected marker failure"):
+        dfs.prepare_refinement(str(tmp_path / "grade"), str(refinement))
+    history = tmp_path / "configs" / "refinement-attempt-00.json"
+    assert history.is_file()
+    assert not refinement.exists()
+
+    recovered = dfs.prepare_refinement(str(tmp_path / "grade"), str(refinement))
+
+    assert recovered["attempt"] == 0
+    assert (tmp_path / "configs" / "refinement-attempt-00.commit.json").is_file()
+
+
+def test_prepare_refinement_never_overwrites_conflicting_attempt_history(
+    tmp_path: Path,
+) -> None:
+    refinement = tmp_path / "configs" / "refinement.json"
+    history = tmp_path / "configs" / "refinement-attempt-00.json"
+    history.parent.mkdir(parents=True)
+    history.write_text(json.dumps({"schema": "conflicting"}))
+    before = history.read_bytes()
+
+    with pytest.raises(dfs.RefinementStateError, match="conflicting immutable"):
+        dfs.prepare_refinement(str(tmp_path / "grade"), str(refinement))
+
+    assert history.read_bytes() == before
+    assert not refinement.exists()
+
+
+def test_grade_gate_promotes_above_threshold(tmp_path: Path) -> None:
     scores = tmp_path / "vlm_eval_stub.json"
-    scores.write_text(json.dumps({"score": 0.8}))
-    captured = {}
-    monkeypatch.setattr(
-        "npa.orchestration.npa_workflow.decisions.write_decision",
-        lambda uri, decision: captured.update(uri=uri, decision=decision),
+    scores.write_text(
+        json.dumps({"status": "completed", "score": 0.8, "passed": True})
     )
-    decision = dfs.grade_gate(
-        str(scores), str(tmp_path / "decision.json"), threshold=0.5
-    )
+    decision_path = tmp_path / "decision.json"
+    decision = dfs.grade_gate(str(scores), str(decision_path), threshold=0.5)
     assert decision == "promote_checkpoint"
-    assert captured["decision"] == "promote_checkpoint"
+    assert json.loads(decision_path.read_text())["decision"] == "promote_checkpoint"
 
 
 def test_grade_gate_loops_below_threshold(tmp_path: Path, monkeypatch) -> None:
@@ -231,7 +506,9 @@ def test_grade_gate_accepts_string_threshold(tmp_path: Path, monkeypatch) -> Non
     """The blueprint interpolates a quoted config.grade_threshold; grade_gate must
     cast a str threshold (and fall back to 0.5 on a non-numeric value)."""
     scores = tmp_path / "vlm_eval_stub.json"
-    scores.write_text(json.dumps({"score": 0.6}))
+    scores.write_text(
+        json.dumps({"status": "completed", "score": 0.6, "passed": True})
+    )
     monkeypatch.setattr(
         "npa.orchestration.npa_workflow.decisions.write_decision",
         lambda uri, decision: None,
@@ -524,10 +801,10 @@ def test_dynamic_quality_disposition_rejects_unavailable_or_malformed_report(
     assert decisions == ["loop_back"]
 
 
-def test_grade_gate_falls_through_a_malformed_report_to_the_older_contract(
+def test_grade_gate_malformed_authoritative_report_fails_closed(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """A malformed newest-contract report must not shadow a usable older one."""
+    """A present but malformed newest report must not promote from stale data."""
 
     (tmp_path / "cosmos_evaluator.json").write_text(json.dumps({"score": "n/a"}))
     (tmp_path / "vlm_eval_stub.json").write_text(json.dumps({"score": 0.9}))
@@ -535,8 +812,9 @@ def test_grade_gate_falls_through_a_malformed_report_to_the_older_contract(
         "npa.orchestration.npa_workflow.decisions.write_decision",
         lambda uri, decision: None,
     )
-    assert dfs.grade_gate(str(tmp_path), str(tmp_path / "d.json"), threshold=0.5) == (
-        "promote_checkpoint"
+    assert (
+        dfs.grade_gate(str(tmp_path), str(tmp_path / "d.json"), threshold=0.5)
+        == "loop_back"
     )
 
 
@@ -552,8 +830,8 @@ def test_download_json_missing_exact_file_does_not_substitute(
     (prefix_dir / "decision.json").write_text(json.dumps({"decision": "loop_back"}))
 
     class _FakeStorage:
-        def download_path(self, uri, dest):  # noqa: ARG002
-            return str(prefix_dir)
+        def download_file(self, uri, dest):  # noqa: ARG002
+            raise FileNotFoundError("exact object absent")
 
     monkeypatch.setattr(dfs, "_storage", lambda: _FakeStorage())
     with pytest.raises(FileNotFoundError):
@@ -572,14 +850,13 @@ def test_grade_gate_missing_eval_loops_not_reads_decision(
     )
 
     class _FakeStorage:
-        def download_path(self, uri, dest):  # noqa: ARG002
-            return str(prefix_dir)
+        def download_file(self, uri, dest):  # noqa: ARG002
+            raise FileNotFoundError("exact object absent")
+
+        def upload_file(self, source, uri):  # noqa: ARG002
+            return uri
 
     monkeypatch.setattr(dfs, "_storage", lambda: _FakeStorage())
-    monkeypatch.setattr(
-        "npa.orchestration.npa_workflow.decisions.write_decision",
-        lambda uri, decision: None,
-    )
     assert (
         dfs.grade_gate("s3://bucket/grade/", "s3://bucket/grade/decision.json", 0.5)
         == "loop_back"
@@ -595,7 +872,7 @@ def test_grade_gate_reads_the_cosmos_evaluator_report(
     prefix_dir = tmp_path / "grade"
     prefix_dir.mkdir()
     (prefix_dir / RESULT_FILENAME).write_text(
-        json.dumps({"score": 0.9, "passed": True})
+        json.dumps({"status": "completed", "score": 0.9, "passed": True})
     )
     monkeypatch.setattr(
         "npa.orchestration.npa_workflow.decisions.write_decision",
@@ -959,7 +1236,7 @@ def test_all_augmentations_missing_manifest_fails_closed(tmp_path: Path) -> None
 
     with pytest.raises(
         typer.BadParameter,
-        match="configured augmentation manifest could not be read",
+        match="could not read the configured augmentation manifest",
     ):
         _all_augmentations(str(tmp_path / "nope") + "/")
 

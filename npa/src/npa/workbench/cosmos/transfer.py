@@ -176,14 +176,17 @@ def preserve_source_chroma(
     transfer: dict[str, Any],
     *,
     source_video: str,
-    regions_json: str,
+    regions_json: str = "",
+    masks_dir: str = "",
+    segmentation: dict[str, Any] | None = None,
     feather_pixels: int = 12,
     luma_max_delta: int = 32,
 ) -> dict[str, Any]:
     """Restore source chroma in protected regions while retaining generated light.
 
     Cosmos still generates every frame. This optional deterministic post-process
-    restores source Cb/Cr per pixel inside feathered normalized rectangles;
+    restores source Cb/Cr per pixel inside feathered normalized rectangles or
+    frame-aligned SAM2 masks;
     generated luma is retained within a bounded per-pixel distance from source,
     so mild illumination/exposure augmentation remains visible while extreme
     darkening or brightening fails to alter protected identity colors. Exact
@@ -193,7 +196,14 @@ def preserve_source_chroma(
     corrected output.
     """
 
-    regions = _parse_protected_regions(regions_json)
+    if bool(regions_json) == bool(masks_dir):
+        raise ProtectedChromaError(
+            "protected chroma requires exactly one of regions_json or masks_dir"
+        )
+    regions = _parse_protected_regions(regions_json) if regions_json else []
+    mask_root = Path(masks_dir) if masks_dir else None
+    if mask_root is not None and not mask_root.is_dir():
+        raise ProtectedChromaError("protected SAM2 mask directory is missing")
     if feather_pixels < 1:
         raise ProtectedChromaError("protected chroma feather must be positive")
     if not 0 <= luma_max_delta <= 255:
@@ -208,10 +218,11 @@ def preserve_source_chroma(
     script = r'''
 import av, json, numpy as np, sys
 from pathlib import Path
-source_path, augmented_path, frames_dir_text, regions_text, feather_text, luma_delta_text = sys.argv[1:]
+source_path, augmented_path, frames_dir_text, regions_text, masks_dir_text, feather_text, luma_delta_text = sys.argv[1:]
 frames_dir = Path(frames_dir_text)
-regions = json.loads(regions_text)
+regions = json.loads(regions_text) if regions_text else []
 regions = [r.get("bounds") if isinstance(r, dict) else r for r in regions]
+masks_dir = Path(masks_dir_text) if masks_dir_text else None
 feather = int(feather_text)
 luma_delta = int(luma_delta_text)
 src_container = av.open(source_path)
@@ -234,6 +245,7 @@ for bounds in regions:
     mask = np.zeros((height, width), dtype=np.float32)
     mask[y0:y1, x0:x1] = alpha
     masks.append(mask)
+rect_alpha = np.maximum.reduce(masks) if masks else None
 src_frames = iter(src_container.decode(video=0))
 aug_frames = iter(aug_container.decode(video=0))
 count = 0
@@ -251,7 +263,25 @@ for aug_frame in aug_frames:
     y = 0.299 * augf[..., 0] + 0.587 * augf[..., 1] + 0.114 * augf[..., 2]
     aug_cb = 128.0 - 0.168736 * augf[..., 0] - 0.331264 * augf[..., 1] + 0.5 * augf[..., 2]
     aug_cr = 128.0 + 0.5 * augf[..., 0] - 0.418688 * augf[..., 1] - 0.081312 * augf[..., 2]
-    alpha = np.maximum.reduce(masks)
+    if masks_dir is not None:
+        from PIL import Image, ImageFilter
+        mask_path = masks_dir / f"mask-{count:06d}.png"
+        if not mask_path.is_file():
+            raise RuntimeError(f"missing frame-aligned protected mask {mask_path.name}")
+        with Image.open(mask_path) as opened_mask:
+            mask_image = opened_mask.convert("L").resize((width, height), Image.Resampling.NEAREST)
+        binary_mask = np.asarray(mask_image, dtype=np.float32) / 255.0
+        if feather > 1:
+            mask_image = mask_image.filter(ImageFilter.GaussianBlur(radius=max(0.5, feather / 2.0)))
+            # Feather inward only. Multiplying by the original binary mask keeps
+            # source chroma from bleeding into unprotected augmentation pixels.
+            alpha = (np.asarray(mask_image, dtype=np.float32) / 255.0) * binary_mask
+        else:
+            alpha = binary_mask
+    else:
+        if rect_alpha is None:
+            raise RuntimeError("protected region mask is missing")
+        alpha = rect_alpha
     bounded_y = np.clip(y, src_y - float(luma_delta), src_y + float(luma_delta))
     y = y * (1.0 - alpha) + bounded_y * alpha
     cb = aug_cb * (1.0 - alpha) + src_cb * alpha
@@ -273,6 +303,10 @@ else:
 aug_container.close(); src_container.close()
 if count == 0:
     raise RuntimeError("no frames decoded")
+if masks_dir is not None:
+    mask_files = sorted(masks_dir.glob("mask-*.png"))
+    if len(mask_files) != count:
+        raise RuntimeError("protected SAM2 mask count differs from video frame count")
 print(json.dumps({"frames": count, "fps": float(rate)}))
 '''
     try:
@@ -288,6 +322,7 @@ print(json.dumps({"frames": count, "fps": float(rate)}))
                     str(augmented),
                     frames_dir,
                     regions_json,
+                    str(mask_root or ""),
                     str(feather_pixels),
                     str(luma_max_delta),
                 ],
@@ -343,12 +378,20 @@ print(json.dumps({"frames": count, "fps": float(rate)}))
     result["video_bytes"] = output.stat().st_size
     result["protected_chroma"] = {
         "mode": "source-chroma",
-        "method": "feathered-per-pixel-source-chroma",
+        "method": (
+            "sam2-mask-feathered-per-pixel-source-chroma"
+            if mask_root is not None
+            else "feathered-per-pixel-source-chroma"
+        ),
         "region_count": len(regions),
         "feather_pixels": feather_pixels,
         "luma_max_delta": luma_max_delta,
         "frame_count": frame_count,
     }
+    if mask_root is not None:
+        result["protected_chroma"]["segmentation"] = segmentation or {
+            "engine": "meta-sam2-upstream"
+        }
     return result
 
 
@@ -669,12 +712,22 @@ def run_cosmos_transfer(
         # set. Keep the NPA default fail-closed; operators must opt out per run.
         argv.append("--disable-guardrails")
     try:
-        subprocess.run(
-            argv,
-            cwd=repo,
-            env=env,
-            check=True,
-        )
+        # Upstream progress output includes the effective prompt and local input
+        # path. Keep it in an unnamed, process-local file that is destroyed at
+        # completion; the retained task log reports only aggregate NPA evidence.
+        with tempfile.TemporaryFile() as vendor_log:
+            subprocess.run(
+                argv,
+                cwd=repo,
+                env=env,
+                check=True,
+                stdout=vendor_log,
+                stderr=subprocess.STDOUT,
+            )
+    except (OSError, subprocess.CalledProcessError):
+        raise RuntimeError(
+            "Cosmos Transfer inference failed; inspect GPU/model access and retry"
+        ) from None
     finally:
         if temp_spec is not None:
             try:

@@ -460,6 +460,9 @@ def test_default_skypilot_calls_preserve_explicit_runtime_isolation(
         "npa.orchestration.skypilot.workflow.find_job_ids_by_name",
         return_value=["1"],
     )
+    reconcile = mocker.patch(
+        "npa.orchestration.skypilot.workflow.lookup_managed_job",
+    )
 
     rendered = tmp_path / "rendered.yaml"
     rendered.write_text("name: isolated\n", encoding="utf-8")
@@ -474,6 +477,7 @@ def test_default_skypilot_calls_preserve_explicit_runtime_isolation(
     executor._status("1")
     executor._timeline("1")
     assert executor._job_ids_by_name("isolated-job") == ["1"]
+    executor._reconcile_exact("isolated-job", "1")
 
     expected = {
         "isolated_config_dir": isolated,
@@ -499,6 +503,7 @@ def test_default_skypilot_calls_preserve_explicit_runtime_isolation(
     status.assert_called_once_with("1", **expected)
     timeline.assert_called_once_with("1", **expected)
     lookup.assert_called_once_with("isolated-job", **expected)
+    reconcile.assert_called_once_with("isolated-job", job_id="1", **expected)
 
 
 def test_successful_job_without_declared_output_fails_closed(tmp_path: Path) -> None:

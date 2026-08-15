@@ -81,6 +81,9 @@ metadata:
 config:
   bucket: example-bucket
   prefix: "physical-ai-data-factory/{{run.id}}"
+  # Planning preview only. The runtime orchestrator still reads the real decision
+  # artifact after each gate; this default makes bare plan-spec show the happy path.
+  plan_assume_decision: promote_checkpoint
 
   # --- Augmentation + grading knobs (Stage 1 + Evaluate loop) ---
   # Synthetic geometry is an explicit developer/test opt-in via --seed-fixture.
@@ -123,14 +126,17 @@ config:
   # Precomputed control video (e.g. a segmentation map produced upstream of this
   # run) to condition on instead of computing the modality on-the-fly.
   augment_control_asset_uri: ""
+  # Optional stable seed for controlled baseline/component comparisons. Empty
+  # preserves the existing behavior of sampling deterministically from run.id.
+  augmentation_seed: ""
   refinement_iterations: "2"      # max evaluate/validate passes before reject
   grade_threshold: "0.75"         # min aggregate score to promote (else loop_back)
-  # A retry must not replay identical inference settings. Before every render,
-  # prepare-refinement reads the prior evaluator report. Failed attempts increase
-  # input structure control and reduce prompt guidance within these bounds.
+  # Retain the established first-pass control weight of 1.0. A retry must not
+  # replay identical inference settings: the default schedule lowers guidance;
+  # custom baselines below the ceiling may also increase structure control.
   adaptive_refinement_enabled: "true"
   cosmos_control: edge
-  cosmos_control_weight: "0.75"
+  cosmos_control_weight: "1.0"
   cosmos_guidance: "3.0"
   refinement_control_weight_step: "0.25"
   refinement_max_control_weight: "1.0"
@@ -143,6 +149,19 @@ config:
   protected_chroma_regions_json: ""
   protected_luma_max_delta: "32"
   protected_feather_pixels: "12"
+  # Optional real Meta SAM2 masks. `off` preserves the existing/default path.
+  # `sam2-auto` discovers stable first-frame objects and tracks them through the
+  # video, then uses the masks for frame-aligned protected-chroma preservation.
+  # Prompt coordinates are intentionally not accepted through rendered argv.
+  segmentation_mode: "off"
+  sam2_model: "facebook/sam2.1-hiera-tiny"
+  sam2_model_revision: "de431c4043854a71d8101e17995dfe596bf101a5"
+  sam2_points_per_side: "16"
+  sam2_predicted_iou_threshold: "0.86"
+  sam2_stability_threshold: "0.92"
+  sam2_min_area_fraction: "0.002"
+  sam2_max_area_fraction: "0.65"
+  sam2_max_objects: "6"
   # NPA temporal residual is advisory until a deployment calibrates its fixed
   # noise floor. Set mode=required only with representative encoded clips.
   temporal_consistency_mode: advisory
@@ -208,6 +227,7 @@ config:
   scores_uri: "s3://{{config.bucket}}/{{config.prefix}}/grade/"
   decision_uri: "s3://{{config.bucket}}/{{config.prefix}}/grade/decision.json"
   refinement_uri: "s3://{{config.bucket}}/{{config.prefix}}/configs/refinement.json"
+  segmentation_uri: "s3://{{config.bucket}}/{{config.prefix}}/segmentation/"
   quality_disposition_uri: "s3://{{config.bucket}}/{{config.prefix}}/grade/quality_disposition.json"
   augmented_frames_uri: "s3://{{config.bucket}}/{{config.prefix}}/cosmos_augmented/"
   labeled_augmented_uri: "s3://{{config.bucket}}/{{config.prefix}}/labeled_augmented/"
@@ -231,6 +251,7 @@ config:
   finalize_report_uri: "s3://{{config.bucket}}/{{config.prefix}}/reports/final.json"
   input_provenance_uri: "s3://{{config.bucket}}/{{config.prefix}}/input/provenance.json"
   input_source_kind: ""
+  input_source_format: "video"
   input_origin: ""
   input_origin_label: ""
   input_sha256: ""
@@ -263,6 +284,16 @@ resources:
     # override instead of OOM-killing four concurrent Cosmos workers.
     cpus: 16
     memory: 128Gi
+    kubernetes:
+      pod_config:
+        spec:
+          # PAIDF images use versioned, immutable release tags. Reuse an exact
+          # node-local image when it has already passed the image preflight and
+          # byte scan; otherwise Kubernetes still pulls it normally. This also
+          # keeps large Cosmos images from being fetched again on refinement.
+          containers:
+            - name: ray-node
+              imagePullPolicy: IfNotPresent
     # Provision the cluster through npa before submit if its context is absent,
     # so one `npa workbench workflow submit ...` covers the whole
     # path (prerequisite check -> provision -> stage source -> launch) without a
@@ -309,6 +340,7 @@ states:
         - "{{config.seed_default_input}}"
         - "{{config.seed_fixture}}"
         - "{{config.augment_subject}}"
+        - "{{config.augmentation_seed}}"
     outputs:
       - uri: "{{config.configs_uri}}manifest.json"
         schema: npa.data_factory.configs.v1
@@ -356,6 +388,8 @@ states:
         - "{{config.refinement_max_control_weight}}"
         - "{{config.refinement_guidance_step}}"
         - "{{config.refinement_min_guidance}}"
+        - "{{config.decision_uri}}"
+        - "{{config.grade_threshold}}"
     outputs:
       - uri: "{{config.refinement_uri}}"
         schema: npa.data_factory.refinement.v1
@@ -456,8 +490,8 @@ states:
       Real quality gate — read the Cosmos Evaluator score and write a
       promote_checkpoint / loop_back decision. The enclosing `grade` loop reads this
       decision (loop.until: promote_checkpoint): promote breaks the loop and proceeds
-      to annotate-augmented; loop_back re-runs the loop body (augment -> evaluate ->
-      gate). No explicit transitions here -- the loop drives control flow, and
+      to the accepted-quality guard; loop_back re-runs the loop body (augment ->
+      evaluate -> gate). No explicit transitions here -- the loop drives control flow, and
       transitions on a loop-sequence member are not evaluated at runtime.
     writesDecision: true
     needs: [evaluate]
@@ -465,7 +499,8 @@ states:
     run:
       shell: >
         python3 -c "from npa.workflows.data_factory_stages import grade_gate;
-        grade_gate('{{config.scores_uri}}', '{{config.decision_uri}}', '{{config.grade_threshold}}')"
+        grade_gate('{{config.scores_uri}}', '{{config.decision_uri}}',
+        '{{config.grade_threshold}}', '{{config.refinement_uri}}')"
     outputs:
       - uri: "{{config.decision_uri}}"
         schema: npa.sim2real.threshold_decision.v1
@@ -498,9 +533,29 @@ states:
         schema: npa.sim2real.threshold_decision.v1
     transitions:
       - when: promote_checkpoint
-        goto: annotate-augmented
+        goto: require-accepted-quality
       - when: loop_back
         goto: visualize-rejected
+
+  require-accepted-quality:
+    description: >
+      Static-plan fail-closed guard. A one-shot plan follows its preview branch
+      rather than re-reading transitions, so re-check the durable disposition
+      before any accepted-only labeling, curation, visualization, or finalize
+      stage. Runtime execution also passes through this guard on promotion.
+    needs: [quality-disposition]
+    resources: cpu
+    run:
+      argv:
+        - python3
+        - -c
+        - >-
+          import sys; from npa.workflows.data_factory_stages import enforce_quality_disposition;
+          enforce_quality_disposition(*sys.argv[1:])
+        - "{{config.scores_uri}}"
+        - "{{config.quality_disposition_uri}}"
+        - "{{config.grade_threshold}}"
+    next: annotate-augmented
 
   visualize-rejected:
     description: >
@@ -537,7 +592,7 @@ states:
     description: >
       Stage 3 - Pseudo-Label Augmented. Re-caption the promoted augmented clips with
       the same hosted VLM so the amplified dataset ships fully labeled.
-    needs: [quality-disposition]
+    needs: [require-accepted-quality]
     resources: cpu
     run:
       shell: >

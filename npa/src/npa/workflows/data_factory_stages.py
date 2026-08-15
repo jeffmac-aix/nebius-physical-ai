@@ -20,15 +20,19 @@ pip-installed in the rendered task, so the blueprint invokes them inline via
 
 from __future__ import annotations
 
+import hashlib
 import json
-import logging
+import math
 import random
 import tempfile
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-LOGGER = logging.getLogger(__name__)
+
+class RefinementStateError(RuntimeError):
+    """Fail-closed, operator-safe refinement state error."""
+
 
 # Appearance-only variables that remain coherent for a replaceable physical
 # scene. The input video is authoritative for geometry, objects, camera, and motion.
@@ -165,24 +169,219 @@ def _read_json_key(bucket: str, key: str) -> dict[str, Any] | None:
 def _download_json(uri: str) -> dict[str, Any]:
     if not uri.startswith("s3://"):
         return json.loads(Path(uri).read_text())
+    from botocore.exceptions import ClientError
+
     want = uri.rstrip("/").split("/")[-1]
     with tempfile.TemporaryDirectory(prefix="npa-df-stage-") as tmp:
-        local = _storage().download_path(uri, tmp)
-        p = Path(local)
-        if p.is_dir():
-            # download_path fell back to the prefix (the exact object is missing).
-            # Prefer the exact requested filename; NEVER silently substitute a
-            # different JSON (e.g. decision.json instead of vlm_eval_stub.json),
-            # which would mask a missing eval result as a bogus score of 0.
-            if want.endswith(".json"):
-                exact = [c for c in p.rglob(want)]
-                if not exact:
-                    raise FileNotFoundError(f"{want} not found under {uri}")
-                p = exact[0]
-            else:
-                cand = sorted(p.rglob("*.json"))
-                p = cand[0] if cand else p
-        return json.loads(Path(p).read_text())
+        target = Path(tmp) / (want or "payload.json")
+        try:
+            local = _storage().download_file(uri, str(target))
+        except ClientError as exc:
+            code = str(exc.response.get("Error", {}).get("Code", ""))
+            if code in {"404", "NoSuchKey", "NotFound"}:
+                raise FileNotFoundError("requested JSON object does not exist") from None
+            raise
+        return json.loads(Path(local).read_text())
+
+
+def _canonical_json_bytes(payload: dict[str, Any]) -> bytes:
+    return (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8")
+
+
+def _payload_sha256(payload: dict[str, Any]) -> str:
+    return hashlib.sha256(_canonical_json_bytes(payload)).hexdigest()
+
+
+def _read_optional_refinement_json(uri: str, *, label: str) -> dict[str, Any] | None:
+    """Read optional run state while treating only exact NotFound as absence.
+
+    Authentication, authorization, transport, JSON, and schema-adjacent failures
+    are fatal. The public error intentionally omits the URI and provider message,
+    which can contain private object names or account metadata.
+    """
+
+    try:
+        payload = _download_json(uri)
+    except FileNotFoundError:
+        return None
+    except Exception as exc:  # noqa: BLE001 - classified and sanitized below
+        raise RefinementStateError(
+            f"{label} read failed ({type(exc).__name__}); retry after repairing storage access"
+        ) from None
+    if not isinstance(payload, dict):
+        raise RefinementStateError(f"{label} must be a JSON object")
+    return payload
+
+
+def _put_immutable_json(payload: dict[str, Any], uri: str, *, label: str) -> str:
+    """Create an immutable JSON object or accept an identical committed retry."""
+
+    expected_sha = _payload_sha256(payload)
+    existing = _read_optional_refinement_json(uri, label=label)
+    if existing is not None:
+        if _payload_sha256(existing) != expected_sha:
+            raise RefinementStateError(
+                f"{label} already exists with a conflicting immutable contract"
+            )
+        return uri
+
+    body = _canonical_json_bytes(payload)
+    if uri.startswith("s3://"):
+        from botocore.exceptions import ClientError
+
+        bucket, key = _split(uri)
+        try:
+            _s3_client().put_object(
+                Bucket=bucket,
+                Key=key,
+                Body=body,
+                ContentType="application/json",
+                IfNoneMatch="*",
+            )
+        except ClientError as exc:
+            code = str(exc.response.get("Error", {}).get("Code", ""))
+            if code not in {
+                "409",
+                "412",
+                "ConditionalRequestConflict",
+                "PreconditionFailed",
+            }:
+                raise RefinementStateError(
+                    f"{label} write failed ({type(exc).__name__})"
+                ) from None
+        except Exception as exc:  # noqa: BLE001 - sanitized operator boundary
+            raise RefinementStateError(
+                f"{label} write failed ({type(exc).__name__})"
+            ) from None
+    else:
+        path = Path(uri)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with path.open("xb") as stream:
+                stream.write(body)
+        except FileExistsError:
+            pass
+        except Exception as exc:  # noqa: BLE001 - sanitized operator boundary
+            raise RefinementStateError(
+                f"{label} write failed ({type(exc).__name__})"
+            ) from None
+
+    committed = _read_optional_refinement_json(uri, label=label)
+    if committed is None or _payload_sha256(committed) != expected_sha:
+        raise RefinementStateError(
+            f"{label} could not be verified after its immutable write"
+        )
+    return uri
+
+
+def _quality_gate_contract(
+    report: dict[str, Any], threshold: float
+) -> dict[str, Any]:
+    """Evaluate the one authoritative completed/hard-check/score contract."""
+
+    score = float(report.get("score", 0.0))
+    if not math.isfinite(score):
+        raise ValueError("expected a finite quality score")
+    status = str(report.get("status", "missing"))
+    raw_passed = report.get("passed")
+    if raw_passed is not None and not isinstance(raw_passed, bool):
+        raise TypeError("expected 'passed' to be a boolean")
+    hard_checks_passed = raw_passed is True
+    decision = (
+        "promote_checkpoint"
+        if status == "completed" and hard_checks_passed and score >= threshold
+        else "loop_back"
+    )
+    return {
+        "decision": decision,
+        "score": score,
+        "threshold": threshold,
+        "report_status": status,
+        "hard_checks_passed": hard_checks_passed,
+    }
+
+
+def _quality_threshold(value: float | str) -> float:
+    """Normalize malformed gate input consistently across every consumer."""
+
+    try:
+        threshold = float(value)
+    except (TypeError, ValueError):
+        return 0.5
+    return (
+        threshold
+        if math.isfinite(threshold) and 0.0 <= threshold <= 1.0
+        else 0.5
+    )
+
+
+def _validated_refinement_pointer(payload: dict[str, Any]) -> dict[str, Any]:
+    """Validate a mutable pointer to one immutable, commit-marked policy."""
+
+    if payload.get("schema") != "npa.data_factory.refinement.v1":
+        raise RefinementStateError("refinement pointer has an unsupported schema")
+    raw_attempt = payload.get("attempt")
+    if isinstance(raw_attempt, bool) or not isinstance(raw_attempt, int):
+        raise RefinementStateError("refinement pointer has an invalid attempt") from None
+    attempt = raw_attempt
+    if attempt < 0:
+        raise RefinementStateError("refinement pointer has an invalid attempt")
+    digest = str(payload.get("policy_sha256") or "")
+    if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+        raise RefinementStateError("refinement pointer is missing its policy digest")
+    immutable = dict(payload)
+    immutable.pop("policy_sha256", None)
+    if _payload_sha256(immutable) != digest:
+        raise RefinementStateError("refinement pointer digest does not match its contract")
+    if not str(immutable.get("history_uri") or "") or not str(
+        immutable.get("commit_uri") or ""
+    ):
+        raise RefinementStateError("refinement pointer is missing immutable provenance")
+    settings = immutable.get("settings")
+    if not isinstance(settings, dict):
+        raise RefinementStateError("refinement pointer settings must be an object")
+    try:
+        control_weight = float(settings["control_weight"])
+        guidance = settings["guidance"]
+    except (KeyError, TypeError, ValueError):
+        raise RefinementStateError("refinement pointer settings are invalid") from None
+    if (
+        not math.isfinite(control_weight)
+        or not 0.0 <= control_weight <= 1.0
+        or isinstance(guidance, bool)
+        or not isinstance(guidance, int)
+        or guidance < 0
+    ):
+        raise RefinementStateError("refinement pointer settings are invalid")
+    return immutable
+
+
+def _verify_committed_refinement(pointer: dict[str, Any]) -> dict[str, Any]:
+    """Require the immutable history object and its commit marker to agree."""
+
+    immutable = _validated_refinement_pointer(pointer)
+    digest = str(pointer["policy_sha256"])
+    history = _read_optional_refinement_json(
+        str(immutable["history_uri"]), label="refinement attempt history"
+    )
+    if history is None or _payload_sha256(history) != digest or history != immutable:
+        raise RefinementStateError(
+            "refinement attempt history is missing or contradicts its pointer"
+        )
+    marker = _read_optional_refinement_json(
+        str(immutable["commit_uri"]), label="refinement commit marker"
+    )
+    expected_marker = {
+        "schema": "npa.data_factory.refinement.commit.v1",
+        "attempt": immutable["attempt"],
+        "history_uri": immutable["history_uri"],
+        "policy_sha256": digest,
+    }
+    if marker != expected_marker:
+        raise RefinementStateError(
+            "refinement commit marker is missing or contradicts its attempt"
+        )
+    return immutable
 
 
 def _committed_augment_manifest(
@@ -285,6 +484,7 @@ def generate_configs(
     seed_default_input: str | bool = "",
     seed_fixture: str | bool = "",
     augment_subject: str = "",
+    augmentation_seed: str = "",
 ) -> dict[str, Any]:
     """Sample appearance-only augmentation combos and write a real config manifest.
 
@@ -294,6 +494,9 @@ def generate_configs(
     ``seed_fixture`` (or the compatibility ``seed_default_input`` spelling) is an
     explicit developer/test opt-in. Production provenance is read from the
     canonical ``input/provenance.json`` written by the prepare step.
+
+    ``augmentation_seed`` optionally decouples appearance sampling from the run
+    ID so controlled baseline/component comparisons receive identical prompts.
     """
     try:
         n = int(n_augmentations)
@@ -308,7 +511,8 @@ def generate_configs(
         or "input-conditioned physical robot manipulation"
     )
     variables = APPEARANCE_VARIABLES
-    rng = random.Random(seed or None)
+    effective_augmentation_seed = str(augmentation_seed or "").strip() or seed
+    rng = random.Random(effective_augmentation_seed or None)
     combos = []
     for _ in range(max(1, n)):
         combo = {k: rng.choice(v) for k, v in variables.items()}
@@ -320,6 +524,7 @@ def generate_configs(
         "schema": "npa.data_factory.configs.v1",
         "scene": subject,
         "n_augmentations": len(combos),
+        "augmentation_seed": effective_augmentation_seed,
         "variables": variables,
         "augmentations": combos,
     }
@@ -339,7 +544,9 @@ def generate_configs(
     fixture_requested = _is_truthy(seed_fixture) or _is_truthy(seed_default_input)
     if fixture_requested:
         try:
-            seeded = _seed_default_input_frames(input_uri, seed=seed)
+            seeded = _seed_default_input_frames(
+                input_uri, seed=effective_augmentation_seed
+            )
         except Exception as exc:  # noqa: BLE001 - re-raised with context below
             # Explicitly requested seeding: swallowing this leaves the pipeline to
             # die two stages later with "No images found in .../input/", the exact
@@ -395,19 +602,35 @@ def generate_configs(
     if lineage:
         manifest["source_leisaac"] = source
     manifest["written_uri"] = _upload_json(manifest, uri)
-    print(json.dumps(manifest))
+    print(
+        json.dumps(
+            {
+                "stage": "generate_configs",
+                "augmentation_count": len(combos),
+                "seeded_fixture_frame_count": seeded,
+                "input_source_kind": str(provenance.get("source_kind") or "unknown"),
+            }
+        )
+    )
     return manifest
 
 
-def grade_gate(scores_uri: str, decision_uri: str, threshold: float | str = 0.5) -> str:
+def grade_gate(
+    scores_uri: str,
+    decision_uri: str,
+    threshold: float | str = 0.5,
+    refinement_uri: str = "",
+) -> str:
     """Read the evaluator score and write a promote/loop decision.
 
     The blueprint's evaluate stage runs the real NVIDIA Cosmos Evaluator, which
     writes ``cosmos_evaluator.json``. Runs produced before that stage existed (and
     any spec still pointing the loop at ``workbench.vlm_eval.run``) wrote the
-    vlm_eval tool's RESULT_FILENAME instead, so both are accepted, newest contract
-    first. Both filenames come from the producing tool's own constant rather than a
-    literal here, so the gate cannot drift from its producer.
+    vlm_eval tool's RESULT_FILENAME instead, so both locations are inspected,
+    newest contract first. Promotion still requires the complete modern
+    status/passed/score contract. Both filenames come from the producing tool's
+    own constant rather than a literal here, so the gate cannot drift from its
+    producer.
 
     ``threshold`` accepts a str (the blueprint interpolates a quoted config value)
     or float; a non-numeric value falls back to 0.5.
@@ -416,24 +639,23 @@ def grade_gate(scores_uri: str, decision_uri: str, threshold: float | str = 0.5)
     yields ``loop_back`` rather than an exception, because a gate that raises takes
     the whole refinement loop down with it.
     """
-    from npa.orchestration.npa_workflow.decisions import write_decision
-    from npa.workbench.cosmos_evaluator import (
-        RESULT_FILENAME as COSMOS_EVALUATOR_RESULT,
-    )
+    from npa.workbench.cosmos_evaluator import RESULT_FILENAME as COSMOS_EVALUATOR_RESULT
     from npa.workbench.vlm_eval import RESULT_FILENAME as VLM_EVAL_RESULT
 
-    try:
-        threshold = float(threshold)
-    except (TypeError, ValueError):
-        threshold = 0.5
+    threshold = _quality_threshold(threshold)
     if scores_uri.endswith(".json"):
         candidates = [scores_uri]
     else:
         base = scores_uri.rstrip("/")
         candidates = [f"{base}/{COSMOS_EVALUATOR_RESULT}", f"{base}/{VLM_EVAL_RESULT}"]
-    score = 0.0
-    status = "completed"
-    hard_checks_passed = False
+    contract = {
+        "decision": "loop_back",
+        "score": 0.0,
+        "threshold": threshold,
+        "report_status": "missing",
+        "hard_checks_passed": False,
+    }
+    report: dict[str, Any] = {}
     source = ""
     problems: list[str] = []
     for candidate in candidates:
@@ -441,26 +663,18 @@ def grade_gate(scores_uri: str, decision_uri: str, threshold: float | str = 0.5)
             report = _download_json(candidate)
             if not isinstance(report, dict):
                 raise TypeError(f"expected a JSON object, got {type(report).__name__}")
-            # Parsed inside the try on purpose: a report that downloads cleanly but
-            # carries a non-numeric score has to degrade to loop_back exactly like an
-            # unreadable one. Letting it raise would abort the whole refinement loop
-            # over a malformed field, which is the opposite of a gate's job.
-            candidate_score = float(report.get("score", 0.0))
-            # A report the producer itself marked degraded (an evaluator that lost
-            # object storage part-way, say) describes the run's infrastructure, not
-            # its variants. Promoting on it would ship an ungraded batch.
-            candidate_status = str(report.get("status", "completed"))
-            # New evaluator reports carry an explicit all-hard-check disposition.
-            # Older VLM reports do not, so retain their score-only contract.
-            candidate_passed = report.get("passed", True)
-            if not isinstance(candidate_passed, bool):
-                raise TypeError("expected 'passed' to be a boolean")
-        except Exception as exc:  # noqa: BLE001 - fall through to the older contract
-            problems.append(f"{candidate.rsplit('/', 1)[-1]}: {exc}"[:150])
+            # Parsed inside the try on purpose: malformed reports degrade to a
+            # loop-back decision rather than aborting the refinement loop.
+            candidate_contract = _quality_gate_contract(report, float(threshold))
+        except FileNotFoundError:
+            # Absence is the only condition under which a pre-Cosmos-Evaluator
+            # legacy report may be authoritative.
+            problems.append(f"candidate {len(problems) + 1}: FileNotFoundError")
             continue
-        score = candidate_score
-        status = candidate_status
-        hard_checks_passed = candidate_passed
+        except Exception as exc:  # noqa: BLE001 - fail closed on the newest report
+            problems.append(f"candidate {len(problems) + 1}: {type(exc).__name__}")
+            break
+        contract = candidate_contract
         source = candidate
         break
     if not source:
@@ -472,23 +686,46 @@ def grade_gate(scores_uri: str, decision_uri: str, threshold: float | str = 0.5)
                 }
             )
         )
-    graded = status == "completed"
-    decision = (
-        "promote_checkpoint"
-        if graded and hard_checks_passed and score >= threshold
-        else "loop_back"
-    )
-    write_decision(decision_uri, decision)
+    decision = str(contract["decision"])
+    decision_payload: dict[str, Any] = {
+        "schema": "npa.sim2real.threshold_decision.v1",
+        **contract,
+        "report_sha256": _payload_sha256(report) if source else "",
+    }
+    if refinement_uri:
+        pointer = _read_optional_refinement_json(
+            refinement_uri, label="refinement pointer"
+        )
+        if pointer is None:
+            raise RefinementStateError(
+                "refinement pointer is missing while recording a gate decision"
+            )
+        immutable = _verify_committed_refinement(pointer)
+        decision_payload["evaluated_refinement_attempt"] = immutable["attempt"]
+        decision_payload["evaluated_refinement_policy_sha256"] = pointer[
+            "policy_sha256"
+        ]
+    gate_basis = {
+        key: decision_payload.get(key)
+        for key in (
+            "decision",
+            "report_sha256",
+            "evaluated_refinement_attempt",
+            "evaluated_refinement_policy_sha256",
+        )
+    }
+    decision_payload["gate_id"] = _payload_sha256(gate_basis)
+    _upload_json(decision_payload, decision_uri)
     print(
         json.dumps(
             {
                 "stage": "grade_gate",
-                "score": score,
-                "threshold": threshold,
+                "score": contract["score"],
+                "threshold": contract["threshold"],
                 "decision": decision,
-                "source": source,
-                "report_status": status,
-                "hard_checks_passed": hard_checks_passed,
+                "report_contract": "selected" if source else "missing",
+                "report_status": contract["report_status"],
+                "hard_checks_passed": contract["hard_checks_passed"],
             }
         )
     )
@@ -499,20 +736,22 @@ def prepare_refinement(
     scores_uri: str,
     refinement_uri: str,
     enabled: str | bool = "true",
-    base_control_weight: float | str = 0.75,
+    base_control_weight: float | str = 1.0,
     base_guidance: float | str = 3.0,
     control_weight_step: float | str = 0.25,
     max_control_weight: float | str = 1.0,
     guidance_step: float | str = 1.0,
     min_guidance: float | str = 1.0,
+    decision_uri: str = "",
+    grade_threshold: float | str = 0.75,
 ) -> dict[str, Any]:
     """Write the effective Cosmos settings for this refinement attempt.
 
     The first loop iteration records the configured baseline. Later iterations
-    read the previous evaluator report and strengthen input structure control
-    while reducing prompt guidance. This makes a refinement loop materially
-    different from replaying an identical inference command. The current policy
-    and immutable per-attempt copies are retained as run provenance.
+    consume the gate decision (when supplied) and independently evaluate the same
+    completed/status, hard-check, and score-threshold contract. Every real retry
+    must change the effective control/guidance pair. The current pointer is
+    mutable, but each attempt and its commit marker are immutable.
 
     This policy is intentionally generic: it reacts only to checker names and
     numeric scores, never to scene labels or deployment-specific semantics.
@@ -522,9 +761,12 @@ def prepare_refinement(
 
     def _number(name: str, value: Any) -> float:
         try:
-            return float(value)
+            number = float(value)
         except (TypeError, ValueError) as exc:
             raise ValueError(f"{name} must be numeric") from exc
+        if not math.isfinite(number):
+            raise ValueError(f"{name} must be finite")
+        return number
 
     def _guidance(name: str, value: Any) -> int:
         number = _number(name, value)
@@ -549,40 +791,179 @@ def prepare_refinement(
     cfg_floor = _guidance("min_guidance", min_guidance)
     if cfg_floor > base_cfg:
         raise ValueError("min_guidance cannot exceed base_guidance")
+    adaptive = _is_truthy(enabled)
+    if adaptive and control_ceiling == base_control and cfg_floor == base_cfg:
+        raise ValueError(
+            "adaptive refinement must permit a control-weight or guidance change"
+        )
+    numeric_threshold = _quality_threshold(grade_threshold)
 
-    previous: dict[str, Any] = {}
-    try:
-        candidate = _download_json(refinement_uri)
-        if isinstance(candidate, dict):
-            previous = candidate
-    except Exception as exc:  # noqa: BLE001 - missing on first attempt
-        LOGGER.debug("no prior refinement policy at %s: %s", refinement_uri, exc)
+    previous_pointer = _read_optional_refinement_json(
+        refinement_uri, label="refinement pointer"
+    )
+    previous = (
+        _verify_committed_refinement(previous_pointer)
+        if previous_pointer is not None
+        else None
+    )
 
     report_uri = (
         scores_uri
         if scores_uri.endswith(".json")
         else f"{scores_uri.rstrip('/')}/{RESULT_FILENAME}"
     )
-    report: dict[str, Any] = {}
-    try:
-        candidate = _download_json(report_uri)
-        if isinstance(candidate, dict):
-            report = candidate
-    except Exception as exc:  # noqa: BLE001 - missing on first attempt
-        LOGGER.debug("no prior evaluator report at %s: %s", report_uri, exc)
+    report = _read_optional_refinement_json(
+        report_uri, label="prior evaluator report"
+    )
+    decision_payload = (
+        _read_optional_refinement_json(decision_uri, label="quality gate decision")
+        if decision_uri
+        else None
+    )
+    if (report is None) != (decision_payload is None) and decision_uri:
+        raise RefinementStateError(
+            "refinement state is contradictory: evaluator report and gate decision must coexist"
+        )
 
-    prior_attempt = -1
-    try:
-        prior_attempt = int(previous.get("attempt", -1))
-    except (TypeError, ValueError):
-        prior_attempt = -1
-    # If execution resumes after evaluation but before the policy artifact was
-    # written, still adapt instead of accidentally replaying the baseline.
-    attempt = max(0, prior_attempt + 1, 1 if report else 0)
+    if report is None:
+        if previous_pointer is not None:
+            if previous is None or int(previous["attempt"]) != 0:
+                raise RefinementStateError(
+                    "refinement state is contradictory before the first evaluation"
+                )
+            # Re-entering prepare before evaluation is an idempotent replay of the
+            # already committed baseline, not a new attempt.
+            print(
+                json.dumps(
+                    {
+                        "stage": "prepare_refinement",
+                        "attempt": 0,
+                        "idempotent": True,
+                        "settings": previous["settings"],
+                    }
+                )
+            )
+            return previous_pointer
+        attempt = 0
+        should_adapt = False
+        gate_id = ""
+        contract: dict[str, Any] | None = None
+    else:
+        if previous_pointer is None or previous is None:
+            raise RefinementStateError(
+                "refinement state is contradictory: an evaluator result has no committed policy"
+            )
+        try:
+            contract = _quality_gate_contract(report, numeric_threshold)
+        except (TypeError, ValueError):
+            raise RefinementStateError(
+                "prior evaluator report does not satisfy the quality-gate schema"
+            ) from None
 
-    adaptive = _is_truthy(enabled)
-    prior_passed = report.get("passed") is True
-    should_adapt = adaptive and bool(report) and not prior_passed
+        from npa.orchestration.npa_workflow.decisions import normalize_decision
+
+        computed_decision = normalize_decision(str(contract["decision"]))
+        report_digest = _payload_sha256(report)
+        evaluated_attempt_number = int(previous["attempt"])
+        evaluated_digest = str(previous_pointer["policy_sha256"])
+        if decision_payload is not None:
+            schema = str(decision_payload.get("schema") or "")
+            if schema and schema != "npa.sim2real.threshold_decision.v1":
+                raise RefinementStateError(
+                    "quality gate decision artifact has an unsupported schema"
+                )
+            try:
+                recorded_decision = normalize_decision(
+                    str(decision_payload["decision"])
+                )
+            except (KeyError, TypeError, ValueError):
+                raise RefinementStateError(
+                    "quality gate decision artifact is missing its decision"
+                ) from None
+            if recorded_decision != computed_decision:
+                raise RefinementStateError(
+                    "quality gate decision contradicts the evaluator contract"
+                )
+            recorded_report_digest = str(
+                decision_payload.get("report_sha256") or ""
+            )
+            if recorded_report_digest and recorded_report_digest != report_digest:
+                raise RefinementStateError(
+                    "quality gate decision contradicts the evaluator report version"
+                )
+            evaluated_attempt = decision_payload.get(
+                "evaluated_refinement_attempt", previous["attempt"]
+            )
+            evaluated_digest = str(
+                decision_payload.get("evaluated_refinement_policy_sha256")
+                or previous_pointer["policy_sha256"]
+            )
+            try:
+                evaluated_attempt_number = int(evaluated_attempt)
+            except (TypeError, ValueError):
+                raise RefinementStateError(
+                    "quality gate decision artifact has an invalid refinement attempt"
+                ) from None
+            gate_id = str(decision_payload.get("gate_id") or "")
+        else:
+            gate_id = ""
+        if not gate_id:
+            gate_id = _payload_sha256(
+                {
+                    "decision": computed_decision,
+                    "report_sha256": report_digest,
+                    "evaluated_refinement_attempt": evaluated_attempt_number,
+                    "evaluated_refinement_policy_sha256": evaluated_digest,
+                }
+            )
+
+        gate_matches_current = (
+            evaluated_attempt_number == int(previous["attempt"])
+            and evaluated_digest == str(previous_pointer["policy_sha256"])
+        )
+        gate_was_already_committed = (
+            contract["decision"] == "loop_back"
+            and str(previous.get("source_gate_id") or "") == gate_id
+            and int(previous["attempt"]) == evaluated_attempt_number + 1
+            and str(previous.get("prior_evaluator_report_sha256") or "")
+            == report_digest
+        )
+        if gate_was_already_committed:
+            print(
+                json.dumps(
+                    {
+                        "stage": "prepare_refinement",
+                        "attempt": previous["attempt"],
+                        "idempotent": True,
+                        "settings": previous["settings"],
+                    }
+                )
+            )
+            return previous_pointer
+        if not gate_matches_current:
+            raise RefinementStateError(
+                "quality gate decision was produced for a different refinement attempt"
+            )
+
+        if contract["decision"] == "promote_checkpoint":
+            print(
+                json.dumps(
+                    {
+                        "stage": "prepare_refinement",
+                        "attempt": previous["attempt"],
+                        "promotion_observed": True,
+                        "settings": previous["settings"],
+                    }
+                )
+            )
+            return previous_pointer
+        if not adaptive:
+            raise RefinementStateError(
+                "quality gate requested a retry, but adaptive refinement is disabled"
+            )
+        attempt = int(previous["attempt"]) + 1
+        should_adapt = True
+
     effective_control = base_control
     effective_guidance = base_cfg
     if should_adapt:
@@ -592,9 +973,25 @@ def prepare_refinement(
         effective_guidance = max(
             cfg_floor, base_cfg - cfg_step * max(1, attempt)
         )
+        previous_settings = previous.get("settings") if previous else {}
+        previous_pair = (
+            round(float(previous_settings.get("control_weight", base_control)), 6),
+            int(previous_settings.get("guidance", base_cfg)),
+        )
+        effective_pair = (round(effective_control, 6), effective_guidance)
+        if effective_pair == previous_pair:
+            # Refuse once the declared monotonic policy saturates. Toggling back
+            # to a prior pair would technically differ from the immediately
+            # preceding attempt while still replaying byte-identical baseline or
+            # retry settings, defeating the point of adaptive inference.
+            raise RefinementStateError(
+                "adaptive refinement schedule is exhausted; refusing to replay "
+                "prior effective inference settings"
+            )
 
     failed_checks: set[str] = set()
-    for clip in report.get("clips", []) if isinstance(report.get("clips"), list) else []:
+    report_clips = report.get("clips", []) if report is not None else []
+    for clip in report_clips if isinstance(report_clips, list) else []:
         if not isinstance(clip, dict) or clip.get("passed") is True:
             continue
         for key in (
@@ -607,18 +1004,33 @@ def prepare_refinement(
             if isinstance(result, dict) and result.get("passed") is False:
                 failed_checks.add(key)
 
-    try:
-        prior_score = float(report.get("score", 0.0)) if report else None
-    except (TypeError, ValueError):
-        prior_score = None
+    prior_score = float(contract["score"]) if contract is not None else None
+    prior_passed = (
+        bool(contract["hard_checks_passed"]) if contract is not None else None
+    )
+    if refinement_uri.endswith(".json"):
+        stem = refinement_uri[:-5]
+    else:
+        stem = refinement_uri.rstrip("/") + "/refinement"
+    history_uri = f"{stem}-attempt-{attempt:02d}.json"
+    commit_uri = f"{stem}-attempt-{attempt:02d}.commit.json"
     payload = {
         "schema": "npa.data_factory.refinement.v1",
         "attempt": attempt,
         "adaptive": adaptive,
         "adapted_from_prior_evaluation": should_adapt,
-        "prior_evaluator_report_uri": report_uri if report else "",
+        "source_gate_id": gate_id,
+        "prior_evaluator_report_uri": report_uri if report is not None else "",
+        "prior_evaluator_report_sha256": (
+            _payload_sha256(report) if report is not None else ""
+        ),
         "prior_score": prior_score,
-        "prior_passed": prior_passed if report else None,
+        "prior_passed": prior_passed,
+        "prior_report_status": (
+            contract["report_status"] if contract is not None else ""
+        ),
+        "grade_threshold": numeric_threshold,
+        "prior_gate_decision": contract["decision"] if contract is not None else "",
         "failed_checks": sorted(failed_checks),
         "settings": {
             "control_weight": round(effective_control, 6),
@@ -632,17 +1044,46 @@ def prepare_refinement(
             "guidance_step": cfg_step,
             "min_guidance": cfg_floor,
         },
+        "history_uri": history_uri,
+        "commit_uri": commit_uri,
+        "written_uri": refinement_uri,
     }
-    payload["written_uri"] = _upload_json(payload, refinement_uri)
-    if refinement_uri.endswith(".json"):
-        history_uri = (
-            f"{refinement_uri[:-5]}-attempt-{attempt:02d}.json"
+    digest = _payload_sha256(payload)
+    marker = {
+        "schema": "npa.data_factory.refinement.commit.v1",
+        "attempt": attempt,
+        "history_uri": history_uri,
+        "policy_sha256": digest,
+    }
+    _put_immutable_json(payload, history_uri, label="refinement attempt history")
+    _put_immutable_json(marker, commit_uri, label="refinement commit marker")
+    pointer = {**payload, "policy_sha256": digest}
+    try:
+        _upload_json(pointer, refinement_uri)
+    except Exception as exc:  # noqa: BLE001 - sanitized operator boundary
+        raise RefinementStateError(
+            f"refinement pointer write failed ({type(exc).__name__})"
+        ) from None
+    committed_pointer = _read_optional_refinement_json(
+        refinement_uri, label="refinement pointer"
+    )
+    if committed_pointer != pointer:
+        raise RefinementStateError(
+            "refinement pointer could not be verified after its write"
         )
-        payload["history_uri"] = _upload_json(payload, history_uri)
-        # Refresh the current pointer so it includes the immutable history URI.
-        payload["written_uri"] = _upload_json(payload, refinement_uri)
-    print(json.dumps(payload))
-    return payload
+    _verify_committed_refinement(pointer)
+    print(
+        json.dumps(
+            {
+                "stage": "prepare_refinement",
+                "attempt": attempt,
+                "adapted_from_prior_evaluation": should_adapt,
+                "settings": payload["settings"],
+                "failed_checks": payload["failed_checks"],
+            }
+        )
+    )
+    return pointer
 
 
 def _persist_quality_disposition(
@@ -654,10 +1095,7 @@ def _persist_quality_disposition(
 
     from npa.workbench.cosmos_evaluator import RESULT_FILENAME
 
-    try:
-        numeric_threshold = float(threshold)
-    except (TypeError, ValueError):
-        numeric_threshold = 0.75
+    numeric_threshold = _quality_threshold(threshold)
     report_uri = (
         scores_uri
         if scores_uri.endswith(".json")
@@ -674,13 +1112,19 @@ def _persist_quality_disposition(
         # Keep ``report`` as the empty mapping. A valid-JSON list/scalar must take
         # the same persist-before-raise path as unreadable or invalid JSON rather
         # than escaping below through ``report.get``.
-        reasons.append(f"evaluator report unavailable or malformed: {exc}"[:300])
+        reasons.append(
+            "evaluator report unavailable or malformed "
+            f"({type(exc).__name__})"
+        )
 
     try:
         score = float(report.get("score", 0.0))
     except (TypeError, ValueError):
         score = 0.0
         reasons.append("evaluator score is not numeric")
+    if not math.isfinite(score):
+        score = 0.0
+        reasons.append("evaluator score is not finite")
     evaluator_status = str(report.get("status", "missing"))
     hard_checks_passed = report.get("passed") is True
     if evaluator_status != "completed":
@@ -727,7 +1171,17 @@ def write_quality_disposition(
     )
     write_decision(decision_uri, decision)
     payload["decision"] = decision
-    print(json.dumps(payload))
+    print(
+        json.dumps(
+            {
+                "stage": "write_quality_disposition",
+                "quality_status": payload["quality_status"],
+                "decision": decision,
+                "score": payload["score"],
+                "threshold": payload["threshold"],
+            }
+        )
+    )
     return payload
 
 
@@ -745,7 +1199,16 @@ def enforce_quality_disposition(
     """
 
     payload = _persist_quality_disposition(scores_uri, disposition_uri, threshold)
-    print(json.dumps(payload))
+    print(
+        json.dumps(
+            {
+                "stage": "enforce_quality_disposition",
+                "quality_status": payload["quality_status"],
+                "score": payload["score"],
+                "threshold": payload["threshold"],
+            }
+        )
+    )
     if payload["quality_status"] != "accepted":
         raise RuntimeError(
             "quality rejected after refinement; see quality disposition artifact"
@@ -869,7 +1332,20 @@ def curate(
     report = _merge_curator_report(report, curator_report_uri)
 
     report["written_uri"] = _upload_json(report, report_uri)
-    print(json.dumps(report))
+    # Keep customer-derived identifiers, object locations, and provenance in
+    # the private report artifact. Task logs are aggregate-only release evidence.
+    print(
+        json.dumps(
+            {
+                "stage": "curate",
+                "status": report["status"],
+                "augmented_clips": report["augmented_clips"],
+                "video_count": report["video_count"],
+                "frame_count": report["frame_count"],
+                "curation_engine": report.get("curation_engine", ""),
+            }
+        )
+    )
     return report
 
 
@@ -1008,5 +1484,15 @@ def finalize(run_root_uri: str, report_uri: str) -> dict[str, Any]:
         report["augmentation_engine"] = str(transfer_manifest.get("mode") or "")
         report["input_conditioned"] = transfer_manifest.get("input_conditioned") is True
     report["written_uri"] = _upload_json(report, report_uri)
-    print(json.dumps(report))
+    print(
+        json.dumps(
+            {
+                "stage": "finalize",
+                "status": report["status"],
+                "artifact_count": report["artifact_count"],
+                "has_rrd": report["has_rrd"],
+                "variant_count": report["variant_count"],
+            }
+        )
+    )
     return report

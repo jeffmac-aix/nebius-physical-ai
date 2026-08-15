@@ -400,10 +400,79 @@ def validate_spec(spec: NpaWorkflowSpec) -> None:
 
     _validate_resource_profiles(spec)
     _validate_executable_resource_contracts(spec)
+    _validate_optional_sam2_config(spec)
     _assert_acyclic_needs(spec)
     _assert_terminal_exists(spec)
     _assert_bounded_control_flow_cycles(spec)
     _validate_resolvable(spec)
+
+
+def _validate_optional_sam2_config(spec: NpaWorkflowSpec) -> None:
+    """Fail before provisioning when a workflow opts into the SAM2 contract."""
+
+    if not any(
+        state.tool_ref == "workbench.cosmos2.transfer_execute"
+        for state in spec.states.values()
+    ) or "segmentation_mode" not in spec.config:
+        return
+    mode = str(spec.config.get("segmentation_mode") or "off").strip().lower()
+    if mode == "off":
+        return
+    from npa.workbench.cosmos.sam2_masks import Sam2MaskConfig, Sam2MaskError
+
+    try:
+        config = Sam2MaskConfig(
+            mode=mode,
+            model_id=str(spec.config.get("sam2_model") or ""),
+            model_revision=str(spec.config.get("sam2_model_revision") or ""),
+            points_per_side=int(spec.config.get("sam2_points_per_side") or 0),
+            predicted_iou_threshold=float(
+                spec.config.get("sam2_predicted_iou_threshold") or 0
+            ),
+            stability_threshold=float(
+                spec.config.get("sam2_stability_threshold") or 0
+            ),
+            min_area_fraction=float(
+                spec.config.get("sam2_min_area_fraction") or 0
+            ),
+            max_area_fraction=float(
+                spec.config.get("sam2_max_area_fraction") or 0
+            ),
+            max_objects=int(spec.config.get("sam2_max_objects") or 0),
+        )
+    except (TypeError, ValueError) as exc:
+        raise NpaWorkflowError(
+            "optional SAM2 settings must use numeric sampling, threshold, area, "
+            "and object-count values"
+        ) from exc
+    try:
+        config.validate()
+    except Sam2MaskError as exc:
+        raise NpaWorkflowError(f"invalid optional SAM2 configuration: {exc}") from exc
+    uri = str(spec.config.get("segmentation_uri") or "")
+    if not uri.startswith("s3://"):
+        raise NpaWorkflowError(
+            "optional SAM2 requires segmentation_uri as a versioned s3:// prefix"
+        )
+    if str(spec.config.get("protected_chroma_regions_json") or "").strip():
+        raise NpaWorkflowError(
+            "optional SAM2 masks and protected_chroma_regions_json are mutually exclusive"
+        )
+    try:
+        luma_delta = int(spec.config.get("protected_luma_max_delta"))
+        feather_pixels = int(spec.config.get("protected_feather_pixels"))
+    except (TypeError, ValueError) as exc:
+        raise NpaWorkflowError(
+            "optional SAM2 protected-luma delta and feather width must be integers"
+        ) from exc
+    if not 0 <= luma_delta <= 255:
+        raise NpaWorkflowError(
+            "optional SAM2 protected_luma_max_delta must be within 0..255"
+        )
+    if feather_pixels < 1:
+        raise NpaWorkflowError(
+            "optional SAM2 protected_feather_pixels must be positive"
+        )
 
 
 def profile_num_nodes(

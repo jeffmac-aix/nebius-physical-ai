@@ -15,6 +15,8 @@ import yaml
 
 from npa.orchestration.npa_workflow.blueprints import resolve_npa_workflow_spec
 from npa.orchestration.npa_workflow.catalog import TOOL_CATALOG
+from npa.orchestration.npa_workflow.errors import NpaWorkflowError
+from npa.orchestration.npa_workflow.spec import load_spec
 from npa.cli.agent_workflow import (
     generate_data_factory_yaml,
     generate_sim2real_staged_yaml,
@@ -107,6 +109,10 @@ def test_agent_generated_paidf_runs_named_real_components() -> None:
         "--protected-regions-json",
         "--protected-luma-max-delta",
         "--protected-feather-pixels",
+        "--segmentation-mode",
+        "--segmentation-uri",
+        "--sam2-model",
+        "--sam2-model-revision",
     ):
         assert option in TOOL_CATALOG["workbench.cosmos2.transfer_execute"].argv_template
     assert states["evaluate"]["toolRef"] == "workbench.cosmos_evaluator.evaluate"
@@ -199,15 +205,18 @@ def test_evaluate_runs_the_real_cosmos_evaluator() -> None:
         "quality-gate",
     ]
     assert states["grade"]["next"] == "quality-disposition"
-    assert states["annotate-augmented"]["needs"] == ["quality-disposition"]
+    assert states["annotate-augmented"]["needs"] == ["require-accepted-quality"]
     disposition = states["quality-disposition"]
     disposition_command = " ".join(disposition["run"]["argv"])
     assert disposition["writesDecision"] is True
     assert "write_quality_disposition" in disposition_command
     assert disposition["transitions"] == [
-        {"when": "promote_checkpoint", "goto": "annotate-augmented"},
+        {"when": "promote_checkpoint", "goto": "require-accepted-quality"},
         {"when": "loop_back", "goto": "visualize-rejected"},
     ]
+    assert "enforce_quality_disposition" in " ".join(
+        states["require-accepted-quality"]["run"]["argv"]
+    )
     assert states["visualize-rejected"]["next"] == "reject-quality"
     assert states["visualize-rejected"]["outputs"][0]["uri"] == "{{config.rrd_uri}}"
     assert "enforce_quality_disposition" in " ".join(
@@ -221,6 +230,9 @@ def test_evaluate_runs_the_real_cosmos_evaluator() -> None:
     assert "protected_chroma_regions_json" in _spec()["config"]
     assert _spec()["config"]["protected_luma_max_delta"] == "32"
     assert _spec()["config"]["protected_feather_pixels"] == "12"
+    assert _spec()["config"]["segmentation_mode"] == "off"
+    assert _spec()["config"]["sam2_model"] == "facebook/sam2.1-hiera-tiny"
+    assert len(_spec()["config"]["sam2_model_revision"]) == 40
     transfer_argv = TOOL_CATALOG["workbench.cosmos2.transfer_execute"].argv_template
     protected_index = transfer_argv.index("--protected-regions-json")
     assert transfer_argv[protected_index + 1] == "{{config.protected_chroma_regions_json}}"
@@ -228,6 +240,9 @@ def test_evaluate_runs_the_real_cosmos_evaluator() -> None:
     assert transfer_argv[luma_index + 1] == "{{config.protected_luma_max_delta}}"
     feather_index = transfer_argv.index("--protected-feather-pixels")
     assert transfer_argv[feather_index + 1] == "{{config.protected_feather_pixels}}"
+    segmentation_index = transfer_argv.index("--segmentation-mode")
+    assert transfer_argv[segmentation_index + 1] == "{{config.segmentation_mode}}"
+    assert "--segmentation-uri" in transfer_argv
 
 
 def test_curation_runs_the_real_cosmos_curator_before_review() -> None:
@@ -269,6 +284,30 @@ def test_gpu_resource_has_headroom_for_multi_variant_fanout() -> None:
     assert _memory_gi(gpu["memory"]) >= 128, (
         "4-way Cosmos fan-out OOMs with the old 16Gi profile"
     )
+
+
+def test_optional_sam2_config_is_validated_before_provisioning(
+    tmp_path: pathlib.Path,
+) -> None:
+    raw = _spec()
+    raw["config"]["segmentation_mode"] = "sam2-boxes"
+    path = tmp_path / "invalid-paidf.yaml"
+    path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+    with pytest.raises(NpaWorkflowError, match="off or sam2-auto"):
+        load_spec(path)
+
+    raw["config"]["segmentation_mode"] = "sam2-auto"
+    raw["config"]["segmentation_uri"] = "not-s3"
+    path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    with pytest.raises(NpaWorkflowError, match="versioned s3:// prefix"):
+        load_spec(path)
+
+    raw["config"]["segmentation_uri"] = "s3://example/run/segmentation/"
+    raw["config"]["protected_luma_max_delta"] = "256"
+    path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    with pytest.raises(NpaWorkflowError, match="within 0..255"):
+        load_spec(path)
 
 
 def test_blueprint_toolrefs_exist_in_catalog() -> None:

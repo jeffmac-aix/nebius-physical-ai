@@ -238,8 +238,9 @@ Error: Cannot submit physical-ai-data-factory.yaml: missing prerequisites:
 Add `--plan-only` to render the SkyPilot YAML without launching. Do not bypass
 preflight on a first run: it is what keeps registry/auth/config failures local.
 
-Replace the starter with a local clip or one S3 object by adding exactly one
-selector to the complete submit command above:
+Replace the starter with a local clip, one S3 object, or one camera/episode from
+an S3 LeRobotDataset by adding exactly one selector to the complete submit
+command above:
 
 ```bash
 # Local H.264 MP4 (NPA verifies and stages it)
@@ -248,16 +249,22 @@ selector to the complete submit command above:
 # One existing S3 object (not a prefix)
 --input-uri s3://source-bucket/captures/my-capture.mp4
 
+# One LeRobotDataset prefix; camera is an exact video feature and episode is >= 0
+--lerobot-uri s3://source-bucket/datasets/robot-run/ \
+--lerobot-camera observation.images.front --lerobot-episode 0
+
 # Developers/tests only: geometric synthetic frames, explicitly labeled
 --seed-fixture
 ```
 
-The selectors conflict by design. Local and S3 replacements are labeled
-“User-supplied input”; NPA does not claim they are captured or assign a media
-license. It validates MP4/H.264, positive dimensions/duration, normalizes the
-source to exactly 93 frames, extracts eight caption frames, records all digests
-and lineage in `input/provenance.json`, and invokes Cosmos with mandatory
-`--condition-on-input`. `--seed-fixture` is never selected silently.
+The selectors conflict by design. LeRobot selection validates `meta/info.json`,
+declared video features, and the requested camera/episode before downloading only
+the selected observation video; it does not materialize the full dataset. Local,
+S3-object, and LeRobot replacements are labeled without NPA claiming that they
+are captured or assigning a media license. NPA validates MP4/H.264, positive
+dimensions/duration, normalizes the source to exactly 93 frames, extracts eight
+caption frames, records lineage in `input/provenance.json`, and invokes Cosmos
+with mandatory `--condition-on-input`. `--seed-fixture` is never selected silently.
 
 ### If submit fails
 
@@ -556,9 +563,10 @@ printf '%s' "$(nebius iam get-access-token)" \
 docker buildx create --name npa-cosmos-oss --driver docker-container   # scoped cache
 for tool in cosmos-evaluator cosmos-curate; do
   # Tag must match npa/src/npa/deploy/images.py; submit pulls exactly that tag.
+  tag="0.1.2-skypilot-v1-20260813T164700Z"
   docker buildx build --builder npa-cosmos-oss --push \
     -f "npa/docker/workbench/$tool/Dockerfile" \
-    -t "$REGISTRY/npa-$tool:0.1.2-skypilot-v1-20260813T164700Z" npa
+    -t "$REGISTRY/npa-$tool:$tag" npa
 done
 docker buildx rm npa-cosmos-oss
 ```
@@ -568,7 +576,8 @@ stages fetch theirs at run time with your Hugging Face token:
 
 ```bash
 docker run --rm -e HF_TOKEN="$HF_TOKEN" -v curator-weights:/config/models \
-  "$REGISTRY/npa-cosmos-curate:0.1.2-skypilot-v1-20260813T164700Z" fetch-models --models split-annotate
+  "$REGISTRY/npa-cosmos-curate:0.1.2-skypilot-v1-20260813T164700Z" \
+  fetch-models --models split-annotate
 ```
 
 The loop below is only a registry reachability diagnostic. The mandatory
@@ -577,7 +586,7 @@ results to immutable digests and refuses a missing, stale, or wrong-digest
 bootstrap attestation before spending GPU time:
 
 ```bash
-for ref in npa-cosmos2-transfer:2.5.1-skypilot-ready-20260801T053000Z \
+for ref in npa-cosmos2-transfer:2.5.1-sam2-skypilot-ready-20260815-review5 \
            npa-cosmos-evaluator:0.1.2-skypilot-v1-20260813T164700Z \
            npa-cosmos-curate:0.1.2-skypilot-v1-20260813T164700Z; do
   docker manifest inspect "$REGISTRY/$ref" >/dev/null && echo "OK   $ref" || echo "MISS $ref"
@@ -619,15 +628,29 @@ No extra flag is the production starter path. To replace it, add exactly one of:
 ```bash
 --input-video ./my-capture.mp4
 --input-uri s3://source-bucket/captures/my-capture.mp4
+--lerobot-uri s3://source-bucket/datasets/robot-run/ --lerobot-episode 0
 --seed-fixture  # developers/tests only: explicitly synthetic geometry
 ```
 
-Local and S3 replacements must be decodable H.264 MP4s. Kubernetes placement is
-checked before input or source staging. Conflicts, missing media, unsupported
+Local, S3-object, and selected LeRobot observation videos must be decodable H.264
+MP4s. Kubernetes placement is checked before input or source staging. Conflicts,
+missing media, unsupported
 codec/container/shape, checksum mismatch, or an unavailable object fail with an
 actionable error and never fall back to shapes. `NPA_PAIDF_OFFLINE=1` permits
 only a verified cache hit. A committed run input is immutable, so a repeated
 submit reuses it and refuses a different source rather than overwriting data.
+
+To enable optional real SAM2 protection, override
+`segmentation_mode=sam2-auto` on submit. SAM2 runs in the existing augment GPU
+task, publishes a versioned frame-aligned mask contract bound to the immutable
+run input, and reuses it for every augmentation variant and bounded retry; `off`
+remains the default. Proposal density, quality/stability thresholds, area bounds,
+and object count remain
+configurable. The mask contract and Cosmos metadata record the pinned official
+source/model revisions, component version/license, aggregate coverage,
+object/frame counts, and runtime. A missing or partial mask sequence fails closed.
+Use the same non-sensitive `augmentation_seed` override for baseline and SAM2
+runs when comparing quality or throughput; empty keeps run-ID-derived sampling.
 
 See the [starter provenance and licensing table](physical-ai-data-factory.md#starter-input-authenticity-licensing-and-replacement)
 for the immutable source URL, CC BY 4.0 attribution, exact digest/media facts,

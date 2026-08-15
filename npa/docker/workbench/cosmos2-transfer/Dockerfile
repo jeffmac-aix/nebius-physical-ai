@@ -19,6 +19,7 @@ FROM ${UV_IMAGE} AS uv-bin
 FROM ${CUDA_BASE_IMAGE} AS build
 
 ARG COSMOS_TRANSFER_REVISION=67d56b7d550a3911024a32dc23ae0bae5258e633
+ARG SAM2_REVISION=2b90b9f5ceec907a1c18123530e92e794ad901a4
 ARG COSMOS_PYTHON_VERSION=3.10.18
 ARG UBUNTU_SNAPSHOT
 
@@ -65,6 +66,30 @@ RUN set -eux; \
     test ! -e assets; \
     test ! -e .git
 
+# The Cosmos lock names a PyPI `sam2` distribution maintained from a third-party
+# fork. PAIDF advertises Meta SAM2, so replace that distribution with the actual
+# upstream source at an immutable commit. Keep only inference code and license
+# material; no checkpoints, demo media, datasets, notebooks, or Git objects enter
+# an image layer.
+WORKDIR /opt/cosmos/meta-sam2
+RUN set -eux; \
+    git init; \
+    git remote add origin https://github.com/facebookresearch/sam2.git; \
+    GIT_LFS_SKIP_SMUDGE=1 git -c filter.lfs.smudge= -c filter.lfs.required=false \
+      fetch --depth=1 --filter=blob:none origin "${SAM2_REVISION}"; \
+    GIT_LFS_SKIP_SMUDGE=1 git -c filter.lfs.smudge= -c filter.lfs.required=false \
+      checkout --detach FETCH_HEAD; \
+    test "$(git rev-parse HEAD)" = "${SAM2_REVISION}"; \
+    rm -rf .git .github assets checkpoints demo notebooks sav_dataset tools training; \
+    test -f LICENSE; \
+    test -f LICENSE_cctorch; \
+    test -f sam2/build_sam.py; \
+    test ! -e assets; \
+    test ! -e checkpoints; \
+    test ! -e .git
+
+WORKDIR /opt/cosmos/cosmos-transfer2.5
+
 COPY --chmod=755 docker/workbench/cosmos2-transfer/assert_no_forbidden_payload.sh \
     /usr/local/bin/assert-no-forbidden-cosmos2-payload
 COPY docker/workbench/cosmos2-transfer/security-overrides.txt \
@@ -80,7 +105,11 @@ RUN set -eux; \
       --python "${COSMOS_PYTHON_VERSION}"; \
     uv pip install --python .venv/bin/python --no-deps \
       --requirement /tmp/cosmos2-security-overrides.txt; \
+    uv pip uninstall --python .venv/bin/python sam2; \
+    SAM2_BUILD_CUDA=0 uv pip install --python .venv/bin/python --no-deps \
+      --no-build-isolation /opt/cosmos/meta-sam2; \
     .venv/bin/python -c 'import defusedxml, importlib.metadata, msgpack, nltk, numpy; assert importlib.metadata.version("defusedxml") == "0.7.1"; assert importlib.metadata.version("nltk") == "3.10.0"; assert importlib.metadata.version("pip") == "26.2"; assert importlib.metadata.version("msgpack") == "1.2.1"; assert importlib.metadata.version("setuptools") == "83.0.0"; assert tuple(map(int, numpy.__version__.split(".")[:1])) >= (2,)'; \
+    .venv/bin/python -c 'import importlib.metadata, sam2; from sam2.build_sam import HF_MODEL_ID_TO_FILENAMES; assert importlib.metadata.version("SAM-2") == "1.0"; assert "facebook/sam2.1-hiera-tiny" in HF_MODEL_ID_TO_FILENAMES; assert not any((d.metadata.get("Name") or "").lower() == "sam2" for d in importlib.metadata.distributions())'; \
     .venv/bin/python -m pip --version; \
     rm -rf .venv/lib/python3.10/site-packages/matplotlib/mpl-data/sample_data; \
     rm -rf .venv/lib/python3.10/site-packages/skimage/data \
@@ -108,11 +137,13 @@ RUN set -eux; \
       "${base_site}"/setuptools "${base_site}"/setuptools-*.dist-info \
       "${base_site}"/_distutils_hack "${base_site}"/distutils-precedence.pth; \
     "${base_python}" -c 'import importlib.util; assert importlib.util.find_spec("pip") is None; assert importlib.util.find_spec("setuptools") is None'; \
-    assert-no-forbidden-cosmos2-payload /opt/cosmos/cosmos-transfer2.5
+    assert-no-forbidden-cosmos2-payload /opt/cosmos/cosmos-transfer2.5; \
+    assert-no-forbidden-cosmos2-payload /opt/cosmos/meta-sam2
 
 FROM ${CUDA_RUNTIME_IMAGE} AS runtime
 
 ARG COSMOS_TRANSFER_REVISION=67d56b7d550a3911024a32dc23ae0bae5258e633
+ARG SAM2_REVISION=2b90b9f5ceec907a1c18123530e92e794ad901a4
 ARG UBUNTU_SNAPSHOT
 ARG NPA_SOURCE_SHA
 
@@ -120,12 +151,15 @@ LABEL org.opencontainers.image.title="NPA Cosmos Transfer 2.5" \
       org.opencontainers.image.description="Cosmos Transfer 2.5 source runtime; model weights are operator-fetched at run time" \
       org.opencontainers.image.source="https://github.com/nvidia-cosmos/cosmos-transfer2.5" \
       org.opencontainers.image.revision="${COSMOS_TRANSFER_REVISION}" \
-      org.opencontainers.image.licenses="Apache-2.0 AND LicenseRef-NVIDIA-Deep-Learning-Container" \
+      org.opencontainers.image.licenses="Apache-2.0 AND BSD-3-Clause AND LicenseRef-NVIDIA-Deep-Learning-Container" \
+      org.nebius.npa.sam2_source="https://github.com/facebookresearch/sam2" \
+      org.nebius.npa.sam2_revision="${SAM2_REVISION}" \
       npa.source_revision="${NPA_SOURCE_SHA}" \
       org.nebius.npa.skypilot-bootstrap-contract="skypilot-0.12.2-v1"
 
 ENV DEBIAN_FRONTEND=noninteractive \
     NPA_IMAGE_SOURCE_SHA=${NPA_SOURCE_SHA} \
+    NPA_SAM2_SOURCE_REVISION=${SAM2_REVISION} \
     HF_HOME=/opt/cosmos/model-cache/huggingface \
     HUGGINGFACE_HUB_CACHE=/opt/cosmos/model-cache/huggingface/hub \
     NLTK_DATA=/opt/cosmos/model-cache \
@@ -220,8 +254,11 @@ RUN set -eux; \
       /opt/cosmos-data/hf_cache; \
     chown -R ubuntu:ubuntu /opt/cosmos/model-cache /opt/cosmos2-transfer /opt/cosmos-data; \
     assert-no-forbidden-cosmos2-payload /opt/cosmos/cosmos-transfer2.5; \
+    assert-no-forbidden-cosmos2-payload /opt/cosmos/meta-sam2; \
     su ubuntu -s /bin/bash -c \
       '/opt/cosmos/cosmos-transfer2.5/.venv/bin/python -c "import sys, torch, flash_attn; from distutils.sysconfig import get_config_var; assert \"/root\" not in (sys._home or \"\"); get_config_var(\"prefix\")"'; \
+    su ubuntu -s /bin/bash -c \
+      '/opt/cosmos/cosmos-transfer2.5/.venv/bin/python -c "import importlib.metadata, os, sam2; from sam2.build_sam import HF_MODEL_ID_TO_FILENAMES; assert importlib.metadata.version(\"SAM-2\") == \"1.0\"; assert os.environ[\"NPA_SAM2_SOURCE_REVISION\"] == \"2b90b9f5ceec907a1c18123530e92e794ad901a4\"; assert \"facebook/sam2.1-hiera-tiny\" in HF_MODEL_ID_TO_FILENAMES"'; \
     su ubuntu -s /bin/bash -c \
       '/opt/cosmos/cosmos-transfer2.5/.venv/bin/python -c "import os; from pathlib import Path; from nltk.pathsec import _get_allowed_roots; assert Path(os.environ[\"NLTK_DATA\"]).resolve() in _get_allowed_roots()"'; \
     su ubuntu -s /bin/bash -c \
@@ -253,6 +290,12 @@ RUN set -eux; \
     /opt/cosmos/cosmos-transfer2.5/.venv/bin/npa \
       workbench cosmos2 transfer --help > /tmp/npa-cosmos2-help.txt; \
     grep -q -- '--control-asset' /tmp/npa-cosmos2-help.txt; \
+    grep -q -- '--segmentation-mode' /tmp/npa-cosmos2-help.txt; \
+    rm -rf /opt/cosmos/model-cache/xdg/uv; \
+    install -d -o ubuntu -g ubuntu -m 0755 /opt/cosmos/model-cache/xdg/uv; \
+    chown -R ubuntu:ubuntu /opt/cosmos/model-cache; \
+    su ubuntu -s /bin/bash -c \
+      'probe=/opt/cosmos/model-cache/xdg/uv/.npa-write-probe; mkdir "$probe"; rmdir "$probe"'; \
     rm -f /tmp/npa-cli-requirements.txt /tmp/npa-cosmos2-help.txt
 
 VOLUME ["/opt/cosmos/model-cache"]

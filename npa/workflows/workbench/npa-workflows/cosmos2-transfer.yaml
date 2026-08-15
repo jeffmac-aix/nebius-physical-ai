@@ -41,6 +41,16 @@ config:
   protected_chroma_regions_json: ""
   protected_luma_max_delta: "32"
   protected_feather_pixels: "12"
+  segmentation_mode: "off"
+  segmentation_uri: ""
+  sam2_model: "facebook/sam2.1-hiera-tiny"
+  sam2_model_revision: "de431c4043854a71d8101e17995dfe596bf101a5"
+  sam2_points_per_side: "16"
+  sam2_predicted_iou_threshold: "0.86"
+  sam2_stability_threshold: "0.92"
+  sam2_min_area_fraction: "0.002"
+  sam2_max_area_fraction: "0.65"
+  sam2_max_objects: "6"
   appearance_regions_json: ""
 
   # Conditioning shape. edge is the on-the-fly Canny default; seg swaps in a

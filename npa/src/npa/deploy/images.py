@@ -184,23 +184,27 @@ SUPPORTED_TOOL_VERSIONS = {
     "isaac-lab": "2.3.2.post1",
     "leisaac": "0.4.0-20260817T231825Z",
     "cosmos": "cu128-torch27-sm100-1.0.9-20260803T002017Z",
-    "cosmos2-transfer": "2.5.1-skypilot-ready-20260801T053000Z",
+    "cosmos2-transfer": "2.5.1-sam2-skypilot-ready-20260815-review5",
     # Additive r2 release of cosmos-framework 1.2.2 (pinned commit 5e67049c) +
     # torch cu130. The immutable 1.2.2-cu130 tag remains rollback provenance.
     # No weights baked; gated Cosmos3 checkpoints download at runtime.
     "cosmos3": "1.2.2-cu130-r2",
     "cosmos3-reason": "cuda13-b300-3.0.1-sm80-sm90-sm100-sm103-sm120-20260803T034152Z",
+    # Additive image releases that preserve the tool versions while including
+    # the immutable SkyPilot 0.12.2 Kubernetes bootstrap closure. The original
+    # semantic-version tags remain valid for direct container use, but cannot be
+    # workflow-worker defaults because their published bytes predate that closure.
     "cosmos-curate": "0.1.2-skypilot-v1-20260813T164700Z",
     "cosmos-evaluator": "0.1.2-skypilot-v1-20260813T164700Z",
     "groot": "0.1.0",
-    "fiftyone": "1.15.0.post1",
+    "fiftyone": "1.15.0-post1-skypilot-v1-20260815-review5",
     "sonic": "cuda13-b300-0.1.2-k8s-runtime-sm80-sm90-sm100-sm103-sm120-20260803T034152Z",
     "retargeting": "0.1.1",
     "envgen": "cuda13-b300-0.1.2-sm80-sm90-sm100-sm103-sm120-20260803T034152Z",
     "reference-policy": "cuda13-b300-0.1.2-sm80-sm90-sm100-sm103-sm120-20260803T034152Z",
     "lerobot-vlm-rl": "cuda13-b300-0.1.1-sm80-sm90-sm100-sm103-sm120-20260803T034152Z",
     "loop-eval": "cuda13-b300-0.1.3-sm80-sm90-sm100-sm103-sm120-20260803T034152Z",
-    "rerun-viewer": "0.31.4",
+    "rerun-viewer": "0.31.4-skypilot-v1-20260815-review5-r2",
     # Tracks the pinned @foxglove/embed SDK release (npa.workbench.foxglove).
     "foxglove-embed": "0.58.0",
     # Lichtblick (MPL-2.0): OSS, Foxglove-compatible static web viewer bundle.

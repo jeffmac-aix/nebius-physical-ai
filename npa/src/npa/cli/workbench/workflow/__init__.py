@@ -557,6 +557,27 @@ def submit_cmd(
         "--input-uri",
         help="PAIDF only: replace the pinned starter with one readable s3://... MP4 object.",
     ),
+    lerobot_uri: str = typer.Option(
+        "",
+        "--lerobot-uri",
+        help=(
+            "PAIDF only: use an S3 LeRobotDataset prefix without downloading the "
+            "whole dataset; one episode/camera video is selected before provisioning."
+        ),
+    ),
+    lerobot_camera: str = typer.Option(
+        "",
+        "--lerobot-camera",
+        help=(
+            "PAIDF LeRobot input only: exact observation camera feature/path segment; "
+            "the lexically first camera is used when omitted."
+        ),
+    ),
+    lerobot_episode: int = typer.Option(
+        0,
+        "--lerobot-episode",
+        help="PAIDF LeRobot input only: non-negative episode index (default: 0).",
+    ),
     seed_fixture: bool = typer.Option(
         False,
         "--seed-fixture",
@@ -645,20 +666,31 @@ def submit_cmd(
     try:
         from npa.workflows.data_factory_input import select_paidf_input
 
-        select_paidf_input(
+        input_selection = select_paidf_input(
             input_video=input_video,
             input_uri=input_uri,
+            lerobot_uri=lerobot_uri,
             seed_fixture=fixture_requested,
+        )
+        from npa.workflows.data_factory_input import validate_lerobot_selector
+
+        validate_lerobot_selector(
+            selection=input_selection,
+            camera=lerobot_camera,
+            episode=lerobot_episode,
         )
     except RuntimeError as exc:
         _fail(str(exc))
         return
     if (
-        input_video is not None or input_uri.strip() or fixture_requested
+        input_video is not None
+        or input_uri.strip()
+        or lerobot_uri.strip()
+        or fixture_requested
     ) and not is_paidf_spec:
         _fail(
-            "--input-video, --input-uri, and --seed-fixture are supported only by "
-            "the physical-ai-data-factory workflow"
+            "--input-video, --input-uri, --lerobot-uri, and --seed-fixture are "
+            "supported only by the physical-ai-data-factory workflow"
         )
         return
     materializer = _resolve_materializer(tool, yaml_path)
@@ -1317,6 +1349,9 @@ def submit_cmd(
                         bucket=bucket_for_source,
                         input_video=input_video,
                         input_uri=input_uri,
+                        lerobot_uri=lerobot_uri,
+                        lerobot_camera=lerobot_camera,
+                        lerobot_episode=lerobot_episode,
                         seed_fixture=fixture_requested,
                     )
                 else:
@@ -1325,6 +1360,9 @@ def submit_cmd(
                         bucket=bucket_for_source,
                         input_video=input_video,
                         input_uri=input_uri,
+                        lerobot_uri=lerobot_uri,
+                        lerobot_camera=lerobot_camera,
+                        lerobot_episode=lerobot_episode,
                         seed_fixture=fixture_requested,
                         endpoint_url=s3_endpoint,
                         aws_access_key_id=extra_env.get("AWS_ACCESS_KEY_ID", ""),

@@ -116,6 +116,11 @@ def test_preserve_source_chroma_records_effective_provenance(
         if command[0] == "ffmpeg":
             Path(command[-1]).write_bytes(b"corrected-video")
             return tx.subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        decoder = command[2]
+        assert decoder.count("rect_alpha = np.maximum.reduce(masks)") == 1
+        assert decoder.index("rect_alpha = np.maximum.reduce(masks)") < decoder.index(
+            "for aug_frame in aug_frames:"
+        )
         return tx.subprocess.CompletedProcess(
             command, 0, stdout='{"frames": 7, "fps": 30.0}\n', stderr=""
         )
@@ -136,6 +141,40 @@ def test_preserve_source_chroma_records_effective_provenance(
         "luma_max_delta": 32,
         "frame_count": 7,
     }
+
+
+def test_preserve_source_chroma_accepts_frame_aligned_sam2_masks(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source = tmp_path / "source.mp4"
+    generated = tmp_path / "generated.mp4"
+    masks = tmp_path / "masks"
+    masks.mkdir()
+    source.write_bytes(b"source")
+    generated.write_bytes(b"generated")
+    (masks / "mask-000000.png").write_bytes(b"mask")
+
+    def fake_run(command, **kwargs):  # noqa: ANN001
+        if command[0] == "ffmpeg":
+            Path(command[-1]).write_bytes(b"corrected-video")
+            return tx.subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        assert str(masks) in command
+        return tx.subprocess.CompletedProcess(
+            command, 0, stdout='{"frames": 1, "fps": 30.0}\n', stderr=""
+        )
+
+    monkeypatch.setattr(tx, "cosmos_transfer_repo", lambda: tmp_path)
+    monkeypatch.setattr(tx.subprocess, "run", fake_run)
+    result = tx.preserve_source_chroma(
+        {"video_path": str(generated), "video_bytes": generated.stat().st_size},
+        source_video=str(source),
+        masks_dir=str(masks),
+        segmentation={"engine": "meta-sam2-upstream", "manifest_uri": "s3://x"},
+    )
+
+    assert result["protected_chroma"]["method"].startswith("sam2-mask-")
+    assert result["protected_chroma"]["region_count"] == 0
+    assert result["protected_chroma"]["segmentation"]["engine"] == "meta-sam2-upstream"
 
 
 def test_preserve_source_chroma_decodes_encoded_video_and_keeps_generated_luma(
@@ -212,21 +251,95 @@ def test_preserve_source_chroma_decodes_encoded_video_and_keeps_generated_luma(
     assert 20 < abs(restored_y - source_y) < 37
 
 
-def test_load_refinement_validates_numeric_settings(tmp_path: Path) -> None:
-    policy = tmp_path / "refinement.json"
-    policy.write_text(
-        json.dumps(
-            {
-                "schema": "npa.data_factory.refinement.v1",
-                "attempt": 1,
-                "adapted_from_prior_evaluation": True,
-                "failed_checks": ["appearance_fidelity"],
-                "settings": {"control_weight": 1.0, "guidance": 2},
-            }
+def test_frame_aligned_masks_protect_only_the_selected_pixels(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        pytest.skip("ffmpeg is required for the encoded-video integration test")
+    from PIL import Image
+
+    source = tmp_path / "source.mp4"
+    generated = tmp_path / "generated.mp4"
+    masks = tmp_path / "masks"
+    masks.mkdir()
+    for path, color in ((source, "0x3c78b4"), (generated, "0x28140a")):
+        subprocess.run(
+            [
+                ffmpeg,
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                f"color=c={color}:size=64x48:rate=6:duration=1",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                str(path),
+            ],
+            check=True,
         )
+    for index in range(6):
+        mask = Image.new("L", (64, 48), 0)
+        mask.paste(255, (0, 0, 32, 48))
+        mask.save(masks / f"mask-{index:06d}.png")
+
+    monkeypatch.setattr(tx, "_venv_python", lambda _repo: Path(sys.executable))
+    result = tx.preserve_source_chroma(
+        {"video_path": str(generated), "video_bytes": generated.stat().st_size},
+        source_video=str(source),
+        masks_dir=str(masks),
+        segmentation={"engine": "meta-sam2-upstream"},
+        feather_pixels=8,
+    )
+
+    def first_rgb(path: Path) -> np.ndarray:
+        raw = subprocess.check_output(
+            [
+                ffmpeg,
+                "-loglevel",
+                "error",
+                "-i",
+                str(path),
+                "-frames:v",
+                "1",
+                "-f",
+                "rawvideo",
+                "-pix_fmt",
+                "rgb24",
+                "-",
+            ]
+        )
+        return np.frombuffer(raw, dtype=np.uint8).reshape(48, 64, 3).astype(np.float32)
+
+    source_frame = first_rgb(source)
+    generated_frame = first_rgb(generated)
+    restored = first_rgb(Path(result["video_path"]))
+    protected_error = np.abs(restored[:, :28] - source_frame[:, :28]).mean()
+    protected_baseline_error = np.abs(
+        generated_frame[:, :28] - source_frame[:, :28]
+    ).mean()
+    unprotected_error = np.abs(restored[:, 36:] - generated_frame[:, 36:]).mean()
+    assert protected_error < protected_baseline_error * 0.55
+    assert unprotected_error < 5.0
+    assert result["protected_chroma"]["frame_count"] == 6
+
+
+def test_load_refinement_validates_numeric_settings(tmp_path: Path) -> None:
+    from npa.workflows import data_factory_stages as dfs
+
+    policy = tmp_path / "refinement.json"
+    committed = dfs.prepare_refinement(
+        str(tmp_path / "grade"),
+        str(policy),
+        base_control_weight=1.0,
+        base_guidance=2,
     )
     loaded = cosmos2._load_refinement(str(policy))
-    assert loaded["attempt"] == 1
+    assert committed["attempt"] == loaded["attempt"] == 0
     assert loaded["settings"] == {"control_weight": 1.0, "guidance": 2}
 
 
@@ -240,9 +353,52 @@ def test_load_refinement_validates_numeric_settings(tmp_path: Path) -> None:
 def test_load_refinement_rejects_values_cosmos_cannot_load(
     tmp_path: Path, settings: dict[str, float]
 ) -> None:
+    from npa.workflows import data_factory_stages as dfs
+
     policy = tmp_path / "refinement.json"
-    policy.write_text(json.dumps({"attempt": 1, "settings": settings}))
+    pointer = dfs.prepare_refinement(
+        str(tmp_path / "grade"),
+        str(policy),
+        base_control_weight=1.0,
+        base_guidance=2,
+    )
+    immutable = dict(pointer)
+    immutable.pop("policy_sha256")
+    immutable["settings"] = settings
+    digest = dfs._payload_sha256(immutable)
+    Path(str(immutable["history_uri"])).write_bytes(
+        dfs._canonical_json_bytes(immutable)
+    )
+    Path(str(immutable["commit_uri"])).write_bytes(
+        dfs._canonical_json_bytes(
+            {
+                "schema": "npa.data_factory.refinement.commit.v1",
+                "attempt": immutable["attempt"],
+                "history_uri": immutable["history_uri"],
+                "policy_sha256": digest,
+            }
+        )
+    )
+    policy.write_bytes(
+        dfs._canonical_json_bytes({**immutable, "policy_sha256": digest})
+    )
     with pytest.raises(typer.BadParameter):
+        cosmos2._load_refinement(str(policy))
+
+
+def test_load_refinement_rejects_an_uncommitted_policy(tmp_path: Path) -> None:
+    policy = tmp_path / "refinement.json"
+    policy.write_text(
+        json.dumps(
+            {
+                "schema": "npa.data_factory.refinement.v1",
+                "attempt": 0,
+                "settings": {"control_weight": 1.0, "guidance": 3},
+            }
+        )
+    )
+
+    with pytest.raises(typer.BadParameter, match="policy digest"):
         cosmos2._load_refinement(str(policy))
 
 
@@ -786,6 +942,243 @@ def test_transfer_cli_reports_storage_failure_without_secret(monkeypatch) -> Non
     assert "no supported video" not in result.output
     assert secret not in result.output
     assert inference_called is False
+
+
+def test_augmentation_manifest_read_failure_is_sanitized_and_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "private-object-name"
+
+    def fail_read(_uri: str) -> dict:
+        raise PermissionError(f"denied object={secret}")
+
+    monkeypatch.setattr(
+        "npa.workflows.data_factory_stages._download_json", fail_read
+    )
+
+    with pytest.raises(typer.BadParameter, match="augmentation manifest") as exc:
+        cosmos2._all_augmentations("s3://redacted/configs/")
+
+    assert secret not in str(exc.value)
+
+
+def test_augmentation_manifest_requires_real_variants(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "npa.workflows.data_factory_stages._download_json",
+        lambda _uri: {"augmentations": []},
+    )
+
+    with pytest.raises(typer.BadParameter, match="no augmentation variants"):
+        cosmos2._all_augmentations("s3://redacted/configs/")
+
+
+def test_paidf_transfer_invokes_optional_sam2_once_and_reuses_masks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from npa.cli.workbench import cosmos2
+    from npa.workbench.cosmos import sam2_masks
+
+    source = tmp_path / "input.mp4"
+    source.write_bytes(b"video")
+    generated = tmp_path / "generated.mp4"
+    generated.write_bytes(b"generated")
+    calls: dict[str, object] = {"generate": 0, "protected": []}
+
+    monkeypatch.setattr(tx, "cosmos_transfer_available", lambda: True)
+    monkeypatch.setattr(
+        cosmos2, "_materialize_conditioning_input", lambda *_args, **_kwargs: str(source)
+    )
+    monkeypatch.setattr(
+        cosmos2,
+        "_all_augmentations",
+        lambda _uri: [{"prompt": "generic-a"}, {"prompt": "generic-b"}],
+    )
+    monkeypatch.setattr(
+        cosmos2,
+        "_persist_generated_conditioning_clip",
+        lambda *_args, **_kwargs: "s3://b/input.mp4",
+    )
+
+    def fake_generate(_video, output_dir, *, config, run_id):  # noqa: ANN001
+        calls["generate"] = int(calls["generate"]) + 1
+        assert run_id == "run"
+        masks = Path(output_dir) / "masks"
+        masks.mkdir()
+        (masks / "mask-000000.png").write_bytes(b"mask")
+        manifest = Path(output_dir) / "manifest.json"
+        manifest.write_text("{}", encoding="utf-8")
+        return sam2_masks.Sam2MaskResult({}, manifest, masks)
+
+    monkeypatch.setattr(sam2_masks, "generate_sam2_video_masks", fake_generate)
+    monkeypatch.setattr(
+        sam2_masks,
+        "load_published_sam2_masks",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "npa.clients.storage.StorageClient.from_environment",
+        lambda: object(),
+    )
+    monkeypatch.setattr(
+        sam2_masks,
+        "publish_sam2_masks",
+        lambda *_args, **_kwargs: {
+            "engine": sam2_masks.SAM2_ENGINE,
+            "component": "Meta Segment Anything Model 2",
+            "component_version": "1.0",
+            "component_source": "https://github.com/facebookresearch/sam2",
+            "component_revision": sam2_masks.SAM2_SOURCE_REVISION,
+            "license": {"spdx": "Apache-2.0"},
+            "config": {"mode": "sam2-auto"},
+            "frame_count": 1,
+            "object_count": 1,
+            "mask_coverage": {"mean": 0.25},
+            "runtime": {"device": "cuda", "seconds": 1.0},
+            "manifest_uri": "s3://b/run/segmentation/manifest.json",
+            "masks_uri": "s3://b/run/segmentation/masks/",
+        },
+    )
+    monkeypatch.setattr(
+        tx,
+        "run_cosmos_transfer",
+        lambda **_kwargs: {
+            "video_path": str(generated),
+            "video_bytes": generated.stat().st_size,
+            "spec": "conditioned.json",
+        },
+    )
+
+    def fake_protect(result, **kwargs):  # noqa: ANN001
+        calls["protected"].append(kwargs)
+        return result
+
+    monkeypatch.setattr(tx, "preserve_source_chroma", fake_protect)
+    monkeypatch.setattr(
+        tx,
+        "publish_transfer_clip",
+        lambda *_args, **_kwargs: {"name": "aug-run-0", "frame_count": 1},
+    )
+    monkeypatch.setattr(
+        tx,
+        "write_run_manifest",
+        lambda *_args, **_kwargs: {
+            "augmented_video_uri": "s3://b/run/augment/video.mp4",
+            "augmented_videos": ["s3://b/run/augment/video.mp4"],
+            "frame_count": 1,
+            "variant_count": 1,
+            "multiply_mode": "single-variant",
+            "variant_parallelism": 1,
+            "clips": ["aug-run-0"],
+            "conditioning_clip_uri": "s3://b/input.mp4",
+            "control_spec": "conditioned.json",
+            "control": "edge",
+            "control_weight": 1.0,
+            "control_prompt": "",
+            "mask_prompt": "",
+            "control_uris": {},
+        },
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "workbench",
+            "cosmos2",
+            "transfer",
+            "--input-uri",
+            "s3://b/run/input/",
+            "--output-uri",
+            "s3://b/run/augment/",
+            "--configs-uri",
+            "s3://b/run/configs/",
+            "--run-id",
+            "run",
+            "--execute",
+            "--condition-on-input",
+            "--segmentation-mode",
+            "sam2-auto",
+            "--segmentation-uri",
+            "s3://b/run/segmentation/",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert calls["generate"] == 1
+    assert len(calls["protected"]) == 2
+    assert calls["protected"][0]["masks_dir"]
+    assert payload["segmentation"]["engine"] == sam2_masks.SAM2_ENGINE
+    assert "prompt" not in payload
+    assert "manifest_uri" not in json.dumps(payload)
+
+
+def test_paidf_transfer_rejects_invalid_or_conflicting_sam2_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from npa.cli.workbench import cosmos2
+
+    source = tmp_path / "input.mp4"
+    source.write_bytes(b"video")
+    monkeypatch.setattr(tx, "cosmos_transfer_available", lambda: True)
+    monkeypatch.setattr(
+        cosmos2, "_materialize_conditioning_input", lambda *_args, **_kwargs: str(source)
+    )
+
+    invalid = runner.invoke(
+        app,
+        [
+            "workbench",
+            "cosmos2",
+            "transfer",
+            "--input-uri",
+            "s3://b/input/",
+            "--output-uri",
+            "s3://b/output/",
+            "--configs-uri",
+            "s3://b/configs/",
+            "--run-id",
+            "run",
+            "--execute",
+            "--condition-on-input",
+            "--segmentation-mode",
+            "sam2-auto",
+            "--segmentation-uri",
+            "s3://b/segmentation/",
+            "--sam2-points-per-side",
+            "2",
+        ],
+    )
+    assert invalid.exit_code != 0
+    assert "points_per_side" in invalid.output
+
+    conflict = runner.invoke(
+        app,
+        [
+            "workbench",
+            "cosmos2",
+            "transfer",
+            "--input-uri",
+            "s3://b/input/",
+            "--output-uri",
+            "s3://b/output/",
+            "--configs-uri",
+            "s3://b/configs/",
+            "--run-id",
+            "run",
+            "--execute",
+            "--condition-on-input",
+            "--segmentation-mode",
+            "sam2-auto",
+            "--segmentation-uri",
+            "s3://b/segmentation/",
+            "--protected-regions-json",
+            "[[0.1,0.1,0.2,0.2]]",
+        ],
+    )
+    assert conflict.exit_code != 0
+    assert "mutually" in conflict.output and "exclusive" in conflict.output
 
 
 def test_detect_gpu_count_from_cuda_visible_devices(monkeypatch) -> None:
