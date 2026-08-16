@@ -291,6 +291,15 @@ def submit_cmd(
             "(disabled by default; prefer the explicit --resume-run ID contract)."
         ),
     ),
+    retry_absent_in_flight: bool = typer.Option(
+        False,
+        "--retry-absent-in-flight/--no-retry-absent-in-flight",
+        help=(
+            "With --runtime and explicit resume: authorize a new attempt only when "
+            "the exact previously reconciled managed job and every declared durable "
+            "output are proven absent. Disabled by default."
+        ),
+    ),
     poll_seconds: int = typer.Option(
         30,
         "--poll-seconds",
@@ -671,6 +680,9 @@ def submit_cmd(
         return
     if resume and not (run_id or resume_run):
         _fail("--resume requires an explicit --resume-run ID (or legacy --run-id)")
+        return
+    if retry_absent_in_flight and not (resume_run or (resume and run_id)):
+        _fail("--retry-absent-in-flight requires an explicit --resume-run ID")
         return
     workflow_identity = ""
     if is_npa_spec:
@@ -1238,6 +1250,7 @@ def submit_cmd(
                 retries=retries,
                 max_concurrency=max_concurrency,
                 resume=resume,
+                retry_absent_in_flight=retry_absent_in_flight,
                 output_format=output_format,
                 project=project,
                 auto_load=auto_load,
@@ -1801,6 +1814,7 @@ def _run_npa_workflow_runtime(
     retries: int,
     max_concurrency: int,
     resume: bool,
+    retry_absent_in_flight: bool,
     output_format: "OutputFormat",
     project: str = "",
     auto_load: bool = True,
@@ -1869,6 +1883,7 @@ def _run_npa_workflow_runtime(
         isolated_config_dir=isolated_config_dir,
         config_path=config_path,
         resume=resume,
+        retry_absent_in_flight=retry_absent_in_flight,
         project=project or "default",
         sky_bin=sky_bin,
         credential_resolver=lambda: _resolve_runtime_secret_values(
