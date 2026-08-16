@@ -1805,6 +1805,189 @@ def test_resume_relaunches_only_authoritatively_absent_transient_wave(
     )
     assert report.status == "succeeded"
     assert [call["tasks"] for call in submitter.calls][0] == ["shard-a", "shard-b"]
+    attempts = [
+        item
+        for item in store.read_runtime_state().waves
+        if item["key"] == "001|shards|shards:shard-a:-,shards:shard-b:-"
+    ]
+    assert [item["attempt"] for item in attempts] == [1, 2]
+
+
+def test_resume_absent_submitted_wave_stays_blocked_across_repeated_resume(
+    tmp_path: Path,
+) -> None:
+    from npa.orchestration.skypilot.workflow import ManagedJobEvidence
+
+    spec = load_spec(_write_spec(tmp_path, FANOUT_SPEC))
+    store = MemoryStore()
+    state = RuntimeRunState(workflow=spec.name, run_id="rt-sticky-absence")
+    state.record_wave(
+        {
+            "key": "001|shards|shards:shard-a:-,shards:shard-b:-",
+            "status": "running",
+            "job_id": "77",
+            "job_name": "rt-sticky-absence-01-shards",
+            "attempt": 1,
+            "sky_status": "SUBMITTED",
+            "logical_launch_id": "logical-sticky-absence",
+            "launch_sequence": 1,
+            "recovery_decision": "submitted_and_reconciled",
+        }
+    )
+    store.write_runtime_state(state)
+    options = RuntimeOptions(poll_seconds=0, max_wait_seconds=60, resume=True)
+
+    for _ in range(2):
+        submitter = FakeSubmitter()
+        executor = _executor(
+            spec,
+            run_id="rt-sticky-absence",
+            submitter=submitter,
+            options=options,
+            store=store,
+            reconcile_fn=lambda *_args, **_kwargs: ManagedJobEvidence("absent"),
+        )
+        report = run_workflow_runtime(
+            spec, run_id="rt-sticky-absence", executor=executor, options=options
+        )
+        assert report.status == "failed"
+        assert submitter.calls == []
+        assert (
+            store.read_runtime_state().waves[0]["recovery_decision"]
+            == "resume_block_terminal_or_legacy_absence"
+        )
+
+
+def test_explicit_resume_relaunches_absent_submitted_wave_as_new_attempt(
+    tmp_path: Path,
+) -> None:
+    from npa.orchestration.skypilot.workflow import ManagedJobEvidence
+
+    output_spec = FANOUT_SPEC
+    for shard, next_state in (
+        ("a", "shard-b"),
+        ("b", "shard-c"),
+        ("c", "join"),
+    ):
+        output_spec = output_spec.replace(
+            f"    resources: cpu\n\n  {next_state}:",
+            "    resources: cpu\n"
+            "    outputs:\n"
+            f'      - uri: "s3://{{{{config.bucket}}}}/'
+            f'{{{{config.prefix}}}}/shard-{shard}.json"\n\n'
+            f"  {next_state}:",
+            1,
+        )
+    spec = load_spec(_write_spec(tmp_path, output_spec))
+    store = MemoryStore()
+    state = RuntimeRunState(workflow=spec.name, run_id="rt-explicit-absence")
+    state.record_wave(
+        {
+            "key": "001|shards|shards:shard-a:-,shards:shard-b:-",
+            "status": "running",
+            "job_id": "77",
+            "job_name": "rt-explicit-absence-01-shards",
+            "attempt": 1,
+            "sky_status": "SUBMITTED",
+            "logical_launch_id": "logical-explicit-absence",
+            "launch_sequence": 1,
+            "recovery_decision": "submitted_and_reconciled",
+        }
+    )
+    store.write_runtime_state(state)
+    options = RuntimeOptions(
+        poll_seconds=0,
+        max_wait_seconds=60,
+        resume=True,
+        retry_absent_in_flight=True,
+    )
+    submitter = FakeSubmitter()
+    executor = _executor(
+        spec,
+        run_id="rt-explicit-absence",
+        submitter=submitter,
+        options=options,
+        store=store,
+        output_checker=lambda _uri: bool(submitter.calls),
+        reconcile_fn=lambda *_args, **_kwargs: ManagedJobEvidence("absent"),
+    )
+
+    report = run_workflow_runtime(
+        spec, run_id="rt-explicit-absence", executor=executor, options=options
+    )
+
+    assert report.status == "succeeded"
+    assert submitter.calls[0]["job_name"].endswith("-a2")
+    attempts = [
+        item
+        for item in store.read_runtime_state().waves
+        if item["key"] == "001|shards|shards:shard-a:-,shards:shard-b:-"
+    ]
+    assert [item["attempt"] for item in attempts] == [1, 2]
+    assert (
+        attempts[0]["recovery_decision"]
+        == "operator_authorized_verified_absent_relaunch"
+    )
+    assert attempts[1]["status"] == "succeeded"
+
+
+def test_explicit_absent_resume_refuses_existing_declared_output(
+    tmp_path: Path,
+) -> None:
+    from npa.orchestration.skypilot.workflow import ManagedJobEvidence
+
+    output_spec = FANOUT_SPEC.replace(
+        "    resources: cpu\n\n  shard-b:",
+        "    resources: cpu\n"
+        "    outputs:\n"
+        '      - uri: "s3://{{config.bucket}}/{{config.prefix}}/shard-a.json"\n\n'
+        "  shard-b:",
+        1,
+    )
+    spec = load_spec(_write_spec(tmp_path, output_spec))
+    store = MemoryStore()
+    state = RuntimeRunState(workflow=spec.name, run_id="rt-output-present")
+    state.record_wave(
+        {
+            "key": "001|shards|shards:shard-a:-,shards:shard-b:-",
+            "status": "running",
+            "job_id": "77",
+            "job_name": "rt-output-present-01-shards",
+            "attempt": 1,
+            "sky_status": "RUNNING",
+            "logical_launch_id": "logical-output-present",
+            "launch_sequence": 1,
+            "recovery_decision": "submitted_and_reconciled",
+        }
+    )
+    store.write_runtime_state(state)
+    options = RuntimeOptions(
+        poll_seconds=0,
+        max_wait_seconds=60,
+        resume=True,
+        retry_absent_in_flight=True,
+    )
+    submitter = FakeSubmitter()
+    executor = _executor(
+        spec,
+        run_id="rt-output-present",
+        submitter=submitter,
+        options=options,
+        store=store,
+        output_checker=lambda _uri: True,
+        reconcile_fn=lambda *_args, **_kwargs: ManagedJobEvidence("absent"),
+    )
+
+    report = run_workflow_runtime(
+        spec, run_id="rt-output-present", executor=executor, options=options
+    )
+
+    assert report.status == "failed"
+    assert submitter.calls == []
+    assert (
+        store.read_runtime_state().waves[0]["recovery_decision"]
+        == "resume_block_output_present"
+    )
 
 
 def test_resume_blocks_indeterminate_incomplete_wave_without_submit(
