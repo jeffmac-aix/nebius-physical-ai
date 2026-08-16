@@ -49,6 +49,7 @@ _AMBIENT_CREDENTIAL_ENV_VARS = (
     "NPA_REGISTRY_ID",
     "HF_TOKEN",
     "HUGGING_FACE_HUB_TOKEN",
+    "FOXGLOVE_API_TOKEN",
     "NEBIUS_TOKEN_FACTORY_KEY",
     "NEBIUS_TOKEN_FACTORY_BASE_URL",
     "NEBIUS_BASE_URL",
@@ -157,15 +158,27 @@ def isolate_home_config(monkeypatch, tmp_path_factory, request):
 
     npa_dir = home / ".npa"
     monkeypatch.setattr(npa.clients.config, "CONFIG_PATH", npa_dir / "config.yaml")
-    monkeypatch.setattr(npa.clients.credentials, "CREDENTIALS_PATH", npa_dir / "credentials.yaml")
-    monkeypatch.setattr(npa.controller_ownership, "CONFIG_PATH", npa_dir / "config.yaml")
-    monkeypatch.setattr(npa.orchestration.skypilot._bin, "CONFIG_PATH", npa_dir / "config.yaml")
-    monkeypatch.setattr(npa.deploy.provisioner, "_WORKBENCH_BASE", npa_dir / "workbenches")
     monkeypatch.setattr(
-        npa.deploy.provisioner, "_TF_PLUGIN_CACHE_DIR", npa_dir / "terraform-plugin-cache"
+        npa.clients.credentials, "CREDENTIALS_PATH", npa_dir / "credentials.yaml"
+    )
+    monkeypatch.setattr(
+        npa.controller_ownership, "CONFIG_PATH", npa_dir / "config.yaml"
+    )
+    monkeypatch.setattr(
+        npa.orchestration.skypilot._bin, "CONFIG_PATH", npa_dir / "config.yaml"
+    )
+    monkeypatch.setattr(
+        npa.deploy.provisioner, "_WORKBENCH_BASE", npa_dir / "workbenches"
+    )
+    monkeypatch.setattr(
+        npa.deploy.provisioner,
+        "_TF_PLUGIN_CACHE_DIR",
+        npa_dir / "terraform-plugin-cache",
     )
     monkeypatch.setattr(npa.cluster.state, "CLUSTERS_DIR", npa_dir / "clusters")
-    monkeypatch.setattr(npa.cli.skypilot, "DEFAULT_VENV_PATH", npa_dir / "skypilot-venv")
+    monkeypatch.setattr(
+        npa.cli.skypilot, "DEFAULT_VENV_PATH", npa_dir / "skypilot-venv"
+    )
     monkeypatch.setattr(
         npa.cli.cluster.terraform_lifecycle,
         "_DEFAULT_SKYPILOT_BIN",
