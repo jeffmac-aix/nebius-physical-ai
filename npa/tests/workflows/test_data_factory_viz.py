@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -139,6 +140,50 @@ def test_load_stage_docs_covers_all_pipeline_stages(tmp_path: Path) -> None:
     assert "loop_back_to_inner_loop" in docs["pipeline/3_grade"]
     assert "rejected" in docs["pipeline/3_grade"]
     assert "aggregate score is below threshold" in docs["pipeline/3_grade"]
+
+
+def test_stage_docs_select_latest_append_only_refinement_iteration(
+    tmp_path: Path,
+) -> None:
+    from npa.workflows.data_factory_viz import _load_stage_docs
+
+    run = tmp_path / "run"
+    for iteration, score in ((1, 0.2), (2, 0.8)):
+        augment = run / "cosmos_augmented" / f"iteration-{iteration}"
+        augment.mkdir(parents=True)
+        (augment / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "mode": "cosmos_transfer2.5_gpu",
+                    "variant_count": iteration,
+                    "input_conditioned": True,
+                }
+            )
+        )
+        grade = run / "grade" / f"iteration-{iteration}"
+        grade.mkdir(parents=True)
+        (grade / "cosmos_evaluator.json").write_text(
+            json.dumps({"score": score, "status": "completed"})
+        )
+        (grade / "decision.json").write_text(
+            json.dumps(
+                {
+                    "decision": "promote_checkpoint"
+                    if iteration == 2
+                    else "loop_back"
+                }
+            )
+        )
+    (run / "grade" / "quality_disposition.json").write_text(
+        json.dumps({"quality_status": "accepted", "score": 0.8})
+    )
+
+    docs = _load_stage_docs(run)
+
+    assert '"variant_count": 2' in docs["pipeline/2_augment"]
+    assert '"score": 0.8' in docs["pipeline/3_grade"]
+    assert '"score": 0.2' not in docs["pipeline/3_grade"]
+    assert "promote_checkpoint" in docs["pipeline/3_grade"]
     # Stage log lists each stage.
     assert "augment" in docs["pipeline/0_log"]
     assert "grade" in docs["pipeline/0_log"]

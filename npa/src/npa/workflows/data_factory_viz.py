@@ -108,6 +108,21 @@ def _subsample(items: list, cap: int) -> list:
     return out
 
 
+def _latest_iteration_dir(root: Path) -> Path:
+    """Select the newest append-only PAIDF loop directory, with legacy fallback."""
+
+    if not root.is_dir():
+        return root
+    candidates: list[tuple[int, Path]] = []
+    for path in root.iterdir():
+        if not path.is_dir():
+            continue
+        match = re.fullmatch(r"iteration-(\d+)", path.name)
+        if match:
+            candidates.append((int(match.group(1)), path))
+    return max(candidates, default=(-1, root), key=lambda item: item[0])[1]
+
+
 def _log_frame(rr: Any, rec: Any, entity: str, arr: Any) -> None:
     """Log a frame as a JPEG-encoded image (small) with a raw-RGB fallback."""
     try:
@@ -201,7 +216,7 @@ def build_run_rrd(
                 recording=rec,
             )
 
-        aug_root = local / "cosmos_augmented"
+        aug_root = _latest_iteration_dir(local / "cosmos_augmented")
         if aug_root.is_dir():
             for d in sorted(p for p in aug_root.iterdir() if p.is_dir()):
                 label = _augmentation_label(d)
@@ -386,7 +401,8 @@ def _load_stage_docs(local: Path) -> dict[str, str]:
         )
 
     # Augment fan-out — how many Cosmos Transfer 2.5 variants were produced.
-    aug = _read_json(local / "cosmos_augmented" / "manifest.json")
+    aug_dir = _latest_iteration_dir(local / "cosmos_augmented")
+    aug = _read_json(aug_dir / "manifest.json")
     if isinstance(aug, dict):
         variants = aug.get("variants") or aug.get("clips") or []
         docs["pipeline/2_augment"] = _json_block("Augment — Cosmos Transfer 2.5 (multiply)", aug)
@@ -396,7 +412,8 @@ def _load_stage_docs(local: Path) -> dict[str, str]:
         )
 
     # Evaluate & Validate — the hallucination / attribute-verification grade.
-    grade_dir = local / "grade"
+    grade_root = local / "grade"
+    grade_dir = _latest_iteration_dir(grade_root)
     grade_docs: list[str] = []
     try:
         from npa.workbench.cosmos_evaluator import (
@@ -426,7 +443,7 @@ def _load_stage_docs(local: Path) -> dict[str, str]:
     if isinstance(dec, dict):
         grade_docs.append(_json_block("Quality gate decision", dec))
         stage_log.append(f"grade: decision={dec.get('decision', 'n/a')}")
-    disposition = _read_json(grade_dir / "quality_disposition.json")
+    disposition = _read_json(grade_root / "quality_disposition.json")
     if isinstance(disposition, dict):
         grade_docs.append(_json_block("Final quality disposition", disposition))
         stage_log.append(
