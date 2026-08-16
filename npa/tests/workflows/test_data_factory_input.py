@@ -235,6 +235,7 @@ def test_lerobot_selector_materializes_only_selected_camera_episode(
     assert result.provenance["lerobot_selection"] == {
         "episode_selector": "operator-supplied",
         "camera_selector": "explicit",
+        "selection_contract": "compatibility-defaults",
         "media_kind": "video",
         "selected_object": "redacted",
     }
@@ -271,6 +272,57 @@ def test_lerobot_camera_and_episode_validation_is_fail_closed() -> None:
     with pytest.raises(dfi.PaidfInputError, match="require --lerobot-uri"):
         dfi.plan_paidf_input(
             run_id="bad", bucket="artifacts", lerobot_camera="front"
+        )
+
+
+@pytest.mark.parametrize(
+    ("camera", "episode_was_explicit", "missing"),
+    [
+        ("", True, "--lerobot-camera"),
+        ("observation.images.front", False, "--lerobot-episode"),
+    ],
+)
+def test_lerobot_strict_selection_requires_explicit_camera_and_episode(
+    camera: str, episode_was_explicit: bool, missing: str
+) -> None:
+    with pytest.raises(dfi.PaidfInputError, match=missing):
+        dfi.validate_lerobot_selector(
+            selection="lerobot_dataset",
+            camera=camera,
+            episode=0,
+            require_explicit_selection=True,
+            episode_was_explicit=episode_was_explicit,
+        )
+
+    dfi.validate_lerobot_selector(
+        selection="lerobot_dataset",
+        camera="observation.images.front",
+        episode=0,
+        require_explicit_selection=True,
+        episode_was_explicit=True,
+    )
+
+    planned = dfi.plan_paidf_input(
+        run_id="paidf-explicit-contract",
+        bucket="artifacts",
+        lerobot_uri="s3://artifacts/dataset/",
+        lerobot_camera="observation.images.front",
+        lerobot_episode=0,
+        require_explicit_lerobot_selection=True,
+        lerobot_episode_was_explicit=True,
+    )
+    assert planned.provenance["lerobot_selection"]["selection_contract"] == (
+        "explicit-camera-and-episode"
+    )
+
+
+def test_lerobot_explicit_zero_episode_is_still_a_lerobot_only_selector() -> None:
+    with pytest.raises(dfi.PaidfInputError, match="require --lerobot-uri"):
+        dfi.validate_lerobot_selector(
+            selection="starter",
+            camera="",
+            episode=0,
+            episode_was_explicit=True,
         )
 
 

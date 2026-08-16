@@ -164,11 +164,13 @@ npa workbench workflow submit "$SPEC" --run-id "$RUN_ID" --runtime \
   --var bucket="$BUCKET" --input-uri s3://source-bucket/path/capture.mp4 \
   --assume-decision promote_checkpoint
 
-# Replace with one episode/camera video from an S3 LeRobotDataset prefix.
-# Omit --lerobot-camera for deterministic lexically-first-video selection.
+# Replace with one operator-reviewed episode/camera video from an S3
+# LeRobotDataset prefix. The strict flag prevents compatibility defaults from
+# silently substituting another visual stream.
 npa workbench workflow submit "$SPEC" --run-id "$RUN_ID" --runtime \
   --var bucket="$BUCKET" --lerobot-uri s3://source-bucket/datasets/robot-run/ \
   --lerobot-camera observation.images.front --lerobot-episode 0 \
+  --require-explicit-lerobot-selection \
   --assume-decision promote_checkpoint
 
 # Developers/tests only — explicitly synthetic
@@ -179,6 +181,11 @@ npa workbench workflow submit "$SPEC" --run-id "$RUN_ID" --runtime \
 Those are alternatives: run one with the prepared fresh ID. A previous run is
 resumed only with an explicit `--resume-run "$RUN_ID"`; an unattended command
 never reads or silently reuses the legacy global `~/.npa/paidf-first-run-id`.
+For subject-sensitive LeRobot runs, inspect beginning, middle, and end frames
+privately, then pass `--require-explicit-lerobot-selection` with both reviewed
+selectors. The gate runs before object-store access and provisioning. Omitting it
+retains the compatibility behavior (episode 0 and a lexically first camera when
+not otherwise specified); schema validity alone is not semantic confirmation.
 
 The default cache is `~/.cache/npa/physical-ai-data-factory/`; set
 `NPA_PAIDF_CACHE_DIR` to move it. Every hit is rechecked. Set

@@ -251,7 +251,8 @@ command above:
 
 # One LeRobotDataset prefix; camera is an exact video feature and episode is >= 0
 --lerobot-uri s3://source-bucket/datasets/robot-run/ \
---lerobot-camera observation.images.front --lerobot-episode 0
+--lerobot-camera observation.images.front --lerobot-episode 0 \
+--require-explicit-lerobot-selection
 
 # Developers/tests only: geometric synthetic frames, explicitly labeled
 --seed-fixture
@@ -265,6 +266,11 @@ are captured or assigning a media license. NPA validates MP4/H.264, positive
 dimensions/duration, normalizes the source to exactly 93 frames, extracts eight
 caption frames, records lineage in `input/provenance.json`, and invokes Cosmos
 with mandatory `--condition-on-input`. `--seed-fixture` is never selected silently.
+For subject-sensitive input, privately inspect representative beginning, middle,
+and end frames before submit, then use
+`--require-explicit-lerobot-selection`. It fails before object-store access unless
+both reviewed selectors were supplied; a LeRobot schema or checksum is not a
+semantic-subject assertion.
 
 ### If submit fails
 
@@ -628,7 +634,9 @@ No extra flag is the production starter path. To replace it, add exactly one of:
 ```bash
 --input-video ./my-capture.mp4
 --input-uri s3://source-bucket/captures/my-capture.mp4
---lerobot-uri s3://source-bucket/datasets/robot-run/ --lerobot-episode 0
+--lerobot-uri s3://source-bucket/datasets/robot-run/ \
+  --lerobot-camera observation.images.front --lerobot-episode 0 \
+  --require-explicit-lerobot-selection
 --seed-fixture  # developers/tests only: explicitly synthetic geometry
 ```
 

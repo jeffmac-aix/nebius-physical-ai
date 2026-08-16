@@ -159,6 +159,8 @@ def plan_paidf_input(
     lerobot_uri: str = "",
     lerobot_camera: str = "",
     lerobot_episode: int = 0,
+    require_explicit_lerobot_selection: bool = False,
+    lerobot_episode_was_explicit: bool = False,
     seed_fixture: bool = False,
 ) -> PreparedPaidfInput:
     """Describe selection for ``--plan-only`` without filesystem, S3, or network I/O."""
@@ -173,6 +175,8 @@ def plan_paidf_input(
         selection=selection,
         camera=lerobot_camera,
         episode=lerobot_episode,
+        require_explicit_selection=require_explicit_lerobot_selection,
+        episode_was_explicit=lerobot_episode_was_explicit,
     )
     base_uri = (
         f"s3://{bucket}/physical-ai-data-factory/{run_id}/input/"
@@ -208,6 +212,7 @@ def plan_paidf_input(
         source = (
             _lerobot_source_metadata(
                 camera=lerobot_camera,
+                explicit_selection=require_explicit_lerobot_selection,
             )
             if selection == "lerobot_dataset"
             else _user_source_metadata(
@@ -236,6 +241,8 @@ def prepare_paidf_input(
     lerobot_uri: str = "",
     lerobot_camera: str = "",
     lerobot_episode: int = 0,
+    require_explicit_lerobot_selection: bool = False,
+    lerobot_episode_was_explicit: bool = False,
     seed_fixture: bool = False,
     endpoint_url: str = "",
     aws_access_key_id: str = "",
@@ -263,6 +270,8 @@ def prepare_paidf_input(
         selection=selection,
         camera=lerobot_camera,
         episode=lerobot_episode,
+        require_explicit_selection=require_explicit_lerobot_selection,
+        episode_was_explicit=lerobot_episode_was_explicit,
     )
     clean_run_id = str(run_id or "").strip()
     clean_bucket = str(bucket or "").strip()
@@ -396,6 +405,7 @@ def prepare_paidf_input(
                 lerobot_uri=lerobot_uri.strip(),
                 camera=lerobot_camera,
                 episode=lerobot_episode,
+                explicit_selection=require_explicit_lerobot_selection,
                 destination=requested_source,
             )
         else:
@@ -957,19 +967,43 @@ def _user_source_metadata(*, source_ref: str, transport: str) -> dict[str, Any]:
 
 
 def validate_lerobot_selector(
-    *, selection: str, camera: str, episode: int
+    *,
+    selection: str,
+    camera: str,
+    episode: int,
+    require_explicit_selection: bool = False,
+    episode_was_explicit: bool = False,
 ) -> None:
     """Validate LeRobot-only selectors before any object-store access."""
 
     if episode < 0:
         raise PaidfInputError("--lerobot-episode must be a non-negative integer")
-    if selection != "lerobot_dataset" and (camera.strip() or episode != 0):
+    if require_explicit_selection:
+        if selection != "lerobot_dataset":
+            raise PaidfInputError(
+                "--require-explicit-lerobot-selection requires --lerobot-uri"
+            )
+        missing: list[str] = []
+        if not camera.strip():
+            missing.append("--lerobot-camera")
+        if not episode_was_explicit:
+            missing.append("--lerobot-episode")
+        if missing:
+            raise PaidfInputError(
+                "--require-explicit-lerobot-selection fails closed unless the "
+                "operator supplies " + " and ".join(missing)
+            )
+    if selection != "lerobot_dataset" and (
+        camera.strip() or episode != 0 or episode_was_explicit
+    ):
         raise PaidfInputError(
             "--lerobot-camera and --lerobot-episode require --lerobot-uri"
         )
 
 
-def _lerobot_source_metadata(*, camera: str) -> dict[str, Any]:
+def _lerobot_source_metadata(
+    *, camera: str, explicit_selection: bool = False
+) -> dict[str, Any]:
     """Describe a selected LeRobot trajectory without inferring its ownership."""
 
     # The source prefix, episode, and feature names can themselves be customer
@@ -984,6 +1018,11 @@ def _lerobot_source_metadata(*, camera: str) -> dict[str, Any]:
         "lerobot_selection": {
             "episode_selector": "operator-supplied",
             "camera_selector": "explicit" if camera.strip() else "automatic",
+            "selection_contract": (
+                "explicit-camera-and-episode"
+                if explicit_selection
+                else "compatibility-defaults"
+            ),
         },
         "authenticity": {
             "classification": "operator_supplied_unverified",
@@ -1010,6 +1049,7 @@ def _materialize_lerobot_episode(
     lerobot_uri: str,
     camera: str,
     episode: int,
+    explicit_selection: bool,
     destination: Path,
 ) -> dict[str, Any]:
     """Select one LeRobot camera/episode MP4 without downloading the dataset.
@@ -1192,6 +1232,7 @@ def _materialize_lerobot_episode(
         raise PaidfInputError("the selected LeRobot observation video is empty")
     metadata = _lerobot_source_metadata(
         camera=camera,
+        explicit_selection=explicit_selection,
     )
     metadata["lerobot_selection"].update(
         {
