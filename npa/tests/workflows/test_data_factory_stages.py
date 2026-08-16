@@ -43,17 +43,23 @@ def _mock_committed_manifest(
     """Make listed canonical test objects carry the real committed contract."""
 
     original = dfs._download_json
-    videos = sorted(key for key in keys if key.endswith("/augmented_video.mp4"))
-    variants = [
-        {
-            "clip": key.rsplit("/", 2)[-2],
-            "augmented_video_uri": f"s3://{bucket}/{key}",
-        }
-        for key in videos
-    ]
-
     def load(uri: str):
-        if uri.rstrip("/").endswith("cosmos_augmented/manifest.json"):
+        if "cosmos_augmented/" in uri and uri.endswith("/manifest.json"):
+            object_key = uri.split(f"s3://{bucket}/", 1)[-1]
+            manifest_prefix = object_key.rsplit("/", 1)[0] + "/"
+            videos = sorted(
+                key
+                for key in keys
+                if key.startswith(manifest_prefix)
+                and key.endswith("/augmented_video.mp4")
+            )
+            variants = [
+                {
+                    "clip": key.rsplit("/", 2)[-2],
+                    "augmented_video_uri": f"s3://{bucket}/{key}",
+                }
+                for key in videos
+            ]
             return {
                 "schema": "npa.cosmos2.transfer.v1",
                 "mode": "cosmos_transfer2.5_gpu",
@@ -193,6 +199,63 @@ def test_prepare_refinement_uses_baseline_then_adapts_failed_retry(
     assert retry["settings"] == {"control_weight": 1.0, "guidance": 2}
     assert retry["failed_checks"] == ["appearance_fidelity"]
     assert (tmp_path / "configs" / "refinement-attempt-01.json").is_file()
+
+
+def test_prepare_refinement_reads_preceding_append_only_iteration(
+    tmp_path: Path,
+) -> None:
+    grade = tmp_path / "grade"
+    refinement = tmp_path / "configs" / "refinement.json"
+    decision = grade / "decision.json"
+    baseline = dfs.prepare_refinement(
+        str(grade),
+        str(refinement),
+        decision_uri=str(decision),
+        loop_iteration=1,
+    )
+    assert baseline["attempt"] == 0
+
+    first_grade = grade / "iteration-1"
+    first_grade.mkdir(parents=True)
+    (first_grade / "cosmos_evaluator.json").write_text(
+        json.dumps(
+            {
+                "status": "completed",
+                "score": 0.4,
+                "passed": False,
+                "clips": [
+                    {
+                        "passed": False,
+                        "appearance_fidelity": {"passed": False},
+                        "hallucination": {"passed": True},
+                    }
+                ],
+            }
+        )
+    )
+    assert (
+        dfs.grade_gate(
+            str(first_grade),
+            str(first_grade / "decision.json"),
+            0.75,
+            str(refinement),
+        )
+        == "loop_back"
+    )
+
+    retry = dfs.prepare_refinement(
+        str(grade),
+        str(refinement),
+        decision_uri=str(decision),
+        loop_iteration=2,
+    )
+
+    assert retry["attempt"] == 1
+    assert retry["failed_checks"] == ["appearance_fidelity"]
+    assert (first_grade / "cosmos_evaluator.json").is_file()
+    assert (first_grade / "decision.json").is_file()
+    assert not (grade / "cosmos_evaluator.json").exists()
+    assert not decision.exists()
 
 
 def test_prepare_refinement_replays_a_committed_adapted_attempt_idempotently(
@@ -1216,6 +1279,28 @@ def test_finalize_reports_multi_variant_from_clip_dirs(
     report = dfs.finalize(
         "s3://b/physical-ai-data-factory/run1/", "s3://b/.../final.json"
     )
+    assert report["multiply_mode"] == "multi-variant"
+    assert report["variant_count"] == 2
+
+
+def test_finalize_counts_only_latest_append_only_augmentation_iteration(
+    monkeypatch,
+) -> None:
+    keys = [
+        "physical-ai-data-factory/run1/cosmos_augmented/iteration-1/manifest.json",
+        "physical-ai-data-factory/run1/cosmos_augmented/iteration-1/old/augmented_video.mp4",
+        "physical-ai-data-factory/run1/cosmos_augmented/iteration-2/manifest.json",
+        "physical-ai-data-factory/run1/cosmos_augmented/iteration-2/new-a/augmented_video.mp4",
+        "physical-ai-data-factory/run1/cosmos_augmented/iteration-2/new-b/augmented_video.mp4",
+    ]
+    monkeypatch.setattr(dfs, "_list_keys", lambda uri: keys)
+    _mock_committed_manifest(monkeypatch, keys, bucket="b")
+    monkeypatch.setattr(dfs, "_upload_json", lambda payload, uri: uri)
+
+    report = dfs.finalize(
+        "s3://b/physical-ai-data-factory/run1/", "s3://b/run1/final.json"
+    )
+
     assert report["multiply_mode"] == "multi-variant"
     assert report["variant_count"] == 2
 

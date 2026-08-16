@@ -390,6 +390,7 @@ states:
         - "{{config.refinement_min_guidance}}"
         - "{{config.decision_uri}}"
         - "{{config.grade_threshold}}"
+        - "{{loop.grade}}"
     outputs:
       - uri: "{{config.refinement_uri}}"
         schema: npa.data_factory.refinement.v1
@@ -423,6 +424,9 @@ states:
       refinement loop: on a loop_back decision the loop re-runs augment (re-render),
       re-verify, and re-gate, so a failed batch is actually re-augmented.
     needs: [prepare-refinement]
+    params:
+      augment_uri: "{{config.augment_uri}}iteration-{{loop.grade}}/"
+      augment_manifest_uri: "{{config.augment_uri}}iteration-{{loop.grade}}/manifest.json"
     toolRef: workbench.cosmos2.transfer_execute
     resources: gpu
     inputs:
@@ -476,6 +480,9 @@ states:
       workflows that intentionally recolour materials are not silently blocked;
       deployments that promise stable base colours may set it to required and
       optionally restrict it to normalized protected regions.
+    params:
+      rollouts_uri: "{{config.augment_uri}}iteration-{{loop.grade}}/"
+      scores_uri: "{{config.scores_uri}}iteration-{{loop.grade}}/"
     toolRef: workbench.cosmos_evaluator.evaluate
     resources: cpu
     inputs:
@@ -495,6 +502,9 @@ states:
       transitions on a loop-sequence member are not evaluated at runtime.
     writesDecision: true
     needs: [evaluate]
+    params:
+      scores_uri: "{{config.scores_uri}}iteration-{{loop.grade}}/"
+      decision_uri: "{{config.scores_uri}}iteration-{{loop.grade}}/decision.json"
     resources: cpu
     run:
       shell: >
@@ -514,6 +524,9 @@ states:
       evidence-only Rerun stage before failing the workflow.
     writesDecision: true
     needs: [grade]
+    params:
+      scores_uri: "{{config.scores_uri}}iteration-{{loop.grade}}/"
+      decision_uri: "{{config.scores_uri}}iteration-{{loop.grade}}/decision.json"
     resources: cpu
     run:
       argv:
@@ -544,6 +557,8 @@ states:
       before any accepted-only labeling, curation, visualization, or finalize
       stage. Runtime execution also passes through this guard on promotion.
     needs: [quality-disposition]
+    params:
+      scores_uri: "{{config.scores_uri}}iteration-{{loop.grade}}/"
     resources: cpu
     run:
       argv:
@@ -575,6 +590,8 @@ states:
       Fail the workflow only after the rejected run's disposition and Rerun evidence
       are durable. This preserves fail-closed promotion semantics.
     needs: [visualize-rejected]
+    params:
+      scores_uri: "{{config.scores_uri}}iteration-{{loop.grade}}/"
     resources: cpu
     run:
       argv:
@@ -593,6 +610,8 @@ states:
       Stage 3 - Pseudo-Label Augmented. Re-caption the promoted augmented clips with
       the same hosted VLM so the amplified dataset ships fully labeled.
     needs: [require-accepted-quality]
+    params:
+      augmented_frames_uri: "{{config.augment_uri}}iteration-{{loop.grade}}/"
     resources: cpu
     run:
       shell: >
@@ -621,6 +640,8 @@ states:
       and an ffmpeg carrying libopenh264. The stage fails closed if the real
       upstream curator cannot run or publish its output.
     needs: [annotate-augmented]
+    params:
+      augment_uri: "{{config.augment_uri}}iteration-{{loop.grade}}/"
     toolRef: workbench.cosmos_curate.curate
     resources: cpu
     inputs:
@@ -644,6 +665,9 @@ states:
       unavailable the stage fails closed; it never markets counts-only output as
       FiftyOne review.
     needs: [cosmos-curate]
+    params:
+      augment_uri: "{{config.augment_uri}}iteration-{{loop.grade}}/"
+      lance_uri: "{{config.augment_uri}}iteration-{{loop.grade}}/"
     toolRef: workbench.fiftyone.curate_augmented
     resources: cpu
     inputs:

@@ -645,7 +645,7 @@ def test_paidf_planner_uses_compatible_first_pass_and_committed_retry_pointer() 
     )
     # The prepare argv carries the exact baseline, adaptive bounds, authoritative
     # decision artifact, and matching quality threshold used to create a retry.
-    assert prepare.argv[-9:] == [
+    assert prepare.argv[-10:] == [
         "true",
         "1.0",
         "3.0",
@@ -655,7 +655,50 @@ def test_paidf_planner_uses_compatible_first_pass_and_committed_retry_pointer() 
         "1.0",
         "s3://example-bucket/physical-ai-data-factory/planner-settings/grade/decision.json",
         "0.75",
+        "1",
     ]
+
+
+def test_paidf_refinement_iterations_use_append_only_artifact_prefixes() -> None:
+    spec = load_spec(PAIDF)
+    plan = build_plan(
+        spec,
+        run_id="append-only-refinement",
+        assume_decision="loop_back",
+    )
+
+    augments = [step for step in plan.steps if step.state == "augment"]
+    evaluates = [step for step in plan.steps if step.state == "evaluate"]
+    gates = [step for step in plan.steps if step.state == "quality-gate"]
+    prepares = [step for step in plan.steps if step.state == "prepare-refinement"]
+    assert [step.outputs[0]["uri"] for step in augments] == [
+        "s3://example-bucket/physical-ai-data-factory/append-only-refinement/"
+        "cosmos_augmented/iteration-1/manifest.json",
+        "s3://example-bucket/physical-ai-data-factory/append-only-refinement/"
+        "cosmos_augmented/iteration-2/manifest.json",
+    ]
+    assert [
+        step.argv[step.argv.index("--output-uri") + 1] for step in evaluates
+    ] == [
+        "s3://example-bucket/physical-ai-data-factory/append-only-refinement/"
+        "grade/iteration-1/",
+        "s3://example-bucket/physical-ai-data-factory/append-only-refinement/"
+        "grade/iteration-2/",
+    ]
+    assert [step.outputs[0]["uri"] for step in gates] == [
+        "s3://example-bucket/physical-ai-data-factory/append-only-refinement/"
+        "grade/iteration-1/decision.json",
+        "s3://example-bucket/physical-ai-data-factory/append-only-refinement/"
+        "grade/iteration-2/decision.json",
+    ]
+    assert [step.argv[-1] for step in prepares] == ["1", "2"]
+
+    reject = next(step for step in plan.steps if step.state == "reject-quality")
+    assert (
+        reject.argv[-3]
+        == "s3://example-bucket/physical-ai-data-factory/append-only-refinement/"
+        "grade/iteration-2/"
+    )
 
 
 def test_paidf_bare_static_plan_previews_promoted_path_with_fail_closed_guard(

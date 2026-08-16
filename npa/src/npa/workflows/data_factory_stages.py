@@ -24,6 +24,7 @@ import hashlib
 import json
 import math
 import random
+import re
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -744,20 +745,47 @@ def prepare_refinement(
     min_guidance: float | str = 1.0,
     decision_uri: str = "",
     grade_threshold: float | str = 0.75,
+    loop_iteration: int | str = "",
 ) -> dict[str, Any]:
     """Write the effective Cosmos settings for this refinement attempt.
 
     The first loop iteration records the configured baseline. Later iterations
-    consume the gate decision (when supplied) and independently evaluate the same
-    completed/status, hard-check, and score-threshold contract. Every real retry
-    must change the effective control/guidance pair. The current pointer is
-    mutable, but each attempt and its commit marker are immutable.
+    consume the preceding iteration's immutable evaluator and gate artifacts and
+    independently evaluate the same completed/status, hard-check, and
+    score-threshold contract. Every real retry must change the effective
+    control/guidance pair. The current pointer is mutable, but each attempt and its
+    commit marker are immutable.
 
     This policy is intentionally generic: it reacts only to checker names and
     numeric scores, never to scene labels or deployment-specific semantics.
     """
 
     from npa.workbench.cosmos_evaluator import RESULT_FILENAME
+
+    if str(loop_iteration).strip():
+        try:
+            current_iteration = int(loop_iteration)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("loop_iteration must be a positive integer") from exc
+        if current_iteration < 1:
+            raise ValueError("loop_iteration must be a positive integer")
+        prior_iteration = current_iteration - 1
+        if scores_uri.endswith(".json"):
+            score_parent, _, score_name = scores_uri.rpartition("/")
+            score_prefix = f"{score_parent}/" if score_parent else ""
+            scores_uri = (
+                f"{score_prefix}iteration-{prior_iteration}/{score_name}"
+            )
+        else:
+            scores_uri = (
+                f"{scores_uri.rstrip('/')}/iteration-{prior_iteration}/"
+            )
+        if decision_uri:
+            decision_parent, _, decision_name = decision_uri.rpartition("/")
+            decision_prefix = f"{decision_parent}/" if decision_parent else ""
+            decision_uri = (
+                f"{decision_prefix}iteration-{prior_iteration}/{decision_name}"
+            )
 
     def _number(name: str, value: Any) -> float:
         try:
@@ -1435,20 +1463,31 @@ def finalize(run_root_uri: str, report_uri: str) -> dict[str, Any]:
     # Count augmented scenario variants (per-clip subdirs under cosmos_augmented/,
     # excluding the top-level run manifest) so the final report reflects the real
     # "multiply" fan-out — one Cosmos Transfer 2.5 inference per sampled combo.
+    aug_marker = "cosmos_augmented/"
+    iteration_numbers: set[int] = set()
+    for key in keys:
+        match = re.search(r"cosmos_augmented/iteration-(\d+)/", key)
+        if match:
+            iteration_numbers.add(int(match.group(1)))
+    selected_aug_marker = (
+        f"{aug_marker}iteration-{max(iteration_numbers)}/"
+        if iteration_numbers
+        else aug_marker
+    )
+    selected_augment_uri = run_root_uri.rstrip("/") + f"/{selected_aug_marker}"
     committed = _committed_augment_manifest(
-        run_root_uri.rstrip("/") + "/cosmos_augmented/", listed_keys=keys
+        selected_augment_uri, listed_keys=keys
     )
     if committed is not None:
         n_variants = int(committed.get("variant_count", 0) or 0)
     else:
-        aug_marker = "cosmos_augmented/"
         aug_clips: set[str] = set()
-        for k in keys:
-            if aug_marker in k:
-                rest = k.split(aug_marker, 1)[1]
-                seg = rest.split("/", 1)[0] if "/" in rest else ""
-                if seg and seg != "_attempts":
-                    aug_clips.add(seg)
+        for key in keys:
+            if selected_aug_marker in key:
+                rest = key.split(selected_aug_marker, 1)[1]
+                segment = rest.split("/", 1)[0] if "/" in rest else ""
+                if segment and segment != "_attempts":
+                    aug_clips.add(segment)
         n_variants = len(aug_clips)
     bucket, _prefix = _split(run_root_uri)
     lineage_key = next(

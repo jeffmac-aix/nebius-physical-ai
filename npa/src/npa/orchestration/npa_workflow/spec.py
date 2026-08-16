@@ -556,6 +556,12 @@ def _validate_executable_resource_contracts(spec: NpaWorkflowSpec) -> None:
     from npa.orchestration.npa_workflow.interpreter import _make_context
 
     context = _make_context(spec, run_id="validate-run")
+    # Executable params may carry a named loop token (for append-only per-attempt
+    # output prefixes). Use the same first-iteration sentinel as the general
+    # resolvability validator so semantic checks validate the resolved contract.
+    context.loop_iterations = {
+        state.name: 1 for state in spec.states.values() if state.loop is not None
+    }
     for state in spec.states.values():
         if not state.run and not state.tool_ref:
             continue
@@ -604,6 +610,7 @@ def _validate_executable_resource_contracts(spec: NpaWorkflowSpec) -> None:
                 state.params,
                 config=context.config,
                 run=context.run,
+                loop_iterations=context.loop_iterations,
             )
         except TokenError as exc:
             raise NpaWorkflowError(f"state {state.name}: {exc}") from exc
