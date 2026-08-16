@@ -142,6 +142,12 @@ def test_paidf_runtime_executor_observes_terminal_nonzero_rejection(
     _persist_quality_disposition(str(scores), str(disposition), 0.75)
     spec.config["scores_uri"] = str(scores)
     spec.config["quality_disposition_uri"] = str(disposition)
+    spec.states["quality-disposition"].params["decision_uri"] = (
+        "s3://example-bucket/paidf-test/final-decision.json"
+    )
+    spec.states["quality-gate"].params["decision_uri"] = (
+        "s3://example-bucket/paidf-test/iteration-{{loop.grade}}/decision.json"
+    )
 
     class _RuntimeExecutor:
         def __init__(self) -> None:

@@ -93,6 +93,68 @@ states:
     terminal: true
 """
 
+SCOPED_GATE_LOOP_SPEC = """
+apiVersion: npa.workflow/v0.0.1
+kind: Workflow
+
+metadata:
+  name: scoped-gate-loop-demo
+
+config:
+  bucket: example-bucket
+  prefix: "scoped-gate/{{run.id}}"
+  max_iterations: 2
+  decision_uri: "s3://{{config.bucket}}/{{config.prefix}}/legacy/decision.json"
+
+resources:
+  cpu:
+    cloud: kubernetes
+    cpus: 4
+    memory: 16Gi
+
+initial: refine
+
+states:
+  refine:
+    description: Bounded loop whose gate has an iteration-scoped decision.
+    loop:
+      max: "{{config.max_iterations}}"
+      until: promote_checkpoint
+    sequence:
+      - work
+      - gate
+    next: publish
+
+  work:
+    description: Do the work.
+    run:
+      shell: "echo work"
+    resources: cpu
+
+  gate:
+    description: Write this iteration's decision artifact.
+    writesDecision: true
+    needs: [work]
+    params:
+      decision_uri: >-
+        s3://{{config.bucket}}/{{config.prefix}}/iteration-{{loop.refine}}/decision.json
+    run:
+      shell: "echo gate {{config.decision_uri}}"
+    resources: cpu
+    outputs:
+      - uri: "{{config.prefix}}/gate-report.json"
+        schema: npa.example.report.v1
+      - uri: "{{config.decision_uri}}"
+        schema: npa.sim2real.threshold_decision.v1
+
+  publish:
+    description: Publish after promotion or loop exhaustion.
+    run:
+      shell: "echo publish"
+    resources: cpu
+    terminal: true
+"""
+
 FANOUT_SPEC = """
 apiVersion: npa.workflow/v0.0.1
 kind: Workflow
@@ -657,6 +719,50 @@ def test_runtime_runs_full_budget_when_gate_keeps_looping(tmp_path: Path) -> Non
     assert sum(1 for call in submitter.calls if call["tasks"] == ["gate"]) == 3
     assert submitter.calls[-1]["tasks"] == ["publish"]
     assert len(report.decisions) == 3
+
+
+def test_runtime_reads_exact_iteration_scoped_decision_output(tmp_path: Path) -> None:
+    spec = load_spec(_write_spec(tmp_path, SCOPED_GATE_LOOP_SPEC))
+    submitter = FakeSubmitter()
+    executor = _executor(spec, submitter=submitter)
+    reads: list[tuple[str, str]] = []
+    decisions = iter(("loop_back", "promote_checkpoint"))
+
+    def reader(bucket: str, key: str) -> str:
+        reads.append((bucket, key))
+        return json.dumps({"decision": next(decisions)})
+
+    report = run_workflow_runtime(
+        spec,
+        run_id="rt-scoped-decision",
+        executor=executor,
+        options=executor.options,
+        decision_reader=reader,
+        assume_decision="loop_back",
+    )
+
+    assert report.status == "succeeded"
+    assert reads == [
+        (
+            "example-bucket",
+            "scoped-gate/rt-scoped-decision/iteration-1/decision.json",
+        ),
+        (
+            "example-bucket",
+            "scoped-gate/rt-scoped-decision/iteration-2/decision.json",
+        ),
+    ]
+    assert all(
+        decision.get("source") != "assume_decision_fallback"
+        for decision in report.decisions
+    )
+    assert [call["tasks"][0] for call in submitter.calls] == [
+        "work",
+        "gate",
+        "work",
+        "gate",
+        "publish",
+    ]
 
 
 def test_runtime_branch_follows_transition_goto(tmp_path: Path) -> None:
