@@ -544,13 +544,25 @@ def submit_cmd(
         "--lerobot-camera",
         help=(
             "PAIDF LeRobot input only: exact observation camera feature/path segment; "
-            "the lexically first camera is used when omitted."
+            "the lexically first camera is used when omitted unless strict selection "
+            "is requested."
         ),
     ),
-    lerobot_episode: int = typer.Option(
-        0,
+    lerobot_episode: int | None = typer.Option(
+        None,
         "--lerobot-episode",
-        help="PAIDF LeRobot input only: non-negative episode index (default: 0).",
+        help=(
+            "PAIDF LeRobot input only: non-negative episode index (compatibility "
+            "default: 0)."
+        ),
+    ),
+    require_explicit_lerobot_selection: bool = typer.Option(
+        False,
+        "--require-explicit-lerobot-selection",
+        help=(
+            "PAIDF LeRobot input only: fail before object-store access unless both "
+            "--lerobot-camera and --lerobot-episode were explicitly supplied."
+        ),
     ),
     seed_fixture: bool = typer.Option(
         False,
@@ -620,6 +632,7 @@ def submit_cmd(
         substitutions.get("seed_fixture")
     ) or _is_truthy_submit_value(substitutions.get("seed_default_input"))
     fixture_requested = seed_fixture or legacy_fixture
+    resolved_lerobot_episode = 0 if lerobot_episode is None else lerobot_episode
     try:
         from npa.workflows.data_factory_input import select_paidf_input
 
@@ -634,7 +647,9 @@ def submit_cmd(
         validate_lerobot_selector(
             selection=input_selection,
             camera=lerobot_camera,
-            episode=lerobot_episode,
+            episode=resolved_lerobot_episode,
+            require_explicit_selection=require_explicit_lerobot_selection,
+            episode_was_explicit=lerobot_episode is not None,
         )
     except RuntimeError as exc:
         _fail(str(exc))
@@ -991,7 +1006,11 @@ def submit_cmd(
                         input_uri=input_uri,
                         lerobot_uri=lerobot_uri,
                         lerobot_camera=lerobot_camera,
-                        lerobot_episode=lerobot_episode,
+                        lerobot_episode=resolved_lerobot_episode,
+                        require_explicit_lerobot_selection=(
+                            require_explicit_lerobot_selection
+                        ),
+                        lerobot_episode_was_explicit=lerobot_episode is not None,
                         seed_fixture=fixture_requested,
                     )
                 else:
@@ -1002,7 +1021,11 @@ def submit_cmd(
                         input_uri=input_uri,
                         lerobot_uri=lerobot_uri,
                         lerobot_camera=lerobot_camera,
-                        lerobot_episode=lerobot_episode,
+                        lerobot_episode=resolved_lerobot_episode,
+                        require_explicit_lerobot_selection=(
+                            require_explicit_lerobot_selection
+                        ),
+                        lerobot_episode_was_explicit=lerobot_episode is not None,
                         seed_fixture=fixture_requested,
                         endpoint_url=s3_endpoint,
                         aws_access_key_id=extra_env.get("AWS_ACCESS_KEY_ID", ""),

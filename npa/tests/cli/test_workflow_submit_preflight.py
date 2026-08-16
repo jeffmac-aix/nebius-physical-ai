@@ -247,6 +247,7 @@ def test_paidf_lerobot_selector_is_planned_without_object_store_access(
         "observation.images.front",
         "--lerobot-episode",
         "3",
+        "--require-explicit-lerobot-selection",
         "--var",
         "bucket=real-bucket",
         "--output-format",
@@ -258,6 +259,55 @@ def test_paidf_lerobot_selector_is_planned_without_object_store_access(
     assert payload["lifecycle_state"] == "PLAN_ONLY"
     assert "Operator-supplied LeRobotDataset" not in result.output
     assert "input_source_format" not in result.output  # metadata, not an argv shim
+
+
+@pytest.mark.parametrize(
+    ("args", "missing"),
+    [
+        (
+            (
+                "--lerobot-uri",
+                "s3://source-bucket/datasets/robot-run/",
+                "--lerobot-episode",
+                "0",
+            ),
+            "--lerobot-camera",
+        ),
+        (
+            (
+                "--lerobot-uri",
+                "s3://source-bucket/datasets/robot-run/",
+                "--lerobot-camera",
+                "observation.images.front",
+            ),
+            "--lerobot-episode",
+        ),
+    ],
+)
+def test_paidf_lerobot_strict_selector_fails_before_preflight(
+    args: tuple[str, ...], missing: str
+) -> None:
+    result = _submit(
+        "--plan-only",
+        *args,
+        "--require-explicit-lerobot-selection",
+    )
+
+    assert result.exit_code == 1
+    assert missing in result.output
+    assert "fails closed" in result.output
+    assert "missing prerequisites" not in result.output
+
+
+def test_paidf_lerobot_strict_selector_requires_dataset_uri() -> None:
+    result = _submit(
+        "--plan-only",
+        "--require-explicit-lerobot-selection",
+    )
+
+    assert result.exit_code == 1
+    assert "requires --lerobot-uri" in result.output
+    assert "missing prerequisites" not in result.output
 
 
 def test_paidf_lerobot_only_selectors_fail_without_dataset_uri() -> None:

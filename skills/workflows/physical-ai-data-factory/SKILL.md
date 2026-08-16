@@ -260,7 +260,12 @@ already stored by `npa configure`. With no input selector, submit fetches,
 checksum-verifies, caches, normalizes, and stages the pinned real RoboPro starter.
 Use `--input-video`, `--input-uri`, or `--lerobot-uri` to replace it; LeRobot
 selection may add an exact `--lerobot-camera` and non-negative
-`--lerobot-episode`, and materializes only the chosen observation video. Use
+`--lerobot-episode`, and materializes only the chosen observation video. For a
+subject-sensitive run, privately review representative beginning, middle, and
+end frames and pass `--require-explicit-lerobot-selection`; it fails before
+object-store access unless both selectors were explicitly supplied. The flag is
+data-agnostic and records no selectors or subject labels in Git. Omitting it
+retains the compatibility defaults and is not semantic-subject proof. Use
 `--seed-fixture` only for explicitly synthetic developer/test input.
 The one-variant override keeps the first real run decisive; omit it for the
 spec's default two-variant multiply or raise it with the requested GPU count.
@@ -295,6 +300,12 @@ not change these disk requirements.
   rejected runs get a partial evidence recording before the explicit fail-closed
   state. Runs that fail before usable input/augmented frames exist cannot produce
   an RRD.
+- **Schema is not semantic proof.** A valid LeRobot `meta/info.json`, checksum,
+  or automatic camera choice cannot establish the depicted subject. For a
+  subject-sensitive run, inspect representative frames outside the repository,
+  supply exact camera and episode selectors, and enable
+  `--require-explicit-lerobot-selection` so compatibility defaults cannot choose
+  a different stream. Ambiguous visual candidates fail closed operationally.
 - **SAM2 is explicit and optional.** `segmentation_mode: off` is the default and
   keeps the non-SAM path unchanged. `sam2-auto` invokes upstream Meta SAM2 in the
   Cosmos GPU task once per source clip, publishes an exact
