@@ -342,7 +342,7 @@ describe("NPA agent UI with mocked APIs", () => {
     cy.get("#artifactRefreshRuns").should("be.enabled").and("have.attr", "aria-busy", "false");
   });
 
-  it("selects one escaped project detail at a time and preserves the stable project ID", () => {
+  it("selects one escaped project and bucket detail at a time", () => {
     const projectCapabilities = (artifactStatus, artifactReason, readStatus, readReason, submitStatus, submitReason) => ({
       project_metadata: { status: "available", reason: "Project identity was returned by tenant discovery." },
       storage_resource_discovery: { status: "available", reason: "Object storage resources visible in this project were listed." },
@@ -411,7 +411,10 @@ describe("NPA agent UI with mocked APIs", () => {
         deployment_project: true,
         status: "available",
         capabilities: projectCapabilities("available", "At least one project bucket is searchable.", "available", "Artifact object reads were verified.", "available", "Workflow submission remains scoped to the deployment project."),
-        resources: [resource("resource-a", "project-artifacts")],
+        resources: [
+          resource("resource-a", "project-artifacts"),
+          resource("resource-a-archive", "archive-artifacts"),
+        ],
       },
       {
         id: "project-c",
@@ -456,6 +459,7 @@ describe("NPA agent UI with mocked APIs", () => {
     cy.wait("@selectorAccess");
 
     cy.get('label[for="agentAccessProjectSelect"]').should("contain.text", "Project");
+    cy.get('label[for="agentAccessBucketSelect"]').should("contain.text", "Bucket");
     cy.get("#agentAccessProjectSelect")
       .should("have.prop", "tagName", "SELECT")
       .and("be.enabled")
@@ -475,11 +479,25 @@ describe("NPA agent UI with mocked APIs", () => {
       .and("contain.text", "Project Alpha")
       .and("contain.text", "project-a")
       .and("contain.text", "deployment project");
+    cy.get("#agentAccessBucketSelect")
+      .should("have.prop", "tagName", "SELECT")
+      .and("be.enabled")
+      .and("have.attr", "aria-describedby", "agentAccessBucketHint")
+      .and("have.value", "project-artifacts");
+    cy.get("#agentAccessBucketSelect option").should("have.length", 2);
+    cy.get("#agentAccessProjects .access-resource").should("have.length", 1)
+      .and("contain.text", "project-artifacts")
+      .and("not.contain.text", "archive-artifacts");
+    cy.get("#agentAccessBucketSelect").select("archive-artifacts");
+    cy.get("#agentAccessProjects .access-resource").should("have.length", 1)
+      .and("contain.text", "archive-artifacts")
+      .and("not.contain.text", "project-artifacts");
     cy.get("#agentAccessPanel").should(($panel) => {
       expect($panel.text()).not.to.match(/\bpartial\b/i);
     });
 
     cy.get("#agentAccessProjectSelect").select("project-b");
+    cy.get("#agentAccessBucketSelect").should("have.value", "foreign-artifacts");
     cy.get("#agentAccessProjects .access-project-detail").should("have.length", 1)
       .and("contain.text", "Foreign Project")
       .and("contain.text", "foreign-artifacts")
@@ -489,7 +507,18 @@ describe("NPA agent UI with mocked APIs", () => {
       .should("have.attr", "data-project-id", "project-b")
       .and("have.attr", "data-resource-bucket", "foreign-artifacts");
 
+    cy.get("#agentAccessProjectSelect").select("project-a");
+    cy.get("#agentAccessBucketSelect").should("have.value", "project-artifacts");
+    cy.get("#agentAccessProjects .access-resource")
+      .should("contain.text", "project-artifacts")
+      .and("not.contain.text", "archive-artifacts");
+
     cy.get("#agentAccessProjectSelect").select("project-c");
+    cy.get("#agentAccessBucketSelect")
+      .should("be.disabled")
+      .and("have.value", "")
+      .find("option")
+      .should("have.text", "No buckets available");
     cy.get("#agentAccessProjects .access-project-detail").should("have.length", 1)
       .and("contain.text", "No searchable artifact bucket.")
       .and("contain.text", "No Bucket")
@@ -497,6 +526,7 @@ describe("NPA agent UI with mocked APIs", () => {
     cy.get("#agentAccessProjects button[data-access-action]").should("not.exist");
 
     cy.get("#agentAccessProjectSelect").select("project-d");
+    cy.get("#agentAccessBucketSelect").should("be.enabled").and("have.value", "empty-artifacts");
     cy.get("#agentAccessProjects .access-project-detail").should("have.length", 1)
       .and("contain.text", "Empty Bucket")
       .and("contain.text", "empty-artifacts")
@@ -522,6 +552,7 @@ describe("NPA agent UI with mocked APIs", () => {
       ]);
     });
     cy.get("#agentAccessProjectSelect").invoke("val", hostileProjectId).trigger("change");
+    cy.get("#agentAccessBucketSelect").should("have.value", hostileBucket);
     cy.get("#agentAccessProjects .access-project-detail").should("have.length", 1)
       .and("contain.text", hostileProjectId)
       .and("contain.text", hostileBucket)
@@ -529,9 +560,16 @@ describe("NPA agent UI with mocked APIs", () => {
     cy.get("#agentAccessPanel").find("script, img, svg").should("not.exist");
     cy.window().its("__npaXss").should("not.exist");
     cy.get("#agentAccessProjectSelect").focus().should("be.focused");
+    cy.get("#agentAccessBucketSelect").focus().should("be.focused");
 
     cy.viewport(375, 667);
     cy.get("#agentAccessProjectSelect").should("be.visible").then(($select) => {
+      const selectRect = $select[0].getBoundingClientRect();
+      const panelRect = $select[0].closest("#agentAccessPanel").getBoundingClientRect();
+      expect(selectRect.left).to.be.at.least(panelRect.left);
+      expect(selectRect.right).to.be.at.most(panelRect.right + 1);
+    });
+    cy.get("#agentAccessBucketSelect").should("be.visible").then(($select) => {
       const selectRect = $select[0].getBoundingClientRect();
       const panelRect = $select[0].closest("#agentAccessPanel").getBoundingClientRect();
       expect(selectRect.left).to.be.at.least(panelRect.left);
@@ -596,14 +634,16 @@ describe("NPA agent UI with mocked APIs", () => {
 
   it("disables denied and unavailable access actions with visible reasons", () => {
     for (const bucket of ["denied-artifacts", "unavailable-artifacts"]) {
+      cy.get("#agentAccessBucketSelect").select(bucket);
       cy.get(`#agentAccessProjects [data-resource-bucket="${bucket}"]`).each(($button) => {
         expect($button[0].tagName).to.eq("BUTTON");
         expect($button).to.be.disabled;
         expect($button.attr("aria-describedby")).to.be.a("string").and.not.be.empty;
       });
     }
-    cy.get("#agentAccessProjects").should("contain.text", "Permission denied while listing objects.");
     cy.get("#agentAccessProjects").should("contain.text", "Object reads could not be verified.");
+    cy.get("#agentAccessBucketSelect").select("denied-artifacts");
+    cy.get("#agentAccessProjects").should("contain.text", "Permission denied while listing objects.");
   });
 
   it("shows busy/error feedback and blocks stale resource responses", () => {
@@ -639,6 +679,7 @@ describe("NPA agent UI with mocked APIs", () => {
     cy.get("#agentAccessActionResult")
       .should("have.attr", "aria-busy", "true")
       .and("contain.text", "Querying the selected project and bucket");
+    cy.get("#agentAccessBucketSelect").select("archive-artifacts");
     cy.get('#agentAccessProjects button[data-access-action="list"][data-resource-bucket="archive-artifacts"]').click();
     cy.wait("@scopedAccessRuns");
     cy.get("#agentAccessActionResult", { timeout: 3000 })
@@ -652,6 +693,7 @@ describe("NPA agent UI with mocked APIs", () => {
       statusCode: 502,
       body: { ok: false, error: "Scoped list probe failed." },
     }).as("failedAccessRuns");
+    cy.get("#agentAccessBucketSelect").select("project-artifacts");
     cy.get('#agentAccessProjects button[data-access-action="list"][data-resource-bucket="project-artifacts"]').click();
     cy.wait("@failedAccessRuns");
     cy.get("#agentAccessActionResult")
@@ -680,6 +722,26 @@ describe("NPA agent UI with mocked APIs", () => {
     cy.wait(800);
     cy.get("#agentAccessActionResult").should("have.attr", "hidden");
     cy.get("#agentAccessActionResult").should("not.contain.text", "must-not-render-after-refresh");
+  });
+
+  it("preserves the selected bucket when an access refresh fails", () => {
+    cy.get("#agentAccessBucketSelect").select("archive-artifacts");
+    cy.get("#agentAccessProjects .access-resource").should("contain.text", "archive-artifacts");
+    cy.intercept("GET", "/api/access?refresh=true", {
+      statusCode: 503,
+      body: { ok: false, error: "Access inventory is temporarily unavailable." },
+    }).as("failedAccessRefresh");
+
+    cy.get("#agentAccessRefresh").click();
+    cy.wait("@failedAccessRefresh");
+    cy.get("#agentAccessStatus").should("have.text", "Access unavailable");
+    cy.get("#agentAccessErrors").should("contain.text", "Existing project-scoped operations are unchanged");
+    cy.get("#agentAccessProjectSelect").should("have.value", "project-a");
+    cy.get("#agentAccessBucketSelect").should("be.enabled").and("have.value", "archive-artifacts");
+    cy.get("#agentAccessProjects .access-resource")
+      .should("have.length", 1)
+      .and("contain.text", "archive-artifacts")
+      .and("not.contain.text", "project-artifacts");
   });
 
   it("opens a JSON-only run through Read and renders useful content", () => {

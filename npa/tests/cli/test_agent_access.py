@@ -274,6 +274,8 @@ def test_access_model_is_embedded_with_api_ui_and_read_boundary() -> None:
     assert 'id="agentAccessPanel"' in ui_source
     assert 'id="agentAccessProjectSelect"' in ui_source
     assert 'for="agentAccessProjectSelect"' in ui_source
+    assert 'id="agentAccessBucketSelect"' in ui_source
+    assert 'for="agentAccessBucketSelect"' in ui_source
     assert 'apiJson("/api/access"' in ui_source
     assert 'data-access-action="' in ui_source
     assert 'data-capability-status="' in ui_source
@@ -292,6 +294,9 @@ def test_access_model_is_embedded_with_api_ui_and_read_boundary() -> None:
         in ui_source
     )
     assert "const nextSelection = retained || deployment" in ui_source
+    assert "populateAccessBucketPicker(selected, !projectChanged)" in ui_source
+    assert "function selectAccessBucket(bucketName)" in ui_source
+    assert 'data-selected-bucket="' in ui_source
     assert "No searchable artifact bucket." in ui_source
 
 
