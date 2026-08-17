@@ -665,34 +665,39 @@ def _resolve_deploy_storage_credentials(
             candidate["nebius_secret_key"] = configured_secret_key
             return candidate
 
-    shared = load_credentials(environ={})
-    shared_bucket = str(shared.s3_bucket or "").strip()
-    shared_prefix = ""
-    if shared_bucket.startswith("s3://"):
-        rest = shared_bucket[len("s3://") :]
-        shared_bucket, _sep, shared_prefix = rest.partition("/")
-        shared_prefix = shared_prefix.strip("/")
-    shared_endpoint = str(
-        shared.s3_endpoint or f"https://storage.{region}.nebius.cloud"
-    ).strip()
-    shared_access_key = str(shared.s3_access_key_id or "").strip()
-    shared_secret_key = str(shared.s3_secret_access_key or "").strip()
-    if shared_bucket and _storage_credentials_allow_writes(
-        bucket=shared_bucket,
-        endpoint=shared_endpoint,
-        access_key=shared_access_key,
-        secret_key=shared_secret_key,
-        region=region,
-        prefix=shared_prefix,
-    ):
-        if emit_status:
-            typer.echo("  Using health-verified shared artifact storage credentials.")
-        candidate["s3_bucket"] = shared_bucket
-        candidate["s3_prefix"] = shared_prefix
-        candidate["s3_endpoint"] = shared_endpoint
-        candidate["nebius_api_key"] = shared_access_key
-        candidate["nebius_secret_key"] = shared_secret_key
-        return candidate
+    # Never record a host-level shared bucket as an explicit project's remote
+    # backend; keep immutable journal ownership exact.
+    if not project_name:
+        shared = load_credentials(environ={})
+        shared_bucket = str(shared.s3_bucket or "").strip()
+        shared_prefix = ""
+        if shared_bucket.startswith("s3://"):
+            rest = shared_bucket[len("s3://") :]
+            shared_bucket, _sep, shared_prefix = rest.partition("/")
+            shared_prefix = shared_prefix.strip("/")
+        shared_endpoint = str(
+            shared.s3_endpoint or f"https://storage.{region}.nebius.cloud"
+        ).strip()
+        shared_access_key = str(shared.s3_access_key_id or "").strip()
+        shared_secret_key = str(shared.s3_secret_access_key or "").strip()
+        if shared_bucket and _storage_credentials_allow_writes(
+            bucket=shared_bucket,
+            endpoint=shared_endpoint,
+            access_key=shared_access_key,
+            secret_key=shared_secret_key,
+            region=region,
+            prefix=shared_prefix,
+        ):
+            if emit_status:
+                typer.echo(
+                    "  Using health-verified shared artifact storage credentials."
+                )
+            candidate["s3_bucket"] = shared_bucket
+            candidate["s3_prefix"] = shared_prefix
+            candidate["s3_endpoint"] = shared_endpoint
+            candidate["nebius_api_key"] = shared_access_key
+            candidate["nebius_secret_key"] = shared_secret_key
+            return candidate
 
     bucket = str(candidate.get("s3_bucket", "")).strip()
     endpoint = str(candidate.get("s3_endpoint", "")).strip()

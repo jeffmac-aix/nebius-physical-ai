@@ -195,6 +195,12 @@
       .access-project-picker {
         display: grid;
         gap: 5px;
+        max-width: 720px;
+      }
+      .access-picker-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
         margin-top: 12px;
         max-width: 720px;
       }
@@ -273,6 +279,7 @@
       .access-action-run-copy { min-width: 0; overflow-wrap: anywhere; }
       .access-errors { margin-top: 8px; color: var(--danger-text); font-size: 12px; }
       @media (max-width: 760px) {
+        .access-picker-grid { grid-template-columns: 1fr; }
         .access-capabilities { grid-template-columns: 1fr; }
         .access-action-run { align-items: flex-start; flex-direction: column; }
       }
@@ -1967,12 +1974,21 @@
             </div>
           </div>
           <div id="agentAccessSummary" class="access-summary" aria-live="polite"></div>
-          <div class="access-project-picker">
-            <label for="agentAccessProjectSelect">Project</label>
-            <select id="agentAccessProjectSelect" aria-describedby="agentAccessProjectHint" disabled>
-              <option value="">Loading projects…</option>
-            </select>
-            <span id="agentAccessProjectHint" class="hint">Choose a project to inspect its effective read access and available actions.</span>
+          <div class="access-picker-grid">
+            <div class="access-project-picker">
+              <label for="agentAccessProjectSelect">Project</label>
+              <select id="agentAccessProjectSelect" aria-describedby="agentAccessProjectHint" disabled>
+                <option value="">Loading projects…</option>
+              </select>
+              <span id="agentAccessProjectHint" class="hint">Choose a project to inspect its effective read access.</span>
+            </div>
+            <div class="access-project-picker">
+              <label for="agentAccessBucketSelect">Bucket</label>
+              <select id="agentAccessBucketSelect" aria-describedby="agentAccessBucketHint" disabled>
+                <option value="">Loading buckets…</option>
+              </select>
+              <span id="agentAccessBucketHint" class="hint">Choose one bucket to inspect its available actions.</span>
+            </div>
           </div>
           <div id="agentAccessProjects" class="access-projects" aria-live="polite"></div>
           <div id="agentAccessErrors" class="access-errors" role="status"></div>
@@ -2641,6 +2657,7 @@
       let accessRefreshController = null;
       let selectedAccessResource = null;
       let selectedAccessProjectId = storedAccessProjectId();
+      let selectedAccessBucketName = "";
       let currentAccessReport = null;
       function accessSelectionFromButton(button) {
         return {
@@ -2869,6 +2886,54 @@
         }
         return false;
       }
+      function selectedAccessProject() {
+        return sortedAccessProjects(currentAccessReport).find(
+          (item) => String((item && item.id) || "") === selectedAccessProjectId,
+        ) || null;
+      }
+      function accessProjectResources(project) {
+        return Array.isArray(project && project.resources) ? project.resources : [];
+      }
+      function setAccessBucketPlaceholder(message) {
+        const picker = document.getElementById("agentAccessBucketSelect");
+        if (!picker) return;
+        picker.replaceChildren();
+        const option = document.createElement("option");
+        option.value = "";
+        option.textContent = message;
+        picker.appendChild(option);
+        picker.value = "";
+        picker.disabled = true;
+      }
+      function populateAccessBucketPicker(project, retainSelection) {
+        const picker = document.getElementById("agentAccessBucketSelect");
+        const resources = accessProjectResources(project);
+        if (!picker) {
+          selectedAccessBucketName = resources.length
+            ? String((resources[0] && resources[0].name) || "")
+            : "";
+          return;
+        }
+        picker.replaceChildren();
+        resources.forEach((resource) => {
+          const option = document.createElement("option");
+          const bucket = String((resource && resource.name) || "unnamed bucket");
+          option.value = bucket;
+          option.textContent = bucket;
+          picker.appendChild(option);
+        });
+        picker.disabled = !resources.length;
+        if (!resources.length) {
+          setAccessBucketPlaceholder(project ? "No buckets available" : "Select a project first");
+          selectedAccessBucketName = "";
+          return;
+        }
+        const retained = retainSelection && resources.some(
+          (resource) => String((resource && resource.name) || "unnamed bucket") === selectedAccessBucketName,
+        ) ? selectedAccessBucketName : "";
+        selectedAccessBucketName = retained || String((resources[0] && resources[0].name) || "unnamed bucket");
+        picker.value = selectedAccessBucketName;
+      }
       function renderSelectedAccessProject() {
         const projectsHost = document.getElementById("agentAccessProjects");
         if (!projectsHost) return;
@@ -2886,7 +2951,11 @@
         const readScope = capabilities.artifact_read || {};
         const submit = capabilities.workflow_submission || {};
         const storageDiscovery = capabilities.storage_resource_discovery || {};
-        const resources = Array.isArray(project && project.resources) ? project.resources : [];
+        const resources = accessProjectResources(project);
+        const selectedResourceIndex = resources.findIndex(
+          (resource) => String((resource && resource.name) || "unnamed bucket") === selectedAccessBucketName,
+        );
+        const selectedResource = selectedResourceIndex >= 0 ? resources[selectedResourceIndex] : null;
         const projectId = String(project.id || "");
         const projectName = String(project.name || projectId || "project");
         const scopeHtml = (label, capability) => {
@@ -2895,7 +2964,9 @@
             escapeHtml(accessStatusLabel(capStatus)) + "</strong> — " +
             escapeHtml(String(capability.reason || "No capability reason was reported.")) + "</div>";
         };
-        const resourceHtml = resources.length ? resources.map((resource, resourceIndex) => {
+        const resourceHtml = selectedResource ? (() => {
+          const resource = selectedResource;
+          const resourceIndex = selectedResourceIndex;
           const caps = (resource && resource.capabilities) || {};
           const list = caps.artifact_discovery || {};
           const read = caps.artifact_read || {};
@@ -2915,13 +2986,13 @@
               '<span id="' + reasonId + '" class="access-capability-reason">' +
               escapeHtml(String(capability.reason || "No capability reason was reported.")) + "</span></div>";
           };
-          return '<div class="access-resource">' +
+          return '<div class="access-resource" data-selected-bucket="' + escapeHtml(bucket) + '">' +
             '<div class="access-resource-head"><span class="pill">object storage</span><code>' + escapeHtml(bucket) + "</code></div>" +
             '<div class="access-capabilities">' +
             capabilityHtml("List", list, "list", "List artifacts") +
             capabilityHtml("Read", read, "read", "Browse / preview") +
             "</div></div>";
-        }).join("") : '<div class="access-resource-empty"><strong>No searchable artifact bucket.</strong> <span class="hint">' +
+        })() : '<div class="access-resource-empty"><strong>No searchable artifact bucket.</strong> <span class="hint">' +
           escapeHtml(String(storageDiscovery.reason || discovery.reason || "No object-storage resource was returned for this project.")) +
           "</span></div>";
         projectsHost.innerHTML = '<article class="access-project access-project-detail" data-project-id="' + escapeHtml(projectId) + '">' +
@@ -2942,12 +3013,28 @@
         const requested = String(projectId || "").trim();
         const selected = projects.find((item) => String((item && item.id) || "") === requested);
         if (!selected) return false;
-        if (selectedAccessProjectId !== requested && !opts.renderOnly) {
+        const projectChanged = selectedAccessProjectId !== requested;
+        if (projectChanged && !opts.renderOnly) {
           cancelAccessAction(true);
         }
         selectedAccessProjectId = requested;
         persistAccessProjectId(requested);
         const picker = document.getElementById("agentAccessProjectSelect");
+        if (picker && picker.value !== requested) picker.value = requested;
+        populateAccessBucketPicker(selected, !projectChanged);
+        renderSelectedAccessProject();
+        return true;
+      }
+      function selectAccessBucket(bucketName) {
+        const requested = String(bucketName || "").trim();
+        const project = selectedAccessProject();
+        const selected = accessProjectResources(project).find(
+          (resource) => String((resource && resource.name) || "unnamed bucket") === requested,
+        );
+        if (!selected) return false;
+        if (selectedAccessBucketName !== requested) cancelAccessAction(true);
+        selectedAccessBucketName = requested;
+        const picker = document.getElementById("agentAccessBucketSelect");
         if (picker && picker.value !== requested) picker.value = requested;
         renderSelectedAccessProject();
         return true;
@@ -3002,6 +3089,12 @@
             option.setAttribute("data-project-id", projectId);
             picker.appendChild(option);
           });
+          if (!projects.length) {
+            const option = document.createElement("option");
+            option.value = "";
+            option.textContent = "No projects available";
+            picker.appendChild(option);
+          }
           picker.disabled = !projects.length;
         }
         const deploymentId = String(identity.deployment_project_id || "");
@@ -3015,7 +3108,9 @@
         if (nextSelection) selectAccessProject(nextSelection, { renderOnly: true });
         else {
           selectedAccessProjectId = "";
+          selectedAccessBucketName = "";
           persistAccessProjectId("");
+          setAccessBucketPlaceholder("Select a project first");
           renderSelectedAccessProject();
         }
         const errors = Array.isArray(report && report.errors) ? report.errors : [];
@@ -3060,6 +3155,18 @@
           }
           if (errorsHost) {
             errorsHost.textContent = "Access refresh failed. Existing project-scoped operations are unchanged; retry refresh for current diagnostics.";
+          }
+          if (!currentAccessReport) {
+            const projectPicker = document.getElementById("agentAccessProjectSelect");
+            if (projectPicker) {
+              projectPicker.replaceChildren();
+              const option = document.createElement("option");
+              option.value = "";
+              option.textContent = "Projects unavailable";
+              projectPicker.appendChild(option);
+              projectPicker.disabled = true;
+            }
+            setAccessBucketPlaceholder("Buckets unavailable");
           }
           throw err;
         } finally {
@@ -3308,6 +3415,13 @@
           accessProjectSelect.addEventListener("change", (event) => {
             const value = String((event.target && event.target.value) || "");
             selectAccessProject(value);
+          });
+        }
+        const accessBucketSelect = document.getElementById("agentAccessBucketSelect");
+        if (accessBucketSelect) {
+          accessBucketSelect.addEventListener("change", (event) => {
+            const value = String((event.target && event.target.value) || "");
+            selectAccessBucket(value);
           });
         }
         const accessPanel = document.getElementById("agentAccessPanel");
