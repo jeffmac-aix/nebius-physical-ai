@@ -895,6 +895,58 @@ def test_resolve_deploy_storage_credentials_falls_back_to_shared(monkeypatch) ->
     assert resolved["nebius_api_key"] == "ak-shared"
 
 
+def test_resolve_deploy_storage_credentials_rejects_shared_for_explicit_project(
+    monkeypatch,
+) -> None:
+    from npa.cli.agent import (
+        AgentStorageCredentialError,
+        _resolve_deploy_storage_credentials,
+    )
+
+    monkeypatch.setattr(
+        "npa.cli.agent.resolve_project_storage",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            checkpoint_bucket="s3://project-bucket/",
+            endpoint_url="https://storage.us-central1.nebius.cloud",
+            aws_access_key_id="ak-project",
+            aws_secret_access_key="sk-project",
+        ),
+    )
+    monkeypatch.setattr(
+        "npa.cli.agent.resolve_terraform_state",
+        lambda _project: SimpleNamespace(
+            bucket="state-bucket",
+            endpoint="https://storage.us-central1.nebius.cloud",
+            access_key="ak-state",
+            secret_key="sk-state",
+        ),
+    )
+    monkeypatch.setattr(
+        "npa.cli.agent._storage_credentials_allow_writes",
+        lambda **kwargs: kwargs["bucket"] == "shared-bucket",
+    )
+
+    def _shared_credentials_must_not_be_loaded(**_kwargs):
+        raise AssertionError("explicit-project deploy consulted shared credentials")
+
+    monkeypatch.setattr(
+        "npa.clients.credentials.load_credentials",
+        _shared_credentials_must_not_be_loaded,
+    )
+
+    with pytest.raises(AgentStorageCredentialError):
+        _resolve_deploy_storage_credentials(
+            region="us-central1",
+            project_alias="target-project",
+            bootstrap_creds={
+                "s3_bucket": "bootstrap-bucket",
+                "s3_endpoint": "https://storage.us-central1.nebius.cloud",
+                "nebius_api_key": "ak-bootstrap",
+                "nebius_secret_key": "sk-bootstrap",
+            },
+        )
+
+
 def test_resolve_deploy_storage_credentials_prefers_saved_project_state(
     monkeypatch,
 ) -> None:
