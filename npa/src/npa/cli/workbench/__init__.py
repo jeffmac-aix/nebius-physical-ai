@@ -6,6 +6,8 @@ import os
 
 import typer
 
+from npa.clients.credentials import load_credentials
+
 _LIGHT_IMPORT = os.environ.get("NPA_SKIP_EAGER_IMPORTS", "").strip().lower() in {
     "1",
     "true",
@@ -48,8 +50,6 @@ def _full_app() -> typer.Typer:
     from npa.cli.workbench.token_factory import app as token_factory_app
     from npa.cli.workbench.vlm_eval import app as vlm_eval_app
     from npa.cli.workbench.workflow import app as workflow_app
-    from npa.clients.credentials import load_credentials
-
     full = typer.Typer(
         name="workbench",
         help="Physical AI workbench tools.",
