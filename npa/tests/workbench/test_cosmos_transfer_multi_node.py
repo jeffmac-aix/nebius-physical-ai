@@ -1836,12 +1836,11 @@ def test_a_worker_renders_only_its_stride_and_publishes_a_shard(
     assert payload["node_rank"] == 1
     assert payload["node_count"] == 2
     assert payload["shard_variant_count"] == 2
-    assert payload["augmentation_variables"] == [
-        {"lighting": "l1", "prompt": "scene 1"},
-        {"lighting": "l3", "prompt": "scene 3"},
-    ]
-    assert payload["prompts"] == ["scene 1", "scene 3"]
-    assert payload["prompt"] == "scene 1"
+    # Customer-derived prompts and variables remain only in durable private
+    # manifests; the operator-facing CLI result is deliberately aggregate-only.
+    assert "augmentation_variables" not in payload
+    assert "prompts" not in payload
+    assert "prompt" not in payload
 
 
 def test_rank_zero_merges_the_gang_into_one_run_manifest(
@@ -1936,9 +1935,9 @@ def test_an_explicit_local_surplus_rank_reports_an_empty_payload(
     assert rendered == []
     payload = json.loads(result.output)
     assert payload["shard_variant_count"] == 0
-    assert payload["augmentation_variables"] == []
-    assert payload["prompts"] == []
-    assert payload["prompt"] == ""
+    assert "augmentation_variables" not in payload
+    assert "prompts" not in payload
+    assert "prompt" not in payload
 
 
 def test_single_node_augment_writes_no_shard_and_keeps_todays_manifest(

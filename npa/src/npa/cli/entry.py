@@ -58,7 +58,7 @@ def main() -> None:
         # Do not initialize the full platform/workbench command tree here. The
         # Cosmos image deliberately carries only its inference stack and the
         # small Typer runtime needed by this command.
-        from npa.workbench.cosmos.cli import app as cosmos2_app
+        from npa.cli.workbench.cosmos2 import app as cosmos2_app
 
         # ``cosmos2_app`` has one registered command. Typer flattens a
         # standalone one-command app, so consume the mounted ``transfer`` name

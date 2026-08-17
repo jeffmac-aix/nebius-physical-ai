@@ -2975,6 +2975,9 @@ def _transfer_control_modalities(spec, *, run_id: str) -> set[str]:
         "workbench.cosmos2.transfer_conditioned_execute",
     }
     modalities: set[str] = set()
+    loop_iterations = {
+        state.name: 1 for state in spec.states.values() if state.loop is not None
+    }
     for state in spec.states.values():
         if state.tool_ref not in tool_refs:
             continue
@@ -2985,6 +2988,7 @@ def _transfer_control_modalities(spec, *, run_id: str) -> set[str]:
                     value,
                     config=spec.config,
                     run={"id": run_id},
+                    loop_iterations=loop_iterations,
                 )
                 if isinstance(value, str)
                 else value

@@ -312,7 +312,7 @@ def test_cosmos2_capability_path_consumes_mounted_command_name() -> None:
 
     probe = """
 import sys
-from npa.workbench.cosmos import cli
+from npa.cli.workbench import cosmos2 as cli
 
 captured = {}
 
