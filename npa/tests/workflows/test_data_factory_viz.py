@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -41,6 +43,15 @@ def test_build_run_rrd_from_local_run(tmp_path: Path) -> None:
     assert result["run_id"] == "df-run"
     assert out.is_file()
     assert out.stat().st_size > 0
+    rerun_cli = Path(sys.executable).with_name("rerun")
+    assert rerun_cli.is_file()
+    verified = subprocess.run(
+        [str(rerun_cli), "rrd", "verify", str(out)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert verified.returncode == 0, verified.stderr
 
 
 def test_frame_index_parses_both_naming_schemes() -> None:
