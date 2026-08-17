@@ -181,7 +181,14 @@ def build_run_rrd(
         local = _materialize_run(input_uri, Path(tmp) / "run", storage_client=storage_client)
         captions = _load_captions(local)
 
+        out_path = Path(tmp) / "sim2real.rrd"
         rec = rr.RecordingStream(app_id, recording_id=run_id)
+        # A file sink must be attached before the first log call. Attaching it
+        # afterwards happens to replay buffered rows, but leaves a streaming RRD
+        # without its footer/manifest when the temporary directory is published.
+        # Rerun can often read that stream, while `rerun rrd verify` correctly
+        # rejects it as incomplete.
+        rec.save(str(out_path))
         logged = 0
 
         input_root = local / "input"
@@ -262,12 +269,15 @@ def build_run_rrd(
             )
 
         if logged == 0:
+            rec.disconnect()
             raise DataFactoryVizError(
                 f"no input/augmented frames found under {input_uri}; nothing to visualize"
             )
 
-        out_path = Path(tmp) / "sim2real.rrd"
-        rr.save(str(out_path), recording=rec)
+        # Flush batched rows and close the file sink before upload so the object
+        # always contains Rerun's terminal manifest/footer.
+        rec.flush()
+        rec.disconnect()
         written_uri = _publish(str(out_path), output_uri, storage_client=storage_client)
 
     return {
