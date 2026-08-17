@@ -50,7 +50,10 @@ TOOL_REF_IMAGE_TOOL: dict[str, str] = {
     "workbench.groot": "groot",
 }
 
+OPENPI_TERMS_ENV = "NPA_OPENPI_ACCEPT_GEMMA_TERMS"
+
 SECRET_ENV_HINTS: dict[str, tuple[str, ...]] = {
+    "workbench.openpi": (OPENPI_TERMS_ENV,),
     "workbench.token_factory": ("NEBIUS_TOKEN_FACTORY_KEY",),
     "workbench.vlm_eval": (),
     # Attribute verification generates and answers its questions on Token Factory.
@@ -97,6 +100,11 @@ DECLARATIVE_PIP_EXTRAS = frozenset({"viz"})
 #: `huggingface_hub`, and the interpreter running npa in a vendor image is not the vendor's own
 #: venv, so the library is not necessarily importable there (live job 244).
 TOOL_REF_PIP_REQUIREMENTS: dict[str, tuple[tuple[str, str], ...]] = {
+    # The OpenPI BYOF environment intentionally contains only upstream's
+    # pinned runtime. Four-mode stages publish/read private object-storage
+    # artifacts from that same interpreter, so install the NPA storage client
+    # there without resolving the rest of NPA over the vendor JAX closure.
+    "workbench.openpi": (("python:boto3", "boto3>=1.34"),),
     # The redistributable image security layer upgrades Transformers with
     # ``--no-deps``. GR00T commit 3df8b382 pins 4.57.3; Transformers 5.3 changes
     # PretrainedConfig dataclass behavior and the pinned GR00T model config then
@@ -333,7 +341,15 @@ def normalize_resources(
     # NOTE: `num_nodes` is deliberately absent. SkyPilot puts it at the TASK level, next
     # to `resources`, so the renderer lifts it out of the profile in
     # build_skypilot_task_doc. Adding it here would produce an invalid resources block.
-    for key in ("cloud", "accelerators", "cpus", "memory", "use_spot", "region"):
+    for key in (
+        "cloud",
+        "accelerators",
+        "cpus",
+        "memory",
+        "disk_size",
+        "use_spot",
+        "region",
+    ):
         if key not in resources or resources[key] in (None, ""):
             continue
         value = resources[key]
@@ -362,12 +378,23 @@ def normalize_resources(
 
     cloud = str(out.get("cloud") or "").strip().lower()
     if cloud in {"kubernetes", "k8s"}:
+        # SkyPilot 0.12.x accepts ``disk_size`` on Kubernetes but explicitly
+        # ignores it because pods have no cloud boot disk. Preserve the profile's
+        # capacity intent using SkyPilot's supported Kubernetes resource request,
+        # which renders as ``ephemeral-storage`` on the pod.
+        if "disk_size" in out:
+            out["ephemeral_storage"] = out.pop("disk_size")
         for key in ("cpus", "memory"):
             if key not in out:
                 continue
             raw = str(out[key]).strip()
             if raw and not raw.endswith("+"):
                 out[key] = f"{raw}+"
+    else:
+        # Preserve the renderer's historical behavior outside Kubernetes. This
+        # review deliberately settles only the affected Kubernetes profiles and
+        # does not introduce a new VM-cloud boot-disk contract.
+        out.pop("disk_size", None)
     return out
 
 
@@ -1446,6 +1473,13 @@ def secret_env_hints_for_plan(steps: Sequence[PlanStep]) -> tuple[str, ...]:
     seen: set[str] = set()
     for step in steps:
         tool_ref = step.tool_ref or ""
+        if tool_ref == "workbench.byof.repo" and any(
+            value == "openpi" or "pi05_droid_jointpos_polaris" in value
+            for value in step.argv
+        ):
+            if OPENPI_TERMS_ENV not in seen:
+                seen.add(OPENPI_TERMS_ENV)
+                hints.append(OPENPI_TERMS_ENV)
         matches = [
             (prefix, names)
             for prefix, names in SECRET_ENV_HINTS.items()
@@ -1627,9 +1661,9 @@ def build_skypilot_task_doc(
     }
     attempt_id = str(options.execution_attempt_id or "").strip()
     if not attempt_id:
-        material = "\0".join(
-            (spec.name, run_id, str(scheduler_task["name"]))
-        ).encode("utf-8")
+        material = "\0".join((spec.name, run_id, str(scheduler_task["name"]))).encode(
+            "utf-8"
+        )
         attempt_id = hashlib.sha256(material).hexdigest()
     envs["NPA_WORKFLOW_ATTEMPT_ID"] = attempt_id
     if options.execution_fence_sequence < 1 or options.execution_fence_attempt < 1:
@@ -1704,7 +1738,10 @@ def build_skypilot_task_doc(
     # and exports SKYPILOT_NODE_RANK / SKYPILOT_NODE_IPS into each. Emitted only when the
     # profile asks for more than one node, so every existing rendered doc is unchanged.
     num_nodes = int(scheduler_task.get("num_nodes") or 1)
-    if str(scheduler_task.get("tool_ref") or "") == "workbench.cosmos2.transfer_execute":
+    if (
+        str(scheduler_task.get("tool_ref") or "")
+        == "workbench.cosmos2.transfer_execute"
+    ):
         # This renderer/planner value is authoritative.  SkyPilot's runtime
         # variables are independent evidence and the worker cross-checks them.
         envs["NPA_COSMOS_NODE_COUNT"] = str(num_nodes)
@@ -2063,11 +2100,13 @@ def assert_no_unresolved_placeholders(yaml_text: str) -> None:
         raise NpaWorkflowRenderError(
             f"rendered SkyPilot YAML is invalid while checking placeholders: {exc}"
         ) from exc
-    unresolved = sorted({
-        name
-        for document in documents
-        for name in _document_declarative_placeholder_names(document)
-    })
+    unresolved = sorted(
+        {
+            name
+            for document in documents
+            for name in _document_declarative_placeholder_names(document)
+        }
+    )
     if unresolved:
         joined = ", ".join(f"${{{name}}}" for name in unresolved)
         raise NpaWorkflowRenderError(

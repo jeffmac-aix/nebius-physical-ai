@@ -636,8 +636,7 @@ def submit_cmd(
         )
         return
     is_paidf_spec = bool(
-        merged_npa_spec is not None
-        and merged_npa_spec.name == PAIDF_WORKFLOW_NAME
+        merged_npa_spec is not None and merged_npa_spec.name == PAIDF_WORKFLOW_NAME
     )
     legacy_fixture = _is_truthy_submit_value(
         substitutions.get("seed_fixture")
@@ -1125,6 +1124,7 @@ def submit_cmd(
         image_overrides_for_preflight.update(specific_image_overrides)
         image_digest_pins = _preflight_submit_images(
             yaml_path,
+            spec=merged_npa_spec,
             options=SkypilotRenderOptions(
                 registry=_resolve_submit_registry(registry, project),
                 image_overrides=image_overrides_for_preflight,
@@ -1229,9 +1229,7 @@ def submit_cmd(
                 spec_config,
                 requires_s3=_spec_requires_s3(yaml_path),
                 s3_endpoint=submit_credentials.endpoint_url,
-                s3_access_key_id=getattr(
-                    submit_credentials, "access_key_id", ""
-                ),
+                s3_access_key_id=getattr(submit_credentials, "access_key_id", ""),
                 s3_secret_access_key=getattr(
                     submit_credentials, "secret_access_key", ""
                 ),
@@ -1397,6 +1395,7 @@ def submit_cmd(
                 spec=merged_npa_spec,
                 infra=infra,
                 sky_bin=sky_bin,
+                assume_decision=assume_decision,
                 enabled=resolve_accelerators and not plan_only,
                 readiness_timeout=gpu_readiness_timeout,
                 readiness_poll_interval=gpu_readiness_poll_interval,
@@ -2086,9 +2085,7 @@ def _run_npa_workflow_runtime(
         {"workflow": _workflow_submission_receipt(spec, receipt_steps, run_id)},
     )
 
-    resolved_secret_envs = secret_env_names(
-        secret_envs, values=secret_env_values
-    )
+    resolved_secret_envs = secret_env_names(secret_envs, values=secret_env_values)
     pre_submit_hook = None
     if refresh_registry_secret:
         runtime_k8s_context = _infra_kube_context(infra)
@@ -2485,6 +2482,7 @@ def _resolve_submit_registry(registry: str, project: str) -> str:
 def _preflight_submit_images(
     yaml_path: Path,
     *,
+    spec=None,
     options: SkypilotRenderOptions,
     assume_decision: str,
     enabled: bool,
@@ -2513,12 +2511,12 @@ def _preflight_submit_images(
     )
 
     try:
-        spec = load_spec(yaml_path)
-        run_id = f"{spec.name}-preflight"
-        plan = build_plan(spec, run_id=run_id, assume_decision=assume_decision)
-        images = plan_images(spec, plan.steps, run_id=run_id, options=options)
+        resolved_spec = spec or load_spec(yaml_path)
+        run_id = f"{resolved_spec.name}-preflight"
+        plan = build_plan(resolved_spec, run_id=run_id, assume_decision=assume_decision)
+        images = plan_images(resolved_spec, plan.steps, run_id=run_id, options=options)
         pull_secrets_by_image = plan_image_pull_secrets(
-            spec, plan.steps, run_id=run_id, options=options
+            resolved_spec, plan.steps, run_id=run_id, options=options
         )
     except NpaWorkflowError:
         # Planning problems are reported by the submit path itself with better context.
@@ -2662,6 +2660,7 @@ def _resolve_submit_accelerators(
     spec=None,
     infra: str,
     sky_bin: str,
+    assume_decision: str = "",
     enabled: bool,
     readiness_timeout: float = 600.0,
     readiness_poll_interval: float = 10.0,
@@ -2681,6 +2680,7 @@ def _resolve_submit_accelerators(
         # An explicit blanket override is the operator's decision; honor it as-is.
         return {}
 
+    from npa.orchestration.npa_workflow import build_plan
     from npa.orchestration.npa_workflow.errors import NpaWorkflowError
     from npa.orchestration.skypilot._bin import SkyPilotNotInstalledError
     from npa.orchestration.skypilot.k8s_gpu_catalog import (
@@ -2692,7 +2692,18 @@ def _resolve_submit_accelerators(
     )
 
     try:
-        requested = spec_accelerators((spec or load_spec(yaml_path)).resources)
+        resolved_spec = spec or load_spec(yaml_path)
+        plan = build_plan(
+            resolved_spec,
+            run_id=f"{resolved_spec.name}-accelerator-preflight",
+            assume_decision=assume_decision,
+        )
+        requested = spec_accelerators(
+            {
+                f"step-{index}": step.resources_profile
+                for index, step in enumerate(plan.steps)
+            }
+        )
     except NpaWorkflowError:
         return {}
     if not requested:
@@ -2774,9 +2785,7 @@ def _preflight_submit_gang_capacity(
                 config_path=config_path,
                 isolated_config_dir=isolated_config_dir,
             )
-        selected = str(
-            (accelerator_overrides or {}).get(accelerator) or accelerator
-        )
+        selected = str((accelerator_overrides or {}).get(accelerator) or accelerator)
         kubernetes = resolved.get("kubernetes")
         kubernetes = kubernetes if isinstance(kubernetes, Mapping) else {}
         pod_config = kubernetes.get("pod_config")
@@ -2819,7 +2828,10 @@ def _skypilot_allowed_nodes(
     if resolved.global_config_path is None:
         return ()
     try:
-        document = yaml.safe_load(resolved.global_config_path.read_text(encoding="utf-8")) or {}
+        document = (
+            yaml.safe_load(resolved.global_config_path.read_text(encoding="utf-8"))
+            or {}
+        )
     except (OSError, yaml.YAMLError) as exc:
         raise RuntimeError(
             "could not read the selected SkyPilot config for allowed_nodes preflight"
@@ -2828,8 +2840,10 @@ def _skypilot_allowed_nodes(
     raw = kubernetes.get("allowed_nodes") if isinstance(kubernetes, Mapping) else None
     if raw is None:
         return ()
-    if not isinstance(raw, list) or not raw or not all(
-        isinstance(name, str) and name.strip() for name in raw
+    if (
+        not isinstance(raw, list)
+        or not raw
+        or not all(isinstance(name, str) and name.strip() for name in raw)
     ):
         raise RuntimeError(
             "SkyPilot kubernetes.allowed_nodes must be a non-empty list of node names"
