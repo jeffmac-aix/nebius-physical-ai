@@ -307,6 +307,30 @@ main()
     assert "--segmentation-mode" in proc.stdout
 
 
+def test_cosmos2_capability_module_entry_dispatches_the_mounted_path() -> None:
+    """The image-authored ``python -m`` wrapper must execute the fast entry."""
+
+    env = dict(os.environ)
+    env["NPA_SKIP_EAGER_IMPORTS"] = "1"
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "npa.cli.entry",
+            "workbench",
+            "cosmos2",
+            "transfer",
+            "--help",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "--control-asset" in proc.stdout
+    assert "--segmentation-mode" in proc.stdout
+
+
 def test_cosmos2_capability_path_consumes_mounted_command_name() -> None:
     """The standalone image entrypoint must parse options after ``transfer``."""
 

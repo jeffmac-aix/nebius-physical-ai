@@ -270,23 +270,21 @@ RUN set -eux; \
     su ubuntu -s /bin/bash -c \
       'test -w /opt/cosmos/model-cache/huggingface && test -x /opt/cosmos/cosmos-transfer2.5/.venv/bin/python'
 
-# The full top-level NPA command tree is imported by the console script even for
-# `workbench cosmos2`.  Install its missing import-time packages as an exact,
-# hash-verified overlay without resolving or upgrading the vendor lock.  Merely
-# checking `import npa` is insufficient: that package is intentionally lazy and
-# was green in the image that failed live with a missing Typer dependency.  The
-# console wrapper is authored locally from fixed text and executes the copied
-# source directly; no build backend or package index is consulted.
+# Install the capability CLI's exact, hash-verified dependency overlay without
+# resolving or upgrading the vendor lock. The lightweight console entry detects
+# `workbench cosmos2 transfer` before importing the full platform command tree,
+# then dispatches to the copied Cosmos2 source directly. The wrapper is authored
+# locally from fixed text; no build backend or package index is consulted.
 RUN set -eux; \
     uv pip install --python /opt/cosmos/cosmos-transfer2.5/.venv/bin/python \
       --no-deps --require-hashes \
       --requirement /tmp/npa-cli-requirements.txt; \
     printf '%s\n' '#!/bin/sh' \
-      'exec /opt/cosmos/cosmos-transfer2.5/.venv/bin/python -m npa.cli.main "$@"' \
+      'exec /opt/cosmos/cosmos-transfer2.5/.venv/bin/python -m npa.cli.entry "$@"' \
       > /opt/cosmos/cosmos-transfer2.5/.venv/bin/npa; \
     chmod 0755 /opt/cosmos/cosmos-transfer2.5/.venv/bin/npa; \
     env -u PYTHONPATH "${NPA_BAKED_PYTHON}" -c \
-      'import npa.cli.main; import npa.workflows.sim2real.runtime_attestation'; \
+      'import npa.cli.entry; import npa.workflows.sim2real.runtime_attestation'; \
     /opt/cosmos/cosmos-transfer2.5/.venv/bin/npa \
       workbench cosmos2 transfer --help > /tmp/npa-cosmos2-help.txt; \
     grep -q -- '--control-asset' /tmp/npa-cosmos2-help.txt; \

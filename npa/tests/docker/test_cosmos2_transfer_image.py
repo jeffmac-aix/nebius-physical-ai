@@ -134,7 +134,8 @@ def test_lfs_media_models_and_build_credentials_are_excluded() -> None:
     assert cli_requirements.count("--hash=sha256:") == len(requirement_lines)
     assert "--no-deps --require-hashes" in text
     assert "pip install --no-deps /opt/npa" not in text
-    assert "python -m npa.cli.main" in text
+    assert "python -m npa.cli.entry" in text
+    assert "python -m npa.cli.main" not in text
     assert "PYTHONPATH=/opt/npa/src" in text
     assert (
         "NPA_BAKED_PYTHON=/opt/cosmos/cosmos-transfer2.5/.venv/bin/python" in text
@@ -142,7 +143,8 @@ def test_lfs_media_models_and_build_credentials_are_excluded() -> None:
     assert "ln -sfn /opt/npa/src/npa" in text
     assert 'env -u PYTHONPATH "${NPA_BAKED_PYTHON}" -c' in text
     assert "no build backend or package index is consulted" in text
-    assert "import npa.cli.main" in text
+    assert "import npa.cli.entry" in text
+    assert "import npa.cli.main" not in text
     assert "workbench cosmos2 transfer --help" in text
     assert "grep -q -- '--control-asset'" in text
 
@@ -229,7 +231,8 @@ def test_final_runtime_is_non_root_relocated_and_cache_writable_by_design() -> N
     assert "> /usr/local/bin/python3" in text
     assert "npa-cli-requirements.txt" in text
     assert "--no-deps --require-hashes" in text
-    assert "-m npa.cli.main" in text
+    assert "-m npa.cli.entry" in text
+    assert "-m npa.cli.main" not in text
     assert "/opt/cosmos/cosmos-transfer2.5/.venv/bin/npa" in text
     assert "workbench cosmos2 transfer --help" in text
     assert "rm -rf /opt/cosmos/model-cache/xdg/uv" in text

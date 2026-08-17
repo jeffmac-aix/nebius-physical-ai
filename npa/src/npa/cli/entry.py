@@ -72,3 +72,7 @@ def main() -> None:
     from npa.cli.main import app_entry
 
     app_entry()
+
+
+if __name__ == "__main__":
+    main()
