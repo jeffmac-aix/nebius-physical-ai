@@ -121,10 +121,10 @@ def test_prompt_from_combo_is_appearance_only() -> None:
         "background": "plain wall",
     }
     prompt = dfs.prompt_from_combo(combo)
-    assert "warm color grade" in prompt
-    assert "matte surface finish" in prompt
-    assert "change appearance only" in prompt
-    assert "Preserve every frame's exact input objects" in prompt
+    assert "warm" in prompt
+    assert "matte" in prompt
+    assert "non-identity-bearing backdrop" in prompt
+    assert "Preserve the exact foreground objects" in prompt
     assert "cloth" not in prompt
 
 
@@ -132,6 +132,28 @@ def test_generate_configs_is_deterministic_by_seed(tmp_path: Path) -> None:
     a = dfs.generate_configs(str(tmp_path / "a.json"), n_augmentations=2, seed="s")
     b = dfs.generate_configs(str(tmp_path / "b.json"), n_augmentations=2, seed="s")
     assert a["augmentations"] == b["augmentations"]
+
+
+def test_generate_configs_fans_out_coherent_profiles_and_distinct_seeds(
+    tmp_path: Path,
+) -> None:
+    result = dfs.generate_configs(
+        str(tmp_path / "profiles.json"),
+        n_augmentations=4,
+        seed="quality-search",
+    )
+
+    candidates = result["augmentations"]
+    assert len(
+        {
+            tuple(candidate[key] for key in dfs.APPEARANCE_VARIABLES)
+            for candidate in candidates
+        }
+    ) == 4
+    assert len({candidate["inference_seed"] for candidate in candidates}) == 4
+    assert all(
+        0 <= candidate["inference_seed"] < 2**31 for candidate in candidates
+    )
 
 
 def test_generate_configs_supports_a_shared_controlled_comparison_seed(
@@ -1113,6 +1135,7 @@ def test_generate_configs_feeds_first_augmentation_to_transfer(tmp_path: Path) -
         "background",
         "color_grade",
         "surface_finish",
+        "inference_seed",
         "prompt",
     }
     # The prompt is what the augment stage feeds into Cosmos Transfer.

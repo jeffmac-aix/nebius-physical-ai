@@ -27,7 +27,7 @@ BUILD_BASE_SHA = (
 RUNTIME_BASE_SHA = (
     "sha256:9175fa92f96de35a8cfb9493f0dfcf9435c7a597e9d95ad41d2cae382a95e3f9"
 )
-EXACT_TAG = "2.5.1-sam2-skypilot-ready-20260815-review5"
+EXACT_TAG = "2.5.1-sam2-multigpu-20260817"
 
 
 def _dockerfile() -> str:
@@ -227,20 +227,11 @@ def test_final_runtime_is_non_root_relocated_and_cache_writable_by_design() -> N
     assert "COPY --from=build --chown=1000:1000 /opt/cosmos /opt/cosmos" in text
     assert 'exec /opt/cosmos/cosmos-transfer2.5/.venv/bin/python "$@"' in text
     assert "> /usr/local/bin/python3" in text
-    assert (
-        "ln -sfn /opt/cosmos/cosmos-transfer2.5/.venv/bin/npa /usr/local/bin/npa"
-        in text
-    )
-    assert "npa-runtime-requirements.txt" in text
-    assert "--requirement /tmp/npa-runtime-requirements.txt" in text
-    assert 'importlib.metadata.version(\"typer\") == \"0.27.1\"' in text
-    requirements = (IMAGE_DIR / "npa-runtime-requirements.txt").read_text()
-    assert "annotated_doc-0.0.5-py3-none-any.whl" in requirements
-    assert "shellingham-1.5.4-py2.py3-none-any.whl" in requirements
-    assert "typer-0.27.1-py3-none-any.whl" in requirements
-    assert requirements.count("#sha256=") == 3
-    assert 'test "$(command -v npa)" = /usr/local/bin/npa' in text
-    assert "npa workbench cosmos2 transfer --help" in text
+    assert "npa-cli-requirements.txt" in text
+    assert "--no-deps --require-hashes" in text
+    assert "-m npa.cli.main" in text
+    assert "/opt/cosmos/cosmos-transfer2.5/.venv/bin/npa" in text
+    assert "workbench cosmos2 transfer --help" in text
     assert "rm -rf /opt/cosmos/model-cache/xdg/uv" in text
     assert "chown -R ubuntu:ubuntu /opt/cosmos/model-cache" in text
     assert "/opt/cosmos/model-cache/xdg/uv/.npa-write-probe" in text

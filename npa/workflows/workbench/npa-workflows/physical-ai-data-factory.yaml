@@ -114,6 +114,7 @@ config:
   # ControlNet checkpoint, so switching downloads different gated weights.
   augment_control: "edge"
   augment_control_weight: "1.0"
+  augment_guidance: "3.0"
   # Objects on-the-fly seg should segment, e.g. "robot arm, conveyor, bin".
   # Upstream falls back to the first 128 words of the appearance prompt.
   augment_control_prompt: ""
@@ -135,9 +136,6 @@ config:
   # replay identical inference settings: the default schedule lowers guidance;
   # custom baselines below the ceiling may also increase structure control.
   adaptive_refinement_enabled: "true"
-  cosmos_control: edge
-  cosmos_control_weight: "1.0"
-  cosmos_guidance: "3.0"
   refinement_control_weight_step: "0.25"
   refinement_max_control_weight: "1.0"
   refinement_guidance_step: "1.0"
@@ -382,8 +380,8 @@ states:
         - "{{config.scores_uri}}"
         - "{{config.refinement_uri}}"
         - "{{config.adaptive_refinement_enabled}}"
-        - "{{config.cosmos_control_weight}}"
-        - "{{config.cosmos_guidance}}"
+        - "{{config.augment_control_weight}}"
+        - "{{config.augment_guidance}}"
         - "{{config.refinement_control_weight_step}}"
         - "{{config.refinement_max_control_weight}}"
         - "{{config.refinement_guidance_step}}"

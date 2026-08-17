@@ -1056,6 +1056,25 @@ def _variant_parallelism(num_variants: int) -> int:
     return max(1, min(requested, max(1, int(num_variants))))
 
 
+def _inference_seed(combo: dict[str, Any]) -> int | None:
+    """Return a validated deterministic seed from one sampled candidate."""
+
+    raw = combo.get("inference_seed")
+    if raw in (None, ""):
+        return None
+    if isinstance(raw, bool):
+        raise typer.BadParameter("candidate inference_seed must be an integer")
+    try:
+        seed = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise typer.BadParameter(
+            "candidate inference_seed must be an integer"
+        ) from exc
+    if not 0 <= seed < 2**31:
+        raise typer.BadParameter("candidate inference_seed must be within 0..2147483647")
+    return seed
+
+
 def _materialize_input_clip(src: str, *, allow_frame_sequence: bool = False) -> str:
     """Resolve a local path or ``s3://`` URI to a local conditioning video.
 
@@ -1754,6 +1773,7 @@ def transfer_cmd(
                     mask_asset=mask_asset,
                     mask_prompt=mask_prompt,
                     guidance=guidance,
+                    seed=_inference_seed(combo),
                     cuda_visible_devices=device,
                     variant_tag=variant_run,
                 )
@@ -1929,6 +1949,7 @@ def transfer_cmd(
                 mask_asset=mask_asset,
                 mask_prompt=mask_prompt,
                 guidance=guidance,
+                seed=_inference_seed(variables),
             )
             if protected_chroma_mode == "source-chroma":
                 from npa.workbench.cosmos.transfer import preserve_source_chroma

@@ -65,6 +65,7 @@ def test_spec_for_input_video_builds_edge_control(tmp_path: Path) -> None:
         control_weight=0.8,
         guidance=4,
         name="run-1",
+        seed=1234,
     )
     assert modality == "edge"
     spec = json.loads((repo / rel).read_text())
@@ -72,6 +73,7 @@ def test_spec_for_input_video_builds_edge_control(tmp_path: Path) -> None:
     assert spec["prompt"] == "rainy night, wet asphalt"
     assert spec["edge"] == {"control_weight": 0.8}
     assert spec["guidance"] == 4
+    assert spec["seed"] == 1234
     # Depth is precomputed-only: this path must never fetch Video Depth Anything.
     depth = tmp_path / "depth.mp4"
     depth.write_bytes(b"depth")
@@ -1198,6 +1200,13 @@ def test_variant_parallelism_env_override_and_cap(monkeypatch) -> None:
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1,2,3")
     assert cosmos2._variant_parallelism(6) == 4
     assert cosmos2._variant_parallelism(1) == 1
+
+
+def test_candidate_inference_seed_is_optional_and_validated() -> None:
+    assert cosmos2._inference_seed({}) is None
+    assert cosmos2._inference_seed({"inference_seed": 123}) == 123
+    with pytest.raises(typer.BadParameter, match="inference_seed"):
+        cosmos2._inference_seed({"inference_seed": "not-a-number"})
 
 
 def test_run_cosmos_transfer_pins_gpu_and_unique_spec(

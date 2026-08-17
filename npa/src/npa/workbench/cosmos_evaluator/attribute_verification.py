@@ -26,8 +26,6 @@ import base64
 import json
 import logging
 import re
-import shutil
-import subprocess
 import tempfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -49,6 +47,8 @@ QUESTION_SYSTEM_PROMPT = (
 )
 VERIFY_SYSTEM_PROMPT = (
     "You are an expert vision model tasked with answering multiple choice questions about images.\n"
+    "The image may be a left-to-right beginning, middle, and end contact sheet. "
+    "Require the requested visual attribute to be consistent across its panels.\n"
     "Analyze the image carefully and select the single best answer from the provided options.\n"
     "Respond with ONLY a single letter (A, B, C, or D) corresponding to your answer.\n"
     "Do not include any explanation or additional text.\n"
@@ -526,7 +526,7 @@ def _default_client() -> Any:
 
 
 class _FrameImage:
-    """Context manager yielding a still image for the clip under test."""
+    """Yield a still or a beginning/middle/end contact sheet for the clip."""
 
     def __init__(self, *, video: str | Path | None, frame: str | Path | None) -> None:
         self._video = Path(video) if video is not None else None
@@ -541,40 +541,10 @@ class _FrameImage:
         assert self._video is not None
         if not self._video.is_file():
             raise CosmosEvaluatorError(f"video not found: {self._video}")
-        exe = shutil.which("ffmpeg")
-        if not exe:
-            raise CosmosEvaluatorError("extracting a frame from a video requires ffmpeg on PATH")
         self._tmp = tempfile.TemporaryDirectory(prefix="npa-cosmos-eval-")
-        # From here on __exit__ will not run if this raises, because the caller never
-        # receives the context manager, so clean up the directory here instead.
         try:
-            out = Path(self._tmp.name) / "first_frame.jpg"
-            proc = subprocess.run(
-                [
-                    exe,
-                    "-nostdin",
-                    "-y",
-                    "-hide_banner",
-                    "-loglevel",
-                    "error",
-                    "-i",
-                    str(self._video),
-                    "-frames:v",
-                    "1",
-                    "-q:v",
-                    "2",
-                    str(out),
-                ],
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=120,
-            )
-            if proc.returncode != 0 or not out.is_file() or out.stat().st_size == 0:
-                raise CosmosEvaluatorError(
-                    f"ffmpeg could not extract a frame from {self._video.name}: "
-                    f"{(proc.stderr or '').strip()[:200]}"
-                )
+            out = Path(self._tmp.name) / "representative_frames.jpg"
+            _write_representative_contact_sheet(self._video, out)
         except BaseException:
             self.__exit__()
             raise
@@ -588,3 +558,51 @@ class _FrameImage:
 
 def _frame_image(*, video: str | Path | None, frame: str | Path | None) -> _FrameImage:
     return _FrameImage(video=video, frame=frame)
+
+
+def _write_representative_contact_sheet(video: Path, output: Path) -> None:
+    """Decode truthful beginning/middle/end frames into one verifier image."""
+
+    try:
+        import av
+        from PIL import Image
+    except ImportError as exc:
+        raise CosmosEvaluatorError(
+            "representative video verification requires PyAV and Pillow"
+        ) from exc
+
+    try:
+        with av.open(str(video)) as container:
+            frame_count = sum(1 for _frame in container.decode(video=0))
+        if frame_count < 1:
+            raise CosmosEvaluatorError("the augmented video decoded zero frames")
+        targets = {0, (frame_count - 1) // 2, frame_count - 1}
+        frames: list[Image.Image] = []
+        with av.open(str(video)) as container:
+            for index, frame in enumerate(container.decode(video=0)):
+                if index in targets:
+                    frames.append(frame.to_image().convert("RGB"))
+    except CosmosEvaluatorError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - sanitized evaluator boundary
+        raise CosmosEvaluatorError(
+            "could not decode representative frames from the augmented video"
+        ) from exc
+    if len(frames) != len(targets):
+        raise CosmosEvaluatorError(
+            "the augmented video changed frame count while representative frames were decoded"
+        )
+
+    normalized: list[Image.Image] = []
+    for frame in frames:
+        resized = frame.copy()
+        resized.thumbnail((384, 384), Image.Resampling.LANCZOS)
+        normalized.append(resized)
+    width = sum(frame.width for frame in normalized)
+    height = max(frame.height for frame in normalized)
+    sheet = Image.new("RGB", (width, height), color=(18, 18, 18))
+    offset = 0
+    for frame in normalized:
+        sheet.paste(frame, (offset, (height - frame.height) // 2))
+        offset += frame.width
+    sheet.save(output, format="JPEG", quality=95, subsampling=0)

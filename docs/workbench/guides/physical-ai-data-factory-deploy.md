@@ -592,7 +592,7 @@ results to immutable digests and refuses a missing, stale, or wrong-digest
 bootstrap attestation before spending GPU time:
 
 ```bash
-for ref in npa-cosmos2-transfer:2.5.1-sam2-skypilot-ready-20260815-review5 \
+for ref in npa-cosmos2-transfer:2.5.1-sam2-multigpu-20260817 \
            npa-cosmos-evaluator:0.1.2-skypilot-v1-20260813T164700Z \
            npa-cosmos-curate:0.1.2-skypilot-v1-20260813T164700Z; do
   docker manifest inspect "$REGISTRY/$ref" >/dev/null && echo "OK   $ref" || echo "MISS $ref"
@@ -658,7 +658,9 @@ configurable. The mask contract and Cosmos metadata record the pinned official
 source/model revisions, component version/license, aggregate coverage,
 object/frame counts, and runtime. A missing or partial mask sequence fails closed.
 Use the same non-sensitive `augmentation_seed` override for baseline and SAM2
-runs when comparing quality or throughput; empty keeps run-ID-derived sampling.
+runs when comparing quality or throughput. It controls both the coherent profile
+order and distinct per-candidate diffusion seeds; empty keeps deterministic
+run-ID-derived sampling.
 
 See the [starter provenance and licensing table](physical-ai-data-factory.md#starter-input-authenticity-licensing-and-replacement)
 for the immutable source URL, CC BY 4.0 attribution, exact digest/media facts,

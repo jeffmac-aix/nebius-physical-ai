@@ -303,6 +303,13 @@ def test_optional_sam2_config_is_validated_before_provisioning(
     with pytest.raises(NpaWorkflowError, match="versioned s3:// prefix"):
         load_spec(path)
 
+    raw["config"]["segmentation_uri"] = "s3://example/segmentation/"
+    raw["config"]["augment_nodes"] = "2"
+    path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    with pytest.raises(NpaWorkflowError, match="requires one augment node"):
+        load_spec(path)
+
+    raw["config"]["augment_nodes"] = "1"
     raw["config"]["segmentation_uri"] = "s3://example/run/segmentation/"
     raw["config"]["protected_luma_max_delta"] = "256"
     path.write_text(yaml.safe_dump(raw), encoding="utf-8")

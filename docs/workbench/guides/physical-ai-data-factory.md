@@ -37,7 +37,8 @@ Three NVIDIA components in that table are the real open-source projects:
 - **[Cosmos Evaluator](https://github.com/nvidia-cosmos/cosmos-evaluator)**
   (Apache-2.0) grades. The `evaluate` stage runs two of upstream's checks per
   variant: *attribute verification* (an LLM writes one multiple-choice question
-  per sampled attribute, a VLM answers it from a frame — both on Token Factory,
+  per sampled attribute, a VLM answers it from a truthful beginning/middle/end
+  contact sheet — both on Token Factory,
   since upstream drives them through a configurable OpenAI-compatible endpoint)
   and *hallucination* (per-frame dynamic-mask comparison against the source clip,
   CPU only). The hallucination score only feeds the run score for
@@ -235,8 +236,9 @@ quality status therefore remain separate and auditable.
 Refinement is adaptive by default. `prepare-refinement` writes
 `configs/refinement.json` before each render and keeps immutable
 `refinement-attempt-NN.json` copies plus commit markers. The established first-pass
-control weight remains `1.0`; after a failed evaluation the default retry lowers
-prompt guidance, while a custom baseline below its configured ceiling may also
+control weight remains `1.0`; `augment_guidance` defaults to `3.0`. After a failed
+evaluation the default retry lowers prompt guidance, while a custom baseline below
+its configured ceiling may also
 raise edge-control strength. Each retry selects a different in-bounds pair; once
 the declared monotonic schedule is exhausted, refinement fails closed instead of
 toggling back to a previous policy. A configuration with no possible first retry
@@ -289,10 +291,13 @@ BSD helper notice, and checkpoint boundary are recorded in the Cosmos Transfer
 redistribution notice.
 
 For an A/B comparison, give both fresh runs the same non-sensitive
-`augmentation_seed`. Config generation will then sample identical appearance
-prompts even though the run IDs differ, making evaluator and throughput deltas
-attributable to the optional component rather than a different workload. An empty
-value retains the existing run-ID-derived sampling behavior.
+`augmentation_seed`. Config generation will then order the same coherent,
+nonconflicting appearance profiles and assign the same distinct per-candidate
+diffusion seeds even though the run IDs differ. The first four candidates cover
+four concrete lighting/backdrop/palette/finish combinations without replacement,
+making evaluator and throughput deltas attributable to the optional component
+rather than a different workload. An empty value retains deterministic
+run-ID-derived sampling behavior.
 
 `protected_chroma_regions_json` is deliberately separate from
 `appearance_regions_json`: the former changes transfer pixels, while the latter

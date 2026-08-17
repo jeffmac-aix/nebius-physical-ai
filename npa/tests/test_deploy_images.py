@@ -71,7 +71,7 @@ def test_non_sonic_workbench_images_resolve_from_supported_tools() -> None:
     assert (
         container_image_for_tool("cosmos2-transfer")
         == "cr.eu-north1.nebius.cloud/e00cm0vc6t09m0z5gw/"
-        "npa-cosmos2-transfer:2.5.1-sam2-skypilot-ready-20260815-review5"
+        "npa-cosmos2-transfer:2.5.1-sam2-multigpu-20260817"
     )
     assert (
         container_image_for_tool("cosmos3")

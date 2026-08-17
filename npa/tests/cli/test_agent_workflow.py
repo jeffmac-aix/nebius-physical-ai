@@ -285,7 +285,8 @@ def test_generate_data_factory_yaml_validates_and_plans() -> None:
     assert generated["config"]["trigger_uri"] == generated["config"]["input_uri"]
     assert generated["config"]["grade_threshold"] == "0.75"
     assert generated["config"]["plan_assume_decision"] == "promote_checkpoint"
-    assert generated["config"]["cosmos_control_weight"] == "1.0"
+    assert generated["config"]["augment_control_weight"] == "1.0"
+    assert generated["config"]["augment_guidance"] == "3.0"
     assert generated["config"]["default_decision"] == "loop_back"
     assert generated["config"]["appearance_fidelity_mode"] == "advisory"
     assert generated["states"]["grade"]["next"] == "quality-disposition"

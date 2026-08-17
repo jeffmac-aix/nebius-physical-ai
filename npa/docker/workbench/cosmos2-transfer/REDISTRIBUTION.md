@@ -7,7 +7,7 @@ is mandatory before the packaging contract may classify the image `public`.
 
 ## Immutable provenance
 
-- Image tag: `npa-cosmos2-transfer:2.5.1-sam2-skypilot-ready-20260815-review5`
+- Image tag: `npa-cosmos2-transfer:2.5.1-sam2-multigpu-20260817`
 - Upstream source: `https://github.com/nvidia-cosmos/cosmos-transfer2.5`
 - Upstream revision: `67d56b7d550a3911024a32dc23ae0bae5258e633`
 - Meta SAM2 source: `https://github.com/facebookresearch/sam2`

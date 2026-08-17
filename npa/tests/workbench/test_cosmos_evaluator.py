@@ -611,6 +611,40 @@ def test_appearance_fidelity_decodes_real_encoded_video(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_attribute_verifier_builds_begin_middle_end_contact_sheet(
+    tmp_path: Path,
+) -> None:
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        pytest.skip("ffmpeg is required to create the encoded-video fixture")
+    video = tmp_path / "representative.mp4"
+    subprocess.run(
+        [
+            ffmpeg,
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=64x48:rate=6:duration=1",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            str(video),
+        ],
+        check=True,
+    )
+    sheet = tmp_path / "sheet.jpg"
+    av._write_representative_contact_sheet(video, sheet)
+
+    from PIL import Image
+
+    with Image.open(sheet) as image:
+        assert image.size == (192, 48)
+
+
 class FakeTokenFactory:
     """Records requests and replays scripted replies."""
 

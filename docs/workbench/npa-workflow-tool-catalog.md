@@ -126,7 +126,8 @@ exposing a tool to workflow specs, then update this table.
 `workbench.cosmos2.transfer_execute` retains defaults for every option added by
 the PAIDF refinement and SAM2 integration. Existing external specs that provide
 only `trigger_uri`, `augment_uri`, and `configs_uri` continue to validate and
-render with the established effective control weight of `1.0`, guidance `3.0`,
+render with the established effective `augment_control_weight` of `1.0`,
+`augment_guidance` of `3.0`,
 and optional protection/segmentation disabled. Explicit spec config takes
 precedence over these compatibility defaults.
 

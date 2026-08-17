@@ -35,23 +35,40 @@ class RefinementStateError(RuntimeError):
     """Fail-closed, operator-safe refinement state error."""
 
 
-# Appearance-only variables that remain coherent for a replaceable physical
-# scene. The input video is authoritative for geometry, objects, camera, and motion.
+# Coherent appearance profiles for a replaceable physical scene. Sampling each
+# field independently produced contradictions such as dim evening illumination
+# with a sunlit window. Profiles keep every four-attribute request concrete and
+# mutually compatible while the source remains authoritative for foreground
+# identity, geometry, camera, timing, and motion.
+APPEARANCE_PROFILES: tuple[dict[str, str], ...] = (
+    {
+        "lighting": "bright diffuse daylight",
+        "background": "solid light-gray backdrop",
+        "color_grade": "neutral balanced color palette",
+        "surface_finish": "matte low-gloss backdrop finish",
+    },
+    {
+        "lighting": "warm tungsten lamp illumination",
+        "background": "solid beige backdrop",
+        "color_grade": "warm amber color palette",
+        "surface_finish": "satin soft-sheen backdrop finish",
+    },
+    {
+        "lighting": "cool overhead industrial illumination",
+        "background": "solid blue-gray backdrop",
+        "color_grade": "cool blue color palette",
+        "surface_finish": "polished reflective backdrop finish",
+    },
+    {
+        "lighting": "dim soft evening illumination",
+        "background": "solid charcoal backdrop",
+        "color_grade": "high-contrast color palette",
+        "surface_finish": "weathered textured backdrop finish",
+    },
+)
 APPEARANCE_VARIABLES = {
-    "lighting": [
-        "bright daylight",
-        "warm lamp light",
-        "dim evening light",
-        "cool overhead light",
-    ],
-    "background": [
-        "plain wall",
-        "cluttered shelves",
-        "sunlit window",
-        "hanging curtain",
-    ],
-    "color_grade": ["neutral", "warm", "cool", "high contrast"],
-    "surface_finish": ["matte", "satin", "lightly reflective", "weathered"],
+    key: [profile[key] for profile in APPEARANCE_PROFILES]
+    for key in APPEARANCE_PROFILES[0]
 }
 
 LEISAAC_SCENES = {
@@ -78,11 +95,15 @@ def prompt_from_combo(combo: dict[str, Any], *, scene: str = "") -> str:
         scene or "Photorealistic input-conditioned physical robot manipulation scene"
     )
     return (
-        f"{subject}, "
-        f"{lighting or 'bright daylight'}, {background or 'plain wall'} background appearance, "
-        f"{color_grade or 'neutral'} color grade, {surface_finish or 'matte'} surface finish. "
-        "Preserve every frame's exact input objects, identities, geometry, camera, timing, and motion; "
-        "change appearance only."
+        f"Photorealistic {subject}. "
+        "Apply all four visible appearance requirements consistently in every frame: "
+        f"lighting is {lighting or 'bright diffuse daylight'}; "
+        f"the background behind the foreground subject is a {background or 'solid light-gray backdrop'}; "
+        f"the scene has a {color_grade or 'neutral balanced color palette'}; "
+        f"the non-identity-bearing backdrop has a {surface_finish or 'matte low-gloss backdrop finish'}. "
+        "Preserve the exact foreground objects, identities, geometry, camera, timing, and motion. "
+        "Do not add, remove, recolor, or reshape foreground objects; change only lighting, "
+        "global color treatment, and the non-identity-bearing backdrop appearance."
     )
 
 
@@ -515,8 +536,16 @@ def generate_configs(
     effective_augmentation_seed = str(augmentation_seed or "").strip() or seed
     rng = random.Random(effective_augmentation_seed or None)
     combos = []
-    for _ in range(max(1, n)):
-        combo = {k: rng.choice(v) for k, v in variables.items()}
+    profiles: list[dict[str, str]] = []
+    while len(profiles) < max(1, n):
+        cycle = [dict(profile) for profile in APPEARANCE_PROFILES]
+        rng.shuffle(cycle)
+        profiles.extend(cycle)
+    for profile in profiles[: max(1, n)]:
+        combo: dict[str, Any] = dict(profile)
+        # Each candidate receives a stable, distinct diffusion seed. The field is
+        # provenance/quality-search metadata, not a visual attribute question.
+        combo["inference_seed"] = rng.randrange(0, 2**31)
         # The prompt is what actually conditions the Cosmos Transfer augmentation,
         # so the sampled appearance drives the pixels (not just a Rerun label).
         combo["prompt"] = prompt_from_combo(combo, scene=subject)

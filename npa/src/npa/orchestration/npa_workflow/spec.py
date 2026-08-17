@@ -458,6 +458,21 @@ def _validate_optional_sam2_config(spec: NpaWorkflowSpec) -> None:
         raise NpaWorkflowError(
             "optional SAM2 masks and protected_chroma_regions_json are mutually exclusive"
         )
+    for state in spec.states.values():
+        if state.tool_ref != "workbench.cosmos2.transfer_execute":
+            continue
+        profile = spec.resources.get(state.resources, {})
+        nodes = profile_num_nodes(
+            profile,
+            name=state.resources,
+            config=spec.config,
+            run={"id": "validate-run"},
+        )
+        if nodes > 1:
+            raise NpaWorkflowError(
+                "optional SAM2 auto segmentation requires one augment node; use "
+                "multi-GPU variant fan-out on that node"
+            )
     try:
         luma_delta = int(spec.config.get("protected_luma_max_delta"))
         feather_pixels = int(spec.config.get("protected_feather_pixels"))

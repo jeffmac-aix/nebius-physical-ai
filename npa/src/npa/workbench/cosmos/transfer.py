@@ -404,6 +404,7 @@ def _spec_for_input_video(
     control_weight: float,
     guidance: float,
     name: str,
+    seed: int | None = None,
     control_asset: str = "",
     control_prompt: str = "",
     mask_asset: str = "",
@@ -455,6 +456,8 @@ def _spec_for_input_video(
         "guidance": guidance,
         modality: control_config,
     }
+    if seed is not None:
+        spec["seed"] = int(seed)
     safe = "".join(c if (c.isalnum() or c in "-_") else "_" for c in str(name or "input"))
     spec_path = repo / f"_npa_input_spec_{safe}.json"
     spec_path.write_text(_json.dumps(spec, indent=2), encoding="utf-8")
@@ -624,6 +627,7 @@ def run_cosmos_transfer(
     mask_asset: str = "",
     mask_prompt: str = "",
     guidance: float = 3.0,
+    seed: int | None = None,
     cuda_visible_devices: str | None = None,
     variant_tag: str = "",
     disable_content_guardrails: bool | None = None,
@@ -662,6 +666,7 @@ def run_cosmos_transfer(
             control_weight=control_weight,
             guidance=guidance,
             name=tag,
+            seed=seed,
             control_asset=control_asset,
             control_prompt=control_prompt,
             mask_asset=mask_asset,
@@ -759,6 +764,7 @@ def run_cosmos_transfer(
         "mask_prompt": mask_prompt,
         "control_asset": control_asset,
         "mask_asset": mask_asset,
+        "inference_seed": seed,
         "out_dir": str(out_abs),
         "spec": spec,
         "spec_json": spec_json,
@@ -886,6 +892,7 @@ def publish_transfer_clip(
     refinement = transfer.get("refinement") or {}
     effective_control_weight = transfer.get("effective_control_weight")
     effective_guidance = transfer.get("effective_guidance")
+    inference_seed = transfer.get("inference_seed")
     conditioning_clip_uri = str(transfer.get("conditioning_clip_uri") or "")
 
     control_uris: dict[str, str] = {}
@@ -935,6 +942,7 @@ def publish_transfer_clip(
             "refinement": refinement,
             "effective_control_weight": effective_control_weight,
             "effective_guidance": effective_guidance,
+            "inference_seed": inference_seed,
         }
         cm = Path(tmp) / "metadata.json"
 
@@ -1010,6 +1018,7 @@ def publish_transfer_clip(
         "refinement": refinement,
         "effective_control_weight": effective_control_weight,
         "effective_guidance": effective_guidance,
+        "inference_seed": inference_seed,
         "variables": variables or {},
     }
 
@@ -1459,6 +1468,7 @@ def build_run_manifest(
         "refinement": first.get("refinement", {}),
         "effective_control_weight": first.get("effective_control_weight"),
         "effective_guidance": first.get("effective_guidance"),
+        "inference_seed": first.get("inference_seed"),
         "variants": [
             {
                 "clip": c.get("clip", ""),
@@ -1472,6 +1482,7 @@ def build_run_manifest(
                 "refinement": c.get("refinement", {}),
                 "effective_control_weight": c.get("effective_control_weight"),
                 "effective_guidance": c.get("effective_guidance"),
+                "inference_seed": c.get("inference_seed"),
             }
             for index, c in enumerate(clips)
         ],
