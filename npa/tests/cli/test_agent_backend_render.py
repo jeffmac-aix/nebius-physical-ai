@@ -14,12 +14,28 @@ import json
 import re
 import secrets
 import symtable
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from npa.cli.agent_embed import embedded_python_source
+
+
+def _clear_rendered_agent_backend_modules() -> None:
+    """Discard the temporary top-level package emitted by render tests."""
+    for module_name in tuple(sys.modules):
+        if module_name == "agent_backend" or module_name.startswith("agent_backend."):
+            sys.modules.pop(module_name, None)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_rendered_agent_backend_package():
+    """Prevent one rendered backend's temporary package leaking into another test."""
+    _clear_rendered_agent_backend_modules()
+    yield
+    _clear_rendered_agent_backend_modules()
 
 
 def test_artifact_route_uses_source_qualified_run_ref() -> None:
