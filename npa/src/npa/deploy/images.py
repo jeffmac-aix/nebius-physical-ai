@@ -160,6 +160,18 @@ UNVALIDATED_PUBLICATION_TOOLS: frozenset[str] = frozenset({"ltx2"})
 PUBLIC_CONTAINER_REGISTRY_ENV = "NPA_PUBLIC_REGISTRY"
 DEFAULT_PUBLIC_CONTAINER_REGISTRY = "ghcr.io/nebius/nebius-physical-ai"
 
+# A supported worker release can be available in the maintainer source registry
+# before an authorized human publishes it to the anonymous mirror. Keep public
+# resolution on the last anonymously verified tag in that interval. Remove an
+# override only after the replacement tag has been copied and an unauthenticated
+# manifest check succeeds; ``contribute-workbench-image`` deliberately makes
+# public publication a separate, explicit decision.
+PUBLIC_MIRROR_TAG_OVERRIDES: dict[str, str] = {
+    "cosmos2-transfer": "2.5.1-skypilot-ready-20260801T053000Z",
+    "fiftyone": "1.15.0.post1",
+    "rerun-viewer": "0.31.4",
+}
+
 # Registry hosts that serve anonymous/public pulls. Resolving a restricted image
 # against one of these is always wrong: either it is not there (we never publish
 # it) or someone has published a non-redistributable runtime to third parties.
@@ -310,7 +322,7 @@ def public_mirror_tag_for_tool(tool: str) -> str:
     """
     if tool == "sonic":
         return SUPPORTED_TOOL_VERSIONS[tool]
-    return supported_tool_version(tool)
+    return PUBLIC_MIRROR_TAG_OVERRIDES.get(tool, supported_tool_version(tool))
 
 
 def supported_lerobot_versions() -> tuple[str, ...]:
@@ -394,6 +406,7 @@ def container_image_for_tool(
     image_variant: str | None = None,
 ) -> str:
     """Return the fully qualified image ref for a Workbench tool."""
+    resolved_registry = registry or _primary_registry()
     if tool == "sonic":
         entry = sonic_image_entry(gpu_target=gpu_target, image_variant=image_variant)
         image_name = str(entry["name"])
@@ -404,8 +417,11 @@ def container_image_for_tool(
                 f"Image variants are only defined for SONIC, got tool={tool!r}"
             )
         image_name = CONTAINER_IMAGE_NAMES[tool]
-        resolved_tag = tag or supported_tool_version(tool)
-    resolved_registry = registry or _primary_registry()
+        resolved_tag = tag or (
+            public_mirror_tag_for_tool(tool)
+            if is_public_registry(resolved_registry)
+            else supported_tool_version(tool)
+        )
     if not is_publicly_redistributable(tool) and is_public_registry(resolved_registry):
         raise ValueError(
             f"{tool!r} is not publicly redistributable and is never distributed from a "

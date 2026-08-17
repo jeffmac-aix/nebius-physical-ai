@@ -38,6 +38,7 @@ from npa.deploy.images import (
     is_publicly_redistributable,
     omniverse_restricted_image_names,
     public_container_registry,
+    public_mirror_tag_for_tool,
     publicly_publishable_tools,
 )
 from npa.deploy.publish_public import (
@@ -524,6 +525,38 @@ def test_oss_tools_resolve_from_the_public_mirror_normally() -> None:
         "lerobot", registry=DEFAULT_PUBLIC_CONTAINER_REGISTRY
     )
     assert ref.startswith(DEFAULT_PUBLIC_CONTAINER_REGISTRY + "/npa-lerobot:")
+
+
+@pytest.mark.parametrize(
+    ("tool", "public_tag", "supported_tag"),
+    (
+        (
+            "cosmos2-transfer",
+            "2.5.1-skypilot-ready-20260801T053000Z",
+            "2.5.1-sam2-multigpu-20260817-r2",
+        ),
+        (
+            "fiftyone",
+            "1.15.0.post1",
+            "1.15.0-post1-skypilot-v1-20260815-review5",
+        ),
+        (
+            "rerun-viewer",
+            "0.31.4",
+            "0.31.4-skypilot-v1-20260815-review5-r2",
+        ),
+    ),
+)
+def test_pending_public_release_keeps_anonymous_resolution_on_verified_tag(
+    tool: str, public_tag: str, supported_tag: str
+) -> None:
+    assert public_mirror_tag_for_tool(tool) == public_tag
+    assert container_image_for_tool(
+        tool, registry=DEFAULT_PUBLIC_CONTAINER_REGISTRY
+    ).endswith(f":{public_tag}")
+    assert container_image_for_tool(
+        tool, registry="cr.eu-north1.nebius.cloud/example"
+    ).endswith(f":{supported_tag}")
 
 
 # --------------------------------------------------------------------------------------
