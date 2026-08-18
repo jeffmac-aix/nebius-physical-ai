@@ -60,6 +60,13 @@ def test_hosted_example_pins_reviewed_npa_source_revision() -> None:
     source_ref = manifest["services"]["sim"]["build"]["args"]["NPA_SOURCE_REF"]
 
     assert re.fullmatch(r"[0-9a-f]{40}", source_ref)
+    subprocess.run(
+        ["git", "cat-file", "-e", f"{source_ref}^{{commit}}"],
+        cwd=EXAMPLE_DIR,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
     dockerfile = (EXAMPLE_DIR / "Dockerfile").read_text()
     assert "ARG NPA_SOURCE_REF" in dockerfile
     assert "@${NPA_SOURCE_REF}#subdirectory=npa" in dockerfile
