@@ -217,7 +217,9 @@ class TestConvert:
         assert (output_dir / "meta" / "info.json").exists()
         assert (output_dir / "meta" / "stats.json").exists()
         assert (output_dir / "meta" / "tasks.parquet").exists()
-        assert (output_dir / "meta" / "episodes" / "chunk-000" / "file-000.parquet").exists()
+        assert (
+            output_dir / "meta" / "episodes" / "chunk-000" / "file-000.parquet"
+        ).exists()
 
         # data/
         assert (output_dir / "data" / "chunk-000" / "file-000.parquet").exists()
@@ -225,7 +227,9 @@ class TestConvert:
         # videos/
         for cam in ["observation.images.workspace", "observation.images.wrist"]:
             for ep_idx in range(N_EPISODES):
-                vid = output_dir / "videos" / cam / "chunk-000" / f"file-{ep_idx:03d}.mp4"
+                vid = (
+                    output_dir / "videos" / cam / "chunk-000" / f"file-{ep_idx:03d}.mp4"
+                )
                 assert vid.exists(), f"Missing video: {vid}"
                 assert vid.stat().st_size > 0
 

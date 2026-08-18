@@ -32,7 +32,9 @@ DEFAULT_VIDEO_SIZE_MB = 500
 
 DATA_PATH_TPL = "data/chunk-{chunk_index:03d}/file-{file_index:03d}.parquet"
 VIDEO_PATH_TPL = "videos/{video_key}/chunk-{chunk_index:03d}/file-{file_index:03d}.mp4"
-EPISODES_PATH_TPL = "meta/episodes/chunk-{chunk_index:03d}/file-{file_index:03d}.parquet"
+EPISODES_PATH_TPL = (
+    "meta/episodes/chunk-{chunk_index:03d}/file-{file_index:03d}.parquet"
+)
 
 
 class AdapterError(Exception):
@@ -56,16 +58,26 @@ def encode_video(
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     cmd = [
-        "ffmpeg", "-y",
-        "-f", "rawvideo",
-        "-pix_fmt", "rgb24",
-        "-s", f"{w}x{h}",
-        "-r", str(fps),
-        "-i", "pipe:",
-        "-c:v", "libx264",
-        "-pix_fmt", "yuv420p",
-        "-crf", "23",
-        "-g", "2",
+        "ffmpeg",
+        "-y",
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "rgb24",
+        "-s",
+        f"{w}x{h}",
+        "-r",
+        str(fps),
+        "-i",
+        "pipe:",
+        "-c:v",
+        "libx264",
+        "-pix_fmt",
+        "yuv420p",
+        "-crf",
+        "23",
+        "-g",
+        "2",
         str(output_path),
     ]
     proc = subprocess.run(
@@ -176,8 +188,7 @@ def _numeric_feature_values(
 def discover_episodes(input_dir: Path) -> list[Path]:
     """Find episode directories sorted by name."""
     episodes = sorted(
-        d for d in input_dir.iterdir()
-        if d.is_dir() and d.name.startswith("episode_")
+        d for d in input_dir.iterdir() if d.is_dir() and d.name.startswith("episode_")
     )
     if not episodes:
         raise AdapterError(f"No episode_* directories found in {input_dir}")
@@ -263,7 +274,9 @@ def convert(
             ("observation.images.workspace", obs_workspace),
             ("observation.images.wrist", obs_wrist),
         ]:
-            video_path = output_dir / "videos" / cam_key / "chunk-000" / f"file-{ep_idx:03d}.mp4"
+            video_path = (
+                output_dir / "videos" / cam_key / "chunk-000" / f"file-{ep_idx:03d}.mp4"
+            )
             encode_video(cam_frames, video_path, fps)
 
         # ── Build data rows ─────────────────────────────────────────
@@ -348,9 +361,7 @@ def convert(
         "timestamp": pa.array(
             [r["timestamp"] for r in all_data_rows], type=pa.float32()
         ),
-        "index": pa.array(
-            [r["index"] for r in all_data_rows], type=pa.int64()
-        ),
+        "index": pa.array([r["index"] for r in all_data_rows], type=pa.int64()),
         "task_index": pa.array(
             [r["task_index"] for r in all_data_rows], type=pa.int64()
         ),
@@ -511,10 +522,12 @@ def _write_episodes_parquet(
 
 def _write_tasks_parquet(task: str, output_path: Path) -> None:
     """Write the tasks.parquet metadata file."""
-    table = pa.table({
-        "task_index": pa.array([0], type=pa.int64()),
-        "task": pa.array([task], type=pa.string()),
-    })
+    table = pa.table(
+        {
+            "task_index": pa.array([0], type=pa.int64()),
+            "task": pa.array([task], type=pa.string()),
+        }
+    )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     pq.write_table(table, output_path, compression="snappy")
 
