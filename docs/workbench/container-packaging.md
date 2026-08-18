@@ -42,7 +42,7 @@ All first-class images live under `npa/docker/workbench/`:
 | `npa-lerobot` | `lerobot/Dockerfile` | FastAPI server `:8080` |
 | `npa-lerobot-policy` | `lerobot-policy/Dockerfile` | entrypoint modes (serve/train/eval) |
 | `npa-genesis` | `genesis/Dockerfile` | job shell (CLI supplies command) |
-| `npa-isaac-lab` | `isaac-lab/Dockerfile` | job shell; includes the OSS Antioch-compatible Franka/OpenPI bridge, with all vendor runtimes and weights fetched only at run time |
+| `npa-isaac-lab` | `isaac-lab/Dockerfile` | job shell; includes the OSS Antioch-compatible Franka/OpenPI bridge, with all vendor runtimes and weights fetched only at run time; uses distro FFmpeg and excludes the static executable bundled by the `imageio-ffmpeg` wheel |
 | `npa-leisaac` | `leisaac/Dockerfile` | teleoperation/status service `:8080`, WebRTC TCP `:49100`, UDP `:47998` |
 | `npa-cosmos` | `cosmos/Dockerfile` | job shell; server built but not default CMD |
 | `npa-groot` | `groot/Dockerfile` | job shell; `EXPOSE 8080` |
@@ -226,7 +226,11 @@ grep for "isaac": the images deliberately keep a `/isaac-sim/python.sh` **shim**
 `ENTRYPOINT`, making the shim the only reliable bootstrap trigger. On
 `npa-isaac-lab` it scans 83,043 entries and reports 21 allowlisted paths — the shim, the
 bootstrap, the pinned manifests, two smoke scripts and two empty mount points — and
-`VERDICT: clean`.
+`VERDICT: clean`. The scan also rejects wheel-bundled static FFmpeg. The image
+keeps the BSD-2-Clause `imageio-ffmpeg` wrapper for MoviePy compatibility but
+forces it to the distro `/usr/bin/ffmpeg`; the bundled executable is removed in
+the same layer that installs the dependency and is recorded in
+`isaac-lab/THIRD_PARTY_NOTICES.md`.
 
 **Build-your-own still works, and no longer needs NGC credentials at all**, because there
 is nothing credentialed left to pull:

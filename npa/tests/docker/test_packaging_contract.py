@@ -363,6 +363,14 @@ def test_derived_bootstrap_contract_cannot_be_redirected_to_canonical_source() -
         _validate_derived_bootstrap_source("groot", entry)
 
 
+def test_isaac_lab_excludes_wheel_bundled_static_ffmpeg() -> None:
+    text = (WORKBENCH_DOCKER / "isaac-lab" / "Dockerfile").read_text(encoding="utf-8")
+    assert "IMAGEIO_FFMPEG_EXE=/usr/bin/ffmpeg" in text
+    assert "apt-get install -y --no-install-recommends ffmpeg" in text
+    assert "imageio_ffmpeg/binaries/ffmpeg*' -delete" in text
+    assert "THIRD_PARTY_NOTICES.md" in text
+
+
 def test_fiftyone_image_has_skypilot_kubernetes_prerequisites() -> None:
     """The workflow image must survive SkyPilot's non-root pod bootstrap."""
     text = (WORKBENCH_DOCKER / "fiftyone" / "Dockerfile").read_text(encoding="utf-8")

@@ -97,8 +97,10 @@ private Isaac Lab engine, and verify its two checks and managed artifact record.
 - NPA and OpenPI source are Apache-2.0.
 - The bridge image is eligible for public redistribution only because its built
   layers contain no Isaac, Omniverse Kit, Antioch SDK, checkpoint, cache, or
-  credential bytes. This implementation nevertheless publishes it only to the
-  operator's private registry for this path.
+  credential bytes, and because it uses distro FFmpeg instead of the separately
+  licensed static executable bundled in the `imageio-ffmpeg` wheel. This
+  implementation nevertheless publishes it only to the operator's private
+  registry for this path.
 - Isaac/Omniverse and Antioch runtime caches remain private runtime state and
   must never be committed or copied into a derived image.
 - Polaris weights contain Gemma-derived material, are fetched only after the

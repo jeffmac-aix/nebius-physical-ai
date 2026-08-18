@@ -66,6 +66,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     OMNI_LOG_DIR=/tmp/isaac-sim-cache/logs \
     XDG_RUNTIME_DIR=/tmp/xdg-runtime \
     NVIDIA_DRIVER_CAPABILITIES=all \
+    IMAGEIO_FFMPEG_EXE=/usr/bin/ffmpeg \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/opt/npa/src
 
@@ -77,6 +78,7 @@ COPY --chmod=0755 docker/workbench/common/workflow_runtime_entrypoint.sh \
     /usr/local/bin/npa-workflow-entrypoint
 COPY docker/workbench/isaac-lab/smoke_env.py /opt/npa/docker/workbench/isaac-lab/smoke_env.py
 COPY docker/workbench/isaac-lab/smoke_functional.py /opt/npa/docker/workbench/isaac-lab/smoke_functional.py
+COPY docker/workbench/isaac-lab/THIRD_PARTY_NOTICES.md /opt/npa/licenses/isaac-lab/THIRD_PARTY_NOTICES.md
 COPY --chown=ubuntu:ubuntu pyproject.toml /opt/npa/pyproject.toml
 COPY --chown=ubuntu:ubuntu src/npa /opt/npa/src/npa
 COPY --chown=ubuntu:ubuntu workflows /opt/npa/workflows
@@ -96,7 +98,16 @@ RUN chmod +x /opt/npa/docker/workbench/common/*.sh \
     && test "$(printf %s "${NPA_SOURCE_SHA}" | wc -c)" -eq 40 \
     && NPA_RUNTIME_USER="${NPA_RUNTIME_USER}" \
        NPA_ISAAC_VENV=/opt/npa/sim/venv \
-       /opt/npa/docker/workbench/common/install_isaac_runtime_base.sh
+       /opt/npa/docker/workbench/common/install_isaac_runtime_base.sh \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/* \
+    && find /opt/npa/sim/venv -type f \
+      -path '*/imageio_ffmpeg/binaries/ffmpeg*' -delete \
+    && test -z "$(find /opt/npa/sim/venv -type f \
+      -path '*/imageio_ffmpeg/binaries/ffmpeg*' -print -quit)" \
+    && IMAGEIO_FFMPEG_EXE=/usr/bin/ffmpeg /opt/npa/sim/venv/bin/python -c \
+      'import imageio_ffmpeg; assert imageio_ffmpeg.get_ffmpeg_exe() == "/usr/bin/ffmpeg"'
 
 COPY --chmod=0755 docker/workbench/isaac-lab/npa_cli.sh /usr/local/bin/npa
 
