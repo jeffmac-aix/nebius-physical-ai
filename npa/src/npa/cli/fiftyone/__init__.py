@@ -3396,7 +3396,7 @@ def deploy_cmd(
                             f"{FIFTYONE_HOME}/zoo/models",
                         ],
                         command=(
-                            "-lc "
+                            "bash -lc "
                             + shlex.quote(f"exec {FIFTYONE_VENV}/bin/python {FIFTYONE_HOME}/app.py")
                         ),
                         gpu=uses_gpu,

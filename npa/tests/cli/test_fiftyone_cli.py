@@ -558,6 +558,9 @@ def test_fiftyone_deploy_runtime_container_starts_image(tmp_path: Path, mocker) 
         f"/npa-fiftyone:{supported_tool_version('fiftyone')}"
     )
     assert deploy_container.call_args.kwargs["gpu"] is False
+    assert deploy_container.call_args.kwargs["command"] == (
+        "bash -lc 'exec /opt/fiftyone/venv/bin/python /opt/fiftyone/app.py'"
+    )
     wb_cfg = write_config.call_args_list[0].args[0]["projects"]["proj"]["workbenches"][
         "curate-container"
     ]
@@ -602,6 +605,9 @@ def test_fiftyone_deploy_runtime_container_starts_image(tmp_path: Path, mocker) 
 
     assert result.exit_code == 0
     assert deploy_container.call_args.kwargs["image_ref"] == custom_image
+    assert deploy_container.call_args.kwargs["command"] == (
+        "bash -lc 'exec /opt/fiftyone/venv/bin/python /opt/fiftyone/app.py'"
+    )
 
 
 def test_fiftyone_byovm_auto_health_uses_short_public_retry_budget(mocker) -> None:
