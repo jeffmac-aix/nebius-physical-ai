@@ -121,8 +121,17 @@ if [ "$INSTALL_SKYPILOT_PREREQS" = "1" ]; then
   # client/server, and passwordless sudo; without all of them provisioning fails with
   # `container not found ("ray-node")`. Guarded by
   # npa/tests/guardrails/test_workbench_image_k8s_prereqs.py.
+  # Pre-create empty sentinels so openssh-server's post-install keygen skips host
+  # identity generation.  Delete them in this same image layer; real keys are
+  # generated only in the running container by workflow_runtime_entrypoint.sh.
+  install -d -m 0755 /etc/ssh
+  touch \
+    /etc/ssh/ssh_host_rsa_key \
+    /etc/ssh/ssh_host_ecdsa_key \
+    /etc/ssh/ssh_host_ed25519_key
   apt-get install -y --no-install-recommends \
     python3 python3-venv python3-pip rsync openssh-client openssh-server sudo netcat-openbsd
+  rm -f /etc/ssh/ssh_host_*_key /etc/ssh/ssh_host_*_key.pub
   printf 'ubuntu ALL=(ALL) NOPASSWD:ALL\n' > /etc/sudoers.d/99-npa-runtime-user
   chmod 0440 /etc/sudoers.d/99-npa-runtime-user
   install -d -m 0755 /run/sshd

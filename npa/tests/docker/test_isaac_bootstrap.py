@@ -742,6 +742,18 @@ def test_base_installer_proves_the_refusal_at_build_time() -> None:
     assert "-ne 78" in text, "the build must require the documented EX_CONFIG exit code"
 
 
+def test_base_installer_never_snapshots_ssh_host_private_keys() -> None:
+    """Package installation must not create one host identity for every image pull."""
+
+    text = BASE_INSTALLER.read_text(encoding="utf-8")
+    sentinel = "touch \\\n    /etc/ssh/ssh_host_rsa_key"
+    cleanup = "rm -f /etc/ssh/ssh_host_*_key"
+    install = "openssh-client openssh-server"
+    assert sentinel in text
+    assert cleanup in text
+    assert text.index(sentinel) < text.index(install) < text.index(cleanup)
+
+
 def test_base_installer_uses_immutable_system_and_bootstrap_inputs() -> None:
     """The GPU image build must not resolve Python or packaging from moving indexes."""
     text = BASE_INSTALLER.read_text(encoding="utf-8")
