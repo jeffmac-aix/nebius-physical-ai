@@ -224,11 +224,15 @@ or quality-disposition checks; it should not be made a shared default.
 - **CPU:** config sampling, hallucination, temporal-consistency, and protected-
   appearance checks, Cosmos Curator curation, FiftyOne review, visualize, finalize.
 
-The quality gate is fail closed. Promotion requires every variant to pass attribute
-verification and, for input-conditioned variants, hallucination checking, plus the
-aggregate threshold. Temporal consistency joins those hard checks only in calibrated
-`required` mode; protected-appearance fidelity does the same when its mode is
-`required`. If refinement is exhausted, `quality-disposition`
+The quality gate is fail closed. PAIDF first ranks every generated candidate,
+then copies only candidates with explicit independently passing 4/4 attribute,
+hallucination, threshold, and configured hard-check evidence into an additive
+`selection/iteration-N/` batch. It re-evaluates that selection on deterministic
+decoded holdout frames that are disjoint from the ranking beginning/middle/end
+sample. Temporal consistency joins the hard checks only in calibrated `required`
+mode; protected-appearance fidelity does the same when its mode is `required`.
+The complete ranking pool remains unchanged. If refinement is exhausted,
+`quality-disposition`
 writes `grade/quality_disposition.json` with `quality_status: rejected` and stops
 the workflow before labeling or curation. Workflow execution status and dataset
 quality status therefore remain separate and auditable.
@@ -243,7 +247,9 @@ raise edge-control strength. Each retry selects a different in-bounds pair; once
 the declared monotonic schedule is exhausted, refinement fails closed instead of
 toggling back to a previous policy. A configuration with no possible first retry
 fails before GPU work. Transfer metadata records the effective values and failed
-check names, so a retry is not an unauditable replay of identical inference settings.
+check names and exact failed attribute names. Retry prompts emphasize only those
+failed attributes with their candidate-specific requested values, so a retry is
+not an unauditable replay of identical inference settings.
 The planner validates Cosmos Transfer's native constraints before reserving a GPU:
 edge-control weights stay within `0..1`, and guidance remains a non-negative
 integer.
@@ -278,7 +284,8 @@ proposals; raw prompt coordinates
 are intentionally not accepted through workflow config or rendered argv. The
 mask drives the same source-chroma/luma-bounded fidelity policy at pixel precision
 with feathered boundaries. Missing frames, empty eligible proposals, checkpoint
-mismatch, decode failure, or upload failure stops the augment stage.
+mismatch, decode failure, empty/all-frame masks, invalid coverage, or upload
+failure stops the augment stage.
 
 The default is `segmentation_mode: off`, which neither downloads nor invokes
 SAM2 and preserves the original PAIDF/Cosmos behavior. The official
@@ -293,23 +300,25 @@ redistribution notice.
 For an A/B comparison, give both fresh runs the same non-sensitive
 `augmentation_seed`. Config generation will then order the same coherent,
 nonconflicting appearance profiles and assign the same distinct per-candidate
-diffusion seeds even though the run IDs differ. The first four candidates cover
-four concrete lighting/backdrop/palette/finish combinations without replacement,
+diffusion seeds even though the run IDs differ. The first eight candidates cover
+eight concrete lighting/backdrop/palette/finish combinations without replacement,
 making evaluator and throughput deltas attributable to the optional component
 rather than a different workload. An empty value retains deterministic
-run-ID-derived sampling behavior.
+run-ID-derived sampling behavior. The maintained search table now provides eight
+conservative, unambiguous appearance profiles before it repeats a profile with a
+different diffusion seed. `quality_anchor_uri` can point at a preserved canonical
+run; PAIDF derives the highest-scoring independently hard-passing candidate and
+uses its recorded prompt variables, seed, control weight, and guidance as the
+first search anchor without embedding scene-specific values in the workflow.
 
 `protected_chroma_regions_json` is deliberately separate from
 `appearance_regions_json`: the former changes transfer pixels, while the latter
 only selects evaluator measurements. A deployment may use the same rectangles for
 both, but PAIDF does not couple those policies implicitly.
 
-The all-variant batch policy is intentionally conservative: the reference workflow
-does not yet quarantine failed variant directories before downstream labeling and
-curation, so it will not promote a mixed-quality prefix. A future partial-promotion
-mode must first route only accepted variants into a separate downstream prefix.
 Attribute verification remains an all-attributes hard check; its score still
-contributes to the aggregate. An unavailable VLM marks evaluation `degraded` and
+contributes to the aggregate. A bare summary `passed` bit without its per-check
+evidence is not selectable. An unavailable VLM marks evaluation `degraded` and
 fails closed instead of falling back to a motion-only promotion.
 
 Each curation/evaluation tool has its own CPU-only workbench image:
@@ -507,8 +516,13 @@ s3://<bucket>/physical-ai-data-factory/<run-id>/
   input/               # source.mp4 + conditioning clip/frames + provenance
   configs/             # Stage 1 manifest + adaptive refinement provenance -> json
   labeled_original/    # Stage 2a VLM captions                  -> json
-  cosmos_augmented/    # Stage 2b augmented clips + metadata    -> video / json
-  grade/               # evaluator, decision, quality disposition -> json
+  cosmos_augmented/    # append-only candidates by iteration    -> video / image / json
+  selection/           # additive hard-pass holdout batches     -> video / json
+  grade/               # ranking + holdout reports, decisions, disposition -> json
+  review/
+    fiftyone-dataset/  # portable real FiftyOneDataset + media, every terminal run
+    fiftyone-review.json # review-only/accepted fields and preservation proof
+    decision.json      # post-review route; canonical quality decision is unchanged
   labeled_augmented/   # Stage 3 VLM captions on augmented      -> json
   curation/
     cosmos_curator/    # Cosmos Curator output tree             -> video / json
@@ -529,11 +543,15 @@ the `.rrd` in the artifact browser) shows it in the Rerun panel.
 
 After refinement, `quality-disposition` branches on the persisted final result.
 Accepted runs continue through re-captioning and curation before `visualize`.
-Rejected runs first execute `visualize-rejected`, which records the available
-input/augmented frames, evaluator result, decision, and rejection disposition,
-then `reject-quality` fails the workflow. This preserves fail-closed promotion
-without losing the RRD needed to inspect why the run was rejected. A failure that
-occurs before usable input or augmented frames exist still cannot produce an RRD.
+Every terminal run first exports every committed candidate to a portable real
+FiftyOne dataset. Rejected samples are labeled `review-only`, expose score,
+per-attribute results, hallucination status, iteration, and candidate identity,
+and always have `promotion_eligible=false`; accepted-only relabeling, Cosmos
+Curator, Brain selection, and finalization remain skipped. Rejected runs then
+execute `visualize-rejected`, which embeds each committed candidate's actual PNG
+and MP4 components plus a `REJECTED` evidence panel in the RRD before
+`reject-quality` fails the workflow. A failure before any usable input or
+augmented media exists still cannot produce an RRD.
 The accepted branch begins with `require-accepted-quality`, which re-checks the
 durable disposition. This additional guard is what keeps a one-shot serial plan
 using a preview assumption from running accepted-only stages when the real report
@@ -546,7 +564,11 @@ captions. The default/off path remains entirely non-SAM.
 
 ## View input / intermediate / output in the NPA agent
 
-The agent discovers runs from its artifact bucket. If the agent's base prefix is
+The agent discovers runs from its artifact bucket. Discovery paginates the full
+configured source and prefers a provable complete strict-superset canonical run
+over a same-ID one-file viewer mirror. Divergent duplicates stay ambiguous and
+require the returned source-qualified `run_ref`; publication must never replace
+or remove the canonical prefix. If the agent's base prefix is
 `checkpoints`, place the run under `checkpoints/physical-ai-data-factory/<run-id>/`
 (or pass the matching discovery prefix). Then:
 
@@ -562,6 +584,11 @@ POST /api/sim-viz/load-artifact  {"run_id":"<run-id>","key":"reports/sim2real.rr
 Input clips render as `video`, extracted frames as `image`, and every stage's
 labels/reports as `json` — so the full input → intermediate → output flow is
 browsable in the agent.
+
+Load the portable review archive into an existing durable Voxel51 deployment
+with `npa workbench fiftyone load-dataset --format fiftyone`; the loader imports
+`fo.types.FiftyOneDataset` with its media, marks the dataset persistent, and makes
+the disposition fields queryable after workflow compute has exited.
 
 > **An RRD needs decodable input or augmented frames.** With an empty `input/` the
 > run stops at `annotate-original` (only `configs/manifest.json` is written), so

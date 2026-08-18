@@ -682,6 +682,8 @@ TOOL_CATALOG: dict[str, ToolEntry] = {
             "{{config.appearance_max_dimension}}",
             "--vlm-model",
             "{{config.caption_model}}",
+            "--attribute-sample-policy",
+            "{{config.attribute_sample_policy}}",
             "--output",
             "json",
         ],
@@ -1775,6 +1777,32 @@ TOOL_CATALOG: dict[str, ToolEntry] = {
             "--dedup-threshold",
             "{{config.fiftyone_dedup_threshold}}",
             "--require-fiftyone",
+            "--output",
+            "json",
+        ],
+    ),
+    "workbench.fiftyone.review_augmented": ToolEntry(
+        name="workbench.fiftyone.review_augmented",
+        description=(
+            "Export every terminal PAIDF candidate as a portable real "
+            "FiftyOneDataset, preserving rejected review-only semantics and "
+            "verifying that pre-existing canonical artifacts are unchanged."
+        ),
+        argv_template=[
+            "npa",
+            "workbench",
+            "fiftyone",
+            "review-augmented",
+            "--run-root-uri",
+            "{{config.run_root_uri}}",
+            "--quality-disposition-uri",
+            "{{config.quality_disposition_uri}}",
+            "--dataset-uri",
+            "{{config.terminal_review_dataset_uri}}",
+            "--report-uri",
+            "{{config.terminal_review_report_uri}}",
+            "--dataset-name",
+            "{{config.terminal_review_dataset_name}}",
             "--output",
             "json",
         ],

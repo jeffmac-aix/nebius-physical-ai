@@ -176,6 +176,236 @@ def test_generate_configs_supports_a_shared_controlled_comparison_seed(
     assert baseline["augmentation_seed"] == "controlled-comparison-v1"
 
 
+def test_generate_configs_derives_first_search_candidate_from_passing_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = {
+        "status": "completed",
+        "augment_uri": "s3://b/prior/cosmos_augmented/iteration-1/",
+        "clips": [
+            {
+                "clip_id": "prior-best",
+                "score": 0.91,
+                "passed": True,
+                "attribute_verification": {
+                    "passed": True,
+                    "passed_checks": 4,
+                    "total_checks": 4,
+                },
+                "hallucination": {"passed": True},
+            }
+        ],
+    }
+    variables = {
+        "color_grade": "neutral balanced color",
+        "surface_finish": "natural low-gloss materials",
+        "lighting": "soft diffuse daylight",
+        "background": "stable low-detail surroundings",
+    }
+    monkeypatch.setattr(
+        dfs,
+        "_list_keys",
+        lambda _uri: ["prior/grade/iteration-1/ranking/cosmos_evaluator.json"],
+    )
+    monkeypatch.setattr(dfs, "_read_json_key", lambda _bucket, _key: report)
+    monkeypatch.setattr(
+        dfs,
+        "_committed_augment_manifest",
+        lambda _uri: {
+            "variants": [
+                {
+                    "clip": "prior-best",
+                    "augmented_video_uri": (
+                        "s3://b/prior/cosmos_augmented/iteration-1/"
+                        "prior-best/augmented_video.mp4"
+                    ),
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        dfs,
+        "_download_json",
+        lambda _uri: {
+            "variables": variables,
+            "inference_seed": 42,
+            "effective_control_weight": 0.9,
+            "effective_guidance": 2.0,
+        },
+    )
+
+    manifest = dfs.generate_configs(
+        str(tmp_path / "configs.json"),
+        n_augmentations=8,
+        seed="new-run",
+        quality_anchor_uri="s3://b/prior/",
+    )
+
+    assert manifest["n_augmentations"] == 8
+    assert manifest["augmentations"][0]["inference_seed"] == 42
+    assert {
+        key: manifest["augmentations"][0][key] for key in dfs.APPEARANCE_VARIABLES
+    } == variables
+    assert manifest["quality_anchor"]["clip_id"] == "prior-best"
+    assert manifest["quality_anchor"]["score"] == 0.91
+
+
+@pytest.mark.parametrize(
+    ("passing", "expected_selected"),
+    [(True, ["candidate-a"]), (False, [])],
+    ids=["one-independent-pass", "zero-selection-fails-closed"],
+)
+def test_candidate_selection_is_additive_and_preserves_complete_ranking_pool(
+    monkeypatch: pytest.MonkeyPatch,
+    passing: bool,
+    expected_selected: list[str],
+) -> None:
+    augment_uri = "s3://b/run/cosmos_augmented/iteration-1/"
+    selection_uri = "s3://b/run/selection/iteration-1/"
+    source_rows = [
+        {"key": "run/cosmos_augmented/iteration-1/manifest.json", "size": 100, "etag": "m"},
+        {"key": "run/cosmos_augmented/iteration-1/candidate-a/augmented_video.mp4", "size": 200, "etag": "a"},
+        {"key": "run/cosmos_augmented/iteration-1/candidate-a/metadata.json", "size": 50, "etag": "am"},
+        {"key": "run/cosmos_augmented/iteration-1/candidate-b/augmented_video.mp4", "size": 210, "etag": "b"},
+        {"key": "run/cosmos_augmented/iteration-1/candidate-b/metadata.json", "size": 55, "etag": "bm"},
+    ]
+    destination_rows: list[dict[str, object]] = []
+    manifest = {
+        "schema": "npa.cosmos2.transfer.v1",
+        "mode": "cosmos_transfer2.5_gpu",
+        "status": "executed",
+        "node_count": 1,
+        "variant_count": 2,
+        "variants": [
+            {
+                "clip": clip,
+                "variant_index": index,
+                "augmented_video_uri": (
+                    f"{augment_uri}{clip}/augmented_video.mp4"
+                ),
+                "control_uris": {},
+            }
+            for index, clip in enumerate(("candidate-a", "candidate-b"))
+        ],
+    }
+    ranking = {
+        "status": "completed",
+        "clips": [
+            {
+                "clip_id": "candidate-a",
+                "status": "completed",
+                "score": 0.9,
+                "passed": passing,
+                "input_conditioned": True,
+                "attribute_verification": {
+                    "passed": passing,
+                    "total_checks": 4,
+                    "passed_checks": 4 if passing else 3,
+                },
+                "hallucination": {"passed": True},
+            },
+            {
+                "clip_id": "candidate-b",
+                "status": "completed",
+                "score": 0.6,
+                "passed": False,
+                "input_conditioned": True,
+                "attribute_verification": {
+                    "passed": False,
+                    "total_checks": 4,
+                    "passed_checks": 3,
+                },
+                "hallucination": {"passed": True},
+            },
+        ],
+    }
+
+    def inventory(uri: str) -> list[dict]:
+        if uri == augment_uri:
+            return [dict(row) for row in source_rows]
+        if uri == selection_uri:
+            return [dict(row) for row in destination_rows]
+        raise AssertionError(uri)
+
+    class FakeS3:
+        def copy_object(self, *, Bucket: str, CopySource: dict, Key: str) -> None:
+            assert Bucket == "b"
+            source = next(row for row in source_rows if row["key"] == CopySource["Key"])
+            destination_rows.append({**source, "key": Key})
+
+    def upload(payload: dict, uri: str) -> str:
+        if uri == f"{selection_uri}manifest.json":
+            destination_rows.append(
+                {"key": "run/selection/iteration-1/manifest.json", "size": 100, "etag": "sm"}
+            )
+        return uri
+
+    monkeypatch.setattr(dfs, "_inventory_rows", inventory)
+    monkeypatch.setattr(dfs, "_committed_augment_manifest", lambda *_args, **_kwargs: manifest)
+    monkeypatch.setattr(dfs, "_download_json", lambda _uri: ranking)
+    monkeypatch.setattr(dfs, "_s3_client", lambda: FakeS3())
+    monkeypatch.setattr(dfs, "_upload_json", upload)
+
+    result = dfs.select_hard_passing_candidates(
+        augment_uri,
+        "s3://b/run/grade/iteration-1/ranking/",
+        selection_uri,
+        "s3://b/run/selection/iteration-1/selection.json",
+        0.75,
+    )
+
+    assert result["selected_clip_ids"] == expected_selected
+    assert result["ranking_pool_unchanged_after_selection"] is True
+    assert source_rows == inventory(augment_uri)
+    assert any(row["key"].endswith("manifest.json") for row in destination_rows)
+    if expected_selected:
+        assert any("candidate-a/augmented_video.mp4" in row["key"] for row in destination_rows)
+    assert not any("candidate-b/" in row["key"] for row in destination_rows)
+
+
+def test_rejected_review_fields_are_truthful_and_never_promotion_eligible() -> None:
+    candidate = dfs._review_candidate_from_evaluation(
+        iteration=2,
+        clip="candidate-z",
+        media_key="run/candidate-z/augmented_video.mp4",
+        evaluation={
+            "score": 0.8,
+            "passed": True,
+            "attribute_verification": {
+                "checks": [{"variable": "lighting", "passed": True}]
+            },
+            "hallucination": {"passed": True},
+        },
+        run_disposition="rejected",
+    )
+
+    assert candidate["candidate_id"] == "iteration-2/candidate-z"
+    assert candidate["candidate_passed"] is True
+    assert candidate["promotion_eligible"] is False
+    assert candidate["hallucination_status"] == "passed"
+
+
+def test_candidate_selection_does_not_trust_a_bare_passed_summary() -> None:
+    assert not dfs._independently_hard_passing_candidate(
+        {"status": "completed", "score": 0.99, "passed": True}, 0.75
+    )
+    assert not dfs._independently_hard_passing_candidate(
+        {
+            "status": "completed",
+            "score": 0.99,
+            "passed": True,
+            "input_conditioned": True,
+            "attribute_verification": {
+                "passed": True,
+                "total_checks": 4,
+                "passed_checks": 4,
+            },
+            "hallucination": {"passed": False},
+        },
+        0.75,
+    )
+
+
 def test_prepare_refinement_uses_baseline_then_adapts_failed_retry(
     tmp_path: Path,
 ) -> None:
@@ -221,6 +451,47 @@ def test_prepare_refinement_uses_baseline_then_adapts_failed_retry(
     assert retry["settings"] == {"control_weight": 1.0, "guidance": 2}
     assert retry["failed_checks"] == ["appearance_fidelity"]
     assert (tmp_path / "configs" / "refinement-attempt-01.json").is_file()
+
+
+def test_prepare_refinement_records_exact_failed_attribute_names(tmp_path: Path) -> None:
+    grade = tmp_path / "grade"
+    grade.mkdir()
+    refinement = tmp_path / "configs" / "refinement.json"
+    decision = grade / "decision.json"
+    dfs.prepare_refinement(str(grade), str(refinement), decision_uri=str(decision))
+    (grade / "cosmos_evaluator.json").write_text(
+        json.dumps(
+            {
+                "status": "completed",
+                "score": 0.7,
+                "passed": False,
+                "clips": [
+                    {
+                        "passed": False,
+                        "attribute_verification": {
+                            "passed": False,
+                            "checks": [
+                                {"variable": "lighting", "passed": False},
+                                {"variable": "background", "passed": True},
+                            ],
+                        },
+                        "hallucination": {"passed": True},
+                    }
+                ],
+            }
+        )
+    )
+    assert (
+        dfs.grade_gate(str(grade), str(decision), 0.75, str(refinement))
+        == "loop_back"
+    )
+
+    retry = dfs.prepare_refinement(
+        str(grade), str(refinement), decision_uri=str(decision)
+    )
+
+    assert retry["failed_checks"] == ["attribute_verification"]
+    assert retry["failed_attributes"] == ["lighting"]
 
 
 def test_prepare_refinement_reads_preceding_append_only_iteration(

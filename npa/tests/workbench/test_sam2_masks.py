@@ -99,7 +99,11 @@ def test_load_published_sam2_masks_reuses_only_an_exact_contract(
     config = sm.Sam2MaskConfig()
     base = "s3://example/run/segmentation/"
     png = tmp_path / "mask.png"
-    Image.new("L", (4, 3), 255).save(png)
+    mask = Image.new("L", (4, 3), 0)
+    for x in range(2):
+        for y in range(3):
+            mask.putpixel((x, y), 255)
+    mask.save(png)
     manifest = {
         "schema": sm.MASK_SCHEMA,
         "status": "executed",
@@ -114,7 +118,7 @@ def test_load_published_sam2_masks_reuses_only_an_exact_contract(
         "width": 4,
         "height": 3,
         "object_count": 1,
-        "mask_coverage": {"mean": 1.0, "min": 1.0, "max": 1.0},
+        "mask_coverage": {"mean": 0.5, "min": 0.5, "max": 0.5},
         "runtime": {"device": "cuda", "seconds": 2.0, "frames_per_second": 1.0},
         "manifest_uri": f"{base}manifest.json",
         "masks_uri": f"{base}masks/",
@@ -154,6 +158,25 @@ def test_load_published_sam2_masks_reuses_only_an_exact_contract(
 
     assert reused is not None
     assert len(list(reused.masks_dir.glob("mask-*.png"))) == 2
+    for invalid_coverage in (
+        {"mean": 0.0, "min": 0.0, "max": 0.0},
+        {"mean": 1.0, "min": 1.0, "max": 1.0},
+    ):
+        invalid_manifest = {**manifest, "mask_coverage": invalid_coverage}
+        objects[("example", "run/segmentation/manifest.json")] = json.dumps(
+            invalid_manifest
+        ).encode()
+        with pytest.raises(sm.Sam2MaskError, match="invalid evidence"):
+            sm.load_published_sam2_masks(
+                base,
+                tmp_path / f"invalid-{invalid_coverage['mean']}",
+                config=config,
+                run_id="run",
+                storage_client=storage,
+            )
+    objects[("example", "run/segmentation/manifest.json")] = json.dumps(
+        manifest
+    ).encode()
     with pytest.raises(sm.Sam2MaskError, match="immutable configuration"):
         sm.load_published_sam2_masks(
             base,

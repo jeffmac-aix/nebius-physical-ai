@@ -54,6 +54,113 @@ def test_build_run_rrd_from_local_run(tmp_path: Path) -> None:
     assert verified.returncode == 0, verified.stderr
 
 
+def test_rejected_rrd_component_stats_include_actual_augmented_media(
+    tmp_path: Path,
+) -> None:
+    """Regression: rejected evidence must contain pixels/video, not URI-only text."""
+
+    pytest.importorskip("rerun")
+    run = tmp_path / "rejected-run"
+    candidate = run / "cosmos_augmented" / "iteration-1" / "candidate-a"
+    _write_png(candidate / "frame-00000.png", (12, 34, 56))
+    video = candidate / "augmented_video.mp4"
+    encoded = subprocess.run(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-loop",
+            "1",
+            "-i",
+            str(candidate / "frame-00000.png"),
+            "-t",
+            "0.2",
+            "-pix_fmt",
+            "yuv420p",
+            "-y",
+            str(video),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert encoded.returncode == 0, encoded.stderr
+    (candidate.parent / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema": "npa.cosmos2.transfer.v1",
+                "mode": "cosmos_transfer2.5_gpu",
+                "status": "executed",
+                "node_count": 1,
+                "variant_count": 1,
+                "variants": [
+                    {
+                        "clip": "candidate-a",
+                        "variant_index": 0,
+                        "augmented_video_uri": (
+                            "s3://test/run/cosmos_augmented/iteration-1/"
+                            "candidate-a/augmented_video.mp4"
+                        ),
+                        "control_uris": {},
+                    }
+                ],
+            }
+        )
+    )
+    grade = run / "grade"
+    (grade / "iteration-1" / "ranking").mkdir(parents=True)
+    (grade / "iteration-1" / "ranking" / "cosmos_evaluator.json").write_text(
+        json.dumps(
+            {
+                "status": "completed",
+                "clips": [
+                    {
+                        "clip_id": "candidate-a",
+                        "score": 0.7,
+                        "passed": False,
+                        "attribute_verification": {
+                            "passed": False,
+                            "checks": [
+                                {"variable": "lighting", "passed": False}
+                            ],
+                        },
+                        "hallucination": {"passed": True},
+                    }
+                ],
+            }
+        )
+    )
+    (grade / "quality_disposition.json").write_text(
+        json.dumps(
+            {
+                "quality_status": "rejected",
+                "score": 0.7,
+                "threshold": 0.75,
+            }
+        )
+    )
+
+    out = tmp_path / "reports" / "rejected.rrd"
+    result = build_run_rrd(str(run), str(out))
+
+    assert result["augmented_media_entities"] == 1
+    assert result["augmented_frame_components"] == 1
+    assert result["augmented_video_components"] == 1
+    printed = subprocess.run(
+        [str(Path(sys.executable).with_name("rerun")), "rrd", "print", "-v", str(out)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert printed.returncode == 0, printed.stderr
+    component_stats = printed.stdout
+    assert "augmented/iteration-1/candidate-a" in component_stats
+    assert "@EncodedImage:blob" in component_stats
+    assert "@AssetVideo:blob" in component_stats
+    assert "augmented/iteration-1/candidate-a/disposition" in component_stats
+
+
 def test_frame_index_parses_both_naming_schemes() -> None:
     # Hyphen-delimited producer names (frame-00000) and underscore input names
     # (video_0_frame_01) must both yield distinct, ordered indices.
@@ -325,6 +432,30 @@ def test_captions_carry_self_identifying_header(tmp_path: Path) -> None:
 def test_build_run_rrd_requires_rrd_output(tmp_path: Path) -> None:
     with pytest.raises(DataFactoryVizError):
         build_run_rrd(str(tmp_path), str(tmp_path / "out.json"))
+
+
+def test_viewer_publication_preservation_check_is_additive_and_fail_closed() -> None:
+    import npa.workflows.data_factory_viz as viz
+
+    before = [
+        {"key": "run/input/source.mp4", "size": 10, "etag": "source"},
+        {"key": "run/cosmos_augmented/a/frame.png", "size": 20, "etag": "frame"},
+    ]
+    after = [
+        *before,
+        {"key": "run/reports/sim2real.rrd", "size": 30, "etag": "rrd"},
+    ]
+    viz._verify_additive_publication(before, after, "run/reports/sim2real.rrd")
+
+    changed = [
+        {**before[0], "etag": "changed"},
+        before[1],
+        after[-1],
+    ]
+    with pytest.raises(DataFactoryVizError, match="changed the canonical"):
+        viz._verify_additive_publication(
+            before, changed, "run/reports/sim2real.rrd"
+        )
 
 
 def test_build_run_rrd_errors_when_no_frames(tmp_path: Path) -> None:

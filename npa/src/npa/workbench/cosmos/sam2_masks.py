@@ -174,6 +174,9 @@ def load_published_sam2_masks(
     if (
         not 1 <= object_count <= config.max_objects
         or not all(math.isfinite(value) and 0.0 <= value <= 1.0 for value in coverage_values)
+        or not 0.0 < coverage_values[0] < 1.0
+        or coverage_values[2] <= 0.0
+        or coverage_values[1] >= 1.0
         or not math.isfinite(runtime_seconds)
         or runtime_seconds < 0.0
         or not math.isfinite(frames_per_second)
@@ -380,6 +383,10 @@ def generate_sam2_video_masks(
         coverage.append(float(mask.mean()))
         Image.fromarray(mask.astype("uint8") * 255).save(
             masks_dir / f"mask-{index:06d}.png"
+        )
+    if not coverage or not 0.0 < (sum(coverage) / len(coverage)) < 1.0:
+        raise Sam2MaskError(
+            "SAM2 produced an empty or all-frame-invalid mask contract"
         )
     del predictor, inference_state, frame_masks
     torch.cuda.empty_cache()

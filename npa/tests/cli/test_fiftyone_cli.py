@@ -2082,3 +2082,47 @@ def test_curate_augmented_reports_real_fiftyone_engine(mocker) -> None:
 
     assert result.exit_code == 0, result.output
     assert json.loads(result.output)["engine"] == "fiftyone-brain"
+
+
+def test_review_augmented_exports_rejected_candidates_without_promotion(mocker) -> None:
+    review = mocker.patch(
+        "npa.workflows.data_factory_stages.review_terminal_candidates",
+        return_value={
+            "status": "completed",
+            "engine": "fiftyone",
+            "dataset_name": "paidf-review-run",
+            "candidate_count": 8,
+            "quality_disposition": "rejected",
+            "review_only": True,
+            "promotion_eligible_count": 0,
+            "written_uri": "s3://bucket/run/review/fiftyone-review.json",
+        },
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "workbench",
+            "fiftyone",
+            "review-augmented",
+            "--run-root-uri",
+            "s3://bucket/run/",
+            "--quality-disposition-uri",
+            "s3://bucket/run/grade/quality_disposition.json",
+            "--dataset-uri",
+            "s3://bucket/run/review/fiftyone-dataset/",
+            "--report-uri",
+            "s3://bucket/run/review/fiftyone-review.json",
+            "--dataset-name",
+            "paidf-review-run",
+            "--output",
+            "json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["quality_disposition"] == "rejected"
+    assert payload["review_only"] is True
+    assert payload["promotion_eligible_count"] == 0
+    review.assert_called_once()

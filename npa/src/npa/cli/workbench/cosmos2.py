@@ -173,11 +173,42 @@ def _load_refinement(refinement_uri: str) -> dict[str, Any]:
             for item in immutable.get("failed_checks", [])
             if isinstance(item, str)
         ],
+        "failed_attributes": [
+            str(item)
+            for item in immutable.get("failed_attributes", [])
+            if isinstance(item, str)
+        ],
         "settings": {
             "control_weight": control_weight,
             "guidance": guidance,
         },
     }
+
+
+def _apply_refinement_prompt(
+    combo: dict[str, Any], refinement: dict[str, Any]
+) -> dict[str, Any]:
+    """Emphasize exactly the attributes that failed the preceding evaluation."""
+
+    failed = [
+        str(value).strip()
+        for value in refinement.get("failed_attributes", [])
+        if str(value).strip() and str(value).strip() in combo
+    ]
+    if not failed:
+        return dict(combo)
+    adapted = dict(combo)
+    requirements = "; ".join(
+        f"{variable.replace('_', ' ')} is unambiguously {combo[variable]}"
+        for variable in failed
+    )
+    adapted["prompt"] = (
+        f"{str(combo.get('prompt') or '').strip()} "
+        f"Retry emphasis based only on failed attribute checks: {requirements}. "
+        "Keep every other object, geometry, camera, timing, motion, and appearance "
+        "property unchanged."
+    ).strip()
+    return adapted
 
 
 _VIDEO_EXTS = (".mp4", ".mov", ".webm", ".mkv", ".avi")
@@ -1713,7 +1744,10 @@ def transfer_cmd(
                 write_shard_manifest,
             )
 
-            combos = _all_augmentations(configs_uri)
+            combos = [
+                _apply_refinement_prompt(combo, refinement)
+                for combo in _all_augmentations(configs_uri)
+            ]
 
             # Multi-node fan-out: this node renders only its stride of the sampled
             # combos. Variant indices stay GLOBAL, so clip names remain disjoint

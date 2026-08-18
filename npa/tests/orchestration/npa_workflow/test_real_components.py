@@ -98,6 +98,8 @@ def test_agent_generated_paidf_runs_named_real_components() -> None:
         "prepare-refinement",
         "augment",
         "evaluate",
+        "select-candidates",
+        "evaluate-selected",
         "quality-gate",
     ]
     assert "prepare_refinement" in states["prepare-refinement"]["run"]["argv"][2]
@@ -116,6 +118,11 @@ def test_agent_generated_paidf_runs_named_real_components() -> None:
     ):
         assert option in TOOL_CATALOG["workbench.cosmos2.transfer_execute"].argv_template
     assert states["evaluate"]["toolRef"] == "workbench.cosmos_evaluator.evaluate"
+    assert (
+        states["review-terminal-candidates"]["toolRef"]
+        == "workbench.fiftyone.review_augmented"
+    )
+    assert not TOOL_CATALOG["workbench.fiftyone.review_augmented"].stub
     assert states["cosmos-curate"]["toolRef"] == "workbench.cosmos_curate.curate"
     assert states["curate"]["toolRef"] == "workbench.fiftyone.curate_augmented"
     assert (
@@ -193,6 +200,7 @@ def test_evaluate_runs_the_real_cosmos_evaluator() -> None:
         "--appearance-chroma-instability-tolerance",
         "--appearance-blur-ksize",
         "--appearance-max-dimension",
+        "--attribute-sample-policy",
     ):
         assert option in argv
 
@@ -202,6 +210,8 @@ def test_evaluate_runs_the_real_cosmos_evaluator() -> None:
         "prepare-refinement",
         "augment",
         "evaluate",
+        "select-candidates",
+        "evaluate-selected",
         "quality-gate",
     ]
     assert states["grade"]["next"] == "quality-disposition"
@@ -211,6 +221,12 @@ def test_evaluate_runs_the_real_cosmos_evaluator() -> None:
     assert disposition["writesDecision"] is True
     assert "write_quality_disposition" in disposition_command
     assert disposition["transitions"] == [
+        {"when": "promote_checkpoint", "goto": "review-terminal-candidates"},
+        {"when": "loop_back", "goto": "review-terminal-candidates"},
+    ]
+    assert states["review-terminal-candidates"]["needs"] == ["quality-disposition"]
+    assert states["review-terminal-candidates"]["next"] == "route-terminal-quality"
+    assert states["route-terminal-quality"]["transitions"] == [
         {"when": "promote_checkpoint", "goto": "require-accepted-quality"},
         {"when": "loop_back", "goto": "visualize-rejected"},
     ]
@@ -271,8 +287,10 @@ def test_quality_gate_reads_the_evaluator_report() -> None:
     from npa.workbench.cosmos_evaluator import RESULT_FILENAME
 
     states = _states()
-    assert states["quality-gate"]["needs"] == ["evaluate"]
-    outputs = [output["uri"] for output in states["evaluate"]["outputs"]]
+    assert states["quality-gate"]["needs"] == ["evaluate-selected"]
+    assert states["evaluate"]["params"]["attribute_sample_policy"] == "ranking"
+    assert states["evaluate-selected"]["params"]["attribute_sample_policy"] == "holdout"
+    outputs = [output["uri"] for output in states["evaluate-selected"]["outputs"]]
     assert any(uri.endswith(RESULT_FILENAME) for uri in outputs), (
         f"evaluate must publish {RESULT_FILENAME}, which grade_gate reads"
     )

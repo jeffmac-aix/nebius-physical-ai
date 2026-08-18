@@ -6865,19 +6865,44 @@ def artifacts_for_run(
                 }},
             )
         if len(matches) > 1:
-            return JSONResponse(
-                status_code=409,
-                content={{
-                    "ok": False,
-                    "error": {{
-                        "code": "ambiguous_run_id",
-                        "message": "This run ID exists in multiple artifact sources; select a project, bucket, and resolved prefix.",
+            try:
+                resolutions = [
+                    RunResolution(
+                        run_id=normalized_run,
+                        bucket=item.bucket,
+                        source_prefix=item.resolved_prefix,
+                        artifacts=list_artifacts(
+                            item.bucket,
+                            normalized_run,
+                            prefix=item.resolved_prefix,
+                            s3=s3,
+                        ),
+                    )
+                    for item in matches
+                ]
+                complete = prefer_complete_run_resolution(resolutions)
+            except Exception:  # noqa: BLE001 - ambiguity remains the safe fallback
+                complete = None
+            if complete is None:
+                return JSONResponse(
+                    status_code=409,
+                    content={{
+                        "ok": False,
+                        "error": {{
+                            "code": "ambiguous_run_id",
+                            "message": "This run ID exists in multiple artifact sources; select a project, bucket, and resolved prefix.",
+                        }},
+                        "run_id": normalized_run,
+                        "sources": [item.to_dict() for item in matches],
+                        "access": access_diagnostics,
                     }},
-                    "run_id": normalized_run,
-                    "sources": [item.to_dict() for item in matches],
-                    "access": access_diagnostics,
-                }},
-            )
+                )
+            matches = [
+                item
+                for item in matches
+                if item.bucket == complete.bucket
+                and item.resolved_prefix == complete.source_prefix
+            ]
         selected = matches[0]
         run_bucket = selected.bucket
         artifact_prefix = selected.resolved_prefix

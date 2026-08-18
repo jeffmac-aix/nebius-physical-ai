@@ -63,7 +63,31 @@ APPEARANCE_PROFILES: tuple[dict[str, str], ...] = (
         "lighting": "dim soft evening illumination",
         "background": "solid charcoal backdrop",
         "color_grade": "high-contrast color palette",
-        "surface_finish": "weathered textured backdrop finish",
+        "surface_finish": "matte uniform backdrop finish",
+    },
+    {
+        "lighting": "soft side-lit studio illumination",
+        "background": "solid off-white backdrop",
+        "color_grade": "neutral cool color palette",
+        "surface_finish": "matte smooth backdrop finish",
+    },
+    {
+        "lighting": "warm diffuse studio illumination",
+        "background": "solid tan backdrop",
+        "color_grade": "warm balanced color palette",
+        "surface_finish": "low-gloss smooth backdrop finish",
+    },
+    {
+        "lighting": "bright overcast daylight",
+        "background": "solid pale-blue backdrop",
+        "color_grade": "cool balanced color palette",
+        "surface_finish": "matte low-texture backdrop finish",
+    },
+    {
+        "lighting": "low-key even studio illumination",
+        "background": "solid dark-gray backdrop",
+        "color_grade": "muted neutral color palette",
+        "surface_finish": "satin uniform backdrop finish",
     },
 )
 APPEARANCE_VARIABLES = {
@@ -452,6 +476,110 @@ def _is_truthy(value: Any) -> bool:
 _DEFAULT_INPUT_FRAME_COUNT = 8
 
 
+def _derive_quality_anchor(anchor_uri: str) -> dict[str, Any] | None:
+    """Derive the best independently passing settings from preserved reports."""
+
+    source = str(anchor_uri or "").strip()
+    if not source:
+        return None
+    reports: list[tuple[str, dict[str, Any]]] = []
+    if source.endswith(".json"):
+        payload = _download_json(source)
+        if isinstance(payload, dict):
+            reports.append((source, payload))
+    else:
+        bucket, _prefix = _split(source)
+        for key in _list_keys(source):
+            if not (
+                re.search(
+                    r"/grade/iteration-\d+/(?:ranking/)?cosmos_evaluator\.json$",
+                    f"/{key}",
+                )
+            ):
+                continue
+            payload = _read_json_key(bucket, key)
+            if isinstance(payload, dict):
+                reports.append((f"s3://{bucket}/{key}", payload))
+    passing: list[tuple[float, str, dict[str, Any], dict[str, Any]]] = []
+    for report_uri, report in reports:
+        if report.get("status") != "completed":
+            continue
+        for clip in report.get("clips", []):
+            if not isinstance(clip, dict) or clip.get("passed") is not True:
+                continue
+            attributes = clip.get("attribute_verification")
+            hallucination = clip.get("hallucination")
+            if not isinstance(attributes, dict) or not isinstance(
+                hallucination, dict
+            ):
+                continue
+            if (
+                attributes.get("passed") is not True
+                or int(attributes.get("passed_checks") or 0) < 4
+                or int(attributes.get("passed_checks") or 0)
+                != int(attributes.get("total_checks") or 0)
+                or hallucination.get("passed") is not True
+            ):
+                continue
+            passing.append(
+                (
+                    float(clip.get("score") or 0.0),
+                    report_uri,
+                    report,
+                    clip,
+                )
+            )
+    if not passing:
+        return None
+    score, report_uri, report, clip = max(
+        passing, key=lambda item: (item[0], str(item[3].get("clip_id") or ""))
+    )
+    augment_uri = str(report.get("augment_uri") or "")
+    manifest = _committed_augment_manifest(augment_uri)
+    if not isinstance(manifest, dict):
+        raise RuntimeError("quality anchor report has no committed augment manifest")
+    clip_id = str(clip.get("clip_id") or "")
+    variant = next(
+        (
+            item
+            for item in manifest.get("variants", [])
+            if isinstance(item, dict) and str(item.get("clip") or "") == clip_id
+        ),
+        None,
+    )
+    if not isinstance(variant, dict):
+        raise RuntimeError("quality anchor candidate is absent from its manifest")
+    video_uri = str(variant.get("augmented_video_uri") or "")
+    metadata = _download_json(video_uri.rsplit("/", 1)[0] + "/metadata.json")
+    if not isinstance(metadata, dict) or not isinstance(
+        metadata.get("variables"), dict
+    ):
+        raise RuntimeError("quality anchor candidate metadata is unavailable")
+    variables = {
+        key: str(metadata["variables"].get(key) or "").strip()
+        for key in APPEARANCE_VARIABLES
+    }
+    if not all(variables.values()):
+        raise RuntimeError("quality anchor omits a required appearance attribute")
+    inference_seed = metadata.get("inference_seed")
+    if isinstance(inference_seed, bool) or not isinstance(inference_seed, int):
+        inference_seed = metadata["variables"].get("inference_seed")
+    try:
+        inference_seed = int(inference_seed)
+    except (TypeError, ValueError):
+        inference_seed = None
+    return {
+        "score": score,
+        "report_uri": report_uri,
+        "report_sha256": _payload_sha256(report),
+        "clip_id": clip_id,
+        "variables": variables,
+        "inference_seed": inference_seed,
+        "control_weight": metadata.get("effective_control_weight"),
+        "guidance": metadata.get("effective_guidance"),
+    }
+
+
 def _seed_fixture_frames(
     input_uri: str, count: int = _DEFAULT_INPUT_FRAME_COUNT, seed: str = ""
 ) -> int:
@@ -507,6 +635,7 @@ def generate_configs(
     seed_fixture: str | bool = "",
     augment_subject: str = "",
     augmentation_seed: str = "",
+    quality_anchor_uri: str = "",
 ) -> dict[str, Any]:
     """Sample appearance-only augmentation combos and write a real config manifest.
 
@@ -532,20 +661,31 @@ def generate_configs(
         or leisaac_scene
         or "input-conditioned physical robot manipulation"
     )
-    variables = APPEARANCE_VARIABLES
+    anchor = _derive_quality_anchor(quality_anchor_uri)
+    variables = {key: list(values) for key, values in APPEARANCE_VARIABLES.items()}
+    if anchor:
+        for key, value in anchor["variables"].items():
+            if value not in variables[key]:
+                variables[key].append(value)
     effective_augmentation_seed = str(augmentation_seed or "").strip() or seed
     rng = random.Random(effective_augmentation_seed or None)
     combos = []
     profiles: list[dict[str, str]] = []
+    if anchor:
+        profiles.append(dict(anchor["variables"]))
     while len(profiles) < max(1, n):
         cycle = [dict(profile) for profile in APPEARANCE_PROFILES]
         rng.shuffle(cycle)
         profiles.extend(cycle)
-    for profile in profiles[: max(1, n)]:
+    for profile_index, profile in enumerate(profiles[: max(1, n)]):
         combo: dict[str, Any] = dict(profile)
         # Each candidate receives a stable, distinct diffusion seed. The field is
         # provenance/quality-search metadata, not a visual attribute question.
-        combo["inference_seed"] = rng.randrange(0, 2**31)
+        combo["inference_seed"] = (
+            anchor["inference_seed"]
+            if anchor and profile_index == 0 and anchor["inference_seed"] is not None
+            else rng.randrange(0, 2**31)
+        )
         # The prompt is what actually conditions the Cosmos Transfer augmentation,
         # so the sampled appearance drives the pixels (not just a Rerun label).
         combo["prompt"] = prompt_from_combo(combo, scene=subject)
@@ -557,6 +697,14 @@ def generate_configs(
         "augmentation_seed": effective_augmentation_seed,
         "variables": variables,
         "augmentations": combos,
+        "quality_anchor": (
+            {
+                key: anchor[key]
+                for key in ("score", "report_uri", "report_sha256", "clip_id")
+            }
+            if anchor
+            else None
+        ),
     }
     # Seed before uploading: the manifest is this stage's declared artifact, and
     # downstream readers (the agent artifact browser, insights ingest) cannot tell
@@ -775,6 +923,7 @@ def prepare_refinement(
     decision_uri: str = "",
     grade_threshold: float | str = 0.75,
     loop_iteration: int | str = "",
+    quality_anchor_uri: str = "",
 ) -> dict[str, Any]:
     """Write the effective Cosmos settings for this refinement attempt.
 
@@ -831,7 +980,12 @@ def prepare_refinement(
             raise ValueError(f"{name} must be a non-negative integer")
         return int(number)
 
+    quality_anchor = _derive_quality_anchor(quality_anchor_uri)
     base_control = _number("base_control_weight", base_control_weight)
+    if quality_anchor and quality_anchor.get("control_weight") is not None:
+        base_control = _number(
+            "quality_anchor.control_weight", quality_anchor["control_weight"]
+        )
     control_step = _number("control_weight_step", control_weight_step)
     control_ceiling = _number("max_control_weight", max_control_weight)
     if not 0.0 <= base_control <= 1.0:
@@ -844,6 +998,8 @@ def prepare_refinement(
         )
 
     base_cfg = _guidance("base_guidance", base_guidance)
+    if quality_anchor and quality_anchor.get("guidance") is not None:
+        base_cfg = _guidance("quality_anchor.guidance", quality_anchor["guidance"])
     cfg_step = _guidance("guidance_step", guidance_step)
     cfg_floor = _guidance("min_guidance", min_guidance)
     if cfg_floor > base_cfg:
@@ -1047,6 +1203,7 @@ def prepare_refinement(
             )
 
     failed_checks: set[str] = set()
+    failed_attributes: set[str] = set()
     report_clips = report.get("clips", []) if report is not None else []
     for clip in report_clips if isinstance(report_clips, list) else []:
         if not isinstance(clip, dict) or clip.get("passed") is True:
@@ -1060,6 +1217,14 @@ def prepare_refinement(
             result = clip.get(key)
             if isinstance(result, dict) and result.get("passed") is False:
                 failed_checks.add(key)
+        attributes = clip.get("attribute_verification")
+        if isinstance(attributes, dict):
+            for check in attributes.get("checks", []):
+                if not isinstance(check, dict) or check.get("passed") is True:
+                    continue
+                variable = str(check.get("variable") or "").strip()
+                if variable:
+                    failed_attributes.add(variable)
 
     prior_score = float(contract["score"]) if contract is not None else None
     prior_passed = (
@@ -1089,6 +1254,7 @@ def prepare_refinement(
         "grade_threshold": numeric_threshold,
         "prior_gate_decision": contract["decision"] if contract is not None else "",
         "failed_checks": sorted(failed_checks),
+        "failed_attributes": sorted(failed_attributes),
         "settings": {
             "control_weight": round(effective_control, 6),
             "guidance": effective_guidance,
@@ -1101,6 +1267,14 @@ def prepare_refinement(
             "guidance_step": cfg_step,
             "min_guidance": cfg_floor,
         },
+        "quality_anchor": (
+            {
+                key: quality_anchor[key]
+                for key in ("score", "report_uri", "report_sha256", "clip_id")
+            }
+            if quality_anchor
+            else None
+        ),
         "history_uri": history_uri,
         "commit_uri": commit_uri,
         "written_uri": refinement_uri,
@@ -1271,6 +1445,473 @@ def enforce_quality_disposition(
             "quality rejected after refinement; see quality disposition artifact"
         )
     return payload
+
+
+def _inventory_rows(uri: str) -> list[dict[str, Any]]:
+    bucket, prefix = _split(uri if uri.endswith("/") else uri + "/")
+    rows: list[dict[str, Any]] = []
+    paginator = _s3_client().get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+        rows.extend(
+            {
+                "key": str(item.get("Key") or ""),
+                "size": int(item.get("Size") or 0),
+                "etag": str(item.get("ETag") or ""),
+            }
+            for item in page.get("Contents", [])
+            if item.get("Key")
+        )
+    return sorted(rows, key=lambda item: item["key"])
+
+
+def _inventory_digest(rows: list[dict[str, Any]]) -> str:
+    wire = json.dumps(rows, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(wire).hexdigest()
+
+
+def _review_candidate_from_evaluation(
+    *,
+    iteration: int,
+    clip: str,
+    media_key: str,
+    evaluation: dict[str, Any],
+    run_disposition: str,
+) -> dict[str, Any]:
+    attributes = (
+        evaluation.get("attribute_verification", {})
+        if isinstance(evaluation.get("attribute_verification"), dict)
+        else {}
+    )
+    checks = [
+        item for item in attributes.get("checks", []) if isinstance(item, dict)
+    ]
+    failed_attributes = [
+        str(item.get("variable") or "unknown")
+        for item in checks
+        if item.get("passed") is not True
+    ]
+    hallucination = (
+        evaluation.get("hallucination", {})
+        if isinstance(evaluation.get("hallucination"), dict)
+        else {}
+    )
+    temporal = (
+        evaluation.get("temporal_consistency", {})
+        if isinstance(evaluation.get("temporal_consistency"), dict)
+        else {}
+    )
+    appearance = (
+        evaluation.get("appearance_fidelity", {})
+        if isinstance(evaluation.get("appearance_fidelity"), dict)
+        else {}
+    )
+    candidate_passed = evaluation.get("passed") is True
+    return {
+        "candidate_id": f"iteration-{iteration}/{clip}",
+        "iteration": iteration,
+        "clip_id": clip,
+        "media_key": media_key,
+        "score": float(evaluation.get("score") or 0.0),
+        "candidate_passed": candidate_passed,
+        "hard_checks_passed": candidate_passed,
+        "promotion_eligible": run_disposition == "accepted" and candidate_passed,
+        "failed_attributes": failed_attributes,
+        "attribute_results": checks,
+        "hallucination_status": (
+            "passed" if hallucination.get("passed") is True else "failed"
+        ),
+        "hard_check_results": {
+            "attribute_verification": attributes,
+            "hallucination": hallucination,
+            "temporal_consistency": temporal,
+            "appearance_fidelity": appearance,
+        },
+    }
+
+
+def _terminal_review_candidates(
+    run_root_uri: str, disposition: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Resolve every evaluated append-only candidate to its committed video."""
+
+    run_root = run_root_uri.rstrip("/")
+    keys = _list_keys(run_root + "/")
+    manifest_keys = sorted(
+        key
+        for key in keys
+        if re.search(r"/cosmos_augmented/iteration-\d+/manifest\.json$", key)
+        and "/_attempts/" not in key
+    )
+    candidates: list[dict[str, Any]] = []
+    quality_status = str(disposition.get("quality_status") or "")
+    for manifest_key in manifest_keys:
+        match = re.search(
+            r"/cosmos_augmented/iteration-(\d+)/manifest\.json$", manifest_key
+        )
+        if match is None:
+            continue
+        iteration = int(match.group(1))
+        augment_uri = f"{run_root}/cosmos_augmented/iteration-{iteration}/"
+        manifest = _committed_augment_manifest(augment_uri, listed_keys=keys)
+        if not isinstance(manifest, dict):
+            raise RuntimeError(
+                f"terminal review iteration {iteration} has no committed manifest"
+            )
+        report = _download_json(
+            f"{run_root}/grade/iteration-{iteration}/ranking/cosmos_evaluator.json"
+        )
+        if not isinstance(report, dict) or report.get("status") != "completed":
+            raise RuntimeError(
+                f"terminal review iteration {iteration} has no completed evaluator report"
+            )
+        evaluations = {
+            str(item.get("clip_id") or ""): item
+            for item in report.get("clips", [])
+            if isinstance(item, dict) and item.get("clip_id")
+        }
+        manifest_clips: set[str] = set()
+        for variant in manifest.get("variants", []):
+            if not isinstance(variant, dict):
+                raise RuntimeError("terminal review manifest contains an invalid variant")
+            clip = str(variant.get("clip") or "").strip()
+            video_uri = str(variant.get("augmented_video_uri") or "").strip()
+            if not clip or not video_uri or clip not in evaluations:
+                raise RuntimeError(
+                    "terminal review could not join a committed candidate to its evaluation"
+                )
+            video_bucket, video_key = _split(video_uri)
+            run_bucket, _run_prefix = _split(run_root)
+            if video_bucket != run_bucket or video_key not in keys:
+                raise RuntimeError(
+                    "terminal review candidate media is outside the canonical run inventory"
+                )
+            manifest_clips.add(clip)
+            candidates.append(
+                _review_candidate_from_evaluation(
+                    iteration=iteration,
+                    clip=clip,
+                    media_key=video_key,
+                    evaluation=evaluations[clip],
+                    run_disposition=quality_status,
+                )
+            )
+        if manifest_clips != set(evaluations):
+            raise RuntimeError(
+                "terminal review evaluator candidates differ from the committed manifest"
+            )
+    if not candidates:
+        raise RuntimeError("terminal review found no evaluated committed candidates")
+    return candidates
+
+
+def review_terminal_candidates(
+    run_root_uri: str,
+    quality_disposition_uri: str,
+    dataset_uri: str,
+    report_uri: str,
+    dataset_name: str,
+) -> dict[str, Any]:
+    """Publish a portable, non-promoting real-FiftyOne terminal review set."""
+
+    disposition = _download_json(quality_disposition_uri)
+    quality_status = str(disposition.get("quality_status") or "")
+    if quality_status not in {"accepted", "rejected"}:
+        raise RuntimeError("terminal review requires an accepted/rejected disposition")
+    before = _inventory_rows(run_root_uri)
+    dataset_bucket, dataset_prefix = _split(
+        dataset_uri if dataset_uri.endswith("/") else dataset_uri + "/"
+    )
+    report_bucket, report_key = _split(report_uri)
+    run_bucket, _run_prefix = _split(run_root_uri)
+    if dataset_bucket != run_bucket or report_bucket != run_bucket:
+        raise RuntimeError("terminal review must remain inside canonical run storage")
+    if any(
+        row["key"].startswith(dataset_prefix) or row["key"] == report_key
+        for row in before
+    ):
+        raise RuntimeError("terminal review refuses to overwrite existing run artifacts")
+
+    candidates = _terminal_review_candidates(run_root_uri, disposition)
+    from npa.workflows import data_factory_curate as dfc
+
+    with tempfile.TemporaryDirectory(prefix="npa-df-terminal-review-") as tmp:
+        export_dir = Path(tmp) / "fiftyone-dataset"
+        metadata = dfc.export_terminal_review_dataset(
+            candidates=candidates,
+            dataset_name=dataset_name,
+            download_key=lambda key, dest: _download_key(run_bucket, key, dest),
+            export_dir=str(export_dir),
+            workdir=str(Path(tmp) / "media"),
+            run_disposition=quality_status,
+        )
+        written_dataset_uri = _storage().upload_directory(
+            str(export_dir), dataset_uri
+        )
+
+    after_dataset = _inventory_rows(run_root_uri)
+    before_by_key = {row["key"]: row for row in before}
+    after_by_key = {row["key"]: row for row in after_dataset}
+    source_unchanged = all(after_by_key.get(key) == row for key, row in before_by_key.items())
+    archive_rows = [
+        row for row in after_dataset if row["key"].startswith(dataset_prefix)
+    ]
+    if not source_unchanged or not archive_rows or any(
+        int(row["size"]) <= 0 for row in archive_rows
+    ):
+        raise RuntimeError(
+            "terminal review publication changed source inventory or produced an empty archive"
+        )
+    report = {
+        "schema": "npa.paidf.fiftyone-terminal-review/v1",
+        "status": "completed",
+        **metadata,
+        "dataset_uri": written_dataset_uri,
+        "archive_object_count": len(archive_rows),
+        "source_inventory_object_count": len(before),
+        "source_inventory_sha256": _inventory_digest(before),
+        "source_inventory_unchanged_after_publication": True,
+        "candidate_results": [
+            {
+                key: value
+                for key, value in candidate.items()
+                if key != "media_key"
+            }
+            for candidate in candidates
+        ],
+    }
+    report["written_uri"] = _upload_json(report, report_uri)
+    print(
+        json.dumps(
+            {
+                "stage": "review_terminal_candidates",
+                "status": "completed",
+                "quality_disposition": quality_status,
+                "candidate_count": len(candidates),
+                "promotion_eligible_count": metadata[
+                    "promotion_eligible_count"
+                ],
+                "source_inventory_unchanged": True,
+            }
+        )
+    )
+    return report
+
+
+def route_terminal_quality(
+    quality_disposition_uri: str, decision_uri: str
+) -> str:
+    """Route after common review without rewriting the canonical disposition."""
+
+    disposition = _download_json(quality_disposition_uri)
+    quality_status = str(disposition.get("quality_status") or "")
+    if quality_status == "accepted":
+        decision = "promote_checkpoint"
+    elif quality_status == "rejected":
+        decision = "loop_back"
+    else:
+        raise RuntimeError("terminal quality disposition is unavailable")
+    _upload_json(
+        {
+            "schema": "npa.sim2real.threshold_decision.v1",
+            "decision": decision,
+            "quality_status": quality_status,
+            "source": quality_disposition_uri,
+        },
+        decision_uri,
+    )
+    return decision
+
+
+def _independently_hard_passing_candidate(
+    evaluation: dict[str, Any], threshold: float
+) -> bool:
+    """Require explicit per-check evidence, not only a summary ``passed`` bit."""
+
+    if evaluation.get("status", "completed") != "completed":
+        return False
+    try:
+        score = float(evaluation.get("score") or 0.0)
+    except (TypeError, ValueError):
+        return False
+    if (
+        evaluation.get("passed") is not True
+        or not math.isfinite(score)
+        or score < threshold
+    ):
+        return False
+    attributes = evaluation.get("attribute_verification")
+    if not isinstance(attributes, dict) or attributes.get("passed") is not True:
+        return False
+    try:
+        total_checks = int(attributes.get("total_checks") or 0)
+        passed_checks = int(attributes.get("passed_checks") or 0)
+    except (TypeError, ValueError):
+        return False
+    if total_checks < len(APPEARANCE_VARIABLES) or passed_checks != total_checks:
+        return False
+    if evaluation.get("input_conditioned") is True:
+        hallucination = evaluation.get("hallucination")
+        if not isinstance(hallucination, dict) or hallucination.get("passed") is not True:
+            return False
+    for enforced_key, result_key in (
+        ("temporal_enforced", "temporal_consistency"),
+        ("appearance_enforced", "appearance_fidelity"),
+    ):
+        if evaluation.get(enforced_key) is True:
+            result = evaluation.get(result_key)
+            if not isinstance(result, dict) or result.get("passed") is not True:
+                return False
+    return True
+
+
+def select_hard_passing_candidates(
+    augment_uri: str,
+    ranking_scores_uri: str,
+    selection_uri: str,
+    selection_report_uri: str,
+    threshold: float | str = 0.75,
+) -> dict[str, Any]:
+    """Copy only independently hard-passing candidates into a final batch.
+
+    The original ranking pool is immutable and remains the complete evidence set.
+    Selection is an additive copy with a fresh manifest; it is never permission to
+    delete or hide a failed candidate. A zero-selection manifest is truthful and
+    lets final validation emit a fail-closed report instead of crashing the loop.
+    """
+
+    source_rows = _inventory_rows(augment_uri)
+    destination_rows = _inventory_rows(selection_uri)
+    if destination_rows:
+        raise RuntimeError("candidate selection refuses to overwrite prior evidence")
+    listed_keys = [str(row["key"]) for row in source_rows]
+    manifest = _committed_augment_manifest(augment_uri, listed_keys=listed_keys)
+    if not isinstance(manifest, dict):
+        raise RuntimeError("candidate selection requires a committed augment manifest")
+    ranking = _download_json(
+        ranking_scores_uri
+        if ranking_scores_uri.endswith(".json")
+        else ranking_scores_uri.rstrip("/") + "/cosmos_evaluator.json"
+    )
+    if not isinstance(ranking, dict) or ranking.get("status") != "completed":
+        raise RuntimeError("candidate selection requires a completed ranking report")
+    numeric_threshold = _quality_threshold(threshold)
+    evaluations = {
+        str(item.get("clip_id") or ""): item
+        for item in ranking.get("clips", [])
+        if isinstance(item, dict) and item.get("clip_id")
+    }
+    variants = [
+        item for item in manifest.get("variants", []) if isinstance(item, dict)
+    ]
+    if {str(item.get("clip") or "") for item in variants} != set(evaluations):
+        raise RuntimeError(
+            "candidate selection ranking differs from the committed augment manifest"
+        )
+    eligible = {
+        clip
+        for clip, evaluation in evaluations.items()
+        if _independently_hard_passing_candidate(evaluation, numeric_threshold)
+    }
+    source_bucket, _source_prefix = _split(augment_uri)
+    destination_bucket, destination_prefix = _split(
+        selection_uri if selection_uri.endswith("/") else selection_uri + "/"
+    )
+    if source_bucket != destination_bucket:
+        raise RuntimeError("candidate selection must remain in canonical run storage")
+    source_keys = {str(row["key"]): row for row in source_rows}
+    selected_variants: list[dict[str, Any]] = []
+    for variant in variants:
+        clip = str(variant.get("clip") or "")
+        if clip not in eligible:
+            continue
+        video_uri = str(variant.get("augmented_video_uri") or "")
+        video_bucket, video_key = _split(video_uri)
+        if video_bucket != source_bucket or video_key not in source_keys:
+            raise RuntimeError("selected candidate video is outside the source inventory")
+        source_directory = video_key.rsplit("/", 1)[0] + "/"
+        candidate_keys = sorted(
+            key for key in source_keys if key.startswith(source_directory)
+        )
+        if not candidate_keys:
+            raise RuntimeError("selected candidate has no preserved media directory")
+        for key in candidate_keys:
+            relative = key[len(source_directory) :]
+            destination_key = f"{destination_prefix}{clip}/{relative}"
+            _s3_client().copy_object(
+                Bucket=destination_bucket,
+                CopySource={"Bucket": source_bucket, "Key": key},
+                Key=destination_key,
+            )
+        selected_variants.append(
+            {
+                "clip": clip,
+                "variant_index": len(selected_variants),
+                "augmented_video_uri": (
+                    f"s3://{destination_bucket}/{destination_prefix}"
+                    f"{clip}/{video_key.rsplit('/', 1)[1]}"
+                ),
+                "control_uris": {},
+            }
+        )
+    selected_manifest = {
+        "schema": "npa.cosmos2.transfer.v1",
+        "mode": "cosmos_transfer2.5_gpu",
+        "status": "executed",
+        "node_count": 1,
+        "variant_count": len(selected_variants),
+        "variants": selected_variants,
+        "selection_policy": "independent-hard-pass-only",
+        "ranking_report_uri": (
+            ranking_scores_uri
+            if ranking_scores_uri.endswith(".json")
+            else ranking_scores_uri.rstrip("/") + "/cosmos_evaluator.json"
+        ),
+        "source_manifest_sha256": _payload_sha256(manifest),
+    }
+    from npa.workbench.cosmos.transfer import validate_committed_run_manifest
+
+    validate_committed_run_manifest(selected_manifest, selection_uri)
+    manifest_uri = selection_uri.rstrip("/") + "/manifest.json"
+    _upload_json(selected_manifest, manifest_uri)
+    after_source = _inventory_rows(augment_uri)
+    if source_rows != after_source:
+        raise RuntimeError("candidate selection changed the preserved ranking pool")
+    selected_rows = _inventory_rows(selection_uri)
+    if not selected_rows or any(int(row["size"]) <= 0 for row in selected_rows):
+        raise RuntimeError("candidate selection produced an incomplete final batch")
+    result = {
+        "schema": "npa.paidf.candidate-selection/v1",
+        "status": "completed",
+        "policy": "independent-hard-pass-only",
+        "ranked_count": len(variants),
+        "selected_count": len(selected_variants),
+        "threshold": numeric_threshold,
+        "selected_clip_ids": [item["clip"] for item in selected_variants],
+        "ranking_pool_inventory_sha256": _inventory_digest(source_rows),
+        "ranking_pool_unchanged_after_selection": True,
+        "selection_manifest_uri": manifest_uri,
+        "candidate_results": [
+            {
+                "clip_id": clip,
+                "score": float(evaluation.get("score") or 0.0),
+                "hard_checks_passed": evaluation.get("passed") is True,
+                "selected": clip in eligible,
+            }
+            for clip, evaluation in sorted(evaluations.items())
+        ],
+    }
+    result["written_uri"] = _upload_json(result, selection_report_uri)
+    print(
+        json.dumps(
+            {
+                "stage": "select_hard_passing_candidates",
+                "ranked_count": result["ranked_count"],
+                "selected_count": result["selected_count"],
+                "ranking_pool_unchanged": True,
+            }
+        )
+    )
+    return result
 
 
 def curate(

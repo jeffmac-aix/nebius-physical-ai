@@ -345,6 +345,36 @@ def test_load_refinement_validates_numeric_settings(tmp_path: Path) -> None:
     assert loaded["settings"] == {"control_weight": 1.0, "guidance": 2}
 
 
+def test_refinement_prompt_emphasizes_only_exact_failed_attributes() -> None:
+    combo = {
+        "prompt": "Preserve the scene and change its appearance.",
+        "lighting": "soft diffuse daylight",
+        "background": "solid gray backdrop",
+        "surface_finish": "matte",
+    }
+
+    adapted = cosmos2._apply_refinement_prompt(
+        combo,
+        {
+            "failed_attributes": [
+                "lighting",
+                "background",
+                "not-a-configured-variable",
+            ]
+        },
+    )
+
+    assert "lighting is unambiguously soft diffuse daylight" in adapted["prompt"]
+    assert "background is unambiguously solid gray backdrop" in adapted["prompt"]
+    assert "not-a-configured-variable" not in adapted["prompt"]
+    assert combo == {
+        "prompt": "Preserve the scene and change its appearance.",
+        "lighting": "soft diffuse daylight",
+        "background": "solid gray backdrop",
+        "surface_finish": "matte",
+    }
+
+
 @pytest.mark.parametrize(
     "settings",
     [

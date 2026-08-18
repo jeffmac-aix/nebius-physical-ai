@@ -89,6 +89,7 @@ REQUIRED_QUESTION_FIELDS = ("variable", "value", "question", "options", "correct
 ANSWER_LETTERS = ("A", "B", "C", "D")
 DEFAULT_QUESTION_MAX_TOKENS = 2048
 DEFAULT_VERIFY_MAX_TOKENS = 10
+ATTRIBUTE_SAMPLE_POLICIES = frozenset({"ranking", "holdout"})
 
 
 @dataclass(frozen=True)
@@ -139,6 +140,7 @@ def verify_attributes(
     vlm_model: str = "",
     client: Any | None = None,
     max_tokens: int = DEFAULT_VERIFY_MAX_TOKENS,
+    sample_policy: str = "ranking",
 ) -> AttributeVerificationResult:
     """Verify that ``video`` (or ``frame``) shows every selected attribute value.
 
@@ -158,7 +160,12 @@ def verify_attributes(
     vision_model = vlm_model or DEFAULT_VISION_MODEL
     options_table = {key: list(values) for key, values in (variable_options or {}).items()}
 
-    with _frame_image(video=video, frame=frame) as image_path:
+    if sample_policy not in ATTRIBUTE_SAMPLE_POLICIES:
+        raise CosmosEvaluatorError("sample_policy must be ranking or holdout")
+
+    with _frame_image(
+        video=video, frame=frame, sample_policy=sample_policy
+    ) as image_path:
         image_b64 = base64.b64encode(image_path.read_bytes()).decode("ascii")
         media_type = "image/png" if image_path.suffix.lower() == ".png" else "image/jpeg"
         data_url = f"data:{media_type};base64,{image_b64}"
@@ -528,9 +535,16 @@ def _default_client() -> Any:
 class _FrameImage:
     """Yield a still or a beginning/middle/end contact sheet for the clip."""
 
-    def __init__(self, *, video: str | Path | None, frame: str | Path | None) -> None:
+    def __init__(
+        self,
+        *,
+        video: str | Path | None,
+        frame: str | Path | None,
+        sample_policy: str = "ranking",
+    ) -> None:
         self._video = Path(video) if video is not None else None
         self._frame = Path(frame) if frame is not None else None
+        self._sample_policy = sample_policy
         self._tmp: tempfile.TemporaryDirectory[str] | None = None
 
     def __enter__(self) -> Path:
@@ -544,7 +558,9 @@ class _FrameImage:
         self._tmp = tempfile.TemporaryDirectory(prefix="npa-cosmos-eval-")
         try:
             out = Path(self._tmp.name) / "representative_frames.jpg"
-            _write_representative_contact_sheet(self._video, out)
+            _write_representative_contact_sheet(
+                self._video, out, sample_policy=self._sample_policy
+            )
         except BaseException:
             self.__exit__()
             raise
@@ -556,12 +572,21 @@ class _FrameImage:
             self._tmp = None
 
 
-def _frame_image(*, video: str | Path | None, frame: str | Path | None) -> _FrameImage:
-    return _FrameImage(video=video, frame=frame)
+def _frame_image(
+    *,
+    video: str | Path | None,
+    frame: str | Path | None,
+    sample_policy: str = "ranking",
+) -> _FrameImage:
+    return _FrameImage(
+        video=video, frame=frame, sample_policy=sample_policy
+    )
 
 
-def _write_representative_contact_sheet(video: Path, output: Path) -> None:
-    """Decode truthful beginning/middle/end frames into one verifier image."""
+def _write_representative_contact_sheet(
+    video: Path, output: Path, *, sample_policy: str = "ranking"
+) -> None:
+    """Decode deterministic ranking or disjoint holdout frames for verification."""
 
     try:
         import av
@@ -576,7 +601,7 @@ def _write_representative_contact_sheet(video: Path, output: Path) -> None:
             frame_count = sum(1 for _frame in container.decode(video=0))
         if frame_count < 1:
             raise CosmosEvaluatorError("the augmented video decoded zero frames")
-        targets = {0, (frame_count - 1) // 2, frame_count - 1}
+        targets = _representative_frame_targets(frame_count, sample_policy)
         frames: list[Image.Image] = []
         with av.open(str(video)) as container:
             for index, frame in enumerate(container.decode(video=0)):
@@ -606,3 +631,29 @@ def _write_representative_contact_sheet(video: Path, output: Path) -> None:
         sheet.paste(frame, (offset, (height - frame.height) // 2))
         offset += frame.width
     sheet.save(output, format="JPEG", quality=95, subsampling=0)
+
+
+def _representative_frame_targets(
+    frame_count: int, sample_policy: str
+) -> set[int]:
+    """Return deterministic ranking or strictly disjoint holdout frame indices."""
+
+    if frame_count < 1:
+        raise CosmosEvaluatorError("the augmented video decoded zero frames")
+    ranking_targets = {0, (frame_count - 1) // 2, frame_count - 1}
+    if sample_policy == "ranking":
+        return ranking_targets
+    if sample_policy != "holdout":
+        raise CosmosEvaluatorError("sample_policy must be ranking or holdout")
+    available = [
+        index for index in range(frame_count) if index not in ranking_targets
+    ]
+    if not available:
+        raise CosmosEvaluatorError(
+            "holdout verification needs a frame not used by ranking"
+        )
+    target_count = min(3, len(available))
+    return {
+        available[min(len(available) - 1, int(i * len(available) / target_count))]
+        for i in range(target_count)
+    }
