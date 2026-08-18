@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 from pathlib import Path
 
@@ -383,6 +384,205 @@ def test_rejected_review_fields_are_truthful_and_never_promotion_eligible() -> N
     assert candidate["candidate_passed"] is True
     assert candidate["promotion_eligible"] is False
     assert candidate["hallucination_status"] == "passed"
+
+
+def test_terminal_review_preservation_ignores_only_declared_outputs_and_ledger() -> None:
+    before = [
+        {"key": "run/candidate.mp4", "size": 11, "etag": "source"},
+        {"key": "run/npa-workflow/runtime.json", "size": 20, "etag": "old"},
+    ]
+    after = [
+        {"key": "run/candidate.mp4", "size": 11, "etag": "source"},
+        {"key": "run/npa-workflow/runtime.json", "size": 21, "etag": "new"},
+        {"key": "run/review/dataset/samples.json", "size": 30, "etag": "data"},
+        {"key": "run/review/report.json", "size": 40, "etag": "report"},
+    ]
+
+    preserved = dfs._assert_terminal_review_source_preserved(
+        before,
+        after,
+        dataset_prefix="run/review/dataset/",
+        report_key="run/review/report.json",
+        workflow_prefix="run/npa-workflow/",
+    )
+
+    assert preserved == [before[0]]
+    changed = [dict(row) for row in after]
+    changed[0]["etag"] = "changed"
+    with pytest.raises(RuntimeError, match="changed source inventory"):
+        dfs._assert_terminal_review_source_preserved(
+            before,
+            changed,
+            dataset_prefix="run/review/dataset/",
+            report_key="run/review/report.json",
+            workflow_prefix="run/npa-workflow/",
+        )
+    with pytest.raises(RuntimeError, match="removed workflow evidence"):
+        dfs._assert_terminal_review_source_preserved(
+            before,
+            [row for row in after if "npa-workflow" not in row["key"]],
+            dataset_prefix="run/review/dataset/",
+            report_key="run/review/report.json",
+            workflow_prefix="run/npa-workflow/",
+        )
+
+
+def test_terminal_review_archive_resumes_exact_objects_without_overwrite(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive = tmp_path / "archive"
+    (archive / "data").mkdir(parents=True)
+    (archive / "metadata.json").write_text('{"name":"review"}\n')
+    (archive / "data" / "candidate.mp4").write_bytes(b"video-bytes")
+    objects: dict[str, bytes] = {}
+    put_count = 0
+
+    class Body(io.BytesIO):
+        def close(self) -> None:
+            super().close()
+
+    class FakeS3:
+        def put_object(self, *, Bucket: str, Key: str, Body, **_kwargs) -> None:
+            nonlocal put_count
+            assert Bucket == "b"
+            if Key in objects:
+                raise AssertionError("publisher attempted to overwrite an object")
+            objects[Key] = Body.read() if hasattr(Body, "read") else bytes(Body)
+            put_count += 1
+
+        def get_object(self, *, Bucket: str, Key: str) -> dict:
+            assert Bucket == "b"
+            return {"Body": Body(objects[Key])}
+
+    client = FakeS3()
+
+    def inventory(uri: str) -> list[dict]:
+        assert uri == "s3://b/run/review/dataset/"
+        return [
+            {"key": key, "size": len(value), "etag": f"etag-{index}"}
+            for index, (key, value) in enumerate(sorted(objects.items()))
+            if key.startswith("run/review/dataset/")
+        ]
+
+    monkeypatch.setattr(dfs, "_s3_client", lambda: client)
+    monkeypatch.setattr(dfs, "_inventory_rows", inventory)
+
+    uri, rows = dfs._publish_terminal_review_directory_once(
+        archive, "s3://b/run/review/dataset/"
+    )
+    first_put_count = put_count
+    resumed_uri, resumed_rows = dfs._publish_terminal_review_directory_once(
+        archive, "s3://b/run/review/dataset/"
+    )
+
+    assert uri == resumed_uri == "s3://b/run/review/dataset/"
+    assert rows == resumed_rows
+    assert first_put_count == 2
+    assert put_count == first_put_count
+
+    (archive / "metadata.json").write_text('{"name":"different"}\n')
+    with pytest.raises(RuntimeError, match="mismatched archive object"):
+        dfs._publish_terminal_review_directory_once(
+            archive, "s3://b/run/review/dataset/"
+        )
+
+
+def test_terminal_review_validates_existing_portable_dataset_semantically(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate = {
+        "candidate_id": "iteration-1/candidate-a",
+        "iteration": 1,
+        "clip_id": "candidate-a",
+        "media_key": "run/cosmos/candidate-a.mp4",
+        "score": 0.7,
+        "candidate_passed": False,
+        "hard_checks_passed": False,
+        "promotion_eligible": False,
+        "failed_attributes": ["lighting"],
+        "attribute_results": [{"attribute": "lighting", "passed": False}],
+        "hallucination_status": "passed",
+        "hard_check_results": {"hallucination": {"passed": True}},
+    }
+    prefix = "run/review/dataset/"
+    objects = {
+        prefix + "metadata.json": json.dumps(
+            {
+                "version": "1.0",
+                "info": {
+                    "schema": "npa.paidf.fiftyone-terminal-review/v1",
+                    "dataset_name": "review-dataset",
+                    "quality_disposition": "rejected",
+                    "review_only": True,
+                },
+                "sample_fields": [{"name": "candidate_id"}],
+            }
+        ).encode(),
+        prefix + "samples.json": json.dumps(
+            {
+                "samples": [
+                    {
+                        "candidate_id": candidate["candidate_id"],
+                        "iteration": 1,
+                        "clip_id": "candidate-a",
+                        "filepath": "data/candidate-a.mp4",
+                        "score": 0.7,
+                        "candidate_passed": False,
+                        "hard_checks_passed": False,
+                        "promotion_eligible": False,
+                        "quality_disposition": "rejected",
+                        "failed_attributes": ["lighting"],
+                        "hallucination_status": "passed",
+                        "attribute_results_json": json.dumps(
+                            candidate["attribute_results"], sort_keys=True
+                        ),
+                        "hard_check_results_json": json.dumps(
+                            candidate["hard_check_results"], sort_keys=True
+                        ),
+                    }
+                ]
+            }
+        ).encode(),
+        prefix + "frames.json": b'{"frames":[]}',
+        prefix + "data/candidate-a.mp4": b"same-media",
+        candidate["media_key"]: b"same-media",
+    }
+
+    class Body(io.BytesIO):
+        pass
+
+    class FakeS3:
+        def get_object(self, *, Bucket: str, Key: str) -> dict:
+            assert Bucket == "b"
+            return {"Body": Body(objects[Key])}
+
+    monkeypatch.setattr(dfs, "_s3_client", lambda: FakeS3())
+    archive_rows = [
+        {"key": key, "size": len(value), "etag": key}
+        for key, value in objects.items()
+        if key.startswith(prefix)
+    ]
+
+    metadata = dfs._terminal_review_archive_metadata(
+        dataset_uri="s3://b/run/review/dataset/",
+        archive_rows=archive_rows,
+        candidates=[candidate],
+        dataset_name="review-dataset",
+        run_disposition="rejected",
+    )
+
+    assert metadata["candidate_count"] == 1
+    assert metadata["promotion_eligible_count"] == 0
+    assert metadata["review_only"] is True
+    objects[prefix + "data/candidate-a.mp4"] = b"different"
+    with pytest.raises(RuntimeError, match="media differs"):
+        dfs._terminal_review_archive_metadata(
+            dataset_uri="s3://b/run/review/dataset/",
+            archive_rows=archive_rows,
+            candidates=[candidate],
+            dataset_name="review-dataset",
+            run_disposition="rejected",
+        )
 
 
 def test_candidate_selection_does_not_trust_a_bare_passed_summary() -> None:

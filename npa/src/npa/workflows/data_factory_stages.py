@@ -30,6 +30,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from botocore.exceptions import ClientError
+
 
 class RefinementStateError(RuntimeError):
     """Fail-closed, operator-safe refinement state error."""
@@ -1499,6 +1501,327 @@ def _inventory_digest(rows: list[dict[str, Any]]) -> str:
     return hashlib.sha256(wire).hexdigest()
 
 
+def _terminal_review_source_rows(
+    rows: list[dict[str, Any]],
+    *,
+    dataset_prefix: str,
+    report_key: str,
+    workflow_prefix: str,
+) -> list[dict[str, Any]]:
+    """Return immutable source artifacts for terminal-review preservation checks.
+
+    The review dataset and report are declared outputs. The durable workflow
+    ledger is controller-owned and advances while a stage is running, so it is
+    preserved but cannot participate in a byte-for-byte source comparison.
+    Every other canonical object is immutable for the duration of publication.
+    """
+
+    return [
+        row
+        for row in rows
+        if not str(row["key"]).startswith(dataset_prefix)
+        and str(row["key"]) != report_key
+        and not str(row["key"]).startswith(workflow_prefix)
+    ]
+
+
+def _assert_terminal_review_source_preserved(
+    before: list[dict[str, Any]],
+    after: list[dict[str, Any]],
+    *,
+    dataset_prefix: str,
+    report_key: str,
+    workflow_prefix: str,
+) -> list[dict[str, Any]]:
+    """Fail closed if review publication changed a canonical source artifact."""
+
+    source_before = _terminal_review_source_rows(
+        before,
+        dataset_prefix=dataset_prefix,
+        report_key=report_key,
+        workflow_prefix=workflow_prefix,
+    )
+    source_after = _terminal_review_source_rows(
+        after,
+        dataset_prefix=dataset_prefix,
+        report_key=report_key,
+        workflow_prefix=workflow_prefix,
+    )
+    if source_before != source_after:
+        raise RuntimeError("terminal review publication changed source inventory")
+    before_keys = {str(row["key"]) for row in before}
+    after_keys = {str(row["key"]) for row in after}
+    workflow_before = {
+        key for key in before_keys if key.startswith(workflow_prefix)
+    }
+    if not workflow_before.issubset(after_keys):
+        raise RuntimeError("terminal review publication removed workflow evidence")
+    unexpected = {
+        key
+        for key in after_keys - before_keys
+        if not key.startswith(dataset_prefix)
+        and key != report_key
+        and not key.startswith(workflow_prefix)
+    }
+    if unexpected:
+        raise RuntimeError("terminal review publication added undeclared run artifacts")
+    return source_before
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        while chunk := stream.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _sha256_object(client: Any, bucket: str, key: str) -> str:
+    digest = hashlib.sha256()
+    body = client.get_object(Bucket=bucket, Key=key)["Body"]
+    try:
+        while chunk := body.read(1024 * 1024):
+            digest.update(chunk)
+    finally:
+        body.close()
+    return digest.hexdigest()
+
+
+def _publish_terminal_review_directory_once(
+    local_dir: Path, dataset_uri: str
+) -> tuple[str, list[dict[str, Any]]]:
+    """Conditionally publish or exactly resume a portable review archive."""
+
+    bucket, prefix = _split(
+        dataset_uri if dataset_uri.endswith("/") else dataset_uri + "/"
+    )
+    client = _s3_client()
+    local_rows = {
+        prefix + path.relative_to(local_dir).as_posix(): {
+            "path": path,
+            "size": path.stat().st_size,
+            "sha256": _sha256_file(path),
+        }
+        for path in sorted(local_dir.rglob("*"))
+        if path.is_file()
+    }
+    if not local_rows:
+        raise RuntimeError("terminal review produced an empty archive")
+    existing = {row["key"]: row for row in _inventory_rows(dataset_uri)}
+    unexpected = set(existing) - set(local_rows)
+    if unexpected:
+        raise RuntimeError("terminal review archive contains unexpected objects")
+
+    for key, expected in local_rows.items():
+        current = existing.get(key)
+        if current is not None:
+            if (
+                int(current["size"]) != int(expected["size"])
+                or _sha256_object(client, bucket, key) != expected["sha256"]
+            ):
+                raise RuntimeError(
+                    "terminal review refuses to overwrite a mismatched archive object"
+                )
+            continue
+        try:
+            with expected["path"].open("rb") as stream:
+                client.put_object(
+                    Bucket=bucket,
+                    Key=key,
+                    Body=stream,
+                    ContentLength=int(expected["size"]),
+                    IfNoneMatch="*",
+                )
+        except ClientError as exc:
+            code = str(exc.response.get("Error", {}).get("Code", ""))
+            if code not in {"412", "PreconditionFailed"}:
+                raise
+        if _sha256_object(client, bucket, key) != expected["sha256"]:
+            raise RuntimeError(
+                "terminal review refuses to overwrite a mismatched archive object"
+            )
+
+    published = _inventory_rows(dataset_uri)
+    published_by_key = {row["key"]: row for row in published}
+    if set(published_by_key) != set(local_rows) or any(
+        int(published_by_key[key]["size"]) != int(expected["size"])
+        or _sha256_object(client, bucket, key) != expected["sha256"]
+        for key, expected in local_rows.items()
+    ):
+        raise RuntimeError("terminal review archive verification failed")
+    return f"s3://{bucket}/{prefix}", published
+
+
+def _terminal_review_archive_metadata(
+    *,
+    dataset_uri: str,
+    archive_rows: list[dict[str, Any]],
+    candidates: list[dict[str, Any]],
+    dataset_name: str,
+    run_disposition: str,
+) -> dict[str, Any]:
+    """Validate and describe an already-published portable FiftyOne archive."""
+
+    bucket, prefix = _split(
+        dataset_uri if dataset_uri.endswith("/") else dataset_uri + "/"
+    )
+    client = _s3_client()
+
+    def read_json(relative: str) -> dict[str, Any]:
+        body = client.get_object(Bucket=bucket, Key=prefix + relative)["Body"]
+        try:
+            value = json.loads(body.read())
+        finally:
+            body.close()
+        if not isinstance(value, dict):
+            raise RuntimeError("terminal review archive contains invalid JSON")
+        return value
+
+    rows_by_key = {str(row["key"]): row for row in archive_rows}
+    required_json = {
+        prefix + "metadata.json",
+        prefix + "samples.json",
+        prefix + "frames.json",
+    }
+    if not required_json.issubset(rows_by_key) or any(
+        int(row["size"]) <= 0 for row in archive_rows
+    ):
+        raise RuntimeError("terminal review archive is incomplete")
+    metadata = read_json("metadata.json")
+    samples_payload = read_json("samples.json")
+    frames_payload = read_json("frames.json")
+    info = metadata.get("info") if isinstance(metadata.get("info"), dict) else {}
+    samples = samples_payload.get("samples")
+    frames = frames_payload.get("frames")
+    if (
+        info.get("schema") != "npa.paidf.fiftyone-terminal-review/v1"
+        or str(info.get("dataset_name") or "") != dataset_name
+        or str(info.get("quality_disposition") or "") != run_disposition
+        or info.get("review_only") is not (run_disposition != "accepted")
+        or not isinstance(samples, list)
+        or not isinstance(frames, list)
+    ):
+        raise RuntimeError("terminal review archive identity does not match this run")
+    expected = {str(item["candidate_id"]): item for item in candidates}
+    observed = {
+        str(item.get("candidate_id") or ""): item
+        for item in samples
+        if isinstance(item, dict) and item.get("candidate_id")
+    }
+    if len(observed) != len(samples) or set(observed) != set(expected):
+        raise RuntimeError("terminal review archive candidates do not match this run")
+
+    referenced_media: set[str] = set()
+    for candidate_id, candidate in expected.items():
+        sample = observed[candidate_id]
+        filepath = str(sample.get("filepath") or "")
+        if (
+            not filepath.startswith("data/")
+            or filepath.startswith("data/../")
+            or Path(filepath).is_absolute()
+        ):
+            raise RuntimeError("terminal review archive contains an unsafe media path")
+        archive_key = prefix + filepath
+        referenced_media.add(archive_key)
+        if archive_key not in rows_by_key:
+            raise RuntimeError("terminal review archive is missing candidate media")
+        expected_fields = {
+            "iteration": int(candidate.get("iteration") or 0),
+            "clip_id": str(candidate.get("clip_id") or ""),
+            "quality_disposition": run_disposition,
+            "candidate_passed": candidate.get("candidate_passed") is True,
+            "promotion_eligible": candidate.get("promotion_eligible") is True,
+            "score": float(candidate.get("score") or 0.0),
+            "hard_checks_passed": candidate.get("hard_checks_passed") is True,
+            "failed_attributes": [
+                str(value) for value in candidate.get("failed_attributes", [])
+            ],
+            "hallucination_status": str(
+                candidate.get("hallucination_status") or "unavailable"
+            ),
+        }
+        if any(sample.get(key) != value for key, value in expected_fields.items()):
+            raise RuntimeError("terminal review archive fields do not match this run")
+        try:
+            attribute_results = json.loads(
+                str(sample.get("attribute_results_json") or "")
+            )
+            hard_check_results = json.loads(
+                str(sample.get("hard_check_results_json") or "")
+            )
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(
+                "terminal review archive check fields are invalid"
+            ) from exc
+        if (
+            attribute_results != candidate.get("attribute_results", [])
+            or hard_check_results != candidate.get("hard_check_results", {})
+        ):
+            raise RuntimeError("terminal review archive checks do not match this run")
+        source_key = str(candidate.get("media_key") or "")
+        if (
+            not source_key
+            or int(rows_by_key[archive_key]["size"])
+            <= 0
+            or _sha256_object(client, bucket, archive_key)
+            != _sha256_object(client, bucket, source_key)
+        ):
+            raise RuntimeError("terminal review archive media differs from its source")
+
+    non_json_rows = set(rows_by_key) - required_json
+    if non_json_rows != referenced_media:
+        raise RuntimeError("terminal review archive contains undeclared media")
+    fields = sorted(
+        str(item.get("name") or "")
+        for item in metadata.get("sample_fields", [])
+        if isinstance(item, dict) and item.get("name")
+    )
+    return {
+        "engine": "fiftyone",
+        "fiftyone_version": str(metadata.get("version") or ""),
+        "dataset_name": dataset_name,
+        "candidate_count": len(samples),
+        "quality_disposition": run_disposition,
+        "review_only": run_disposition != "accepted",
+        "promotion_eligible_count": sum(
+            candidate.get("promotion_eligible") is True for candidate in candidates
+        ),
+        "fields": fields,
+        "export_format": "FiftyOneDataset",
+    }
+
+
+def _publish_terminal_review_report_once(
+    report: dict[str, Any], report_uri: str
+) -> str:
+    """Conditionally publish an exact report without overwriting prior evidence."""
+
+    bucket, key = _split(report_uri)
+    payload = json.dumps(report, indent=2, sort_keys=True).encode() + b"\n"
+    client = _s3_client()
+    try:
+        client.put_object(
+            Bucket=bucket,
+            Key=key,
+            Body=payload,
+            ContentLength=len(payload),
+            ContentType="application/json",
+            IfNoneMatch="*",
+        )
+    except ClientError as exc:
+        code = str(exc.response.get("Error", {}).get("Code", ""))
+        if code not in {"412", "PreconditionFailed"}:
+            raise
+    existing = client.get_object(Bucket=bucket, Key=key)["Body"]
+    try:
+        stored = existing.read()
+    finally:
+        existing.close()
+    if stored != payload:
+        raise RuntimeError("terminal review refuses to overwrite a mismatched report")
+    return report_uri
+
+
 def _review_candidate_from_evaluation(
     *,
     iteration: int,
@@ -1652,53 +1975,57 @@ def review_terminal_candidates(
         dataset_uri if dataset_uri.endswith("/") else dataset_uri + "/"
     )
     report_bucket, report_key = _split(report_uri)
-    run_bucket, _run_prefix = _split(run_root_uri)
+    run_bucket, run_prefix = _split(
+        run_root_uri if run_root_uri.endswith("/") else run_root_uri + "/"
+    )
+    workflow_prefix = run_prefix + "npa-workflow/"
     if dataset_bucket != run_bucket or report_bucket != run_bucket:
         raise RuntimeError("terminal review must remain inside canonical run storage")
-    if any(
-        row["key"].startswith(dataset_prefix) or row["key"] == report_key
-        for row in before
-    ):
-        raise RuntimeError("terminal review refuses to overwrite existing run artifacts")
 
     candidates = _terminal_review_candidates(run_root_uri, disposition)
     from npa.workflows import data_factory_curate as dfc
 
-    with tempfile.TemporaryDirectory(prefix="npa-df-terminal-review-") as tmp:
-        export_dir = Path(tmp) / "fiftyone-dataset"
-        metadata = dfc.export_terminal_review_dataset(
+    archive_rows = _inventory_rows(dataset_uri)
+    if archive_rows:
+        metadata = _terminal_review_archive_metadata(
+            dataset_uri=dataset_uri,
+            archive_rows=archive_rows,
             candidates=candidates,
             dataset_name=dataset_name,
-            download_key=lambda key, dest: _download_key(run_bucket, key, dest),
-            export_dir=str(export_dir),
-            workdir=str(Path(tmp) / "media"),
             run_disposition=quality_status,
         )
-        written_dataset_uri = _storage().upload_directory(
-            str(export_dir), dataset_uri
-        )
+        written_dataset_uri = dataset_uri.rstrip("/") + "/"
+    else:
+        with tempfile.TemporaryDirectory(prefix="npa-df-terminal-review-") as tmp:
+            export_dir = Path(tmp) / "fiftyone-dataset"
+            metadata = dfc.export_terminal_review_dataset(
+                candidates=candidates,
+                dataset_name=dataset_name,
+                download_key=lambda key, dest: _download_key(run_bucket, key, dest),
+                export_dir=str(export_dir),
+                workdir=str(Path(tmp) / "media"),
+                run_disposition=quality_status,
+            )
+            written_dataset_uri, archive_rows = (
+                _publish_terminal_review_directory_once(export_dir, dataset_uri)
+            )
 
     after_dataset = _inventory_rows(run_root_uri)
-    before_by_key = {row["key"]: row for row in before}
-    after_by_key = {row["key"]: row for row in after_dataset}
-    source_unchanged = all(after_by_key.get(key) == row for key, row in before_by_key.items())
-    archive_rows = [
-        row for row in after_dataset if row["key"].startswith(dataset_prefix)
-    ]
-    if not source_unchanged or not archive_rows or any(
-        int(row["size"]) <= 0 for row in archive_rows
-    ):
-        raise RuntimeError(
-            "terminal review publication changed source inventory or produced an empty archive"
-        )
+    source_before = _assert_terminal_review_source_preserved(
+        before,
+        after_dataset,
+        dataset_prefix=dataset_prefix,
+        report_key=report_key,
+        workflow_prefix=workflow_prefix,
+    )
     report = {
         "schema": "npa.paidf.fiftyone-terminal-review/v1",
         "status": "completed",
         **metadata,
         "dataset_uri": written_dataset_uri,
         "archive_object_count": len(archive_rows),
-        "source_inventory_object_count": len(before),
-        "source_inventory_sha256": _inventory_digest(before),
+        "source_inventory_object_count": len(source_before),
+        "source_inventory_sha256": _inventory_digest(source_before),
         "source_inventory_unchanged_after_publication": True,
         "candidate_results": [
             {
@@ -1709,7 +2036,14 @@ def review_terminal_candidates(
             for candidate in candidates
         ],
     }
-    report["written_uri"] = _upload_json(report, report_uri)
+    report["written_uri"] = _publish_terminal_review_report_once(report, report_uri)
+    _assert_terminal_review_source_preserved(
+        before,
+        _inventory_rows(run_root_uri),
+        dataset_prefix=dataset_prefix,
+        report_key=report_key,
+        workflow_prefix=workflow_prefix,
+    )
     print(
         json.dumps(
             {
