@@ -2060,6 +2060,52 @@ def test_single_node_variant_failure_is_additive_and_does_not_drop_successes(
     failure = json.loads(storage.objects[failure_uri])
     assert failure["promotion_eligible"] is False
     assert failure["variables"]["prompt"] == "scene 1"
+    committed = tx.validate_committed_run_manifest(
+        manifest, "s3://bkt/run1/cosmos_augmented/"
+    )
+    assert [item["variant_index"] for item in committed] == [0, 2, 3]
+
+    missing_failure = dict(manifest)
+    missing_failure["failed_variants"] = []
+    missing_failure["failed_variant_count"] = 0
+    with pytest.raises(ValueError, match="attempt counts"):
+        tx.validate_committed_run_manifest(
+            missing_failure, "s3://bkt/run1/cosmos_augmented/"
+        )
+
+
+def test_committed_manifest_rejects_failed_variant_outside_attempt_prefix() -> None:
+    output_uri = "s3://bkt/run1/cosmos_augmented/"
+    manifest = tx.build_run_manifest(
+        [_clip(0), _clip(2)],
+        run_id="run1",
+        attempt_id=ATTEMPT,
+        failures=[
+            {
+                "variant_index": 1,
+                "status": "failed",
+                "promotion_eligible": False,
+                "failure_uri": (
+                    f"{output_uri}_attempts/another-attempt/"
+                    "_failures/variant-00001.json"
+                ),
+            }
+        ],
+    )
+    manifest.update(
+        {
+            "publication_generation": 1,
+            "logical_publication": "conditional",
+            "logical_wave_id": "wave-1",
+            "membership_digest": "members",
+            "scheduler_fence_sequence": 1,
+            "scheduler_fence_attempt": 1,
+            "scheduler_launch_id": "job-1",
+        }
+    )
+
+    with pytest.raises(ValueError, match="failed variant provenance"):
+        tx.validate_committed_run_manifest(manifest, output_uri)
 
 
 def test_all_variant_failures_preserve_attempts_without_empty_manifest(

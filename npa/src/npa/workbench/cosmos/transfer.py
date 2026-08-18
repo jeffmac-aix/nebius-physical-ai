@@ -1191,6 +1191,32 @@ def validate_committed_run_manifest(
         variants
     ):
         raise ValueError("canonical Cosmos augment manifest has inconsistent variants")
+    failed_variants = document.get("failed_variants", [])
+    if not isinstance(failed_variants, list):
+        raise ValueError(
+            "canonical Cosmos augment manifest has inconsistent failed variants"
+        )
+    try:
+        failed_variant_count = int(
+            document.get("failed_variant_count", len(failed_variants))
+        )
+        attempted_variant_count = int(
+            document.get(
+                "attempted_variant_count", len(variants) + len(failed_variants)
+            )
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "canonical Cosmos augment manifest has inconsistent attempt counts"
+        ) from exc
+    if (
+        failed_variant_count != len(failed_variants)
+        or attempted_variant_count != len(variants) + len(failed_variants)
+        or attempted_variant_count < 0
+    ):
+        raise ValueError(
+            "canonical Cosmos augment manifest has inconsistent attempt counts"
+        )
     attempt_id = str(document.get("attempt_id") or "").strip()
     try:
         node_count = int(document.get("node_count", 1) or 1)
@@ -1286,7 +1312,31 @@ def validate_committed_run_manifest(
                 "canonical Cosmos augment manifest references control evidence from "
                 "another attempt"
             )
-    if seen_indices != set(range(len(variants))):
+    for failure in failed_variants:
+        if not isinstance(failure, dict):
+            raise ValueError(
+                "canonical Cosmos augment manifest has an invalid failed variant"
+            )
+        try:
+            variant_index = int(failure.get("variant_index", -1))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "canonical Cosmos augment manifest has an invalid failed variant index"
+            ) from exc
+        failure_uri = str(failure.get("failure_uri") or "").strip()
+        if (
+            variant_index < 0
+            or variant_index in seen_indices
+            or failure.get("status") != "failed"
+            or failure.get("promotion_eligible") is not False
+            or not failure_uri.startswith(expected_prefix)
+            or "/_failures/" not in failure_uri
+        ):
+            raise ValueError(
+                "canonical Cosmos augment manifest has invalid failed variant provenance"
+            )
+        seen_indices.add(variant_index)
+    if seen_indices != set(range(attempted_variant_count)):
         raise ValueError("canonical Cosmos augment manifest has incomplete variant indices")
     return variants
 
