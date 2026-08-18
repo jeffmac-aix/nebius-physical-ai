@@ -1166,10 +1166,11 @@ def test_generate_configs_uses_leisaac_task_lineage_for_conditioning(
         "background",
         "color_grade",
         "surface_finish",
+        "inference_seed",
         "prompt",
     }
     assert "red-cube lift motion" in combo["prompt"]
-    assert "Preserve every frame's exact input objects" in combo["prompt"]
+    assert "Preserve the exact foreground objects" in combo["prompt"]
     assert manifest["source_leisaac"]["episode_index"] == 0
 
 
