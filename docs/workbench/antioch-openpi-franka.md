@@ -92,15 +92,25 @@ deferred check is then: authenticate through the supported Antioch CLI, package
 the example at the tested NPA revision, run suite `openpi_franka_smoke` in the
 private Isaac Lab engine, and verify its two checks and managed artifact record.
 
+Antioch does not accept secret mounts in `antioch.yaml`. For a hosted smoke,
+keep the Kubernetes credential on the operator host: the example's loopback
+reverse relay uses Antioch's authenticated port tunnel, and the local connector
+pairs it with `kubectl port-forward` to the ClusterIP policy Service. This gives
+the hosted simulator a private byte stream without copying a kubeconfig into the
+Antioch service or creating an Ingress, NodePort, or load balancer.
+
 ## Licensing and artifacts
 
 - NPA and OpenPI source are Apache-2.0.
 - The bridge image is eligible for public redistribution only because its built
   layers contain no Isaac, Omniverse Kit, Antioch SDK, checkpoint, cache, or
   credential bytes, and because it uses distro FFmpeg instead of the separately
-  licensed static executable bundled in the `imageio-ffmpeg` wheel. This
-  implementation nevertheless publishes it only to the operator's private
-  registry for this path.
+  licensed static executable bundled in the `imageio-ffmpeg` wheel. Publish an
+  exact scanned digest only after the repository's guarded GHCR procedure.
+- The OpenPI policy image is independently public-eligible only when its layers
+  contain source/runtime dependencies but no pi0.5/Gemma checkpoint, model
+  cache, access credential, or live infrastructure value. The operator fetches
+  the checkpoint at runtime under the run-scoped Gemma acceptance.
 - Isaac/Omniverse and Antioch runtime caches remain private runtime state and
   must never be committed or copied into a derived image.
 - Polaris weights contain Gemma-derived material, are fetched only after the

@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import json
+import importlib.util
+from pathlib import Path
+import re
+import socket
 
 import numpy as np
 import pytest
 from typer.testing import CliRunner
+import yaml
 
 from npa.cli.main import app
 from npa.workbench.antioch.openpi_bridge import (
@@ -22,6 +27,56 @@ from npa.workbench.antioch.openpi_bridge import (
     validate_observation,
 )
 from npa.workbench.antioch.openpi_health import wait_for_health
+
+
+EXAMPLE_DIR = Path(__file__).resolve().parents[2] / "examples" / "antioch-openpi-franka"
+
+
+def test_hosted_example_pins_reviewed_npa_source_revision() -> None:
+    manifest = yaml.safe_load((EXAMPLE_DIR / "antioch.yaml").read_text())
+    source_ref = manifest["services"]["sim"]["build"]["args"]["NPA_SOURCE_REF"]
+
+    assert re.fullmatch(r"[0-9a-f]{40}", source_ref)
+    dockerfile = (EXAMPLE_DIR / "Dockerfile").read_text()
+    assert "ARG NPA_SOURCE_REF" in dockerfile
+    assert "@${NPA_SOURCE_REF}#subdirectory=npa" in dockerfile
+    service = manifest["services"]["sim"]
+    assert service["environment"] == {
+        "OPENPI_POLICY_HOST": "127.0.0.1",
+        "OPENPI_POLICY_PORT": "8000",
+    }
+    assert service["ports"] == ["18123:18123"]
+    assert "secrets" not in service
+
+
+def test_hosted_reverse_policy_relay_is_bidirectional() -> None:
+    spec = importlib.util.spec_from_file_location(
+        "npa_antioch_reverse_policy_relay",
+        EXAMPLE_DIR / "reverse_policy_relay.py",
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    def unused_port() -> int:
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            return int(probe.getsockname()[1])
+
+    backend_port = unused_port()
+    frontend_port = unused_port()
+    with module.ReversePolicyRelay(
+        backend_port=backend_port,
+        frontend_port=frontend_port,
+    ):
+        backend = socket.create_connection(("127.0.0.1", backend_port), timeout=2)
+        frontend = socket.create_connection(("127.0.0.1", frontend_port), timeout=2)
+        frontend.sendall(b"request")
+        assert backend.recv(7) == b"request"
+        backend.sendall(b"response")
+        assert frontend.recv(8) == b"response"
+        frontend.close()
+        backend.close()
 
 
 def _observation() -> dict[str, object]:

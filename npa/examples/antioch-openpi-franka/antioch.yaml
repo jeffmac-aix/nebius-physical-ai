@@ -1,13 +1,19 @@
 id: npa-antioch-openpi-franka
 name: NPA Antioch OpenPI Franka camera bridge
-scenario_paths: [scenarios]
+scenario_paths: [scenarios.py]
 
 services:
   sim:
-    image: antioch-engine/isaac-lab-3.0:0.3.47
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        NPA_SOURCE_REF: 549b324e92c0c79dee858947611873419f8bba73
+    environment:
+      OPENPI_POLICY_HOST: 127.0.0.1
+      OPENPI_POLICY_PORT: "8000"
+    ports:
+      - "18123:18123"
 
 suites:
   openpi_franka_smoke:
