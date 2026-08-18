@@ -135,6 +135,15 @@ RUN find /opt/npa/src /opt/npa/workflows -type d -exec chmod a+rx {} + \
     && env -u PYTHONPATH /opt/npa/sim/venv/bin/python -c \
       'import boto3, kubernetes, mcap, npa.workflows.sim2real.runtime_attestation'
 
+# The CUDA development base carries profiler tooling and kernel headers that this
+# runtime-fetch image does not use.  Keeping them would retain fixed CRITICAL findings
+# in the public artifact.  OpenSSH's package install also generates host private keys;
+# those are machine identity and must be created in the writable container layer at
+# runtime, never shared by every pull of an immutable image.
+RUN rm -rf /opt/nvidia/nsight-compute \
+    && dpkg --purge --force-depends linux-libc-dev \
+    && rm -f /etc/ssh/ssh_host_*_key /etc/ssh/ssh_host_*_key.pub
+
 RUN /opt/npa/sim/venv/bin/python -m \
       npa.workflows.sim2real.install_isaac_runtime /opt/npa/isaac-runtime \
     && /opt/npa/sim/venv/bin/python -m compileall -q /opt/npa/isaac-runtime
