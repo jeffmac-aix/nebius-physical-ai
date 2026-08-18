@@ -271,7 +271,7 @@ def _iter_tarball(tarball: Path):
         for member in archive:
             name = member.name
             if not (
-                name.endswith(("/layer.tar", ".tar"))
+                name.endswith(("/layer.tar", ".tar", ".tar.gz", ".tgz"))
                 or name.startswith("blobs/")
                 or "/blobs/" in name
             ):
