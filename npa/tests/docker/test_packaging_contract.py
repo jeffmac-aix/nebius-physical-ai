@@ -371,6 +371,15 @@ def test_isaac_lab_excludes_wheel_bundled_static_ffmpeg() -> None:
     assert "THIRD_PARTY_NOTICES.md" in text
 
 
+def test_isaac_lab_build_separates_release_tag_from_runtime_version() -> None:
+    build = (WORKBENCH_DOCKER / "isaac-lab" / "build.sh").read_text(encoding="utf-8")
+
+    assert 'IMAGE_TAG="${IMAGE_TAG_OVERRIDE:-$VERSION}"' in build
+    assert 'ISAAC_LAB_RUNTIME_VERSION="$(sed -n' in build
+    assert '--build-arg "ISAAC_LAB_VERSION=${ISAAC_LAB_RUNTIME_VERSION}"' in build
+    assert '--build-arg "ISAAC_LAB_VERSION=${VERSION}"' not in build
+
+
 def test_fiftyone_image_has_skypilot_kubernetes_prerequisites() -> None:
     """The workflow image must survive SkyPilot's non-root pod bootstrap."""
     text = (WORKBENCH_DOCKER / "fiftyone" / "Dockerfile").read_text(encoding="utf-8")

@@ -176,7 +176,7 @@ GPU pod are never publicly reachable.
 ## Runtime and licensing
 
 `npa-leisaac` derives from the digest-pinned public runtime-fetch
-`npa-isaac-lab:2.3.2.post1-antioch-openpi-20260818-r3` image. Its compatibility set is:
+`npa-isaac-lab:2.3.2.post1-antioch-openpi-20260818-r4` image. Its compatibility set is:
 
 - Isaac Sim `5.1.0.0`;
 - Isaac Lab `2.3.2.post1` and source commit `37ddf626…`;
