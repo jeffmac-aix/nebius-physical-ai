@@ -3372,7 +3372,7 @@ def deploy_cmd(
                         _build_app_py(),
                         owner=ssh_user,
                     )
-                    image_ref = container_image_for_tool(
+                    image_ref = image.strip() or container_image_for_tool(
                         "fiftyone",
                         registry=resolve_container_registry(proj_alias),
                     )

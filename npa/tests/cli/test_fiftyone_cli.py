@@ -573,6 +573,36 @@ def test_fiftyone_deploy_runtime_container_starts_image(tmp_path: Path, mocker) 
         "healthy",
     )
 
+    custom_image = "registry.example/npa-fiftyone@sha256:" + "a" * 64
+    deploy_container.reset_mock()
+    result = runner.invoke(
+        app,
+        [
+            "workbench",
+            "fiftyone",
+            "-p",
+            "proj",
+            "-n",
+            "curate-container-custom",
+            "deploy",
+            "--project-id",
+            "project",
+            "--tenant-id",
+            "tenant",
+            "--region",
+            "eu-north1",
+            "--tf-dir",
+            str(tmp_path),
+            "--runtime",
+            "container",
+            "--image",
+            custom_image,
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert deploy_container.call_args.kwargs["image_ref"] == custom_image
+
 
 def test_fiftyone_byovm_auto_health_uses_short_public_retry_budget(mocker) -> None:
     ssh = mocker.MagicMock()
