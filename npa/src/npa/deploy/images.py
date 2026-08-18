@@ -113,8 +113,10 @@ RESTRICTED_DERIVED_IMAGES: frozenset[str] = frozenset()
 OMNIVERSE_RESTRICTED_TOOLS = RESTRICTED_PUBLICATION_TOOLS
 OMNIVERSE_RESTRICTED_DERIVED_IMAGES = RESTRICTED_DERIVED_IMAGES
 
-# Tools that are licence-eligible for public redistribution but have no accepted
-# built/GPU-validated artifact yet.
+# Tools that are licence-eligible for public redistribution but have not earned
+# every publication claim yet. Antioch is CPU-only and has a built-image payload
+# scan and local capability
+# smoke, but has not been published or anonymously pulled from the public mirror.
 #
 # This is a different question from `RESTRICTED_PUBLICATION_TOOLS`, and conflating
 # them would be wrong in both directions: these are not restricted (the licensing
@@ -126,8 +128,10 @@ OMNIVERSE_RESTRICTED_DERIVED_IMAGES = RESTRICTED_DERIVED_IMAGES
 # Remove a tool from this set in the same change that records its accepted image
 # digest and its payload-scan/GPU evidence — not before.
 UNVALIDATED_PUBLICATION_TOOLS: frozenset[str] = frozenset()
-VALIDATION_CANDIDATE_TOOLS: frozenset[str] = frozenset()
-PUBLICATION_QUARANTINE_TOOLS: frozenset[str] = frozenset()
+VALIDATION_CANDIDATE_TOOLS: frozenset[str] = frozenset({"antioch"})
+PUBLICATION_QUARANTINE_TOOLS: frozenset[str] = (
+    UNVALIDATED_PUBLICATION_TOOLS | VALIDATION_CANDIDATE_TOOLS
+)
 
 # Some newer operator/BYOF pins have not yet been promoted to the supported
 # anonymous channel. Public execution stays on the last accepted release while
