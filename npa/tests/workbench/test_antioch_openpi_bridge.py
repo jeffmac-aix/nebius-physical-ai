@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import importlib.util
-from pathlib import Path
 import re
 import socket
+import subprocess
+import sys
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -27,6 +29,25 @@ from npa.workbench.antioch.openpi_bridge import (
     validate_observation,
 )
 from npa.workbench.antioch.openpi_health import wait_for_health
+
+
+def test_health_module_import_does_not_load_offline_dataset_stack() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys; "
+                "import npa.workbench.antioch.openpi_health; "
+                "assert 'npa.workbench.antioch.manager' not in sys.modules; "
+                "assert 'npa.workbench.antioch.dataset' not in sys.modules"
+            ),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 EXAMPLE_DIR = Path(__file__).resolve().parents[2] / "examples" / "antioch-openpi-franka"
