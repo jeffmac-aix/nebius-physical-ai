@@ -111,6 +111,11 @@ The executable example
 `npa/workflows/workbench/npa-workflows/antioch-offline-policy-train.yaml` follows
 collection with real LeRobot ACT training and publishes a genuine checkpoint.
 
+For online Franka camera control with OpenPI pi0.5-DROID, use the separate
+[RTX Isaac-to-B200 OpenPI bridge](antioch-openpi-franka.md). It shares native
+Isaac code with the Antioch scenario wrapper but does not confuse a
+credential-free Kubernetes proof with an Antioch-hosted run.
+
 ## Security and cleanup
 
 The adapter filters sensitive keys and bearer/JWT/signed-URL forms from CLI errors

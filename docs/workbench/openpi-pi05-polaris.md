@@ -93,6 +93,12 @@ from a private in-cluster diagnostic endpoint—not pod-log access.
 A robot consumer should execute about five position targets at 15 Hz, observe
 again, and re-query the policy.
 
+The production consumer for that contract is the
+[Antioch / Isaac Sim Franka bridge](antioch-openpi-franka.md). It places the
+renderer on RTX PRO 6000, retains this B200 service and wire protocol, and
+fails to no-action on timeout, reconnect exhaustion, malformed responses, or
+unsafe absolute targets.
+
 ## Tiny training and held-out evaluation contract
 
 The workflow generates a deterministic NPZ at run time with two uint8

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .manager import AntiochManager
+from .openpi_bridge import OpenPIWebsocketClient, render_stack
 from .schemas import (
     CollectRequest,
     OperationRecord,
@@ -14,6 +15,8 @@ __all__ = [
     "AntiochManager",
     "CollectRequest",
     "OperationRecord",
+    "OpenPIWebsocketClient",
     "ResumeRequest",
     "SubmitRequest",
+    "render_stack",
 ]

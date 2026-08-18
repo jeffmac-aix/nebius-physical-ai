@@ -1,0 +1,10 @@
+FROM antioch-engine/isaac-lab-3.0:0.3.47
+
+# The operator passes the exact reviewed NPA commit. It is source provenance,
+# never a credential. Antioch saves the resulting image only in the operator's
+# private organization registry because the parent contains its Isaac runtime.
+ARG NPA_SOURCE_REF
+RUN printf '%s' "${NPA_SOURCE_REF}" | grep -Eq '^[0-9a-f]{40}$' \
+    && python -m pip install --no-cache-dir msgpack==1.1.2 websocket-client==1.9.0 \
+    && python -m pip install --no-cache-dir --no-deps \
+      "git+https://github.com/nebius/nebius-physical-ai.git@${NPA_SOURCE_REF}#subdirectory=npa"

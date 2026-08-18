@@ -317,6 +317,10 @@ images:
     isaac_runtime_fetch: true
     tier: interactive
     redistribution: public
+    notes: >-
+      Also carries the OSS Antioch-compatible OpenPI Franka bridge and its
+      MessagePack/WebSocket client. Isaac/Omniverse, Antioch SDK, OpenPI weights,
+      runtime caches, and credentials remain absent from built layers.
   leisaac:
     dockerfile: leisaac/Dockerfile
     isaac_runtime_fetch: true

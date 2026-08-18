@@ -100,6 +100,12 @@ The old `npa-cosmos:1.0.9` cu126 image stopped at Hopper. Its additive cu128/tor
 
 Isaac Lab and SONIC rasterized rendering needs RT cores. L40S and RTX PRO 6000 have them; H100, H200, B200, and B300 do not. The "supported (headless)" cells above mean state-based training only. `npa.workbench.sonic.routing` enforces this and rejects a render workload routed to a datacenter part.
 
+The [Antioch/OpenPI Franka path](antioch-openpi-franka.md) deliberately splits
+these incompatible requirements: `npa-isaac-lab` renders and controls on RTX
+PRO 6000 (`sm_120`), while its private OpenPI policy service runs on B200
+(`sm_100`). A successful policy inference is not evidence for rendering, and a
+successful camera smoke is not evidence for the policy image.
+
 ### Blackwell datacenter hardware status
 
 Managed-Kubernetes nodes were placed successfully for both B200 in us-central1 and B300 in uk-south1 on 2026-08-03. The temporary nodes enabled the first current-hardware validation runs below. Cells remain merely **supported** unless that exact image completed its real capability smoke; hardware availability alone does not flip a cell.

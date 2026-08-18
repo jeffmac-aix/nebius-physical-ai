@@ -8,6 +8,7 @@ from typing import Any
 import httpx
 
 from npa.workbench.antioch.manager import AntiochManager
+from npa.workbench.antioch.openpi_bridge import render_stack
 from npa.workbench.antioch.schemas import (
     CollectRequest,
     OperationRecord,
@@ -95,3 +96,9 @@ def collect(
     return _call(
         "collect", request.model_dump(mode="json"), endpoint=endpoint, token=token
     )
+
+
+def render_openpi_stack(**kwargs: str) -> dict[str, object]:
+    """Render the digest-pinned RTX bridge + B200 policy Kubernetes stack."""
+
+    return render_stack(**kwargs)

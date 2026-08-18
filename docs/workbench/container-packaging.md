@@ -42,7 +42,7 @@ All first-class images live under `npa/docker/workbench/`:
 | `npa-lerobot` | `lerobot/Dockerfile` | FastAPI server `:8080` |
 | `npa-lerobot-policy` | `lerobot-policy/Dockerfile` | entrypoint modes (serve/train/eval) |
 | `npa-genesis` | `genesis/Dockerfile` | job shell (CLI supplies command) |
-| `npa-isaac-lab` | `isaac-lab/Dockerfile` | job shell |
+| `npa-isaac-lab` | `isaac-lab/Dockerfile` | job shell; includes the OSS Antioch-compatible Franka/OpenPI bridge, with all vendor runtimes and weights fetched only at run time |
 | `npa-leisaac` | `leisaac/Dockerfile` | teleoperation/status service `:8080`, WebRTC TCP `:49100`, UDP `:47998` |
 | `npa-cosmos` | `cosmos/Dockerfile` | job shell; server built but not default CMD |
 | `npa-groot` | `groot/Dockerfile` | job shell; `EXPOSE 8080` |

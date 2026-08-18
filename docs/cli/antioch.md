@@ -22,6 +22,8 @@ resume
 collect
 list
 deploy
+openpi-stack  Render or apply the private RTX/Isaac-to-B200/OpenPI stack.
+openpi-contract-smoke  Validate the camera/state/action wire contract without a GPU or credentials.
 ```
 
 ## Options
@@ -35,6 +37,8 @@ deploy
 | Command | Description |
 | --- | --- |
 | `package-project` | Build a deterministic, credential-free immutable project package. system-info submit run status reconcile cancel resume collect list deploy |
+| `openpi-stack` | Render or apply the private RTX/Isaac-to-B200/OpenPI stack. |
+| `openpi-contract-smoke` | Validate the camera/state/action wire contract without a GPU or credentials. |
 
 ## Examples
 

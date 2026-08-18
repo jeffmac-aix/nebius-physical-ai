@@ -31,12 +31,15 @@ licenses:
 skills:
   - name: antioch
     category: tools
-    when_to_use: "Deploy, operate, debug, or compose Antioch simulation and strict offline policy-data collection."
+    when_to_use: "Deploy, operate, debug, or compose Antioch simulation, strict offline policy-data collection, or the RTX Isaac-to-B200 OpenPI Franka bridge."
     path: skills/tools/antioch/SKILL.md
     smoke:
       - type: cli_help
         args: ["workbench", "antioch", "run", "--help"]
         contains: "input-path"
+      - type: cli_help
+        args: ["workbench", "antioch", "openpi-stack", "--help"]
+        contains: "policy-image"
       - type: npa_workflow_yaml
         paths:
           - npa/workflows/workbench/npa-workflows/antioch-offline-policy-train.yaml

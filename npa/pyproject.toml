@@ -25,6 +25,11 @@ dependencies = [
     # depends on click, so it must be declared here.
     "click>=8.0",
     "httpx>=0.27",
+    # OpenPI's supported cross-process protocol is MessagePack over WebSocket.
+    # Keep both direct dependencies explicit: kubernetes also happens to depend
+    # on websocket-client, but the Franka bridge must not rely on that accident.
+    "msgpack==1.1.2",
+    "websocket-client==1.9.0",
     "paramiko>=4.0",
     "pyyaml>=6.0",
     "rich>=13.0",

@@ -12,6 +12,7 @@ import typer
 
 from npa.sdk.workbench import antioch as sdk
 from npa.workbench.antioch.manager import AntiochManager
+from npa.workbench.antioch.openpi_bridge import contract_smoke
 from npa.workbench.antioch.project import package_project
 from npa.workbench.antioch.runtime import (
     ensure_runtime,
@@ -437,3 +438,90 @@ def _deployment(
             },
         ],
     }
+
+
+@app.command("openpi-stack")
+def openpi_stack(
+    run_id: str = typer.Option(..., "--run-id"),
+    policy_image: str = typer.Option(..., "--policy-image"),
+    bridge_image: str = typer.Option(..., "--bridge-image"),
+    policy_terms_secret: str = typer.Option(..., "--policy-terms-secret"),
+    isaac_acceptance_secret: str = typer.Option(..., "--isaac-acceptance-secret"),
+    policy_gpu_selector_key: str = typer.Option(
+        "nebius.com/gpu-name", "--policy-gpu-selector-key"
+    ),
+    policy_gpu_selector_value: str = typer.Option(
+        "B200", "--policy-gpu-selector-value"
+    ),
+    bridge_gpu_selector_key: str = typer.Option(
+        "nebius.com/gpu-name", "--bridge-gpu-selector-key"
+    ),
+    bridge_gpu_selector_value: str = typer.Option(
+        "NVIDIA-RTX-PRO-6000-Blackwell-Server-Edition",
+        "--bridge-gpu-selector-value",
+    ),
+    namespace: str = typer.Option("default", "--namespace"),
+    image_pull_secret: str = typer.Option("", "--image-pull-secret"),
+    antioch_config_secret: str = typer.Option("", "--antioch-config-secret"),
+    s3_credentials_secret: str = typer.Option("", "--s3-credentials-secret"),
+    output_path: str = typer.Option("", "--output-path"),
+    prompt: str = typer.Option("pick up the fork", "--prompt"),
+    policy_ready_timeout_seconds: int = typer.Option(
+        1800, "--policy-ready-timeout-seconds", min=1
+    ),
+    apply: bool = typer.Option(False, "--apply"),
+    delete: bool = typer.Option(False, "--delete"),
+    output: OutputFormat = typer.Option(OutputFormat.text, "--output"),
+) -> None:
+    """Render or apply the private RTX/Isaac-to-B200/OpenPI stack."""
+
+    try:
+        if apply and delete:
+            raise ValueError("--apply and --delete are mutually exclusive")
+        manifest = sdk.render_openpi_stack(
+            run_id=run_id,
+            namespace=namespace,
+            policy_image=policy_image,
+            bridge_image=bridge_image,
+            policy_terms_secret=policy_terms_secret,
+            isaac_acceptance_secret=isaac_acceptance_secret,
+            policy_gpu_selector_key=policy_gpu_selector_key,
+            policy_gpu_selector_value=policy_gpu_selector_value,
+            bridge_gpu_selector_key=bridge_gpu_selector_key,
+            bridge_gpu_selector_value=bridge_gpu_selector_value,
+            image_pull_secret=image_pull_secret,
+            antioch_config_secret=antioch_config_secret,
+            output_uri=output_path,
+            s3_credentials_secret=s3_credentials_secret,
+            prompt=prompt,
+            policy_ready_timeout_seconds=policy_ready_timeout_seconds,
+        )
+        if apply or delete:
+            result = subprocess.run(
+                ["kubectl", "delete" if delete else "apply", "-f", "-"],
+                input=json.dumps(manifest),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            if result.returncode:
+                action = "delete" if delete else "apply"
+                raise RuntimeError(
+                    f"kubectl failed to {action} the OpenPI bridge stack"
+                )
+        status = "deleted" if delete else ("applied" if apply else "rendered")
+        _emit({"status": status, "manifest": manifest}, output)
+    except Exception as exc:
+        _fail(exc)
+
+
+@app.command("openpi-contract-smoke")
+def openpi_contract_smoke(
+    output: OutputFormat = typer.Option(OutputFormat.text, "--output"),
+) -> None:
+    """Validate the camera/state/action wire contract without a GPU or credentials."""
+
+    try:
+        _emit(contract_smoke(), output)
+    except Exception as exc:
+        _fail(exc)

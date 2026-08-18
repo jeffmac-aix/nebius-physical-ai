@@ -49,6 +49,7 @@ GOLDEN_EVAL_CAPABILITIES: dict[str, list[str]] = {
         "headless runtime launch",
         "manipulation env create",
         "env step loop",
+        "Antioch-compatible two-camera Franka to OpenPI position-target bridge",
     ],
     "leisaac": [
         "real LeIsaac-SO101-PickOrange-v0 environment starts",
