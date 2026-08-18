@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import time
+from urllib.error import URLError
 from urllib.request import urlopen
 
 
@@ -31,7 +32,7 @@ def wait_for_health(
             ) as response:
                 if 200 <= response.status < 300:
                     return
-        except Exception:
+        except (TimeoutError, URLError):
             pass
         remaining = deadline - time.monotonic()
         if remaining <= 0:
