@@ -3,9 +3,17 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any, Literal
+from enum import Enum
+from typing import Any
 
 import typer
+
+
+class ReviewOutputFormat(str, Enum):
+    """Output formats supported by the terminal review command."""
+
+    text = "text"
+    json = "json"
 
 
 def register_review_augmented(
@@ -38,8 +46,8 @@ def register_review_augmented(
         dataset_name: str = typer.Option(
             ..., "--dataset-name", help="Stable dataset name used by the review viewer."
         ),
-        output: Literal["text", "json"] = typer.Option(
-            "text", "--output", help="Output format."
+        output: ReviewOutputFormat = typer.Option(
+            ReviewOutputFormat.text, "--output", help="Output format."
         ),
     ) -> None:
         """Export all accepted or rejected PAIDF candidates for real FiftyOne review."""
@@ -55,11 +63,7 @@ def register_review_augmented(
                 fail(f"{option} must be an s3:// URI.")
         if not dataset_name.strip():
             fail("--dataset-name must not be empty.")
-        try:
-            normalized_output = output_format(output)
-        except ValueError:
-            fail("--output must be one of: text, json.")
-            return
+        normalized_output = output_format(output.value)
 
         from npa.workflows.data_factory_stages import review_terminal_candidates
 
@@ -87,3 +91,8 @@ def register_review_augmented(
             },
             normalized_output,
         )
+
+    # The catalog argv guard resolves Typer callbacks by module + function name.
+    # Registration keeps this small command out of the CLI monolith, while the
+    # module-level alias preserves that introspection contract.
+    globals()[review_augmented_cmd.__name__] = review_augmented_cmd
