@@ -77,6 +77,13 @@ diffusions **across the augment pod's GPUs**, one variant per GPU (pinned via
 capped at the variant count (so it is safe on 1 GPU and never pins a variant to a
 GPU the pod lacks). Request the GPUs in the spec: `resources.gpu.accelerators:
 RTXPRO6000:4` runs 4 variants at once (~one variant's wall-clock instead of 4×).
+When multiple model processes need more host RAM than the profile default, set
+`NPA_WORKFLOW_GPU_MEMORY=<N>Gi` alongside the accelerator override; it changes
+only accelerator-backed profiles, never the CPU stages. Failed variants publish
+typed, non-promoting records below the scheduler-attempt prefix while successful
+siblings continue into the run manifest. The manifest reports attempted,
+successful, and failed counts; an all-failed wave preserves those records but
+never publishes an empty candidate batch.
 Verified live: a 4-variant run on `RTXPRO6000:4` drove all 4 GPUs to 100%
 (4 distinct compute PIDs) and finished in ~14 min end-to-end; the manifest recorded
 `variant_parallelism: 4`.

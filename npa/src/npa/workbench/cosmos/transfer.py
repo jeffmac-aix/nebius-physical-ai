@@ -1091,6 +1091,45 @@ def _upload_json(client: Any, document: dict[str, Any], uri: str) -> str:
         return client.upload_file(str(local), uri)
 
 
+def publish_transfer_failure(
+    failure: dict[str, Any],
+    output_uri: str,
+    *,
+    storage_client: Any = None,
+) -> dict[str, Any]:
+    """Persist one failed variant attempt without hiding successful siblings.
+
+    The document deliberately stores a sanitized failure category/type rather
+    than vendor stderr, which can contain the effective prompt or local input
+    path. ``output_uri`` may already be scheduler-attempt scoped; callers pass
+    the same prefix used for successful clip publication so every attempt stays
+    additive and attributable.
+    """
+
+    if not output_uri.startswith("s3://"):
+        raise ValueError(f"output_uri must be an s3:// prefix, got: {output_uri!r}")
+    from npa.clients.storage import StorageClient
+
+    index = int(failure.get("variant_index", -1))
+    if index < 0:
+        raise ValueError("variant failure requires a non-negative variant_index")
+    document = dict(failure)
+    document.update(
+        {
+            "schema": "npa.cosmos2.transfer.variant-failure/v1",
+            "status": "failed",
+            "variant_index": index,
+            "promotion_eligible": False,
+        }
+    )
+    failure_uri = (
+        f"{output_uri.rstrip('/')}/_failures/variant-{index:05d}.json"
+    )
+    _upload_json(storage_client or StorageClient.from_environment(), document, failure_uri)
+    document["failure_uri"] = failure_uri
+    return document
+
+
 def _json_bytes(document: dict[str, Any]) -> bytes:
     import json as _json
 
@@ -1417,6 +1456,7 @@ def build_run_manifest(
     node_count: int = 1,
     shards: list[dict[str, Any]] | None = None,
     attempt_id: str = "",
+    failures: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Return the run-level transfer manifest for ``clips`` (no I/O).
 
@@ -1426,6 +1466,7 @@ def build_run_manifest(
     """
 
     first = clips[0] if clips else {}
+    variant_failures = list(failures or [])
     frames = [f for c in clips for f in c.get("frames", [])]
     manifest = {
         "schema": TRANSFER_MANIFEST_SCHEMA,
@@ -1434,6 +1475,9 @@ def build_run_manifest(
         "run_id": run_id,
         "clips": [c.get("clip", "") for c in clips],
         "variant_count": len(clips),
+        "attempted_variant_count": len(clips) + len(variant_failures),
+        "failed_variant_count": len(variant_failures),
+        "failed_variants": variant_failures,
         # "multiply": one Cosmos Transfer 2.5 inference per sampled appearance
         # combo. >1 clips means the run genuinely amplified across scenarios.
         "multiply_mode": "multi-variant" if len(clips) > 1 else "single-variant",
@@ -1506,6 +1550,7 @@ def write_run_manifest(
     attempt_id: str = "",
     publication_claim_etag: str = "",
     publication_generation: int = 0,
+    failures: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Write the run-level ``cosmos_augmented/manifest.json`` listing every clip
     produced by the (possibly multi-variant) augment stage; return the manifest.
@@ -1542,6 +1587,7 @@ def write_run_manifest(
         node_count=node_count,
         shards=shards,
         attempt_id=attempt_id,
+        failures=failures,
     )
     if publication_claim_etag:
         if not attempt_id or int(publication_generation) < 1:
@@ -1633,6 +1679,7 @@ def write_shard_manifest(
     logical_wave_id: str,
     publication_generation: int,
     storage_client: Any = None,
+    failures: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Publish ONE node's share of a multi-node augment as a shard manifest.
 
@@ -1664,6 +1711,7 @@ def write_shard_manifest(
             "multi-node shard descriptors must point inside their attempt-scoped "
             "output prefix"
         )
+    variant_failures = list(failures or [])
     shard = {
         "schema": SHARD_MANIFEST_SCHEMA,
         "mode": TRANSFER_MANIFEST_MODE,
@@ -1680,6 +1728,9 @@ def write_shard_manifest(
         "variant_parallelism": max(1, int(variant_parallelism or 1)),
         "variant_total": max(0, int(variant_total or 0)),
         "variant_count": len(clips),
+        "attempted_variant_count": len(clips) + len(variant_failures),
+        "failed_variant_count": len(variant_failures),
+        "failed_variants": variant_failures,
         "clips": [c.get("clip", "") for c in clips],
         "clip_descriptors": clips,
     }
@@ -1823,6 +1874,7 @@ def merge_shard_manifests(
         if not isinstance(document, dict):
             return False
         descriptors = document.get("clip_descriptors")
+        failures = document.get("failed_variants", [])
         attempt_prefix = (
             attempt_output_uri_for(output_uri, normalized_attempt_id) + "/"
         )
@@ -1839,13 +1891,23 @@ def merge_shard_manifests(
                 for field, value in expected_shard_identity.items()
             )
             and isinstance(descriptors, list)
+            and isinstance(failures, list)
             and int(document.get("variant_count", -1)) == len(descriptors)
+            and int(document.get("failed_variant_count", -1)) == len(failures)
+            and int(document.get("attempted_variant_count", -1))
+            == len(descriptors) + len(failures)
             and all(
                 isinstance(item, dict)
                 and str(item.get("augmented_video_uri") or "").startswith(
                     attempt_prefix
                 )
                 for item in descriptors
+            )
+            and all(
+                isinstance(item, dict)
+                and int(item.get("variant_index", -1)) >= 0
+                and str(item.get("failure_uri") or "").startswith(attempt_prefix)
+                for item in failures
             )
         )
 
@@ -1922,11 +1984,27 @@ def merge_shard_manifests(
         (clip for shard in shards.values() for clip in shard.get("clip_descriptors", [])),
         key=lambda c: int(c.get("variant_index", 0) or 0),
     )
-    indices = [int(clip.get("variant_index", -1)) for clip in ordered]
+    ordered_failures = sorted(
+        (
+            failure
+            for shard in shards.values()
+            for failure in shard.get("failed_variants", [])
+        ),
+        key=lambda failure: int(failure.get("variant_index", -1)),
+    )
+    indices = sorted(
+        [int(clip.get("variant_index", -1)) for clip in ordered]
+        + [int(failure.get("variant_index", -1)) for failure in ordered_failures]
+    )
     if indices != list(range(variant_total)):
         raise RuntimeError(
             "multi-node augment: shard manifests do not cover every variant exactly "
             f"once for run {run_id!r}; expected 0..{variant_total - 1}, got {indices}"
+        )
+    if not ordered:
+        raise RuntimeError(
+            "multi-node augment: every variant failed independently; failure "
+            "shards were preserved and no empty run manifest was published"
         )
     return write_run_manifest(
         ordered,
@@ -1936,7 +2014,7 @@ def merge_shard_manifests(
         variant_parallelism=sum(
             max(1, int(shard.get("variant_parallelism", 1) or 1))
             for shard in shards.values()
-            if int(shard.get("variant_count", 0) or 0) > 0
+            if int(shard.get("attempted_variant_count", 0) or 0) > 0
         )
         or 1,
         node_count=expected,
@@ -1944,6 +2022,12 @@ def merge_shard_manifests(
             {
                 "rank": int(shard.get("rank", rank) or 0),
                 "variant_count": int(shard.get("variant_count", 0) or 0),
+                "attempted_variant_count": int(
+                    shard.get("attempted_variant_count", 0) or 0
+                ),
+                "failed_variant_count": int(
+                    shard.get("failed_variant_count", 0) or 0
+                ),
                 "variant_parallelism": max(1, int(shard.get("variant_parallelism", 1) or 1)),
                 "clips": list(shard.get("clips", [])),
                 "attempt_id": str(shard.get("attempt_id") or ""),
@@ -1953,6 +2037,7 @@ def merge_shard_manifests(
         attempt_id=normalized_attempt_id,
         publication_claim_etag=publication_claim_etag,
         publication_generation=publication_generation,
+        failures=ordered_failures,
     )
 
 
@@ -2192,6 +2277,7 @@ __all__ = [
     "extract_frames",
     "merge_shard_manifests",
     "publish_transfer_clip",
+    "publish_transfer_failure",
     "publish_transfer_to_s3",
     "reference_augment_frames",
     "resolve_control_modality",

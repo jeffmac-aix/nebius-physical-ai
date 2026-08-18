@@ -1284,11 +1284,15 @@ def _safe_paidf_cli_result(payload: dict[str, Any]) -> dict[str, Any]:
             "output_kind",
             "frame_count",
             "variant_count",
+            "attempted_variant_count",
+            "failed_variant_count",
             "multiply_mode",
             "variant_parallelism",
             "node_count",
             "node_rank",
             "shard_variant_count",
+            "shard_attempted_variant_count",
+            "shard_failed_variant_count",
             "input_conditioned",
         )
         if key in payload
@@ -1740,6 +1744,7 @@ def transfer_cmd(
                 merge_shard_manifests,
                 preserve_source_chroma,
                 publish_transfer_clip,
+                publish_transfer_failure,
                 write_run_manifest,
                 write_shard_manifest,
             )
@@ -1830,6 +1835,26 @@ def transfer_cmd(
             # Fan the GPU-bound diffusions out across this pod's GPUs, then publish
             # sequentially in combo order (publish/S3 upload stays single-threaded).
             transfers: dict[int, dict] = {}
+            failures: dict[int, dict] = {}
+
+            def _record_failure(i: int, combo: dict, exc: Exception) -> None:
+                # Vendor stderr can contain the effective prompt and input path,
+                # so preserve only typed, actionable provenance in the durable
+                # failure record. The private combo manifest already holds the
+                # exact requested variables for a targeted retry.
+                failures[i] = {
+                    "run_id": run_id,
+                    "variant_index": i,
+                    "variables": combo,
+                    "error_type": type(exc).__name__,
+                    "failure_category": "inference-or-output",
+                    "retryable": True,
+                    "refinement": refinement,
+                    "effective_control_weight": control_weight,
+                    "effective_guidance": guidance,
+                    "inference_seed": _inference_seed(combo),
+                }
+
             if parallelism > 1 and len(shard) > 1:
                 from concurrent.futures import ThreadPoolExecutor
 
@@ -1839,13 +1864,31 @@ def transfer_cmd(
                         for slot, (i, combo) in enumerate(shard)
                     }
                     for future in futures:
-                        transfers[futures[future]] = future.result()
+                        index = futures[future]
+                        combo = combos[index]
+                        try:
+                            transfers[index] = future.result()
+                        except Exception as exc:  # noqa: BLE001 - per-candidate boundary
+                            _record_failure(index, combo, exc)
             else:
                 for slot, (i, combo) in enumerate(shard):
-                    transfers[i] = _render_variant(slot, i, combo)
+                    try:
+                        transfers[i] = _render_variant(slot, i, combo)
+                    except Exception as exc:  # noqa: BLE001 - per-candidate boundary
+                        _record_failure(i, combo, exc)
+
+            published_failures = [
+                publish_transfer_failure(
+                    failures[i],
+                    publish_output_uri,
+                )
+                for i in sorted(failures)
+            ]
 
             clips: list[dict] = []
             for i, combo in shard:
+                if i not in transfers:
+                    continue
                 clip_name = f"aug-{run_id}-{i}" if run_id else f"aug{i}"
                 clips.append(
                     publish_transfer_clip(
@@ -1858,6 +1901,11 @@ def transfer_cmd(
                         control_output_uri=publish_control_output_uri,
                         require_frames=True,
                     )
+                )
+            if node_count == 1 and not clips:
+                raise RuntimeError(
+                    "all Cosmos Transfer variants failed; typed attempt evidence "
+                    "was preserved and no empty candidate batch was published"
                 )
             if node_count > 1:
                 # Each node publishes its own shard manifest; rank 0 joins them into
@@ -1885,6 +1933,7 @@ def transfer_cmd(
                     ),
                     logical_wave_id=str(publication_identity["logical_wave_id"]),
                     publication_generation=publication_generation,
+                    failures=published_failures,
                 )
                 _apply_validation_fault(
                     run_id=run_id,
@@ -1908,6 +1957,7 @@ def transfer_cmd(
                         variant_parallelism=parallelism,
                         node_count=node_count,
                         attempt_id=attempt_id,
+                        failures=published_failures,
                     )
                 )
             else:
@@ -1925,6 +1975,7 @@ def transfer_cmd(
                     output_uri,
                     run_id=run_id,
                     variant_parallelism=parallelism,
+                    failures=published_failures,
                     **publication_kwargs,
                 )
             payload["status"] = TRANSFER_MANIFEST_STATUS
@@ -1934,11 +1985,22 @@ def transfer_cmd(
             payload["augmented_videos"] = manifest["augmented_videos"]
             payload["frame_count"] = manifest["frame_count"]
             payload["variant_count"] = manifest["variant_count"]
+            payload["attempted_variant_count"] = int(
+                manifest.get(
+                    "attempted_variant_count",
+                    int(manifest["variant_count"]) + len(published_failures),
+                )
+            )
+            payload["failed_variant_count"] = int(
+                manifest.get("failed_variant_count", len(published_failures))
+            )
             payload["multiply_mode"] = manifest["multiply_mode"]
             payload["variant_parallelism"] = manifest["variant_parallelism"]
             payload["node_count"] = node_count
             payload["node_rank"] = rank
             payload["shard_variant_count"] = len(clips)
+            payload["shard_attempted_variant_count"] = len(shard)
+            payload["shard_failed_variant_count"] = len(published_failures)
             payload["clips"] = manifest["clips"]
             local_variables = [combo for _index, combo in shard]
             payload["augmentation_variables"] = local_variables

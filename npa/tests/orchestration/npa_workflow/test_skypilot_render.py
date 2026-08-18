@@ -344,6 +344,22 @@ def test_accelerator_name_override_preserves_each_profile_gpu_count(
     )
 
 
+def test_gpu_memory_override_targets_only_accelerator_profiles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("NPA_WORKFLOW_GPU_MEMORY", "384Gi")
+    assert normalize_resources(
+        {
+            "cloud": "kubernetes",
+            "accelerators": "RTXPRO6000:4",
+            "memory": "128Gi",
+        }
+    )["memory"] == "384+"
+    assert normalize_resources(
+        {"cloud": "kubernetes", "cpus": 4, "memory": "16Gi"}
+    )["memory"] == "16+"
+
+
 def test_submit_time_accelerator_override_preserves_profile_gpu_count() -> None:
     assert (
         normalize_resources(

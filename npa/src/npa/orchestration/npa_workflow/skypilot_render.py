@@ -351,6 +351,9 @@ def normalize_resources(
     # operators can retarget without editing the committed blueprint; otherwise
     # submit-time resolution supplies a per-profile remap.
     accel_override = str(_os.environ.get("NPA_WORKFLOW_GPU_ACCELERATOR") or "").strip()
+    gpu_memory_override = str(
+        _os.environ.get("NPA_WORKFLOW_GPU_MEMORY") or ""
+    ).strip()
     overrides = dict(accelerator_overrides or {})
 
     out: dict[str, Any] = {}
@@ -384,12 +387,15 @@ def normalize_resources(
                 value = f"{selected_override}:{declared_count}"
             elif selected_override:
                 value = selected_override
-        if key == "memory" and isinstance(value, str):
-            stripped = value.strip()
-            if stripped.lower().endswith("gi"):
-                value = stripped[:-2]
-            elif stripped.lower().endswith("g"):
-                value = stripped[:-1]
+        if key == "memory":
+            if gpu_memory_override and resources.get("accelerators"):
+                value = gpu_memory_override
+            if isinstance(value, str):
+                stripped = value.strip()
+                if stripped.lower().endswith("gi"):
+                    value = stripped[:-2]
+                elif stripped.lower().endswith("g"):
+                    value = stripped[:-1]
         out[key] = value
 
     cloud = str(out.get("cloud") or "").strip().lower()

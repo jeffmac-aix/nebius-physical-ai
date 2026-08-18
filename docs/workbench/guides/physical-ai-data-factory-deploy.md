@@ -735,6 +735,7 @@ contract.
 ```bash
 # Fan 4 scenario variants across 4 GPUs on one node.
 NPA_WORKFLOW_GPU_ACCELERATOR=RTXPRO6000:4 \
+NPA_WORKFLOW_GPU_MEMORY=384Gi \
 npa workbench workflow submit "$SPEC" \
   --run-id "$(date -u +paidf-4gpu-%Y%m%dt%H%M%sz)" \
   --var bucket=<your-artifact-bucket> \
@@ -745,6 +746,15 @@ npa workbench workflow submit "$SPEC" \
   --secret-env AWS_SECRET_ACCESS_KEY \
   --secret-env HF_TOKEN
 ```
+
+`NPA_WORKFLOW_GPU_MEMORY` is optional and applies only to resource profiles that
+request accelerators. Use it when one model process per GPU would exceed the
+blueprint's host-memory default; CPU stages retain their declared memory. A
+single failed diffusion no longer discards completed siblings: its typed,
+non-promoting failure record remains under the scheduler-attempt prefix, and the
+run manifest reports `attempted_variant_count`, `variant_count`, and
+`failed_variant_count`. If every diffusion fails, no empty run manifest is
+published.
 
 When no valid `NPA_SRC_S3_URI` or image override is supplied, real submit
 automatically stages the current content-addressed NPA source and reuses that
