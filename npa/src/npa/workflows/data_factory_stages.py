@@ -1028,6 +1028,24 @@ def prepare_refinement(
     report = _read_optional_refinement_json(
         report_uri, label="prior evaluator report"
     )
+    adaptation_report = report
+    adaptation_report_uri = report_uri
+    if report is not None and not report.get("clips"):
+        ranking_report_uri = (
+            report_uri.rsplit("/", 1)[0] + f"/ranking/{RESULT_FILENAME}"
+        )
+        ranking_report = _read_optional_refinement_json(
+            ranking_report_uri, label="prior ranking evaluator report"
+        )
+        if ranking_report is not None:
+            if ranking_report.get("status") != "completed" or not isinstance(
+                ranking_report.get("clips"), list
+            ):
+                raise RefinementStateError(
+                    "prior ranking evaluator report is not a completed clip report"
+                )
+            adaptation_report = ranking_report
+            adaptation_report_uri = ranking_report_uri
     decision_payload = (
         _read_optional_refinement_json(decision_uri, label="quality gate decision")
         if decision_uri
@@ -1204,7 +1222,11 @@ def prepare_refinement(
 
     failed_checks: set[str] = set()
     failed_attributes: set[str] = set()
-    report_clips = report.get("clips", []) if report is not None else []
+    report_clips = (
+        adaptation_report.get("clips", [])
+        if adaptation_report is not None
+        else []
+    )
     for clip in report_clips if isinstance(report_clips, list) else []:
         if not isinstance(clip, dict) or clip.get("passed") is True:
             continue
@@ -1245,6 +1267,14 @@ def prepare_refinement(
         "prior_evaluator_report_uri": report_uri if report is not None else "",
         "prior_evaluator_report_sha256": (
             _payload_sha256(report) if report is not None else ""
+        ),
+        "adaptation_evaluator_report_uri": (
+            adaptation_report_uri if adaptation_report is not None else ""
+        ),
+        "adaptation_evaluator_report_sha256": (
+            _payload_sha256(adaptation_report)
+            if adaptation_report is not None
+            else ""
         ),
         "prior_score": prior_score,
         "prior_passed": prior_passed,

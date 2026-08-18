@@ -494,6 +494,84 @@ def test_prepare_refinement_records_exact_failed_attribute_names(tmp_path: Path)
     assert retry["failed_attributes"] == ["lighting"]
 
 
+def test_prepare_refinement_uses_ranking_failures_when_holdout_is_empty(
+    tmp_path: Path,
+) -> None:
+    grade = tmp_path / "grade"
+    refinement = tmp_path / "configs" / "refinement.json"
+    decision = grade / "decision.json"
+    dfs.prepare_refinement(
+        str(grade),
+        str(refinement),
+        decision_uri=str(decision),
+        loop_iteration=1,
+    )
+    first_grade = grade / "iteration-1"
+    ranking = first_grade / "ranking" / "cosmos_evaluator.json"
+    ranking.parent.mkdir(parents=True)
+    ranking.write_text(
+        json.dumps(
+            {
+                "status": "completed",
+                "score": 0.8,
+                "passed": False,
+                "clips": [
+                    {
+                        "passed": False,
+                        "attribute_verification": {
+                            "passed": False,
+                            "checks": [
+                                {"variable": "surface_finish", "passed": False},
+                                {"variable": "lighting", "passed": True},
+                            ],
+                        },
+                        "temporal_consistency": {"passed": False},
+                        "hallucination": {"passed": True},
+                    }
+                ],
+            }
+        )
+    )
+    final_report = first_grade / "cosmos_evaluator.json"
+    final_report.write_text(
+        json.dumps(
+            {
+                "status": "completed",
+                "score": 0.0,
+                "passed": False,
+                "clips": [],
+            }
+        )
+    )
+    assert (
+        dfs.grade_gate(
+            str(first_grade),
+            str(first_grade / "decision.json"),
+            0.75,
+            str(refinement),
+        )
+        == "loop_back"
+    )
+
+    retry = dfs.prepare_refinement(
+        str(grade),
+        str(refinement),
+        decision_uri=str(decision),
+        loop_iteration=2,
+    )
+
+    assert retry["failed_checks"] == [
+        "attribute_verification",
+        "temporal_consistency",
+    ]
+    assert retry["failed_attributes"] == ["surface_finish"]
+    assert retry["prior_evaluator_report_uri"] == str(final_report)
+    assert retry["adaptation_evaluator_report_uri"] == str(ranking)
+    assert retry["adaptation_evaluator_report_sha256"] == dfs._payload_sha256(
+        json.loads(ranking.read_text())
+    )
+
+
 def test_prepare_refinement_reads_preceding_append_only_iteration(
     tmp_path: Path,
 ) -> None:
