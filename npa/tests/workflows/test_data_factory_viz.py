@@ -159,6 +159,34 @@ def test_rejected_rrd_component_stats_include_actual_augmented_media(
     assert "@EncodedImage:blob" in component_stats
     assert "@AssetVideo:blob" in component_stats
     assert "augmented/iteration-1/candidate-a/disposition" in component_stats
+    import npa.workflows.data_factory_viz as viz
+
+    verified = viz._verify_terminal_rrd_media(
+        out,
+        variant_records=[
+            {
+                "candidate_id": "iteration-1/candidate-a",
+                "video": video,
+            }
+        ],
+        quality_status="REJECTED",
+    )
+    assert verified == {
+        "augmented_video_entities": 1,
+        "augmented_disposition_entities": 1,
+    }
+    video.write_bytes(b"changed")
+    with pytest.raises(DataFactoryVizError, match="differs from its canonical"):
+        viz._verify_terminal_rrd_media(
+            out,
+            variant_records=[
+                {
+                    "candidate_id": "iteration-1/candidate-a",
+                    "video": video,
+                }
+            ],
+            quality_status="REJECTED",
+        )
 
 
 def test_frame_index_parses_both_naming_schemes() -> None:
@@ -440,21 +468,39 @@ def test_viewer_publication_preservation_check_is_additive_and_fail_closed() -> 
     before = [
         {"key": "run/input/source.mp4", "size": 10, "etag": "source"},
         {"key": "run/cosmos_augmented/a/frame.png", "size": 20, "etag": "frame"},
+        {"key": "run/npa-workflow/runtime.json", "size": 20, "etag": "old"},
     ]
     after = [
-        *before,
+        before[0],
+        before[1],
+        {"key": "run/npa-workflow/runtime.json", "size": 21, "etag": "new"},
         {"key": "run/reports/sim2real.rrd", "size": 30, "etag": "rrd"},
     ]
-    viz._verify_additive_publication(before, after, "run/reports/sim2real.rrd")
+    preserved = viz._verify_additive_publication(
+        before, after, "run/reports/sim2real.rrd"
+    )
+    assert preserved == before[:2]
+    assert (
+        viz._verify_additive_publication(
+            after, after, "run/reports/sim2real.rrd"
+        )
+        == before[:2]
+    )
 
     changed = [
         {**before[0], "etag": "changed"},
         before[1],
+        after[2],
         after[-1],
     ]
     with pytest.raises(DataFactoryVizError, match="changed the canonical"):
         viz._verify_additive_publication(
             before, changed, "run/reports/sim2real.rrd"
+        )
+    changed_rrd = [*after[:-1], {**after[-1], "etag": "changed"}]
+    with pytest.raises(DataFactoryVizError, match="changed an existing recording"):
+        viz._verify_additive_publication(
+            after, changed_rrd, "run/reports/sim2real.rrd"
         )
 
 

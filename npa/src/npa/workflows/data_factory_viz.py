@@ -186,6 +186,7 @@ def build_run_rrd(
     active_storage = storage_client
     source_inventory: list[dict[str, Any]] = []
     output_object_key = ""
+    output_exists = False
     if input_uri.startswith("s3://"):
         if active_storage is None:
             from npa.clients.storage import StorageClient
@@ -201,10 +202,9 @@ def build_run_rrd(
                 "remote RRD publication must remain inside the canonical run prefix"
             )
         source_inventory = _s3_inventory(active_storage, input_uri)
-        if any(row["key"] == output_object_key for row in source_inventory):
-            raise DataFactoryVizError(
-                "RRD publication refuses to overwrite an existing run artifact"
-            )
+        output_exists = any(
+            row["key"] == output_object_key for row in source_inventory
+        )
 
     with tempfile.TemporaryDirectory(prefix="npa-df-viz-") as tmp:
         local = _materialize_run(
@@ -379,17 +379,30 @@ def build_run_rrd(
         # always contains Rerun's terminal manifest/footer.
         rec.flush()
         rec.disconnect()
-        written_uri = _publish(
-            str(out_path), output_uri, storage_client=active_storage
-        )
+        if output_exists:
+            existing_path = Path(tmp) / "existing-sim2real.rrd"
+            assert active_storage is not None
+            active_storage.download_file(output_uri, str(existing_path))
+            _verify_terminal_rrd_media(
+                existing_path,
+                variant_records=variant_records,
+                quality_status=quality_status if variant_records else "UNKNOWN",
+            )
+            written_uri = output_uri
+        else:
+            written_uri = _publish(
+                str(out_path), output_uri, storage_client=active_storage
+            )
 
     inventory_proof: dict[str, Any] = {}
     if source_inventory:
         after = _s3_inventory(active_storage, input_uri)
-        _verify_additive_publication(source_inventory, after, output_object_key)
+        source_rows = _verify_additive_publication(
+            source_inventory, after, output_object_key
+        )
         inventory_proof = {
-            "source_inventory_object_count": len(source_inventory),
-            "source_inventory_sha256": _inventory_sha256(source_inventory),
+            "source_inventory_object_count": len(source_rows),
+            "source_inventory_sha256": _inventory_sha256(source_rows),
             "source_inventory_unchanged_after_publication": True,
         }
 
@@ -445,16 +458,123 @@ def _inventory_sha256(rows: list[dict[str, Any]]) -> str:
 
 def _verify_additive_publication(
     before: list[dict[str, Any]], after: list[dict[str, Any]], output_key: str
-) -> None:
+) -> list[dict[str, Any]]:
     before_by_key = {str(row["key"]): row for row in before}
     after_by_key = {str(row["key"]): row for row in after}
-    if any(after_by_key.get(key) != row for key, row in before_by_key.items()):
+    marker = "/reports/"
+    run_prefix = output_key.split(marker, 1)[0] + "/" if marker in output_key else ""
+    workflow_prefix = run_prefix + "npa-workflow/"
+    source_before = [
+        row
+        for row in before
+        if str(row["key"]) != output_key
+        and not str(row["key"]).startswith(workflow_prefix)
+    ]
+    source_after = [
+        row
+        for row in after
+        if str(row["key"]) != output_key
+        and not str(row["key"]).startswith(workflow_prefix)
+    ]
+    if source_before != source_after:
         raise DataFactoryVizError(
             "RRD publication changed the canonical source object inventory"
         )
+    workflow_before = {
+        key for key in before_by_key if key.startswith(workflow_prefix)
+    }
+    if not workflow_before.issubset(after_by_key):
+        raise DataFactoryVizError("RRD publication removed workflow evidence")
+    unexpected = {
+        key
+        for key in after_by_key.keys() - before_by_key.keys()
+        if key != output_key and not key.startswith(workflow_prefix)
+    }
+    if unexpected:
+        raise DataFactoryVizError("RRD publication added undeclared run artifacts")
     output = after_by_key.get(output_key)
     if output is None or int(output.get("size") or 0) <= 0:
         raise DataFactoryVizError("RRD publication did not produce a non-empty artifact")
+    if output_key in before_by_key and output != before_by_key[output_key]:
+        raise DataFactoryVizError("RRD publication changed an existing recording")
+    return source_before
+
+
+def _verify_terminal_rrd_media(
+    rrd_path: Path,
+    *,
+    variant_records: list[dict[str, Any]],
+    quality_status: str,
+) -> dict[str, int]:
+    """Prove a preserved RRD contains each candidate's exact video and disposition."""
+
+    try:
+        from rerun.recording import load_recording
+    except ImportError as exc:  # pragma: no cover - rerun is a runtime dependency
+        raise DataFactoryVizError(
+            "rerun recording loader is required to verify an existing RRD"
+        ) from exc
+    if not rrd_path.is_file() or rrd_path.stat().st_size <= 0:
+        raise DataFactoryVizError("existing RRD is empty")
+    chunks = list(load_recording(rrd_path).chunks())
+    by_entity: dict[str, list[Any]] = {}
+    for chunk in chunks:
+        by_entity.setdefault(str(chunk.entity_path), []).append(chunk)
+
+    verified_videos = 0
+    verified_dispositions = 0
+    expected_status = str(quality_status or "UNKNOWN").upper()
+    for record in variant_records:
+        candidate = str(record.get("candidate_id") or "")
+        video_path = record.get("video")
+        if not candidate or not isinstance(video_path, Path) or not video_path.is_file():
+            raise DataFactoryVizError(
+                "existing RRD verification requires every committed candidate video"
+            )
+        video_entity = f"/augmented/{candidate}/video"
+        disposition_entity = f"/augmented/{candidate}/disposition"
+        embedded: list[bytes] = []
+        for chunk in by_entity.get(video_entity, []):
+            batch = chunk.to_record_batch()
+            if "AssetVideo:blob" not in batch.schema.names:
+                continue
+            for row in batch.column("AssetVideo:blob").to_pylist():
+                if row:
+                    embedded.append(bytes(row[0]))
+        if len(embedded) != 1 or hashlib.sha256(embedded[0]).hexdigest() != _sha256_path(
+            video_path
+        ):
+            raise DataFactoryVizError(
+                "existing RRD augmented video differs from its canonical candidate"
+            )
+        verified_videos += 1
+
+        text_values: list[str] = []
+        for chunk in by_entity.get(disposition_entity, []):
+            batch = chunk.to_record_batch()
+            for name in batch.schema.names:
+                if "text" not in name.lower() and "body" not in name.lower():
+                    continue
+                text_values.extend(str(value) for value in batch.column(name).to_pylist())
+        if not text_values or not any(expected_status in value.upper() for value in text_values):
+            raise DataFactoryVizError(
+                "existing RRD candidate disposition is missing or inconsistent"
+            )
+        verified_dispositions += 1
+    if not variant_records:
+        raise DataFactoryVizError("existing RRD has no committed candidates to verify")
+    return {
+        "augmented_video_entities": verified_videos,
+        "augmented_disposition_entities": verified_dispositions,
+    }
+
+
+def _sha256_path(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        while chunk := stream.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _image_files(root: Path) -> list[Path]:
@@ -1068,4 +1188,10 @@ def _publish(local_path: str, output_uri: str, *, storage_client: "StorageClient
     from npa.clients.storage import StorageClient
 
     client = storage_client or StorageClient.from_environment()
-    return client.upload_file(local_path, output_uri)
+    client.put_bytes_conditional(
+        Path(local_path).read_bytes(),
+        output_uri,
+        if_none_match=True,
+        content_type="application/octet-stream",
+    )
+    return output_uri
