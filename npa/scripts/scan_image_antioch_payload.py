@@ -37,10 +37,24 @@ for root in (Path("/app"), Path("/etc"), Path("/opt"), Path("/workspace")):
 print(json.dumps({"packages": packages, "forbidden_paths": sorted(forbidden)}))
 raise SystemExit(1 if packages or forbidden else 0)
 """
-    result = _run(
-        ["docker", "run", "--rm", "--entrypoint", "python", args.image, "-c", probe]
-    )
-    if result.returncode not in {0, 1}:
+    result: subprocess.CompletedProcess[str] | None = None
+    for interpreter in ("python3", "python"):
+        candidate = _run(
+            [
+                "docker",
+                "run",
+                "--rm",
+                "--entrypoint",
+                interpreter,
+                args.image,
+                "-c",
+                probe,
+            ]
+        )
+        if candidate.returncode in {0, 1}:
+            result = candidate
+            break
+    if result is None:
         raise SystemExit("could not inspect built Antioch image")
     try:
         detail = json.loads(result.stdout)
