@@ -665,7 +665,7 @@ def test_paidf_fixture_is_explicit_in_rendered_plan(
     generate = next(
         step for step in plan["steps"] if step["state"] == "generate-configs"
     )
-    assert generate["argv"][-3] == "true"
+    assert generate["argv"][-4] == "true"
     assert generate["argv"][-1] == ""
     assert "--condition-on-input" in result.output
 

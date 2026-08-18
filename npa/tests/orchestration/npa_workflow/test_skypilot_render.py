@@ -645,7 +645,7 @@ def test_paidf_planner_uses_compatible_first_pass_and_committed_retry_pointer() 
     )
     # The prepare argv carries the exact baseline, adaptive bounds, authoritative
     # decision artifact, and matching quality threshold used to create a retry.
-    assert prepare.argv[-10:] == [
+    assert prepare.argv[-11:] == [
         "true",
         "1.0",
         "3.0",
@@ -656,6 +656,7 @@ def test_paidf_planner_uses_compatible_first_pass_and_committed_retry_pointer() 
         "s3://example-bucket/physical-ai-data-factory/planner-settings/grade/decision.json",
         "0.75",
         "1",
+        "",
     ]
 
 
@@ -681,9 +682,9 @@ def test_paidf_refinement_iterations_use_append_only_artifact_prefixes() -> None
         step.argv[step.argv.index("--output-uri") + 1] for step in evaluates
     ] == [
         "s3://example-bucket/physical-ai-data-factory/append-only-refinement/"
-        "grade/iteration-1/",
+        "grade/iteration-1/ranking/",
         "s3://example-bucket/physical-ai-data-factory/append-only-refinement/"
-        "grade/iteration-2/",
+        "grade/iteration-2/ranking/",
     ]
     assert [step.outputs[0]["uri"] for step in gates] == [
         "s3://example-bucket/physical-ai-data-factory/append-only-refinement/"
@@ -691,7 +692,7 @@ def test_paidf_refinement_iterations_use_append_only_artifact_prefixes() -> None
         "s3://example-bucket/physical-ai-data-factory/append-only-refinement/"
         "grade/iteration-2/decision.json",
     ]
-    assert [step.argv[-1] for step in prepares] == ["1", "2"]
+    assert [step.argv[-2] for step in prepares] == ["1", "2"]
 
     reject = next(step for step in plan.steps if step.state == "reject-quality")
     assert (

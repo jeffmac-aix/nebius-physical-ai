@@ -257,8 +257,12 @@ def test_generate_data_factory_yaml_validates_and_plans() -> None:
         "augment",
         "grade",
         "evaluate",
+        "select-candidates",
+        "evaluate-selected",
         "quality-gate",
         "quality-disposition",
+        "review-terminal-candidates",
+        "route-terminal-quality",
         "require-accepted-quality",
         "visualize-rejected",
         "reject-quality",
@@ -281,6 +285,7 @@ def test_generate_data_factory_yaml_validates_and_plans() -> None:
     assert "workbench.cosmos_evaluator.evaluate" in tool_refs
     assert "workbench.cosmos_curate.curate" in tool_refs
     assert "workbench.fiftyone.curate_augmented" in tool_refs
+    assert "workbench.fiftyone.review_augmented" in tool_refs
     assert generated["states"]["cosmos-curate"]["resources"] == "gpu"
     assert generated["config"]["trigger_uri"] == generated["config"]["input_uri"]
     assert generated["config"]["grade_threshold"] == "0.75"
@@ -294,6 +299,13 @@ def test_generate_data_factory_yaml_validates_and_plans() -> None:
         "require-accepted-quality"
     ]
     assert generated["states"]["quality-disposition"]["transitions"] == [
+        {"when": "promote_checkpoint", "goto": "review-terminal-candidates"},
+        {"when": "loop_back", "goto": "review-terminal-candidates"},
+    ]
+    assert generated["states"]["review-terminal-candidates"]["next"] == (
+        "route-terminal-quality"
+    )
+    assert generated["states"]["route-terminal-quality"]["transitions"] == [
         {"when": "promote_checkpoint", "goto": "require-accepted-quality"},
         {"when": "loop_back", "goto": "visualize-rejected"},
     ]
@@ -362,15 +374,16 @@ def test_data_factory_subject_is_an_argv_value_not_shell_source() -> None:
     run = spec["states"]["generate-configs"]["run"]
     assert "shell" not in run
     assert spec["config"]["augment_subject"] == "worker's robot clips"
-    assert run["argv"][-2:] == [
+    assert run["argv"][-3:] == [
         "{{config.augment_subject}}",
         "{{config.augmentation_seed}}",
+        "{{config.quality_anchor_uri}}",
     ]
     plan = plan_workflow_yaml_text(workflow, run_id="subject-safe")
     argv = next(step for step in plan["steps"] if step["state"] == "generate-configs")[
         "argv"
     ]
-    assert argv[-2:] == ["worker's robot clips", ""]
+    assert argv[-3:] == ["worker's robot clips", "", ""]
 
 
 def test_data_factory_chat_propagates_quality_and_curator_knobs() -> None:

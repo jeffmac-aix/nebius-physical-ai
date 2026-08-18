@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import tempfile
@@ -25,6 +26,8 @@ from urllib.parse import urlparse
 
 if TYPE_CHECKING:
     from npa.clients.storage import StorageClient
+
+_log = logging.getLogger(__name__)
 
 APPLICATION_ID = "physical-ai-data-factory"
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
@@ -290,8 +293,12 @@ def build_run_rrd(
                                 ),
                                 recording=rec,
                             )
-                    except Exception:  # noqa: BLE001 - the embedded asset remains reviewable
-                        pass
+                    except Exception as exc:  # noqa: BLE001 - asset remains reviewable
+                        _log.debug(
+                            "could not attach video frame references for %s: %s",
+                            video,
+                            exc,
+                        )
                     augmented_video_count += 1
                 if label:
                     rr.log(entity, rr.TextDocument(f"{d.name}: {label}"), static=True, recording=rec)
