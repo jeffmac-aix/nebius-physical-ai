@@ -40,7 +40,9 @@ def test_health_module_import_does_not_load_offline_dataset_stack() -> None:
                 "import sys; "
                 "import npa.workbench.antioch.openpi_health; "
                 "assert 'npa.workbench.antioch.manager' not in sys.modules; "
-                "assert 'npa.workbench.antioch.dataset' not in sys.modules"
+                "assert 'npa.workbench.antioch.dataset' not in sys.modules; "
+                "assert 'npa.workbench.antioch.schemas' not in sys.modules; "
+                "assert 'npa.workbench.antioch.openpi_bridge' not in sys.modules"
             ),
         ],
         check=False,
