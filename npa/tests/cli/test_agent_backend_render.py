@@ -210,7 +210,10 @@ def test_rendered_gpu_fallback_route_is_zero_token_and_confirmation_bound(
             {
                 "logical_allocation": "private-logical-name",
                 "request": request,
-                "failure": {"code": "quota_exhausted", "message": "raw private response"},
+                "failure": {
+                    "code": "quota_exhausted",
+                    "message": "raw private response",
+                },
                 "evidence": {
                     "source": "provider-preflight",
                     "on_demand_impossible": True,
@@ -263,7 +266,9 @@ def test_rendered_gpu_fallback_route_is_zero_token_and_confirmation_bound(
         sys.modules.pop(module_name, None)
 
 
-def test_gpu_decline_preserves_unrelated_pending_confirmation(monkeypatch, tmp_path) -> None:
+def test_gpu_decline_preserves_unrelated_pending_confirmation(
+    monkeypatch, tmp_path
+) -> None:
     import sys
 
     module_name = "npa_rendered_gpu_decline_backend"
@@ -316,13 +321,237 @@ def test_gpu_decline_preserves_unrelated_pending_confirmation(monkeypatch, tmp_p
         unrelated_digest = module.action_digest(unrelated)
         unrelated_token = module._issue_agent_confirm_token(unrelated, unrelated_digest)
 
-        declined = consent({"logical_allocation": "declined-allocation", "accept": False})
+        declined = consent(
+            {"logical_allocation": "declined-allocation", "accept": False}
+        )
         assert declined["allocation"]["selected_pool"] == "on-demand"
         assert module._consume_agent_confirm_token() == (
             unrelated_token,
             unrelated_digest,
             unrelated,
         )
+    finally:
+        sys.modules.pop(module_name, None)
+
+
+def test_confirmation_token_is_single_use_under_concurrency(
+    monkeypatch, tmp_path
+) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+    import sys
+
+    module_name = "npa_rendered_atomic_confirmation_backend"
+    module = _import_rendered_backend(monkeypatch, tmp_path, module_name=module_name)
+    module.STATE_PATH = tmp_path / "atomic-confirmation-state.json"
+    module._STATE_STORE = None
+    action = {"action": "provision_infra", "project": "synthetic"}
+    digest = module.action_digest(action)
+    token = module._issue_agent_confirm_token(action, digest)
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            consumed = list(
+                pool.map(lambda _index: module._consume_agent_confirm_token(), range(2))
+            )
+        assert sum(result[0] == token for result in consumed) == 1
+        assert sum(result[0] == "" for result in consumed) == 1
+    finally:
+        sys.modules.pop(module_name, None)
+
+
+def test_gpu_fallback_attempts_are_atomic_under_concurrency(
+    monkeypatch, tmp_path
+) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+    import sys
+
+    module_name = "npa_rendered_atomic_gpu_fallback_backend"
+    module = _import_rendered_backend(monkeypatch, tmp_path, module_name=module_name)
+    module.STATE_PATH = tmp_path / "atomic-gpu-fallback-state.json"
+    module._STATE_STORE = None
+    request = {
+        "gpu_family": "rtx-pro",
+        "gpu_product": "RTXPRO6000",
+        "gpu_count": 1,
+        "image": "registry.example/npa@sha256:synthetic",
+        "image_digest": "sha256:synthetic",
+        "sm": "sm_120",
+        "rt_cores_required": True,
+        "backend": "kubernetes",
+        "model": "policy-a",
+        "workload_tier": "render",
+        "execution_mode": "train",
+        "boot_disk_count": 1,
+        "boot_disk_size_bytes": 1023 * 1024**3,
+        "pool": "on-demand",
+    }
+    candidate = {**request, "pool": "preemptible"}
+    attempt = next(
+        route.endpoint
+        for route in module.app.router.routes
+        if getattr(route, "path", "") == "/agent/gpu-allocation/attempt"
+    )
+    payload = {
+        "logical_allocation": "concurrent-allocation",
+        "request": request,
+        "failure": {"code": "capacity_exhausted"},
+        "evidence": {
+            "source": "scheduler",
+            "on_demand_impossible": True,
+            "preemptible_available": True,
+        },
+        "preemptible_candidate": candidate,
+    }
+    try:
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            responses = list(pool.map(lambda _index: attempt(payload), range(8)))
+        assert (
+            max(response["allocation"]["qualifying_attempts"] for response in responses)
+            == 8
+        )
+        state = module._load_state()
+        records = state["gpu_allocation_fallback"]
+        assert next(iter(records.values()))["qualifying_attempts"] == 8
+    finally:
+        sys.modules.pop(module_name, None)
+
+
+def test_rendered_mk8s_provision_forwards_shared_backend_desired_state(
+    monkeypatch, tmp_path
+) -> None:
+    """The agent route must not retain divergent GPU/MIG defaults."""
+    import sys
+
+    from npa import provisioning
+
+    module_name = "npa_rendered_mk8s_provision_backend"
+    module = _import_rendered_backend(monkeypatch, tmp_path, module_name=module_name)
+    captured = {}
+
+    class Result:
+        def to_dict(self):
+            return {"actions": ["shared-backend"]}
+
+    monkeypatch.setattr(module, "_agent_npa_ready", lambda: (True, ""))
+    monkeypatch.setattr(
+        provisioning,
+        "provision_if_absent",
+        lambda **kwargs: captured.update(kwargs) or Result(),
+    )
+    try:
+        result = module._provision_agent_infra(
+            "project-alias",
+            "mig-target",
+            dry_run=True,
+            preemptible=True,
+            desired={
+                "cpu_nodes": 0,
+                "gpu_nodes": 2,
+                "gpu_platform": "gpu-rtx6000",
+                "gpu_preset": "1gpu-24vcpu-218gb",
+                "gpu_health_timeout_minutes": 47,
+                "mig": {
+                    "enabled": True,
+                    "strategy": "mixed",
+                    "config": "all-balanced",
+                },
+                "capacity_block_group": "runtime-reservation",
+            },
+        )
+    finally:
+        sys.modules.pop(module_name, None)
+
+    assert result["ok"] is True
+    assert captured["project"] == "project-alias"
+    assert captured["cluster_name"] == "mig-target"
+    assert captured["cpu_nodes"] == 0
+    assert captured["gpu_nodes"] == 2
+    assert captured["gpu_platform"] == "gpu-rtx6000"
+    assert captured["gpu_preset"] == "1gpu-24vcpu-218gb"
+    assert captured["gpu_health_timeout_minutes"] == 47
+    assert captured["mig_enabled"] is True
+    assert captured["mig_strategy"] == "mixed"
+    assert captured["mig_config"] == "all-balanced"
+    assert captured["capacity_block_group"] == "runtime-reservation"
+    assert captured["preemptible"] is True
+
+
+def test_rendered_mk8s_confirmation_binds_storage_and_validation_switches(
+    monkeypatch, tmp_path
+) -> None:
+    import sys
+
+    module_name = "npa_rendered_mk8s_confirmation_binding"
+    module = _import_rendered_backend(monkeypatch, tmp_path, module_name=module_name)
+    module.STATE_PATH = tmp_path / "mk8s-confirmation-state.json"
+    module._STATE_STORE = None
+    monkeypatch.setattr(module, "_agent_project_alias", lambda _value: "project-alias")
+    try:
+        prompt = module.provision_infra({"dry_run": False})
+        assert prompt["needs_confirmation"] is True
+        assert prompt["proposed_action"]["skip_s3"] is True
+        assert prompt["proposed_action"]["validate"] is True
+
+        with pytest.raises(module.HTTPException, match="invalid or expired"):
+            module.provision_infra(
+                {
+                    "dry_run": False,
+                    "skip_s3": False,
+                    "confirm_token": prompt["confirm_token"],
+                }
+            )
+    finally:
+        sys.modules.pop(module_name, None)
+
+
+def test_rendered_mk8s_dry_run_backend_validation_error_is_clean_400(
+    monkeypatch, tmp_path
+) -> None:
+    """Backend request-shape failures must not escape as agent tracebacks."""
+    import sys
+
+    from npa import provisioning
+
+    module_name = "npa_rendered_mk8s_backend_validation_error"
+    module = _import_rendered_backend(monkeypatch, tmp_path, module_name=module_name)
+    monkeypatch.setattr(module, "_agent_project_alias", lambda _value: "project-alias")
+    monkeypatch.setattr(module, "_agent_npa_ready", lambda: (True, ""))
+
+    def reject(**_kwargs):
+        raise ValueError("strict reservation cannot be preemptible")
+
+    monkeypatch.setattr(provisioning, "provision_if_absent", reject)
+    try:
+        response = module.provision_infra({"dry_run": True, "skip_s3": True})
+        assert response.status_code == 400
+        payload = json.loads(response.body)
+        assert payload["status"] == "invalid"
+        assert "strict reservation" in payload["error"]
+    finally:
+        sys.modules.pop(module_name, None)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("cpu_nodes", "one"),
+        ("gpu_nodes", {"count": 2}),
+        ("gpu_health_stabilization_seconds", None),
+        ("gpu_health_timeout_minutes", 0),
+    ],
+)
+def test_rendered_mk8s_provision_rejects_malformed_numeric_json_with_400(
+    monkeypatch, tmp_path, field, value
+) -> None:
+    import sys
+
+    module_name = f"npa_rendered_mk8s_bad_numeric_{field}"
+    module = _import_rendered_backend(monkeypatch, tmp_path, module_name=module_name)
+    try:
+        response = module.provision_infra({field: value})
+        assert response.status_code == 400
+        payload = json.loads(response.body)
+        assert payload["status"] == "invalid"
+        assert field in payload["error"]
     finally:
         sys.modules.pop(module_name, None)
 
@@ -958,6 +1187,8 @@ def test_rendered_backend_imports_and_registers_foxglove_routes(monkeypatch, tmp
         "canonical_mcap",
         "foxglove_cloud",
         "foxglove_routes",
+        "gpu_allocation_fallback",
+        "gpu_allocation_routes",
         "artifact_routes",
     ):
         (package / f"{name}.py").write_text(
@@ -2451,6 +2682,8 @@ def test_rendered_backend_loads_real_skill_excerpts(monkeypatch, tmp_path):
         "canonical_mcap",
         "foxglove_cloud",
         "foxglove_routes",
+        "gpu_allocation_fallback",
+        "gpu_allocation_routes",
         "artifact_routes",
     ):
         (package / f"{name}.py").write_text(
