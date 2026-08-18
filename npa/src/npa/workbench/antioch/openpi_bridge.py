@@ -448,7 +448,13 @@ def render_stack(
                             "nodeSelector": {
                                 policy_gpu_selector_key: policy_gpu_selector_value
                             },
-                            "securityContext": {"runAsNonRoot": True},
+                            "securityContext": {
+                                "runAsNonRoot": True,
+                                "runAsUser": 1000,
+                                "runAsGroup": 1000,
+                                "fsGroup": 1000,
+                                "seccompProfile": {"type": "RuntimeDefault"},
+                            },
                             "containers": [policy_container],
                             "volumes": [
                                 {

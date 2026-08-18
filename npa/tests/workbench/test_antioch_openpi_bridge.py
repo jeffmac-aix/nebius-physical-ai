@@ -245,6 +245,13 @@ def test_stack_uses_separate_gpu_placement_and_private_policy_service() -> None:
     assert bridge["spec"]["template"]["spec"]["nodeSelector"] == {
         "example.invalid/gpu": "RTX-PRO-6000"
     }
+    for workload in (policy, bridge):
+        security = workload["spec"]["template"]["spec"]["securityContext"]
+        assert security["runAsNonRoot"] is True
+        assert security["runAsUser"] == 1000
+        assert security["runAsGroup"] == 1000
+        assert security["fsGroup"] == 1000
+        assert security["seccompProfile"] == {"type": "RuntimeDefault"}
     init = bridge["spec"]["template"]["spec"]["initContainers"][0]
     assert init["name"] == "wait-for-policy"
     assert init["args"][-1] == "1800"
