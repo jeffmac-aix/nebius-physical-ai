@@ -50,6 +50,10 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
+        with:
+          # Hosted scenario manifests pin reviewed ancestor commits. Keep the
+          # provenance test meaningful instead of weakening it for a shallow clone.
+          fetch-depth: 0
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v6

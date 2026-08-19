@@ -105,6 +105,15 @@ def test_test_workflow_uses_the_pinned_development_ffmpeg() -> None:
     assert "apt-get" not in ffmpeg_step
 
 
+def test_test_workflow_fetches_history_for_pinned_source_provenance() -> None:
+    """Reviewed hosted-source commits must be resolvable in the CI checkout."""
+
+    checkout = _step("test.yml", "test", "Check out repository")
+
+    assert checkout["uses"] == "actions/checkout@v6"
+    assert checkout["with"]["fetch-depth"] == "0"
+
+
 def _make_recipe(target: str) -> list[str]:
     """The command lines of one Makefile target, with variables left unexpanded."""
 
