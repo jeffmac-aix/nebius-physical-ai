@@ -34,6 +34,7 @@ from npa.workbench.antioch.openpi_bridge import (
 from npa.workbench.antioch.openpi_health import wait_for_health
 from npa.workbench.antioch.openpi_isaac import (
     _camera_frame,
+    _close_runtime_resource,
     _capture_viewport_rgb,
     _compatible_franka_asset_url,
     _ensure_franka_asset_root,
@@ -122,6 +123,21 @@ def test_camera_observation_warmup_fails_closed_at_deadline() -> None:
             monotonic=lambda: now,
             sleep=lambda _seconds: None,
         )
+
+
+def test_failed_runtime_does_not_call_kit_owned_close() -> None:
+    resource = SimpleNamespace(close=lambda: pytest.fail("close masked failure exit"))
+
+    _close_runtime_resource(resource, failed=True)
+
+
+def test_successful_runtime_closes_kit_owned_resource() -> None:
+    closed: list[bool] = []
+    resource = SimpleNamespace(close=lambda: closed.append(True))
+
+    _close_runtime_resource(resource, failed=False)
+
+    assert closed == [True]
 
 
 def test_hosted_viewport_capture_advances_kit_application_loop(

@@ -202,6 +202,18 @@ def _wait_for_camera_observation(
     ) from last_error
 
 
+def _close_runtime_resource(resource: Any | None, *, failed: bool) -> None:
+    """Close Kit-owned resources only after success.
+
+    Isaac environment/application close can terminate the interpreter with a
+    zero status.  On failure, normal process unwinding owns cleanup so the
+    already-emitted failed-safe report and nonzero exit cannot be masked.
+    """
+
+    if resource is not None and not failed:
+        resource.close()
+
+
 def _capture_viewport_rgb(
     sim: Any, *, eye: np.ndarray, target: np.ndarray
 ) -> np.ndarray:
@@ -634,13 +646,12 @@ def run(*, launch_application: bool = True) -> dict[str, object]:
             stream.stop()
         if client is not None:
             client.close()
-        if env is not None:
-            env.close()
+        _close_runtime_resource(env, failed=failed)
         # On failure, normal interpreter unwinding tears Kit down. Calling
         # SimulationApp.close() can terminate with status zero and mask the
         # exception from Kubernetes; the failed-safe report is already durable.
-        if launch_application and simulation_app is not None and not failed:
-            simulation_app.close()
+        if launch_application:
+            _close_runtime_resource(simulation_app, failed=failed)
     return report
 
 
