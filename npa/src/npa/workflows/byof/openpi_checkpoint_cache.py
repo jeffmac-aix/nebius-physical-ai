@@ -100,13 +100,17 @@ def fetch_generation_manifest(
             raise OpenPICacheError("upstream GCS metadata has an invalid items field")
         for raw in items:
             if not isinstance(raw, Mapping):
-                raise OpenPICacheError("upstream GCS metadata contains a malformed object")
+                raise OpenPICacheError(
+                    "upstream GCS metadata contains a malformed object"
+                )
             name = str(raw.get("name", ""))
             generation = str(raw.get("generation", ""))
             md5_hash = str(raw.get("md5Hash", ""))
             crc32c = str(raw.get("crc32c", ""))
             if not name.startswith(OBJECT_PREFIX) or not generation or not md5_hash:
-                raise OpenPICacheError("upstream checkpoint object metadata is incomplete")
+                raise OpenPICacheError(
+                    "upstream checkpoint object metadata is incomplete"
+                )
             records.append(
                 {
                     "name": name,
@@ -211,8 +215,34 @@ def tokenizer_alias_path(cache_root: str | Path) -> Path:
     return openpi_data_home(cache_root) / TOKENIZER_BUCKET / TOKENIZER_OBJECT
 
 
+def checkpoint_assets_alias_path(cache_root: str | Path) -> Path:
+    """Path OpenPI derives when resolving the checkpoint's normalization assets."""
+
+    return openpi_data_home(cache_root) / BUCKET / ARTIFACT / "assets"
+
+
 def openpi_data_home(cache_root: str | Path) -> Path:
     return Path(cache_root) / OPENPI_DATA_DIRNAME
+
+
+def _ensure_relative_alias(alias: Path, target: Path, *, description: str) -> None:
+    """Publish one fail-closed alias whose target stays within the mounted cache."""
+
+    if not target.is_dir() and not target.is_file():
+        raise OpenPICacheError(f"{description} target is missing")
+    alias.parent.mkdir(parents=True, exist_ok=True)
+    relative_target = os.path.relpath(target, alias.parent)
+    if os.path.lexists(alias):
+        if not alias.is_symlink() or os.readlink(alias) != relative_target:
+            raise OpenPICacheError(
+                f"refusing to overwrite an existing {description} alias"
+            )
+        return
+    temporary_alias = alias.with_name(
+        f".{alias.name}.tmp-{os.getpid()}-{threading.get_ident()}"
+    )
+    os.symlink(relative_target, temporary_alias)
+    os.rename(temporary_alias, alias)
 
 
 def _relative_path(record: Mapping[str, object]) -> Path:
@@ -256,14 +286,20 @@ def _verify_identity(
             "total_size_bytes": EXPECTED_TOTAL_SIZE,
         }
         if metadata != expected_marker:
-            raise OpenPICacheError("OpenPI cache ready marker does not match its identity")
+            raise OpenPICacheError(
+                "OpenPI cache ready marker does not match its identity"
+            )
     checkpoint = identity / "checkpoint"
     expected_paths = {_relative_path(item) for item in records}
-    actual_paths = {
-        path.relative_to(checkpoint)
-        for path in checkpoint.rglob("*")
-        if path.is_file()
-    } if checkpoint.is_dir() else set()
+    actual_paths = (
+        {
+            path.relative_to(checkpoint)
+            for path in checkpoint.rglob("*")
+            if path.is_file()
+        }
+        if checkpoint.is_dir()
+        else set()
+    )
     if actual_paths != expected_paths:
         raise OpenPICacheError("OpenPI cache file set is incomplete or unexpected")
     for record in records:
@@ -306,9 +342,13 @@ def verify_tokenizer_cache(
     try:
         metadata = json.loads(marker.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise OpenPICacheError("PaliGemma tokenizer cache has no valid ready marker") from exc
+        raise OpenPICacheError(
+            "PaliGemma tokenizer cache has no valid ready marker"
+        ) from exc
     if metadata != expected_marker:
-        raise OpenPICacheError("PaliGemma tokenizer ready marker does not match its identity")
+        raise OpenPICacheError(
+            "PaliGemma tokenizer ready marker does not match its identity"
+        )
     object_path = tokenizer_object_path(cache_root)
     if not object_path.is_file() or object_path.stat().st_size != TOKENIZER_SIZE:
         raise OpenPICacheError("PaliGemma tokenizer cache object size mismatch")
@@ -316,7 +356,9 @@ def verify_tokenizer_cache(
         raise OpenPICacheError("PaliGemma tokenizer cache object checksum mismatch")
     alias = tokenizer_alias_path(cache_root)
     if not alias.is_symlink() or alias.resolve() != object_path.resolve():
-        raise OpenPICacheError("PaliGemma tokenizer cache alias is missing or mismatched")
+        raise OpenPICacheError(
+            "PaliGemma tokenizer cache alias is missing or mismatched"
+        )
     return object_path
 
 
@@ -327,6 +369,12 @@ def verify_runtime_cache(
 ) -> Path:
     checkpoint = verify_cache(cache_root, records)
     verify_tokenizer_cache(cache_root, tokenizer_record)
+    assets = checkpoint / "assets"
+    alias = checkpoint_assets_alias_path(cache_root)
+    if not alias.is_symlink() or alias.resolve() != assets.resolve():
+        raise OpenPICacheError(
+            "OpenPI checkpoint normalization-assets alias is missing or mismatched"
+        )
     return checkpoint
 
 
@@ -395,20 +443,11 @@ def _populate_tokenizer(
     except Exception:
         shutil.rmtree(temporary, ignore_errors=True)
         raise
-    alias = tokenizer_alias_path(cache_root)
-    alias.parent.mkdir(parents=True, exist_ok=True)
-    relative_target = os.path.relpath(tokenizer_object_path(cache_root), alias.parent)
-    if os.path.lexists(alias):
-        if not alias.is_symlink() or os.readlink(alias) != relative_target:
-            raise OpenPICacheError(
-                "refusing to overwrite an existing PaliGemma tokenizer cache alias"
-            )
-    else:
-        temporary_alias = alias.with_name(
-            f".{alias.name}.tmp-{os.getpid()}-{threading.get_ident()}"
-        )
-        os.symlink(relative_target, temporary_alias)
-        os.rename(temporary_alias, alias)
+    _ensure_relative_alias(
+        tokenizer_alias_path(cache_root),
+        tokenizer_object_path(cache_root),
+        description="PaliGemma tokenizer cache",
+    )
     verify_tokenizer_cache(cache_root, record)
     return True
 
@@ -463,7 +502,9 @@ def populate_cache(
                     if destination.stat().st_size != int(record["size"]):
                         raise OpenPICacheError("downloaded OpenPI object size mismatch")
                     if _file_md5_base64(destination) != str(record["md5Hash"]):
-                        raise OpenPICacheError("downloaded OpenPI object checksum mismatch")
+                        raise OpenPICacheError(
+                            "downloaded OpenPI object checksum mismatch"
+                        )
                 marker = {
                     "format": CACHE_FORMAT,
                     "provider": PROVIDER,
@@ -473,9 +514,7 @@ def populate_cache(
                     "object_count": EXPECTED_OBJECT_COUNT,
                     "total_size_bytes": EXPECTED_TOTAL_SIZE,
                 }
-                (temporary / READY_MARKER).write_bytes(
-                    _canonical_json(marker) + b"\n"
-                )
+                (temporary / READY_MARKER).write_bytes(_canonical_json(marker) + b"\n")
                 _verify_identity(temporary, records)
                 os.rename(temporary, identity)
             except Exception:
@@ -483,9 +522,14 @@ def populate_cache(
                 raise
             verify_cache(root, records)
             populated = True
-        populated = _populate_tokenizer(
-            root, tokenizer_record, tokenizer_download
-        ) or populated
+        populated = (
+            _populate_tokenizer(root, tokenizer_record, tokenizer_download) or populated
+        )
+        _ensure_relative_alias(
+            checkpoint_assets_alias_path(root),
+            checkpoint_path(root) / "assets",
+            description="OpenPI checkpoint normalization-assets cache",
+        )
         return verify_runtime_cache(root, records, tokenizer_record), populated
 
 

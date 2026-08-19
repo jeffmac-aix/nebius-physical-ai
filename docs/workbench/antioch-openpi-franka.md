@@ -91,9 +91,11 @@ SHA-256, and format version; the tokenizer is keyed by provider, bucket/object,
 exact generation, and format version. Population is serialized by a volume
 lock, downloads into unique temporary directories, verifies the exact file set,
 sizes, and upstream MD5 values, and publishes by atomic rename plus a ready
-marker. The tokenizer's upstream-compatible path is a symlink to its immutable
-identity. An existing mismatched alias is never overwritten. Partial or corrupt
-state fails closed and can be rebuilt without replacing a valid identity.
+marker. The tokenizer and checkpoint normalization-assets paths expected by
+upstream OpenPI are relative symlinks to their verified immutable identities,
+so they remain usable when the server mount is read-only. An existing
+mismatched alias is never overwritten. Partial or corrupt state fails closed
+and can be rebuilt without replacing a valid identity.
 
 Inspect the manifest, then repeat with `--apply`. Secret objects and values are
 never rendered. The command rejects mutable image tags. After collecting the

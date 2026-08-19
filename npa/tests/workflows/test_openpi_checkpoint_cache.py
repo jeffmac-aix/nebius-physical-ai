@@ -96,11 +96,17 @@ def test_cold_population_and_verified_warm_readonly_reuse(
     assert populated is False
     assert reused == path
     assert cache.verify_cache(tmp_path, records) == path
-    assert cache.verify_tokenizer_cache(tmp_path, tokenizer_record).read_bytes() == b"tokenizer"
+    assert (
+        cache.verify_tokenizer_cache(tmp_path, tokenizer_record).read_bytes()
+        == b"tokenizer"
+    )
     assert cache.tokenizer_alias_path(tmp_path).is_symlink()
     assert cache.tokenizer_object_path(tmp_path).is_relative_to(
         cache.openpi_data_home(tmp_path)
     )
+    assets_alias = cache.checkpoint_assets_alias_path(tmp_path)
+    assert assets_alias.is_symlink()
+    assert assets_alias.resolve() == (path / "assets").resolve()
     assert cache.openpi_data_home(tmp_path).stat().st_mode & 0o777 == 0o777
 
 
@@ -237,6 +243,24 @@ def test_existing_tokenizer_alias_is_never_overwritten(
 ) -> None:
     _, _, read_json, download, _ = fake_upstream
     alias = cache.tokenizer_alias_path(tmp_path)
+    alias.parent.mkdir(parents=True)
+    alias.write_bytes(b"mutable-alias")
+
+    with pytest.raises(cache.OpenPICacheError, match="refusing to overwrite"):
+        cache.populate_cache(
+            tmp_path,
+            environ={cache.OPENPI_TERMS_ENV: cache.OPENPI_TERMS_ACCEPTED_VALUE},
+            read_json=read_json,
+            download=download,
+            tokenizer_download=download,
+        )
+
+
+def test_existing_checkpoint_assets_alias_is_never_overwritten(
+    tmp_path: Path, fake_upstream
+) -> None:
+    _, _, read_json, download, _ = fake_upstream
+    alias = cache.checkpoint_assets_alias_path(tmp_path)
     alias.parent.mkdir(parents=True)
     alias.write_bytes(b"mutable-alias")
 
