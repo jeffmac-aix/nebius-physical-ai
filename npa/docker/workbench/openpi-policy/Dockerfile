@@ -18,7 +18,7 @@ RUN GIT_LFS_SKIP_SMUDGE=1 git clone --filter=blob:none \
       15a9616a00943ada6c20a0f158e3adb39df2ccac \
     && cd /opt/byof \
     && /opt/uv/bin/uv sync --frozen --no-dev --no-editable \
-    && /opt/venv/bin/python -m pip check \
+    && /opt/uv/bin/uv pip check --python /opt/venv/bin/python \
     && rm -rf /opt/byof/.git /root/.cache /tmp/*
 
 RUN printf '%s\n' \
