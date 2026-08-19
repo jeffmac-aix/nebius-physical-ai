@@ -11842,6 +11842,11 @@
           return cloudImport ? Math.ceil((serverSeconds + 60) * 1000) : 0;
         }
         if (pathText.startsWith("/api/artifacts/")) return 60000;
+        // Loading an exact recording can include a truthful same-origin copy of
+        // a large RRD/MCAP into the viewer cache. Cancellation still comes from
+        // the caller's AbortSignal, but a generic UI timer must not abandon the
+        // request while the server is streaming that selected object.
+        if (pathText === "/api/sim-viz/load-artifact") return 0;
         if (
           pathText === "/api/chat" ||
           pathText === "/api/workflows/submit" ||
@@ -13728,11 +13733,15 @@
         host.appendChild(row);
       }
       function artifactApiErrorDetail(payload) {
+        const exactSourceErrorCode = "exact_artifact_source_required";
         const detail = payload && Object.prototype.hasOwnProperty.call(payload, "detail")
           ? payload.detail
           : (payload && (payload.error || payload.message));
         if (typeof detail === "string") return detail;
         if (detail && typeof detail === "object") {
+          if (String(detail.code || "") === exactSourceErrorCode) {
+            return String(detail.message || "Reload the run to refresh its exact source authorization.");
+          }
           return String(detail.message || detail.code || JSON.stringify(detail));
         }
         return "The exact run source could not be authorized. Reload the run and try its artifact card again.";

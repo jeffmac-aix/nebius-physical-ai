@@ -3221,6 +3221,7 @@ describe("NPA agent preferred-recording mount handoff", () => {
       expect(mountRequests, "page-boot mount started").to.be.greaterThan(0);
     });
     cy.window().then((win) => {
+      expect(win.__NPA_AGENT_TEST__.requestTimeoutMs("/api/sim-viz/load-artifact", {})).to.eq(0);
       const load = win.__NPA_AGENT_TEST__.loadArtifact({
         run_id: runId,
         run_ref: runRef,
