@@ -36,7 +36,7 @@ FROM nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04@sha256:ac55d124da4882b497f732d
 
 ARG NPA_SOURCE_SHA
 LABEL npa.tool="openpi-policy" \
-      npa.version="pi05-polaris-runtime-cache-20260819-r1" \
+      npa.version="pi05-polaris-runtime-cache-20260819-r2" \
       npa.model_provisioning="runtime-fetch" \
       npa.model_cache="immutable-gcs-generation-manifest" \
       org.opencontainers.image.source="https://github.com/nebius/nebius-physical-ai" \
@@ -47,13 +47,14 @@ ENV DEBIAN_FRONTEND=noninteractive \
     HOME=/workspace \
     OPENPI_DATA_HOME=/opt/npa-model-cache/openpi \
     JAX_COMPILATION_CACHE_DIR=/workspace/.cache/jax \
+    IMAGEIO_FFMPEG_EXE=/usr/bin/ffmpeg \
     XLA_PYTHON_CLIENT_PREALLOCATE=false \
     PYTHONUNBUFFERED=1 \
     PATH=/opt/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 SHELL ["/bin/bash", "-lc"]
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-      ca-certificates libgl1 libglib2.0-0 python3 python3-venv \
+      ca-certificates ffmpeg libgl1 libglib2.0-0 python3 python3-venv \
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/* \
     && install -d -m 0755 /opt/npa-openpi /opt/npa/licenses/openpi-policy \
     && install -d -m 0775 -o 1000 -g 1000 /workspace /workspace/.cache \
@@ -79,6 +80,10 @@ RUN test "$(printf %s "${NPA_SOURCE_SHA}" | wc -c)" -eq 40 \
     && find /opt/byof /opt/venv /opt/npa-openpi /opt/npa/licenses/openpi-policy \
       -type f -exec chmod a+r {} + \
     && test -z "$(find /opt/npa-model-cache/openpi -mindepth 1 -print -quit)" \
+    && find /opt/venv -type f -path '*/imageio_ffmpeg/binaries/ffmpeg*' -delete \
+    && test -z "$(find /opt/venv -type f -path '*/imageio_ffmpeg/binaries/ffmpeg*' -print -quit)" \
+    && IMAGEIO_FFMPEG_EXE=/usr/bin/ffmpeg /opt/venv/bin/python -c \
+      'import imageio_ffmpeg; assert imageio_ffmpeg.get_ffmpeg_exe() == "/usr/bin/ffmpeg"' \
     && /opt/venv/bin/python -m py_compile /opt/npa-openpi/openpi_checkpoint_cache.py \
       /opt/npa-openpi/openpi_policy_server.py \
     && /opt/venv/bin/python -c 'import jax, openpi, openpi_client' \

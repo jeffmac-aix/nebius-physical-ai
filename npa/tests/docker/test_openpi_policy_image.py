@@ -16,12 +16,15 @@ def test_openpi_policy_image_is_pinned_and_runtime_fetch_only() -> None:
     assert text.count("@sha256:") >= 2
     assert "openpi_checkpoint_cache.py" in text
     assert "openpi_policy_server.py" in text
+    assert 'npa.version="pi05-polaris-runtime-cache-20260819-r2"' in text
     assert "NPA_OPENPI_ACCEPT_GEMMA_TERMS=" not in text
     assert "download.maybe_download" not in text
     assert "COPY /opt/npa-model-cache" not in text
     assert "test -z \"$(find /opt/npa-model-cache/openpi -mindepth 1" in text
     assert 'USER 1000' in text
     assert 'EXPOSE 8000' in text
+    assert "IMAGEIO_FFMPEG_EXE=/usr/bin/ffmpeg" in text
+    assert "imageio_ffmpeg/binaries/ffmpeg*' -delete" in text
 
 
 def test_openpi_policy_packaging_contract_is_public_service() -> None:
