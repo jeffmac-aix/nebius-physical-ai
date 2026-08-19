@@ -48,7 +48,7 @@ Classify later failures separately:
 ## Project and machine flow
 
 1. Initialize only the intended directory with `antioch init --json`, or inspect
-   an existing checkout with `antioch project current --json`. Run
+   an existing checkout with `antioch project show <project> --json`. Run
    `scenario collect --json` and `suite collect --json` before spending GPU time.
 2. Discover assignments with `machine list --project ... --json`. Use
    `machine checkout --json` to make an exact assignment current; `--none`
@@ -93,7 +93,8 @@ window. Never create a fresh output prefix to hide an ambiguous submission.
 3. Run `services down --json` only in the exact project whose services this task
    started.
 4. Release only the verified task-owned assignment with
-   `machine release --machine MACHINE --project PROJECT --json`.
+   `machine release --machine MACHINE --project PROJECT --yes --json`. `--yes`
+   acknowledges the exact release non-interactively; it does not broaden scope.
 
 Do not delete completed records as cleanup unless deletion is itself requested.
 Never use `--all`, broad time ranges, process killing, or host-wide container

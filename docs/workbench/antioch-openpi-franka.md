@@ -2,6 +2,9 @@
 
 This path keeps rendering and inference on different GPU workloads:
 
+The latest sanitized sustained-run measurements are in
+[the continuous demo report](antioch-openpi-continuous-demo.md).
+
 | Workload | GPU | Image and responsibility |
 | --- | --- | --- |
 | simulator bridge | RTX PRO 6000 (`sm_120`, RT cores) | digest-pinned `npa-isaac-lab`; runtime-fetches Isaac under the operator's NVIDIA acceptance, captures exterior and wrist RGB plus Franka state, validates and applies bounded position targets |
