@@ -10,6 +10,9 @@ a Docker build argument. Update that immutable 40-character revision whenever
 the shared bridge changes, and validate it with `antioch suite collect --json`.
 The engine and SDK are pinned to `0.3.47`; its derived image contains the vendor
 Isaac runtime and must remain in the operator's private Antioch registry.
+When an engine advertises an as-yet-unpublished NVIDIA asset prefix, the bridge
+checks and uses NVIDIA's immutable 5.1 Franka USD compatibility root at runtime;
+it fails closed unless the exact Franka asset is reachable there.
 
 The project does not contain credentials. Authenticate with Antioch outside the
 project, mount or inject the vendor-supported runtime session, and submit suite

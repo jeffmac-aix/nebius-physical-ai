@@ -7,6 +7,8 @@ import socket
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+import urllib.error
 
 import numpy as np
 import pytest
@@ -29,7 +31,10 @@ from npa.workbench.antioch.openpi_bridge import (
     validate_observation,
 )
 from npa.workbench.antioch.openpi_health import wait_for_health
-from npa.workbench.antioch.openpi_isaac import _verify_vulkan_runtime
+from npa.workbench.antioch.openpi_isaac import (
+    _ensure_franka_asset_root,
+    _verify_vulkan_runtime,
+)
 
 
 def test_health_module_import_does_not_load_offline_dataset_stack() -> None:
@@ -95,6 +100,52 @@ def test_vulkan_preflight_accepts_nvidia_renderer(
         ),
     )
     _verify_vulkan_runtime()
+
+
+def test_franka_asset_root_uses_published_nvidia_compatibility_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assets = SimpleNamespace(
+        NUCLEUS_ASSET_ROOT_DIR="https://assets.example/Assets/Isaac/6.0",
+        ISAAC_NUCLEUS_DIR="https://assets.example/Assets/Isaac/6.0/Isaac",
+        ISAACLAB_NUCLEUS_DIR=("https://assets.example/Assets/Isaac/6.0/Isaac/IsaacLab"),
+        NVIDIA_NUCLEUS_DIR="https://assets.example/Assets/Isaac/6.0/NVIDIA",
+    )
+
+    class Response:
+        status = 200
+
+        def __enter__(self) -> Response:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+    def urlopen(request: object, *, timeout: int) -> Response:
+        assert timeout == 15
+        if "/6.0/" in str(getattr(request, "full_url")):
+            raise urllib.error.HTTPError("", 404, "missing", {}, None)
+        return Response()
+
+    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+    assert _ensure_franka_asset_root(assets) == "nvidia-5.1-compatibility"
+    assert assets.NUCLEUS_ASSET_ROOT_DIR.endswith("/5.1")
+    assert "/5.1/Isaac/IsaacLab" in assets.ISAACLAB_NUCLEUS_DIR
+
+
+def test_franka_asset_root_fails_closed_when_compatibility_asset_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assets = SimpleNamespace(
+        NUCLEUS_ASSET_ROOT_DIR="https://assets.example/Assets/Isaac/6.0"
+    )
+
+    def missing(*_args: object, **_kwargs: object) -> None:
+        raise urllib.error.HTTPError("", 404, "missing", {}, None)
+
+    monkeypatch.setattr("urllib.request.urlopen", missing)
+    with pytest.raises(OpenPIBridgeError, match="reviewed compatibility roots"):
+        _ensure_franka_asset_root(assets)
 
 
 def test_hosted_example_pins_reviewed_npa_source_revision() -> None:

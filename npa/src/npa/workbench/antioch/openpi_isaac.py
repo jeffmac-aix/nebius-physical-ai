@@ -10,9 +10,12 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 from typing import Any
+import urllib.error
+import urllib.request
 from urllib.parse import urlparse
 
 import numpy as np
@@ -61,6 +64,45 @@ def _verify_vulkan_runtime() -> None:
             "Vulkan readiness probe did not find an NVIDIA renderer; refusing "
             "non-render fallback"
         )
+
+
+def _ensure_franka_asset_root(assets: Any | None = None) -> str:
+    """Use the latest published NVIDIA asset root when a newer SDK points at 404s."""
+
+    if assets is None:
+        import isaaclab.utils.assets as assets
+
+    root = str(assets.NUCLEUS_ASSET_ROOT_DIR).rstrip("/")
+    match = re.search(r"/Assets/Isaac/([^/]+)$", root)
+    if not root.startswith("https://") or match is None:
+        return "native"
+    sentinel = f"{root}/Isaac/IsaacLab/Robots/FrankaEmika/panda_instanceable.usd"
+
+    def available(url: str) -> bool:
+        request = urllib.request.Request(url, method="HEAD")
+        try:
+            with urllib.request.urlopen(request, timeout=15) as response:
+                return int(response.status) == 200
+        except (OSError, urllib.error.HTTPError):
+            return False
+
+    if available(sentinel):
+        return "native"
+    # Antioch's Isaac Sim 6.0 engine currently advertises an asset prefix before
+    # that prefix is published. NVIDIA's immutable 5.1 Franka USD is compatible
+    # with the articulation/camera API used here; prove it exists before changing
+    # any module constants so a network outage still fails closed.
+    fallback_root = root[: match.start(1)] + "5.1"
+    fallback_sentinel = sentinel.replace(root, fallback_root, 1)
+    if not available(fallback_sentinel):
+        raise OpenPIBridgeError(
+            "NVIDIA Franka asset is unavailable at both the native and reviewed "
+            "compatibility roots"
+        )
+    for name, value in vars(assets).items():
+        if name.endswith("_DIR") and isinstance(value, str) and value.startswith(root):
+            setattr(assets, name, fallback_root + value[len(root) :])
+    return "nvidia-5.1-compatibility"
 
 
 def _write_report(uri: str, report: dict[str, object]) -> None:
@@ -119,6 +161,9 @@ def run(*, launch_application: bool = True) -> dict[str, object]:
             simulation_app = AppLauncher(headless=True, enable_cameras=True).app
         import gymnasium as gym
         import isaaclab.sim as sim_utils
+        from isaaclab.utils import assets as asset_utils
+
+        asset_compatibility = _ensure_franka_asset_root(asset_utils)
         import isaaclab_tasks  # noqa: F401
         import torch
         from isaaclab.sensors import TiledCameraCfg
@@ -219,6 +264,7 @@ def run(*, launch_application: bool = True) -> dict[str, object]:
             "simulator": "isaac-lab",
             "antioch_compatible": True,
             "gpu_compute_capability": capability,
+            "asset_root": asset_compatibility,
             "camera_shapes": [[224, 224, 3], [224, 224, 3]],
             "policy_action_shape": list(ACTION_SHAPE),
             "targets_executed": executed,
