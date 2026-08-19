@@ -133,7 +133,7 @@ RUN find /opt/npa/src /opt/npa/workflows -type d -exec chmod a+rx {} + \
     && /opt/npa/sim/venv/bin/python -c \
       "import site; from pathlib import Path; Path(site.getsitepackages()[0], 'npa-exact-source.pth').write_text('/opt/npa/src\\n', encoding='utf-8')" \
     && env -u PYTHONPATH /opt/npa/sim/venv/bin/python -c \
-      'import boto3, kubernetes, mcap, npa.workflows.sim2real.runtime_attestation'
+      'import boto3, kubernetes, mcap; import npa.workbench.antioch.openpi_bridge; import npa.workbench.antioch.openpi_isaac; import npa.workbench.antioch.openpi_streaming; import npa.workflows.sim2real.runtime_attestation'
 
 # The CUDA development base carries profiler tooling and kernel headers that this
 # runtime-fetch image does not use.  Keeping them would retain fixed CRITICAL findings
