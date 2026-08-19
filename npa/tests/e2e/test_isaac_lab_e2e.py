@@ -26,7 +26,7 @@ PROJECT_ID = "project-test-00000000000"
 BUCKET = "your-bucket-name"
 ENDPOINT_URL = "https://storage.eu-north1.nebius.cloud"
 WORKBENCH_NAME = "l40s-isaac-lab"
-ISAAC_LAB_IMAGE = "cr.eu-north1.nebius.cloud/your-registry-id/npa-isaac-lab:2.3.2.post1-antioch-openpi-20260818-r4"
+ISAAC_LAB_IMAGE = "cr.eu-north1.nebius.cloud/your-registry-id/npa-isaac-lab:2.3.2.post1-antioch-openpi-20260818-r5"
 GPU_TYPE = "gpu-l40s-d"
 GPU_PRESET = "1gpu-16vcpu-96gb"
 TASK = "Isaac-Reach-Franka-v0"
@@ -50,7 +50,7 @@ def test_isaac_lab_e2e_config_shape() -> None:
     )
 
     assert ISAAC_LAB_IMAGE.endswith(
-        "/npa-isaac-lab:2.3.2.post1-antioch-openpi-20260818-r4"
+        "/npa-isaac-lab:2.3.2.post1-antioch-openpi-20260818-r5"
     )
     assert command[:7] == [
         "workbench",

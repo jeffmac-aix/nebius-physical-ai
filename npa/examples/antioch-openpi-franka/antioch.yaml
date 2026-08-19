@@ -8,7 +8,7 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        NPA_SOURCE_REF: 56dadef1b8d2e4b6af8d518fb18c735803a879b4
+        NPA_SOURCE_REF: 787172b83cb5e228d40470531ccc5a0bd97041c4
     environment:
       OPENPI_POLICY_HOST: 127.0.0.1
       OPENPI_POLICY_PORT: "8000"
