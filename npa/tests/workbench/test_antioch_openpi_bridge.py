@@ -350,6 +350,7 @@ def test_hosted_example_pins_reviewed_npa_source_revision() -> None:
     assert "ARG NPA_SOURCE_REF" in dockerfile
     assert "@${NPA_SOURCE_REF}#subdirectory=npa" in dockerfile
     assert "COPY scenarios.py reverse_policy_relay.py /workspace/project/" in dockerfile
+    assert dockerfile.rstrip().endswith("USER 1000:1000")
     dockerignore = (EXAMPLE_DIR / ".dockerignore").read_text().splitlines()
     assert ".antioch/" in dockerignore
     service = manifest["services"]["sim"]

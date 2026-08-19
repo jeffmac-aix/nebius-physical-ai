@@ -13,3 +13,7 @@ RUN printf '%s' "${NPA_SOURCE_REF}" | grep -Eq '^[0-9a-f]{40}$' \
 # /workspace/project. Copy only the runtime modules: the local tunnel connector
 # stays on the operator host and no Antioch runtime state enters this image.
 COPY scenarios.py reverse_policy_relay.py /workspace/project/
+
+# The hosted engine grants the runtime account device and project access; the
+# scenario and relay need no root privileges after the build has installed them.
+USER 1000:1000
