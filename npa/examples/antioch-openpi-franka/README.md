@@ -42,6 +42,9 @@ operator-owned Kubernetes stack rendered by:
 npa workbench antioch openpi-stack --help
 ```
 
-The rendered Kubernetes bridge waits for policy health before launching Isaac,
-then fails closed on any protocol or control error. Remove all four run objects
-with the same arguments plus `--delete` after collecting the report.
+The rendered Kubernetes bridge waits for policy health and proves that the host
+injected an NVIDIA Vulkan renderer before launching Isaac. A compute-only CUDA
+driver mount is rejected instead of falling back or hanging during scene
+creation. The bridge then fails closed on any protocol or control error. Remove
+all four run objects with the same arguments plus `--delete` after collecting
+the report.

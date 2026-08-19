@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import shutil
+import subprocess
 from typing import Any
 from urllib.parse import urlparse
 
@@ -21,6 +23,44 @@ from .openpi_bridge import (
     OpenPIWebsocketClient,
     safe_position_targets,
 )
+
+
+def _verify_vulkan_runtime() -> None:
+    """Fail before Kit startup when the host exposed only CUDA driver userspace."""
+
+    configured_icds = os.environ.get("VK_ICD_FILENAMES", "").split(":")
+    icd_paths = [Path(value) for value in configured_icds if value]
+    if not icd_paths:
+        icd_paths = [
+            Path("/etc/vulkan/icd.d/nvidia_icd.json"),
+            Path("/usr/share/vulkan/icd.d/nvidia_icd.json"),
+        ]
+    if not any(path.is_file() for path in icd_paths):
+        raise OpenPIBridgeError(
+            "NVIDIA Vulkan ICD is unavailable; refusing to start Isaac without "
+            "the host graphics driver capability"
+        )
+    vulkaninfo = shutil.which("vulkaninfo")
+    if not vulkaninfo:
+        raise OpenPIBridgeError(
+            "vulkaninfo is unavailable; cannot prove Isaac rendering readiness"
+        )
+    try:
+        probe = subprocess.run(
+            [vulkaninfo, "--summary"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise OpenPIBridgeError("Vulkan readiness probe timed out") from exc
+    output = probe.stdout + probe.stderr
+    if probe.returncode != 0 or "NVIDIA" not in output.upper():
+        raise OpenPIBridgeError(
+            "Vulkan readiness probe did not find an NVIDIA renderer; refusing "
+            "non-render fallback"
+        )
 
 
 def _write_report(uri: str, report: dict[str, object]) -> None:
@@ -73,6 +113,7 @@ def run(*, launch_application: bool = True) -> dict[str, object]:
     report: dict[str, object]
     try:
         if launch_application:
+            _verify_vulkan_runtime()
             from isaaclab.app import AppLauncher
 
             simulation_app = AppLauncher(headless=True, enable_cameras=True).app

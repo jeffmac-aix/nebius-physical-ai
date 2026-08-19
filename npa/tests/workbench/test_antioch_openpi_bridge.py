@@ -29,6 +29,7 @@ from npa.workbench.antioch.openpi_bridge import (
     validate_observation,
 )
 from npa.workbench.antioch.openpi_health import wait_for_health
+from npa.workbench.antioch.openpi_isaac import _verify_vulkan_runtime
 
 
 def test_health_module_import_does_not_load_offline_dataset_stack() -> None:
@@ -53,6 +54,47 @@ def test_health_module_import_does_not_load_offline_dataset_stack() -> None:
 
 
 EXAMPLE_DIR = Path(__file__).resolve().parents[2] / "examples" / "antioch-openpi-franka"
+
+
+def test_vulkan_preflight_rejects_missing_host_graphics_driver(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("VK_ICD_FILENAMES", str(tmp_path / "missing.json"))
+    with pytest.raises(OpenPIBridgeError, match="NVIDIA Vulkan ICD is unavailable"):
+        _verify_vulkan_runtime()
+
+
+def test_vulkan_preflight_requires_an_nvidia_renderer(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    icd = tmp_path / "nvidia.json"
+    icd.write_text("{}")
+    monkeypatch.setenv("VK_ICD_FILENAMES", str(icd))
+    monkeypatch.setattr("shutil.which", lambda _command: "/usr/bin/vulkaninfo")
+    monkeypatch.setattr(
+        "subprocess.run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            args=["vulkaninfo"], returncode=0, stdout="GPU: llvmpipe", stderr=""
+        ),
+    )
+    with pytest.raises(OpenPIBridgeError, match="did not find an NVIDIA renderer"):
+        _verify_vulkan_runtime()
+
+
+def test_vulkan_preflight_accepts_nvidia_renderer(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    icd = tmp_path / "nvidia.json"
+    icd.write_text("{}")
+    monkeypatch.setenv("VK_ICD_FILENAMES", str(icd))
+    monkeypatch.setattr("shutil.which", lambda _command: "/usr/bin/vulkaninfo")
+    monkeypatch.setattr(
+        "subprocess.run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            args=["vulkaninfo"], returncode=0, stdout="GPU: NVIDIA RTX", stderr=""
+        ),
+    )
+    _verify_vulkan_runtime()
 
 
 def test_hosted_example_pins_reviewed_npa_source_revision() -> None:
