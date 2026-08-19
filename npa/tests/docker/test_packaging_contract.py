@@ -380,6 +380,15 @@ def test_isaac_lab_build_separates_release_tag_from_runtime_version() -> None:
     assert '--build-arg "ISAAC_LAB_VERSION=${VERSION}"' not in build
 
 
+def test_isaac_lab_source_copy_uses_builder_portable_numeric_ownership() -> None:
+    dockerfile = (WORKBENCH_DOCKER / "isaac-lab" / "Dockerfile").read_text(
+        encoding="utf-8"
+    )
+    assert "COPY --chown=ubuntu:ubuntu" not in dockerfile
+    for source in ("pyproject.toml", "src/npa", "workflows"):
+        assert f"COPY --chown=1000:1000 {source} " in dockerfile
+
+
 def test_fiftyone_image_has_skypilot_kubernetes_prerequisites() -> None:
     """The workflow image must survive SkyPilot's non-root pod bootstrap."""
     text = (WORKBENCH_DOCKER / "fiftyone" / "Dockerfile").read_text(encoding="utf-8")

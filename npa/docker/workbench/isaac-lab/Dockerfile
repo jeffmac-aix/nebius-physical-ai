@@ -79,9 +79,11 @@ COPY --chmod=0755 docker/workbench/common/workflow_runtime_entrypoint.sh \
 COPY docker/workbench/isaac-lab/smoke_env.py /opt/npa/docker/workbench/isaac-lab/smoke_env.py
 COPY docker/workbench/isaac-lab/smoke_functional.py /opt/npa/docker/workbench/isaac-lab/smoke_functional.py
 COPY docker/workbench/isaac-lab/THIRD_PARTY_NOTICES.md /opt/npa/licenses/isaac-lab/THIRD_PARTY_NOTICES.md
-COPY --chown=ubuntu:ubuntu pyproject.toml /opt/npa/pyproject.toml
-COPY --chown=ubuntu:ubuntu src/npa /opt/npa/src/npa
-COPY --chown=ubuntu:ubuntu workflows /opt/npa/workflows
+# Numeric ownership is portable across BuildKit and rootless/Kubernetes-native
+# builders, which may snapshot before resolving the base image's passwd names.
+COPY --chown=1000:1000 pyproject.toml /opt/npa/pyproject.toml
+COPY --chown=1000:1000 src/npa /opt/npa/src/npa
+COPY --chown=1000:1000 workflows /opt/npa/workflows
 
 # Prepared checkouts can materialize scripts as 0700 and data files as 0600.
 # Normalize this copied bootstrap directory before executing any of its scripts.
