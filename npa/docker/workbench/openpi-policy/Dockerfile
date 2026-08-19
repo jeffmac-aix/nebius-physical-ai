@@ -37,7 +37,7 @@ FROM nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04@sha256:ac55d124da4882b497f732d
 
 ARG NPA_SOURCE_SHA
 LABEL npa.tool="openpi-policy" \
-      npa.version="pi05-polaris-runtime-cache-20260819-r8" \
+      npa.version="pi05-polaris-runtime-cache-20260819-r9" \
       npa.model_provisioning="runtime-fetch" \
       npa.model_cache="immutable-gcs-generation-manifest" \
       org.opencontainers.image.source="https://github.com/nebius/nebius-physical-ai" \
@@ -68,6 +68,7 @@ COPY --from=build /opt/byof /opt/byof
 COPY --from=build /usr/local/bin/npa-openpi-sm100-probe /usr/local/bin/npa-openpi-sm100-probe
 COPY src/npa/workflows/byof/openpi_checkpoint_cache.py /opt/npa-openpi/openpi_checkpoint_cache.py
 COPY src/npa/workflows/byof/openpi_policy_server.py /opt/npa-openpi/openpi_policy_server.py
+COPY docker/workbench/openpi-policy/smoke_functional.py /opt/npa-openpi/smoke_functional.py
 COPY docker/workbench/openpi-policy/THIRD_PARTY_NOTICES.md /opt/npa/licenses/openpi-policy/THIRD_PARTY_NOTICES.md
 COPY docker/workbench/openpi-policy/REDISTRIBUTION.md /opt/npa/licenses/openpi-policy/REDISTRIBUTION.md
 
@@ -76,6 +77,7 @@ RUN test "$(printf %s "${NPA_SOURCE_SHA}" | wc -c)" -eq 40 \
       793488b5a55bb87200db90a61fd0af51922b686d94e1da4f4c587ab119b37d74 \
     && chmod 0755 /opt/npa-openpi/openpi_checkpoint_cache.py \
       /opt/npa-openpi/openpi_policy_server.py \
+      /opt/npa-openpi/smoke_functional.py \
       /usr/local/bin/npa-openpi-sm100-probe \
     && find /opt/byof /opt/venv /opt/npa-openpi /opt/npa/licenses/openpi-policy \
       -type d -exec chmod a+rx {} + \
@@ -90,7 +92,7 @@ RUN test "$(printf %s "${NPA_SOURCE_SHA}" | wc -c)" -eq 40 \
     && IMAGEIO_FFMPEG_EXE=/usr/bin/ffmpeg /opt/venv/bin/python -c \
       'import imageio_ffmpeg; assert imageio_ffmpeg.get_ffmpeg_exe() == "/usr/bin/ffmpeg"' \
     && /opt/venv/bin/python -m py_compile /opt/npa-openpi/openpi_checkpoint_cache.py \
-      /opt/npa-openpi/openpi_policy_server.py \
+      /opt/npa-openpi/openpi_policy_server.py /opt/npa-openpi/smoke_functional.py \
     && /opt/venv/bin/python -c \
       'from openpi.training import config; import jax, openpi_client; config.get_config("pi05_droid_jointpos_polaris")' \
     && rm -rf /root/.cache /tmp/*

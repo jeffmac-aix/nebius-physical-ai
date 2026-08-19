@@ -14,6 +14,12 @@ GOLDEN_EVAL_CAPABILITIES: dict[str, list[str]] = {
         "CPU-only system-info contract",
         "proprietary antioch-sim distribution absent",
     ],
+    "openpi-policy": [
+        "native sm_100 CUDA probe on B200",
+        "verified read-only pi0.5-DROID runtime cache",
+        "healthy private policy server",
+        "real inference returns finite [15,8] actions",
+    ],
     "base-cuda13-b300": [
         "torch import + CUDA device available",
         "flash_attn import (Blackwell/CUDA13 stack)",

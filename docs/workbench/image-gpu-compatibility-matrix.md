@@ -59,6 +59,7 @@ The old `npa-cosmos:1.0.9` cu126 image stopped at Hopper. Its additive cu128/tor
 | `npa-workbench-cuda-base` | supported | supported | supported | supported | supported |
 | `npa-lerobot` | supported | **verified** [41] | **verified** [42] | **verified** [39] | **verified** [40] |
 | `npa-lerobot-policy` | supported | supported | supported | supported | supported |
+| `npa-openpi-policy` | supported | supported | supported | **verified** | supported (sm_100 forward compatibility) |
 | `npa-lancedb` | supported | **verified** [26] | **verified** [27] | **verified** [24] | **verified** [25] |
 | `npa-detection-training` | supported | **verified** [29] | **verified** [30] | **verified** [28] | **verified** [31] |
 | `npa-cosmos3` | supported | supported | **verified** [59] | supported | supported |

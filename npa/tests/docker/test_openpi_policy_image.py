@@ -16,7 +16,7 @@ def test_openpi_policy_image_is_pinned_and_runtime_fetch_only() -> None:
     assert text.count("@sha256:") >= 2
     assert "openpi_checkpoint_cache.py" in text
     assert "openpi_policy_server.py" in text
-    assert 'npa.version="pi05-polaris-runtime-cache-20260819-r8"' in text
+    assert 'npa.version="pi05-polaris-runtime-cache-20260819-r9"' in text
     assert "OPENPI_DATA_HOME=/opt/npa-model-cache/openpi/openpi-data" in text
     assert "NPA_OPENPI_ACCEPT_GEMMA_TERMS=" not in text
     assert "download.maybe_download" not in text
