@@ -348,6 +348,7 @@ def test_hosted_example_pins_reviewed_npa_source_revision() -> None:
         "OPENPI_EXECUTED_TARGETS_PER_CHUNK": "5",
         "OPENPI_MAXIMUM_OBSERVATION_AGE_SECONDS": "2",
         "OPENPI_MAXIMUM_RESPONSE_AGE_SECONDS": "10",
+        "OPENPI_CAMERA_WARMUP_SECONDS": "10",
         "OPENPI_INFERENCE_DEADLINE_SECONDS": "15",
         "OPENPI_SAFE_HOLD_BEHAVIOR": "hold-current",
         "OPENPI_MINIMUM_READY_CYCLES": "3",
