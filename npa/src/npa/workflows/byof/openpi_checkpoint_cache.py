@@ -17,11 +17,13 @@ import os
 from pathlib import Path
 import shutil
 import tempfile
+import threading
 from typing import Any, Callable, Mapping, Sequence
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 CACHE_FORMAT = "npa.openpi.gcs-generation-cache.v1"
+OBJECT_CACHE_FORMAT = "npa.openpi.gcs-object-cache.v1"
 OPENPI_TERMS_ENV = "NPA_OPENPI_ACCEPT_GEMMA_TERMS"
 OPENPI_TERMS_ACCEPTED_VALUE = "YES"
 PROVIDER = "gcs"
@@ -33,6 +35,15 @@ EXPECTED_MANIFEST_SHA256 = (
 )
 EXPECTED_OBJECT_COUNT = 27
 EXPECTED_TOTAL_SIZE = 12_434_530_837
+TOKENIZER_BUCKET = "big_vision"
+TOKENIZER_OBJECT = "paligemma_tokenizer.model"
+TOKENIZER_GENERATION = "1711547605575873"
+TOKENIZER_SIZE = 4_264_023
+TOKENIZER_MD5 = "FCCtyYVnIKVZ6KhyhLGV4g=="
+TOKENIZER_CRC32C = "cKDEzw=="
+TOKENIZER_MANIFEST_SHA256 = (
+    "1e0c7ffebf2ed3b8e861f008d0aa9fa6304b39ac43254a14d332e0f992ad661b"
+)
 DEFAULT_CACHE_ROOT = "/opt/npa-model-cache/openpi"
 READY_MARKER = ".npa-ready.json"
 
@@ -58,6 +69,11 @@ def _manifest_url(page_token: str = "") -> str:
     if page_token:
         query["pageToken"] = page_token
     return f"https://storage.googleapis.com/storage/v1/b/{BUCKET}/o?{urlencode(query)}"
+
+
+def _tokenizer_metadata_url() -> str:
+    encoded = TOKENIZER_OBJECT.replace("/", "%2F")
+    return f"https://storage.googleapis.com/storage/v1/b/{TOKENIZER_BUCKET}/o/{encoded}"
 
 
 def _default_read_json(url: str) -> Mapping[str, Any]:
@@ -106,6 +122,23 @@ def fetch_generation_manifest(
     return records
 
 
+def fetch_tokenizer_record(
+    read_json: Callable[[str], Mapping[str, Any]] = _default_read_json,
+) -> dict[str, object]:
+    """Fetch the exact tokenizer object's immutable GCS generation metadata."""
+
+    raw = read_json(_tokenizer_metadata_url())
+    record = {
+        "name": str(raw.get("name", "")),
+        "generation": str(raw.get("generation", "")),
+        "size": int(raw.get("size", -1)),
+        "md5Hash": str(raw.get("md5Hash", "")),
+        "crc32c": str(raw.get("crc32c", "")),
+    }
+    verify_tokenizer_record(record)
+    return record
+
+
 def manifest_sha256(records: Sequence[Mapping[str, object]]) -> str:
     return hashlib.sha256(_canonical_json(list(records))).hexdigest()
 
@@ -120,6 +153,21 @@ def verify_upstream_manifest(records: Sequence[Mapping[str, object]]) -> None:
     ):
         raise OpenPICacheError(
             "upstream OpenPI checkpoint revision does not match the pinned generation manifest"
+        )
+
+
+def verify_tokenizer_record(record: Mapping[str, object]) -> None:
+    digest = manifest_sha256([record])
+    if (
+        record.get("name") != TOKENIZER_OBJECT
+        or record.get("generation") != TOKENIZER_GENERATION
+        or int(record.get("size", -1)) != TOKENIZER_SIZE
+        or record.get("md5Hash") != TOKENIZER_MD5
+        or record.get("crc32c") != TOKENIZER_CRC32C
+        or digest != TOKENIZER_MANIFEST_SHA256
+    ):
+        raise OpenPICacheError(
+            "upstream PaliGemma tokenizer does not match the pinned GCS generation"
         )
 
 
@@ -138,6 +186,27 @@ def cache_identity_root(cache_root: str | Path) -> Path:
 
 def checkpoint_path(cache_root: str | Path) -> Path:
     return cache_identity_root(cache_root) / "checkpoint"
+
+
+def tokenizer_identity_root(cache_root: str | Path) -> Path:
+    return (
+        Path(cache_root)
+        / PROVIDER
+        / TOKENIZER_BUCKET
+        / TOKENIZER_OBJECT
+        / f"generation-{TOKENIZER_GENERATION}"
+        / "v1"
+    )
+
+
+def tokenizer_object_path(cache_root: str | Path) -> Path:
+    return tokenizer_identity_root(cache_root) / "object"
+
+
+def tokenizer_alias_path(cache_root: str | Path) -> Path:
+    """Path OpenPI's upstream downloader derives from its immutable gs:// URL."""
+
+    return Path(cache_root) / TOKENIZER_BUCKET / TOKENIZER_OBJECT
 
 
 def _relative_path(record: Mapping[str, object]) -> Path:
@@ -213,10 +282,52 @@ def verify_cache(
     )
 
 
-def _download_url(record: Mapping[str, object]) -> str:
+def verify_tokenizer_cache(
+    cache_root: str | Path, record: Mapping[str, object]
+) -> Path:
+    verify_tokenizer_record(record)
+    identity = tokenizer_identity_root(cache_root)
+    marker = identity / READY_MARKER
+    expected_marker = {
+        "format": OBJECT_CACHE_FORMAT,
+        "provider": PROVIDER,
+        "bucket": TOKENIZER_BUCKET,
+        "artifact": TOKENIZER_OBJECT,
+        "revision": TOKENIZER_GENERATION,
+        "manifest_sha256": TOKENIZER_MANIFEST_SHA256,
+        "size_bytes": TOKENIZER_SIZE,
+    }
+    try:
+        metadata = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise OpenPICacheError("PaliGemma tokenizer cache has no valid ready marker") from exc
+    if metadata != expected_marker:
+        raise OpenPICacheError("PaliGemma tokenizer ready marker does not match its identity")
+    object_path = tokenizer_object_path(cache_root)
+    if not object_path.is_file() or object_path.stat().st_size != TOKENIZER_SIZE:
+        raise OpenPICacheError("PaliGemma tokenizer cache object size mismatch")
+    if _file_md5_base64(object_path) != TOKENIZER_MD5:
+        raise OpenPICacheError("PaliGemma tokenizer cache object checksum mismatch")
+    alias = tokenizer_alias_path(cache_root)
+    if not alias.is_symlink() or alias.resolve() != object_path.resolve():
+        raise OpenPICacheError("PaliGemma tokenizer cache alias is missing or mismatched")
+    return object_path
+
+
+def verify_runtime_cache(
+    cache_root: str | Path,
+    records: Sequence[Mapping[str, object]],
+    tokenizer_record: Mapping[str, object],
+) -> Path:
+    checkpoint = verify_cache(cache_root, records)
+    verify_tokenizer_cache(cache_root, tokenizer_record)
+    return checkpoint
+
+
+def _download_url(record: Mapping[str, object], *, bucket: str = BUCKET) -> str:
     encoded_name = str(record["name"]).replace("/", "%2F")
     return (
-        f"https://storage.googleapis.com/download/storage/v1/b/{BUCKET}/o/"
+        f"https://storage.googleapis.com/download/storage/v1/b/{bucket}/o/"
         f"{encoded_name}?alt=media&generation={record['generation']}"
     )
 
@@ -229,63 +340,144 @@ def _default_download(record: Mapping[str, object], destination: Path) -> None:
         shutil.copyfileobj(response, output, length=8 * 1024 * 1024)
 
 
+def _default_tokenizer_download(
+    record: Mapping[str, object], destination: Path
+) -> None:
+    request = Request(
+        _download_url(record, bucket=TOKENIZER_BUCKET),
+        headers={"User-Agent": "npa-openpi-cache/1"},
+    )
+    with urlopen(request, timeout=120) as response, destination.open("wb") as output:  # noqa: S310
+        shutil.copyfileobj(response, output, length=8 * 1024 * 1024)
+
+
+def _populate_tokenizer(
+    cache_root: Path,
+    record: Mapping[str, object],
+    download: Callable[[Mapping[str, object], Path], None],
+) -> bool:
+    try:
+        verify_tokenizer_cache(cache_root, record)
+        return False
+    except OpenPICacheError:
+        pass
+    identity = tokenizer_identity_root(cache_root)
+    identity.parent.mkdir(parents=True, exist_ok=True)
+    if identity.exists():
+        shutil.rmtree(identity)
+    temporary = Path(
+        tempfile.mkdtemp(prefix=f".{identity.name}.tmp-", dir=identity.parent)
+    )
+    try:
+        destination = temporary / "object"
+        download(record, destination)
+        if destination.stat().st_size != TOKENIZER_SIZE:
+            raise OpenPICacheError("downloaded PaliGemma tokenizer size mismatch")
+        if _file_md5_base64(destination) != TOKENIZER_MD5:
+            raise OpenPICacheError("downloaded PaliGemma tokenizer checksum mismatch")
+        marker = {
+            "format": OBJECT_CACHE_FORMAT,
+            "provider": PROVIDER,
+            "bucket": TOKENIZER_BUCKET,
+            "artifact": TOKENIZER_OBJECT,
+            "revision": TOKENIZER_GENERATION,
+            "manifest_sha256": TOKENIZER_MANIFEST_SHA256,
+            "size_bytes": TOKENIZER_SIZE,
+        }
+        (temporary / READY_MARKER).write_bytes(_canonical_json(marker) + b"\n")
+        os.rename(temporary, identity)
+    except Exception:
+        shutil.rmtree(temporary, ignore_errors=True)
+        raise
+    alias = tokenizer_alias_path(cache_root)
+    alias.parent.mkdir(parents=True, exist_ok=True)
+    relative_target = os.path.relpath(tokenizer_object_path(cache_root), alias.parent)
+    if os.path.lexists(alias):
+        if not alias.is_symlink() or os.readlink(alias) != relative_target:
+            raise OpenPICacheError(
+                "refusing to overwrite an existing PaliGemma tokenizer cache alias"
+            )
+    else:
+        temporary_alias = alias.with_name(
+            f".{alias.name}.tmp-{os.getpid()}-{threading.get_ident()}"
+        )
+        os.symlink(relative_target, temporary_alias)
+        os.rename(temporary_alias, alias)
+    verify_tokenizer_cache(cache_root, record)
+    return True
+
+
 def populate_cache(
     cache_root: str | Path,
     *,
     environ: Mapping[str, str] | None = None,
     read_json: Callable[[str], Mapping[str, Any]] = _default_read_json,
     download: Callable[[Mapping[str, object], Path], None] = _default_download,
+    tokenizer_download: Callable[
+        [Mapping[str, object], Path], None
+    ] = _default_tokenizer_download,
 ) -> tuple[Path, bool]:
     """Populate once under an advisory lock and atomically publish the cache."""
 
     _require_terms(environ)
     records = fetch_generation_manifest(read_json)
     verify_upstream_manifest(records)
+    tokenizer_record = fetch_tokenizer_record(read_json)
     root = Path(cache_root)
+    root.mkdir(parents=True, exist_ok=True)
+    # OpenPI calls chmod on OPENPI_DATA_HOME even for a fully warm cache.  Set
+    # the requested mode while the init container owns the RW mount so that the
+    # credential-free server can safely use the same directory read-only.
+    root.chmod(0o777)
     lock_dir = root / ".locks"
     lock_dir.mkdir(parents=True, exist_ok=True)
     lock_path = lock_dir / f"{EXPECTED_MANIFEST_SHA256}.lock"
     with lock_path.open("a+b") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        populated = False
         try:
-            return verify_cache(root, records), False
+            verify_cache(root, records)
         except OpenPICacheError:
-            pass
-
-        identity = cache_identity_root(root)
-        identity.parent.mkdir(parents=True, exist_ok=True)
-        if identity.exists():
-            shutil.rmtree(identity)
-        temporary = Path(
-            tempfile.mkdtemp(prefix=f".{identity.name}.tmp-", dir=identity.parent)
-        )
-        try:
-            target = temporary / "checkpoint"
-            for record in records:
-                destination = target / _relative_path(record)
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                download(record, destination)
-                if destination.stat().st_size != int(record["size"]):
-                    raise OpenPICacheError("downloaded OpenPI object size mismatch")
-                if _file_md5_base64(destination) != str(record["md5Hash"]):
-                    raise OpenPICacheError("downloaded OpenPI object checksum mismatch")
-            marker = {
-                "format": CACHE_FORMAT,
-                "provider": PROVIDER,
-                "bucket": BUCKET,
-                "artifact": ARTIFACT,
-                "revision": EXPECTED_MANIFEST_SHA256,
-                "object_count": EXPECTED_OBJECT_COUNT,
-                "total_size_bytes": EXPECTED_TOTAL_SIZE,
-            }
-            (temporary / READY_MARKER).write_bytes(_canonical_json(marker) + b"\n")
-            # Verify the unpublished tree with the same checks as a consumer.
-            _verify_identity(temporary, records)
-            os.rename(temporary, identity)
-        except Exception:
-            shutil.rmtree(temporary, ignore_errors=True)
-            raise
-        return verify_cache(root, records), True
+            identity = cache_identity_root(root)
+            identity.parent.mkdir(parents=True, exist_ok=True)
+            if identity.exists():
+                shutil.rmtree(identity)
+            temporary = Path(
+                tempfile.mkdtemp(prefix=f".{identity.name}.tmp-", dir=identity.parent)
+            )
+            try:
+                target = temporary / "checkpoint"
+                for record in records:
+                    destination = target / _relative_path(record)
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    download(record, destination)
+                    if destination.stat().st_size != int(record["size"]):
+                        raise OpenPICacheError("downloaded OpenPI object size mismatch")
+                    if _file_md5_base64(destination) != str(record["md5Hash"]):
+                        raise OpenPICacheError("downloaded OpenPI object checksum mismatch")
+                marker = {
+                    "format": CACHE_FORMAT,
+                    "provider": PROVIDER,
+                    "bucket": BUCKET,
+                    "artifact": ARTIFACT,
+                    "revision": EXPECTED_MANIFEST_SHA256,
+                    "object_count": EXPECTED_OBJECT_COUNT,
+                    "total_size_bytes": EXPECTED_TOTAL_SIZE,
+                }
+                (temporary / READY_MARKER).write_bytes(
+                    _canonical_json(marker) + b"\n"
+                )
+                _verify_identity(temporary, records)
+                os.rename(temporary, identity)
+            except Exception:
+                shutil.rmtree(temporary, ignore_errors=True)
+                raise
+            verify_cache(root, records)
+            populated = True
+        populated = _populate_tokenizer(
+            root, tokenizer_record, tokenizer_download
+        ) or populated
+        return verify_runtime_cache(root, records, tokenizer_record), populated
 
 
 def preflight(*, environ: Mapping[str, str] | None = None) -> dict[str, object]:
@@ -294,6 +486,7 @@ def preflight(*, environ: Mapping[str, str] | None = None) -> dict[str, object]:
     _require_terms(environ)
     records = fetch_generation_manifest()
     verify_upstream_manifest(records)
+    fetch_tokenizer_record()
     return {
         "status": "passed",
         "provider": PROVIDER,
@@ -301,6 +494,8 @@ def preflight(*, environ: Mapping[str, str] | None = None) -> dict[str, object]:
         "revision": EXPECTED_MANIFEST_SHA256,
         "object_count": EXPECTED_OBJECT_COUNT,
         "total_size_bytes": EXPECTED_TOTAL_SIZE,
+        "tokenizer_generation": TOKENIZER_GENERATION,
+        "tokenizer_size_bytes": TOKENIZER_SIZE,
     }
 
 
@@ -312,13 +507,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "preflight":
         print(json.dumps(preflight(), sort_keys=True))
         return 0
-    records = fetch_generation_manifest()
-    verify_upstream_manifest(records)
     if args.command == "warm":
         path, populated = populate_cache(args.cache_root)
-        print(json.dumps({"status": "populated" if populated else "reused", "path": str(path)}))
+        print(
+            json.dumps(
+                {"status": "populated" if populated else "reused", "path": str(path)}
+            )
+        )
         return 0
-    path = verify_cache(args.cache_root, records)
+    records = fetch_generation_manifest()
+    verify_upstream_manifest(records)
+    tokenizer_record = fetch_tokenizer_record()
+    path = verify_runtime_cache(args.cache_root, records, tokenizer_record)
     if args.command == "path":
         print(path)
     else:

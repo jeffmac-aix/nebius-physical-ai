@@ -11,10 +11,13 @@ other model payload, credential, populated cache, operator data, Antioch runtime
 Isaac, Isaac Lab, Omniverse Kit, or host NVIDIA driver.
 
 At runtime the operator explicitly accepts the two documented Gemma policies.
-Only the cache warmer receives that run-scoped value. It resolves an exact GCS
-object-generation manifest, verifies every size and MD5, and atomically publishes
-an immutable ready directory. The policy server receives neither acceptance nor
-a model credential and mounts only the verified directory read-only. The public
+Only the cache warmer receives that run-scoped value. It resolves the exact GCS
+object generations for both the checkpoint tree and PaliGemma tokenizer,
+verifies every size and MD5, and atomically publishes separately keyed immutable
+ready directories. The tokenizer's upstream-compatible path is a verified
+symlink to its immutable identity and is never overwritten. The policy server
+receives neither acceptance nor a model credential and mounts only the verified
+cache read-only. The public
 GCS source requires no provider credential; acceptance is not persisted in cache
 metadata. A durable Kubernetes PVC can retain those separately governed bytes,
 while the default `emptyDir` is node-local ephemeral state.
