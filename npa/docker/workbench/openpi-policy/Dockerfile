@@ -4,7 +4,7 @@ FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04@sha256:24c8e3581ea6330038b0d3749
 
 ENV DEBIAN_FRONTEND=noninteractive \
     UV_PROJECT_ENVIRONMENT=/opt/venv \
-    UV_PYTHON_DOWNLOADS=never
+    UV_PYTHON_INSTALL_DIR=/opt/uv-python
 SHELL ["/bin/bash", "-lc"]
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -19,7 +19,7 @@ RUN GIT_LFS_SKIP_SMUDGE=1 git clone --filter=blob:none \
     && test "$(git -C /opt/byof rev-parse HEAD)" = \
       15a9616a00943ada6c20a0f158e3adb39df2ccac \
     && cd /opt/byof \
-    && /opt/uv/bin/uv sync --frozen --no-dev --no-editable --python /usr/bin/python3 \
+    && /opt/uv/bin/uv sync --frozen --no-dev --no-editable \
     && /opt/uv/bin/uv pip check --python /opt/venv/bin/python \
     && rm -rf /opt/byof/.git /root/.cache /tmp/*
 
@@ -60,6 +60,7 @@ RUN apt-get update \
       /opt/npa-model-cache/openpi
 
 COPY --from=build /opt/venv /opt/venv
+COPY --from=build /opt/uv-python /opt/uv-python
 COPY --from=build /opt/byof /opt/byof
 COPY --from=build /usr/local/bin/npa-openpi-sm100-probe /usr/local/bin/npa-openpi-sm100-probe
 COPY src/npa/workflows/byof/openpi_checkpoint_cache.py /opt/npa-openpi/openpi_checkpoint_cache.py
