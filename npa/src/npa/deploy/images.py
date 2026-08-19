@@ -187,7 +187,7 @@ SUPPORTED_TOOL_VERSIONS = {
     "genesis": "cuda13-b300-0.4.6-sm80-sm90-sm100-sm103-sm120-20260803T034152Z",
     # Additive clean-runtime-fetch release: Antioch/OpenPI bridge dependencies,
     # distro FFmpeg, and no Isaac/Kit/Antioch/checkpoint bytes in image layers.
-    "isaac-lab": "2.3.2.post1-antioch-openpi-20260819-r14",
+    "isaac-lab": "2.3.2.post1-antioch-openpi-20260819-r15",
     "leisaac": "0.4.0-20260817T231825Z",
     "cosmos": "cu128-torch27-sm100-1.0.9-20260803T002017Z",
     "cosmos2-transfer": "2.5.1-skypilot-ready-20260801T053000Z",
