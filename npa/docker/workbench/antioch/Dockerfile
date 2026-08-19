@@ -1,7 +1,7 @@
 # Digest pinned 2026-07-30. Tag: python:3.12-slim-bookworm.
 FROM python:3.12-slim-bookworm@sha256:d50fb7611f86d04a3b0471b46d7557818d88983fc3136726336b2a4c657aa30b
 
-ARG NPA_VERSION=0.1.1-cli0.3.47
+ARG NPA_VERSION=0.1.1-cli0.3.47-streaming-20260819-r1
 ARG NPA_SOURCE_SHA
 
 LABEL npa.tool="antioch" \

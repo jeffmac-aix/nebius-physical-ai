@@ -178,7 +178,7 @@ PUBLIC_REGISTRY_HOSTS = frozenset(
 )
 
 SUPPORTED_TOOL_VERSIONS = {
-    "antioch": "0.1.1-cli0.3.47",
+    "antioch": "0.1.1-cli0.3.47-streaming-20260819-r1",
     "openpi-policy": "pi05-polaris-runtime-cache-20260819-r9",
     # Default LeRobot image release. Selectable package versions and their
     # image tags live in lerobot_version_manifest.json.
