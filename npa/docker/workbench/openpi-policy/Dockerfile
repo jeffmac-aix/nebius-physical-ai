@@ -51,7 +51,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 SHELL ["/bin/bash", "-lc"]
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-      ca-certificates libgl1 libglib2.0-0 python3 python3-venv \
+      ca-certificates libgl1 libglib2.0-0 passwd python3 python3-venv \
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/* \
     && groupadd --gid 1000 openpi \
     && useradd --uid 1000 --gid 1000 --create-home --home-dir /workspace openpi \
