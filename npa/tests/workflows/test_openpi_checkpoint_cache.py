@@ -98,6 +98,9 @@ def test_cold_population_and_verified_warm_readonly_reuse(
     assert cache.verify_cache(tmp_path, records) == path
     assert cache.verify_tokenizer_cache(tmp_path, tokenizer_record).read_bytes() == b"tokenizer"
     assert cache.tokenizer_alias_path(tmp_path).is_symlink()
+    assert cache.tokenizer_object_path(tmp_path).is_relative_to(
+        cache.openpi_data_home(tmp_path)
+    )
     assert cache.openpi_data_home(tmp_path).stat().st_mode & 0o777 == 0o777
 
 

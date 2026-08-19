@@ -37,7 +37,7 @@ FROM nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04@sha256:ac55d124da4882b497f732d
 
 ARG NPA_SOURCE_SHA
 LABEL npa.tool="openpi-policy" \
-      npa.version="pi05-polaris-runtime-cache-20260819-r5" \
+      npa.version="pi05-polaris-runtime-cache-20260819-r6" \
       npa.model_provisioning="runtime-fetch" \
       npa.model_cache="immutable-gcs-generation-manifest" \
       org.opencontainers.image.source="https://github.com/nebius/nebius-physical-ai" \

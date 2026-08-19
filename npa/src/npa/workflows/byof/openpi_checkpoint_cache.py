@@ -191,7 +191,8 @@ def checkpoint_path(cache_root: str | Path) -> Path:
 
 def tokenizer_identity_root(cache_root: str | Path) -> Path:
     return (
-        Path(cache_root)
+        openpi_data_home(cache_root)
+        / ".npa-identities"
         / PROVIDER
         / TOKENIZER_BUCKET
         / TOKENIZER_OBJECT
