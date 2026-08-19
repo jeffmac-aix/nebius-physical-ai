@@ -92,8 +92,16 @@ def test_test_workflow_uses_the_pinned_development_ffmpeg() -> None:
     assert install_index < ffmpeg_index
     assert "imageio_ffmpeg.get_ffmpeg_exe()" in ffmpeg_step
     assert 'test -x "$ffmpeg_bin"' in ffmpeg_step
-    assert 'ln -s "$ffmpeg_bin" "$RUNNER_TEMP/npa-bin/ffmpeg"' in ffmpeg_step
-    assert 'echo "$RUNNER_TEMP/npa-bin" >> "$GITHUB_PATH"' in ffmpeg_step
+    assert 'ln -s "$ffmpeg_bin" "$test_bin/ffmpeg"' in ffmpeg_step
+    assert re.search(
+        r"raw\.githubusercontent\.com/imageio/imageio-binaries/"
+        r"[0-9a-f]{40}/ffmpeg/ffprobe-linux64-v4\.1",
+        ffmpeg_step,
+    )
+    assert re.search(r"[0-9a-f]{64}  \$test_bin/ffprobe", ffmpeg_step)
+    assert "sha256sum --check --strict" in ffmpeg_step
+    assert 'echo "$test_bin" >> "$GITHUB_PATH"' in ffmpeg_step
+    assert '"$test_bin/ffprobe" -version' in ffmpeg_step
     assert "apt-get" not in ffmpeg_step
 
 
