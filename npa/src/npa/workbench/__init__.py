@@ -4,6 +4,7 @@ from __future__ import annotations
 
 __all__ = [
     "antioch",
+    "alpamayo2_super",
     "cosmos",
     "data",
     "dataset",

@@ -57,6 +57,7 @@ CONTAINER_IMAGE_NAMES = {
     "detection-training": "npa-detection-training",
     "wan2-2": "npa-wan2-2",
     "ltx2": "npa-ltx2",
+    "alpamayo2-super": "npa-alpamayo2-super",
 }
 
 # Public-image publication must enforce the digest-bound SkyPilot bootstrap
@@ -222,6 +223,7 @@ SUPPORTED_TOOL_VERSIONS = {
     # has been scanned. It stays until the GPU run, because renaming it would
     # imply the whole claim is earned, and re-tagging is part of that change.
     "ltx2": "2.5-rtfetch-unbuilt",
+    "alpamayo2-super": "0.1.0-cu128",
     "nebius-cli": "0.12.254",
     "terraform": "~> 0.5.201",
     "terraform-cli": "1.13.3",
