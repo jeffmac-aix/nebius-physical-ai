@@ -6,6 +6,7 @@ import re
 import socket
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 import urllib.error
@@ -225,6 +226,31 @@ def test_hosted_reverse_policy_relay_is_bidirectional() -> None:
         assert frontend.recv(8) == b"response"
         frontend.close()
         backend.close()
+
+
+def test_hosted_policy_relay_reports_transferred_bytes() -> None:
+    spec = importlib.util.spec_from_file_location(
+        "npa_antioch_reverse_policy_relay_bytes",
+        EXAMPLE_DIR / "reverse_policy_relay.py",
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    left, left_peer = socket.socketpair()
+    right, right_peer = socket.socketpair()
+    result: list[int] = []
+    worker = threading.Thread(
+        target=lambda: result.append(module.ReversePolicyRelay._pipe_pair(left, right))
+    )
+    worker.start()
+    left_peer.sendall(b"request")
+    assert right_peer.recv(7) == b"request"
+    right_peer.sendall(b"response")
+    assert left_peer.recv(8) == b"response"
+    left_peer.close()
+    right_peer.close()
+    worker.join(2)
+    assert result == [15]
 
 
 def _observation() -> dict[str, object]:

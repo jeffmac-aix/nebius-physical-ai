@@ -75,16 +75,21 @@ class ReversePolicyRelay:
             self._pipe_pair(frontend, backend)
 
     @staticmethod
-    def _pipe_pair(left: socket.socket, right: socket.socket) -> None:
+    def _pipe_pair(left: socket.socket, right: socket.socket) -> int:
         done = threading.Event()
+        byte_count = 0
+        byte_count_lock = threading.Lock()
 
         def pump(source: socket.socket, target: socket.socket) -> None:
+            nonlocal byte_count
             try:
                 while not done.is_set():
                     chunk = source.recv(1024 * 1024)
                     if not chunk:
                         return
                     target.sendall(chunk)
+                    with byte_count_lock:
+                        byte_count += len(chunk)
             except OSError:
                 return
             finally:
@@ -105,3 +110,4 @@ class ReversePolicyRelay:
         right.close()
         for worker in workers:
             worker.join(1)
+        return byte_count

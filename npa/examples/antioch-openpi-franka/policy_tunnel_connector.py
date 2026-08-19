@@ -27,10 +27,14 @@ def main() -> int:
     args = parser.parse_args()
     if args.sessions < 1:
         parser.error("--sessions must be positive")
-    for _ in range(args.sessions):
+    completed = 0
+    while completed < args.sessions:
         relay = _connect(args.relay_host, args.relay_port)
         policy = _connect(args.policy_host, args.policy_port)
-        ReversePolicyRelay._pipe_pair(relay, policy)
+        if ReversePolicyRelay._pipe_pair(relay, policy) > 0:
+            completed += 1
+        else:
+            time.sleep(0.5)
     return 0
 
 
