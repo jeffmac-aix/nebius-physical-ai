@@ -20,6 +20,7 @@ RUN GIT_LFS_SKIP_SMUDGE=1 git clone --filter=blob:none \
       15a9616a00943ada6c20a0f158e3adb39df2ccac \
     && cd /opt/byof \
     && /opt/uv/bin/uv sync --frozen --no-dev --no-editable \
+    && /opt/uv/bin/uv pip install --python /opt/venv/bin/python deepdiff==8.6.2 \
     && /opt/uv/bin/uv pip check --python /opt/venv/bin/python \
     && rm -rf /opt/byof/.git /root/.cache /tmp/*
 
@@ -36,7 +37,7 @@ FROM nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04@sha256:ac55d124da4882b497f732d
 
 ARG NPA_SOURCE_SHA
 LABEL npa.tool="openpi-policy" \
-      npa.version="pi05-polaris-runtime-cache-20260819-r2" \
+      npa.version="pi05-polaris-runtime-cache-20260819-r3" \
       npa.model_provisioning="runtime-fetch" \
       npa.model_cache="immutable-gcs-generation-manifest" \
       org.opencontainers.image.source="https://github.com/nebius/nebius-physical-ai" \
@@ -55,6 +56,7 @@ SHELL ["/bin/bash", "-lc"]
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
       ca-certificates ffmpeg libgl1 libglib2.0-0 python3 python3-venv \
+    && apt-get upgrade -y \
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/* \
     && install -d -m 0755 /opt/npa-openpi /opt/npa/licenses/openpi-policy \
     && install -d -m 0775 -o 1000 -g 1000 /workspace /workspace/.cache \
@@ -82,11 +84,15 @@ RUN test "$(printf %s "${NPA_SOURCE_SHA}" | wc -c)" -eq 40 \
     && test -z "$(find /opt/npa-model-cache/openpi -mindepth 1 -print -quit)" \
     && find /opt/venv -type f -path '*/imageio_ffmpeg/binaries/ffmpeg*' -delete \
     && test -z "$(find /opt/venv -type f -path '*/imageio_ffmpeg/binaries/ffmpeg*' -print -quit)" \
+    && find /opt/venv -type f -path '*/wandb/bin/wandb-core' -delete \
+    && test -z "$(find /opt/venv -type f -path '*/wandb/bin/wandb-core' -print -quit)" \
+    && find /opt/venv -type d -name flaxlib_src -prune -exec rm -rf {} + \
     && IMAGEIO_FFMPEG_EXE=/usr/bin/ffmpeg /opt/venv/bin/python -c \
       'import imageio_ffmpeg; assert imageio_ffmpeg.get_ffmpeg_exe() == "/usr/bin/ffmpeg"' \
     && /opt/venv/bin/python -m py_compile /opt/npa-openpi/openpi_checkpoint_cache.py \
       /opt/npa-openpi/openpi_policy_server.py \
-    && /opt/venv/bin/python -c 'import jax, openpi, openpi_client' \
+    && /opt/venv/bin/python -c \
+      'from openpi.training import config; import jax, openpi_client; config.get_config("pi05_droid_jointpos_polaris")' \
     && rm -rf /root/.cache /tmp/*
 
 USER 1000
