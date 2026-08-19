@@ -1,10 +1,22 @@
-FROM python:3.12-slim-bookworm
+# Digest pinned 2026-07-30. Tag: python:3.12-slim-bookworm.
+FROM python:3.12-slim-bookworm@sha256:d50fb7611f86d04a3b0471b46d7557818d88983fc3136726336b2a4c657aa30b
+
+ARG NPA_VERSION=0.1.0-cli0.3.47
+ARG NPA_SOURCE_SHA
+
+LABEL npa.tool="antioch" \
+      npa.version="${NPA_VERSION}" \
+      npa.vendor_runtime="none-baked-in; antioch-sim is fetched at runtime" \
+      org.opencontainers.image.revision="${NPA_SOURCE_SHA}"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     NPA_ANTIOCH_RUNTIME_CACHE=/workspace/.cache/npa/antioch
 
-RUN apt-get update \
+RUN test -n "${NPA_SOURCE_SHA}" \
+    && test "$(printf '%s' "${NPA_SOURCE_SHA}" | wc -c)" -eq 40 \
+    && apt-get update \
+    && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends ffmpeg ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 10001 npa
