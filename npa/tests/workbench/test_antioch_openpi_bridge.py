@@ -34,10 +34,76 @@ from npa.workbench.antioch.openpi_bridge import (
 from npa.workbench.antioch.openpi_health import wait_for_health
 from npa.workbench.antioch.openpi_isaac import (
     _camera_frame,
+    _capture_viewport_rgb,
     _compatible_franka_asset_url,
     _ensure_franka_asset_root,
     _verify_vulkan_runtime,
 )
+
+
+def test_hosted_viewport_capture_advances_kit_application_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    callback: dict[str, object] = {}
+    updates = 0
+    renders = 0
+
+    def schedule(_viewport: object, on_capture: object) -> object:
+        callback["value"] = on_capture
+        return object()
+
+    class _App:
+        def update(self) -> None:
+            nonlocal updates
+            updates += 1
+            value = callback.pop("value", None)
+            if value is not None:
+                value(bytes(range(8)), 8, 2, 1, object())
+
+    class _Sim:
+        def render(self) -> None:
+            nonlocal renders
+            renders += 1
+
+    app_module = SimpleNamespace(get_app=lambda: _App())
+    renderer_module = SimpleNamespace(
+        convert_raw_bytes_to_list=lambda buffer, *_args: list(buffer)
+    )
+    kit_module = SimpleNamespace(app=app_module, renderer_capture=renderer_module)
+    monkeypatch.setitem(sys.modules, "omni", SimpleNamespace(kit=kit_module))
+    monkeypatch.setitem(sys.modules, "omni.kit", kit_module)
+    monkeypatch.setitem(sys.modules, "omni.kit.app", app_module)
+    monkeypatch.setitem(
+        sys.modules,
+        "omni.kit.renderer_capture",
+        renderer_module,
+    )
+    monkeypatch.setitem(sys.modules, "omni.kit.viewport", SimpleNamespace())
+    monkeypatch.setitem(
+        sys.modules,
+        "omni.kit.viewport.utility",
+        SimpleNamespace(
+            capture_viewport_to_buffer=schedule,
+            get_active_viewport=lambda: object(),
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "isaacsim", SimpleNamespace())
+    monkeypatch.setitem(sys.modules, "isaacsim.core", SimpleNamespace())
+    monkeypatch.setitem(sys.modules, "isaacsim.core.utils", SimpleNamespace())
+    monkeypatch.setitem(
+        sys.modules,
+        "isaacsim.core.utils.viewports",
+        SimpleNamespace(set_camera_view=lambda **_kwargs: None),
+    )
+
+    image = _capture_viewport_rgb(
+        _Sim(), eye=np.zeros(3), target=np.ones(3)
+    )
+
+    assert image.shape == (1, 2, 3)
+    assert image.tolist() == [[[0, 1, 2], [4, 5, 6]]]
+    assert updates == 1
+    assert renders == 1
 
 
 def test_health_module_import_does_not_load_offline_dataset_stack() -> None:

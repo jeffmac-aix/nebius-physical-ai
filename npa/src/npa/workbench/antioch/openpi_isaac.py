@@ -162,6 +162,7 @@ def _capture_viewport_rgb(
 ) -> np.ndarray:
     """Capture one real RTX viewport frame from Antioch's Kit-owned renderer."""
 
+    import omni.kit.app
     import omni.kit.renderer_capture
     from omni.kit.viewport.utility import (
         capture_viewport_to_buffer,
@@ -194,8 +195,15 @@ def _capture_viewport_rgb(
         ready.set()
 
     capture = capture_viewport_to_buffer(viewport, on_capture)
+    app = omni.kit.app.get_app()
     for _ in range(120):
         sim.render()
+        # Antioch owns Kit's outer application loop.  A simulation render alone
+        # does not dispatch the viewport capture future when a scenario is
+        # executing synchronously, so explicitly advance the supported Kit app
+        # update before checking the callback.  The standalone launcher already
+        # gets the same update through SimulationContext.render().
+        app.update()
         if ready.wait(0.05):
             break
     _ = capture
