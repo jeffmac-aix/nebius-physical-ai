@@ -13,6 +13,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import threading
 from typing import Any
 import urllib.error
 import urllib.request
@@ -156,6 +157,61 @@ def _resize_rgb(image: Any) -> np.ndarray:
     return np.clip(resized[0].permute(1, 2, 0).cpu().numpy(), 0, 255).astype(np.uint8)
 
 
+def _capture_viewport_rgb(
+    sim: Any, *, eye: np.ndarray, target: np.ndarray
+) -> np.ndarray:
+    """Capture one real RTX viewport frame from Antioch's Kit-owned renderer."""
+
+    import omni.kit.renderer_capture
+    from omni.kit.viewport.utility import (
+        capture_viewport_to_buffer,
+        get_active_viewport,
+    )
+    from isaacsim.core.utils.viewports import set_camera_view
+
+    viewport = get_active_viewport()
+    if viewport is None:
+        raise OpenPIBridgeError(
+            "Antioch viewport is unavailable; run the camera suite with its "
+            "authenticated stream enabled"
+        )
+    set_camera_view(eye=eye, target=target, viewport_api=viewport)
+    captured: dict[str, object] = {}
+    ready = threading.Event()
+
+    def on_capture(
+        buffer: object,
+        buffer_size: int,
+        width: int,
+        height: int,
+        pixel_format: object,
+    ) -> None:
+        captured["pixels"] = omni.kit.renderer_capture.convert_raw_bytes_to_list(
+            buffer, buffer_size, width, height, pixel_format
+        )
+        captured["width"] = width
+        captured["height"] = height
+        ready.set()
+
+    capture = capture_viewport_to_buffer(viewport, on_capture)
+    for _ in range(120):
+        sim.render()
+        if ready.wait(0.05):
+            break
+    _ = capture
+    if not ready.is_set():
+        raise OpenPIBridgeError("RTX viewport camera capture timed out")
+    width = int(captured["width"])
+    height = int(captured["height"])
+    pixels = np.asarray(captured["pixels"], dtype=np.uint8)
+    expected = width * height * 4
+    if width < 1 or height < 1 or pixels.size != expected:
+        raise OpenPIBridgeError(
+            f"RTX viewport returned malformed RGBA buffer {pixels.size}, expected {expected}"
+        )
+    return pixels.reshape(height, width, 4)[:, :, :3]
+
+
 def run(*, launch_application: bool = True) -> dict[str, object]:
     """Capture two cameras, request one chunk, and apply five safe targets.
 
@@ -208,30 +264,31 @@ def run(*, launch_application: bool = True) -> dict[str, object]:
         cfg.scene.robot.spawn.usd_path = _compatible_franka_asset_url(
             cfg.scene.robot.spawn.usd_path, asset_compatibility
         )
-        cfg.scene.npa_exterior_camera = CameraCfg(
-            prim_path="{ENV_REGEX_NS}/NpaExteriorCamera",
-            offset=CameraCfg.OffsetCfg(
-                pos=(1.4, 1.4, 1.2),
-                rot=look_at_quaternion((1.4, 1.4, 1.2), (0.5, 0.0, 0.6)),
-                convention="world",
-            ),
-            data_types=["rgb"],
-            width=320,
-            height=320,
-            spawn=sim_utils.PinholeCameraCfg(focal_length=24.0),
-        )
-        cfg.scene.npa_wrist_camera = CameraCfg(
-            prim_path="{ENV_REGEX_NS}/Robot/panda_hand/NpaWristCamera",
-            offset=CameraCfg.OffsetCfg(
-                pos=(0.08, 0.0, 0.02),
-                rot=(0.7071068, 0.0, 0.7071068, 0.0),
-                convention="ros",
-            ),
-            data_types=["rgb"],
-            width=320,
-            height=320,
-            spawn=sim_utils.PinholeCameraCfg(focal_length=18.0),
-        )
+        if launch_application:
+            cfg.scene.npa_exterior_camera = CameraCfg(
+                prim_path="{ENV_REGEX_NS}/NpaExteriorCamera",
+                offset=CameraCfg.OffsetCfg(
+                    pos=(1.4, 1.4, 1.2),
+                    rot=look_at_quaternion((1.4, 1.4, 1.2), (0.5, 0.0, 0.6)),
+                    convention="world",
+                ),
+                data_types=["rgb"],
+                width=320,
+                height=320,
+                spawn=sim_utils.PinholeCameraCfg(focal_length=24.0),
+            )
+            cfg.scene.npa_wrist_camera = CameraCfg(
+                prim_path="{ENV_REGEX_NS}/Robot/panda_hand/NpaWristCamera",
+                offset=CameraCfg.OffsetCfg(
+                    pos=(0.08, 0.0, 0.02),
+                    rot=(0.7071068, 0.0, 0.7071068, 0.0),
+                    convention="ros",
+                ),
+                data_types=["rgb"],
+                width=320,
+                height=320,
+                spawn=sim_utils.PinholeCameraCfg(focal_length=18.0),
+            )
         env = gym.make("Isaac-Lift-Cube-Franka-v0", cfg=cfg)
         env.reset()
         uenv = env.unwrapped
@@ -243,13 +300,42 @@ def run(*, launch_application: bool = True) -> dict[str, object]:
         joint_position = robot.data.joint_pos[0, :7].detach().cpu().numpy()
         finger = robot.data.joint_pos[0, 7:9].mean().item()
         gripper = np.asarray([np.clip(finger / 0.04, 0.0, 1.0)], dtype=np.float32)
-        observation = {
-            "observation/exterior_image_1_left": _resize_rgb(
+        if launch_application:
+            exterior_rgb = _resize_rgb(
                 uenv.scene["npa_exterior_camera"].data.output["rgb"]
-            ),
-            "observation/wrist_image_left": _resize_rgb(
-                uenv.scene["npa_wrist_camera"].data.output["rgb"]
-            ),
+            )
+            wrist_rgb = _resize_rgb(uenv.scene["npa_wrist_camera"].data.output["rgb"])
+            camera_backend = "isaac-lab-camera-sensors"
+        else:
+            from isaaclab.utils.math import quat_apply
+
+            hand_ids, _ = robot.find_bodies("panda_hand")
+            hand_position = robot.data.body_pos_w[0, hand_ids[0]]
+            hand_rotation = robot.data.body_quat_w[0, hand_ids[0]]
+            wrist_eye = hand_position + quat_apply(
+                hand_rotation,
+                torch.tensor([0.08, 0.0, 0.02], device=robot.device),
+            )
+            wrist_target = wrist_eye + quat_apply(
+                hand_rotation,
+                torch.tensor([0.3, 0.0, 0.0], device=robot.device),
+            )
+            exterior_rgb = _capture_viewport_rgb(
+                uenv.sim,
+                eye=np.asarray([1.4, 1.4, 1.2]),
+                target=np.asarray([0.5, 0.0, 0.6]),
+            )
+            wrist_rgb = _capture_viewport_rgb(
+                uenv.sim,
+                eye=wrist_eye.detach().cpu().numpy(),
+                target=wrist_target.detach().cpu().numpy(),
+            )
+            exterior_rgb = _resize_rgb(torch.as_tensor(exterior_rgb))
+            wrist_rgb = _resize_rgb(torch.as_tensor(wrist_rgb))
+            camera_backend = "antioch-authenticated-rtx-viewport"
+        observation = {
+            "observation/exterior_image_1_left": exterior_rgb,
+            "observation/wrist_image_left": wrist_rgb,
             "observation/joint_position": joint_position.astype(np.float32),
             "observation/gripper_position": gripper,
             "prompt": os.environ.get("OPENPI_PROMPT", "pick up the fork"),
@@ -284,6 +370,7 @@ def run(*, launch_application: bool = True) -> dict[str, object]:
             "gpu_compute_capability": capability,
             "asset_root": asset_compatibility,
             "camera_shapes": [[224, 224, 3], [224, 224, 3]],
+            "camera_backend": camera_backend,
             "policy_action_shape": list(ACTION_SHAPE),
             "targets_executed": executed,
             "position_control": "absolute-rate-limited",

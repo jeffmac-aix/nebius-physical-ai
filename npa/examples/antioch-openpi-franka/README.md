@@ -30,12 +30,15 @@ registry credential is copied to Antioch, and the policy remains a ClusterIP:
 kubectl --kubeconfig <task-kubeconfig> --context <task-context> \
   port-forward service/<run-policy-service> 18000:8000
 npa/.venv/bin/python policy_tunnel_connector.py
-antioch suite run openpi_franka_smoke --no-stream
+antioch suite run openpi_franka_smoke --stream
 ```
 
-Run the connector and suite concurrently. The connector retries the
-authenticated tunnel and supports the bridge's reconnect attempts; stop both
-after the suite reaches a terminal state. Keep the kubeconfig and all exact live
+Run `antioch services up --json` once before the connector so the declared port
+is converged, then run the connector and suite concurrently. The hosted bridge
+uses the authenticated RTX viewport for its exterior and wrist-mounted camera
+poses, so the suite keeps Antioch's authenticated stream enabled. The connector
+retries the tunnel and supports the bridge's reconnect attempts; stop both after
+the suite reaches a terminal state. Keep the kubeconfig and all exact live
 resource values outside this project and its run artifacts.
 
 Without an Antioch account session, validate the same bridge code in the
