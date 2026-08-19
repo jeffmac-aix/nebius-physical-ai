@@ -67,7 +67,9 @@ prompts, endpoints, or infrastructure identities.
 
 For stalled frames, first distinguish an active console viewport from advancing
 camera sequence. Check the supported service/API state and camera callback, then
-the observation drop count. For stale actions, compare observation/response age
+allow only a bounded render-only warmup for an initially empty camera tensor;
+do not send observations or apply actions until both frames are complete. Then
+check the observation drop count. For stale actions, compare observation/response age
 to the configured maxima and confirm the reconnect epoch advanced. For tunnel
 jitter, keep latest-observation semantics, reduce requested policy cadence if
 needed, and measure—never queue stale frames. Any timeout, disconnect, malformed

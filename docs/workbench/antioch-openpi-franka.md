@@ -91,6 +91,7 @@ The main streaming controls are exposed by `openpi-stack`:
 | `--executed-targets-per-chunk` | 5 | receding-horizon prefix, from 1 to 15 |
 | `--maximum-observation-age-seconds` | 0.75 | oldest observation accepted for a request |
 | `--maximum-response-age-seconds` | 1.5 | oldest request/response accepted for control |
+| `--camera-warmup-seconds` | 10 | bounded render-only wait for the first complete two-camera observation |
 | `--inference-deadline-seconds` | 10 | socket/inference deadline before safe recovery |
 | `--safe-hold-behavior` | `hold-current` | `hold-current` or `no-action` on underrun/failure |
 | `--minimum-ready-cycles` | 3 | required round trips and applied policy targets |

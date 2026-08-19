@@ -215,7 +215,7 @@ reading the Dockerfile:
 
 ```bash
 npa/.venv/bin/python npa/scripts/scan_image_omniverse_payload.py \
-    cr.<region>.nebius.cloud/<registry-id>/npa-isaac-lab:2.3.2.post1-antioch-openpi-20260819-r11
+    cr.<region>.nebius.cloud/<registry-id>/npa-isaac-lab:2.3.2.post1-antioch-openpi-20260819-r12
 ```
 
 The scanner streams the image's flattened filesystem and its layer history, matching Kit

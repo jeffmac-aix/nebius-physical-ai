@@ -346,6 +346,7 @@ def render_stack(
     executed_targets_per_chunk: int = 5,
     maximum_observation_age_seconds: float = 0.75,
     maximum_response_age_seconds: float = 1.5,
+    camera_warmup_seconds: float = 10.0,
     inference_deadline_seconds: float = 10.0,
     ping_interval_seconds: float = 5.0,
     safe_hold_behavior: str = "hold-current",
@@ -387,6 +388,7 @@ def render_stack(
         "control rate": control_hz,
         "maximum observation age": maximum_observation_age_seconds,
         "maximum response age": maximum_response_age_seconds,
+        "camera warmup deadline": camera_warmup_seconds,
         "inference deadline": inference_deadline_seconds,
         "ping interval": ping_interval_seconds,
         "minimum ready duration": minimum_ready_seconds,
@@ -484,6 +486,10 @@ def render_stack(
         {
             "name": "OPENPI_MAXIMUM_RESPONSE_AGE_SECONDS",
             "value": str(maximum_response_age_seconds),
+        },
+        {
+            "name": "OPENPI_CAMERA_WARMUP_SECONDS",
+            "value": str(camera_warmup_seconds),
         },
         {
             "name": "OPENPI_INFERENCE_DEADLINE_SECONDS",

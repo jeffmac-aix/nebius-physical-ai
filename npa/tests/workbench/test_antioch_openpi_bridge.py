@@ -39,6 +39,7 @@ from npa.workbench.antioch.openpi_isaac import (
     _ensure_franka_asset_root,
     _position_target_tensor,
     _verify_vulkan_runtime,
+    _wait_for_camera_observation,
 )
 
 
@@ -72,6 +73,55 @@ def test_position_target_uses_torch_dtype_not_hosted_backend_dtype() -> None:
     np.testing.assert_allclose(
         result[1], [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.02, 0.02]
     )
+
+
+def test_camera_observation_warmup_advances_until_complete() -> None:
+    attempts = 0
+    advances = 0
+    now = 0.0
+
+    def advance() -> None:
+        nonlocal advances, now
+        advances += 1
+        now += 0.02
+
+    def capture() -> dict[str, object]:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise OpenPIBridgeError("camera returned invalid RGB shape")
+        return {"sequence": attempts}
+
+    result = _wait_for_camera_observation(
+        capture,
+        advance,
+        timeout_seconds=1.0,
+        monotonic=lambda: now,
+        sleep=lambda _seconds: None,
+    )
+
+    assert result == {"sequence": 3}
+    assert advances == 3
+
+
+def test_camera_observation_warmup_fails_closed_at_deadline() -> None:
+    now = 0.0
+
+    def advance() -> None:
+        nonlocal now
+        now += 0.1
+
+    def capture() -> dict[str, object]:
+        raise OpenPIBridgeError("empty camera")
+
+    with pytest.raises(OpenPIBridgeError, match="warmup deadline"):
+        _wait_for_camera_observation(
+            capture,
+            advance,
+            timeout_seconds=0.25,
+            monotonic=lambda: now,
+            sleep=lambda _seconds: None,
+        )
 
 
 def test_hosted_viewport_capture_advances_kit_application_loop(

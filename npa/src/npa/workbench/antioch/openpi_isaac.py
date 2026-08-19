@@ -16,7 +16,7 @@ import shutil
 import subprocess
 import threading
 import time
-from typing import Any
+from typing import Any, Callable
 import urllib.error
 import urllib.request
 from urllib.parse import urlparse
@@ -174,6 +174,34 @@ def _resize_rgb(image: Any) -> np.ndarray:
     return np.clip(resized[0].permute(1, 2, 0).cpu().numpy(), 0, 255).astype(np.uint8)
 
 
+def _wait_for_camera_observation(
+    capture: Callable[[], dict[str, object]],
+    advance: Callable[[], None],
+    *,
+    timeout_seconds: float,
+    monotonic: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+) -> dict[str, object]:
+    """Render boundedly until both cameras produce one complete observation."""
+
+    if not np.isfinite(timeout_seconds) or timeout_seconds <= 0:
+        raise OpenPIBridgeError(
+            "OPENPI_CAMERA_WARMUP_SECONDS must be finite and positive"
+        )
+    deadline = monotonic() + timeout_seconds
+    last_error: OpenPIBridgeError | None = None
+    while monotonic() < deadline:
+        advance()
+        try:
+            return capture()
+        except OpenPIBridgeError as exc:
+            last_error = exc
+            sleep(0.01)
+    raise OpenPIBridgeError(
+        "camera did not produce a complete RGB observation before the warmup deadline"
+    ) from last_error
+
+
 def _capture_viewport_rgb(
     sim: Any, *, eye: np.ndarray, target: np.ndarray
 ) -> np.ndarray:
@@ -250,6 +278,7 @@ def run(*, launch_application: bool = True) -> dict[str, object]:
     client = None
     stream = None
     simulation_app = None
+    failed = False
     report: dict[str, object]
     try:
         if launch_application:
@@ -478,6 +507,13 @@ def run(*, launch_application: bool = True) -> dict[str, object]:
                 raise OpenPIBridgeError(
                     "OPENPI_STREAM_DURATION_SECONDS must be finite and non-negative"
                 )
+            initial_observation = _wait_for_camera_observation(
+                capture_observation,
+                advance_simulation,
+                timeout_seconds=float(
+                    os.environ.get("OPENPI_CAMERA_WARMUP_SECONDS", "10")
+                ),
+            )
             stream = StreamingPolicyLoop(client, config=config)
             shutdown = threading.Event()
             ready_path = Path(
@@ -499,6 +535,10 @@ def run(*, launch_application: bool = True) -> dict[str, object]:
             next_metrics = started + 10.0
             stream.start()
             try:
+                stream.record_render_tick()
+                stream.publish_observation(
+                    initial_observation, monotonic_seconds=time.monotonic()
+                )
                 while not shutdown.is_set() and (
                     duration_seconds == 0
                     or time.monotonic() - started < duration_seconds
@@ -563,7 +603,11 @@ def run(*, launch_application: bool = True) -> dict[str, object]:
                 "streaming_metrics": metrics,
                 "fail_closed": True,
             }
+        # Kit shutdown may terminate the interpreter rather than return to
+        # Python, so persist success evidence before closing the application.
+        _write_report(os.environ.get("NPA_OPENPI_BRIDGE_OUTPUT_URI", ""), report)
     except Exception as exc:
+        failed = True
         streaming_metrics = stream.metrics_snapshot() if stream is not None else None
         report = {
             "schema": "npa.antioch.openpi-franka-bridge.v2",
@@ -592,9 +636,11 @@ def run(*, launch_application: bool = True) -> dict[str, object]:
             client.close()
         if env is not None:
             env.close()
-        if launch_application and simulation_app is not None:
+        # On failure, normal interpreter unwinding tears Kit down. Calling
+        # SimulationApp.close() can terminate with status zero and mask the
+        # exception from Kubernetes; the failed-safe report is already durable.
+        if launch_application and simulation_app is not None and not failed:
             simulation_app.close()
-    _write_report(os.environ.get("NPA_OPENPI_BRIDGE_OUTPUT_URI", ""), report)
     return report
 
 

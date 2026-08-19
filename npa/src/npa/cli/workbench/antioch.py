@@ -497,6 +497,12 @@ def openpi_stack(
     maximum_response_age_seconds: float = typer.Option(
         1.5, "--maximum-response-age-seconds", min=0.001
     ),
+    camera_warmup_seconds: float = typer.Option(
+        10.0,
+        "--camera-warmup-seconds",
+        min=0.001,
+        help="Bounded renderer warmup before the first policy observation.",
+    ),
     inference_deadline_seconds: float = typer.Option(
         10.0, "--inference-deadline-seconds", min=0.001
     ),
@@ -546,6 +552,7 @@ def openpi_stack(
             executed_targets_per_chunk=executed_targets_per_chunk,
             maximum_observation_age_seconds=maximum_observation_age_seconds,
             maximum_response_age_seconds=maximum_response_age_seconds,
+            camera_warmup_seconds=camera_warmup_seconds,
             inference_deadline_seconds=inference_deadline_seconds,
             ping_interval_seconds=ping_interval_seconds,
             safe_hold_behavior=safe_hold_behavior,
