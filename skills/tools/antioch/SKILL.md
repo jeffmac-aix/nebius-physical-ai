@@ -1,57 +1,71 @@
 ---
 name: antioch
-description: Use when deploying, operating, debugging, or composing the Antioch Workbench integration and its offline policy-data contract.
+description: Operate and debug supported Antioch CLI projects, GPU machines, services, scenarios, suites, tunnels, offline policy-data collection, and the private RTX Isaac-to-B200 OpenPI Franka bridge. Use for safe authentication/profile selection, ambiguous-run reconciliation, exact cleanup, hosted-camera readiness, runtime-fetch packaging, or Antioch image release validation.
 ---
 
 # Antioch Workbench
 
-Use the supported structured Antioch CLI only. Never call undocumented Rome HTTP
-endpoints, print identity/config/environment data, or inspect unrelated runs.
+Use only supported Antioch CLI/SDK behavior. Never inspect an auth file, browser
+session, cookie, token, SSH identity, or undocumented API. Keep raw CLI JSON and
+detached logs outside the repository; emit only sanitized assertions.
 
-## Before spending
+## Choose the operating mode
 
-1. Run `npa workbench health preflight --checks s3 --json`.
-2. Run `npa workbench antioch health --output json`; do not start interactive login.
-3. Confirm inputs are public or synthetic and output is a unique run-scoped S3 prefix.
-4. Use the pinned runtime-fetch adapter documented in `docs/workbench/antioch.md`.
+- For authentication, project initialization, machine assignment, scenario or
+  suite lifecycle, and exact cleanup, read
+  [authentication and lifecycle](references/authentication-and-lifecycle.md).
+- For the hosted RTX Isaac/Franka camera bridge to a private B200 OpenPI server,
+  read [OpenPI Franka operation](references/openpi-franka-operation.md) and
+  `docs/workbench/antioch-openpi-franka.md`.
+- For image classification, interrupted-copy recovery, digest scans, public
+  publication, and sanitized evidence, read
+  [release and recovery](references/release-and-recovery.md).
+- Treat [machine-readable contracts](references/contracts.yaml) as the minimum
+  security, readiness, and control invariants. Do not weaken them to pass a
+  smoke.
 
-## Operate
+## Start with proof, not process existence
 
-- Use `run` for blocking workflow composition; `submit` plus `status` for manual control.
+1. Run `npa workbench health preflight --checks s3 --json` when artifacts use S3.
+2. Prove the supported Antioch session and harmless API access as described in
+   the lifecycle reference. Select the intended organization with `auth switch`;
+   never infer it from files.
+3. Run `npa workbench antioch health --output json` for the NPA adapter path.
+4. Resolve every runtime image to a registry digest. Keep live infrastructure
+   values and secret names out of committed examples and evidence.
+5. Require supported API state plus health and useful workload evidence. A PID,
+   open TCP socket, tunnel process, container, or GPU allocation alone is not
+   readiness.
+
+## Operate the NPA offline adapter
+
+- Use `run` for blocking composition; use `submit`, `status`, `reconcile`,
+  `resume`, and `cancel` for explicit lifecycle control.
 - Always pass `--input-path`, `--output-path`, `--workflow-run`, and `--state-id`.
-- Reuse the same identities after a retry. `reconcile` closes a submission crash window.
-- Treat 429/5xx as retryable. Treat auth, malformed output, id conflicts, checksums,
-  and episode schema errors as terminal.
-- Gate downstream work on `_SUCCESS.json`, then consume `<output>/dataset`.
-- The dataset is for offline imitation learning only. Use the LeRobot policy trainer;
-  do not describe it as online PPO or RSL-RL.
+  Reuse those identities after interruption; never guess a second submission.
+- Treat 429/5xx as retryable. Treat auth, conflicting identity, malformed JSON,
+  invalid checksum/schema, and credential discovery as terminal.
+- Gate consumers on `_SUCCESS.json`, then consume `<output>/dataset`. This is
+  offline imitation data, not online PPO or RSL-RL.
+- Follow `docs/workbench/antioch.md` for the immutable project and episode
+  contracts.
 
-## OpenPI Franka bridge
+## Preserve the two-GPU security boundary
 
-For the production two-GPU path, also read
-`docs/workbench/antioch-openpi-franka.md` and the OpenPI guide. Build the
-existing pinned OpenPI BYOF image for B200 and the existing runtime-fetch
-`npa-isaac-lab` image for RTX PRO 6000. Resolve both to digests before render.
+- Keep OpenPI as a private ClusterIP service on port 8000 with bridge-only
+  ingress. Place B200 policy and RTX simulator workloads independently.
+- Give the model warmer alone the model entitlement and writable cache. Give
+  the policy server a verified read-only cache. Give only the simulator side
+  Antioch/Isaac runtime secrets. Never cross those secret scopes.
+- Treat exact finite `[15,8]` actions, Franka joint/gripper limits, bounded
+  per-step motion, timeouts, reconnect backoff, and rate limiting as one
+  fail-closed/no-action boundary.
+- On failure, preserve zero applied targets and close the client. Never convert
+  malformed or late policy output into a hold or best-effort action.
 
-- Render with `npa workbench antioch openpi-stack`; mutable tags are refused.
-- Keep the policy Service as ClusterIP on port 8000 and retain its bridge-only
-  ingress NetworkPolicy. Do not add Ingress, NodePort, or LoadBalancer.
-- Mount Antioch configuration, Isaac acceptance, and S3 credentials only into
-  the RTX simulator Job. Mount the separate Gemma acceptance only into the
-  B200 policy Deployment.
-- Treat exact `[15,8]`, finite values, Franka limits, and rate limiting as one
-  fail-closed boundary. A protocol, timeout, or validation failure is no-action.
-- With no Antioch session, run the real credential-free Isaac/RTX and
-  OpenPI/B200 integration. Defer only the same-code Antioch-hosted scenario;
-  never attempt token recovery or describe local Isaac evidence as hosted.
+## Finish safely
 
-## Cleanup and evidence
-
-Cancel the exact test run before releasing its exact project machine. Record only
-run ids, states, check names, schemas, checksums, artifact basenames, and sanitized
-links. Never record tokens, signed URLs, config contents, organization/customer
-identifiers, unrelated run metadata, or internal infrastructure coordinates.
-
-See `docs/workbench/antioch.md` for authentication, deployment, schemas, licensing,
-recovery, console access, and the current personal-OAuth limitation. See
-`docs/workbench/antioch-openpi-franka.md` for the two-container boundary.
+Cancel the exact run before stopping its exact services or releasing its exact
+machine. Delete only named, run-scoped Kubernetes objects after capturing
+sanitized evidence. Preserve requested registry artifacts. Never use broad
+cleanup selectors when ownership is uncertain.
