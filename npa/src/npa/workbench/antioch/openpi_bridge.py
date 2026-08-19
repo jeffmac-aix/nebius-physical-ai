@@ -344,7 +344,9 @@ def render_stack(
             f"--cache-root {cache_root} --port 8000"
         ],
         "ports": [{"name": "policy", "containerPort": 8000}],
-        "env": [{"name": "OPENPI_DATA_HOME", "value": cache_root}],
+        "env": [
+            {"name": "OPENPI_DATA_HOME", "value": f"{cache_root}/openpi-data"}
+        ],
         "resources": {
             "requests": {"cpu": "16", "memory": "96Gi", "nvidia.com/gpu": "1"},
             "limits": {"nvidia.com/gpu": "1"},

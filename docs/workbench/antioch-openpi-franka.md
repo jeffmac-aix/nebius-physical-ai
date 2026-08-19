@@ -5,7 +5,7 @@ This path keeps rendering and inference on different GPU workloads:
 | Workload | GPU | Image and responsibility |
 | --- | --- | --- |
 | simulator bridge | RTX PRO 6000 (`sm_120`, RT cores) | digest-pinned `npa-isaac-lab`; runtime-fetches Isaac under the operator's NVIDIA acceptance, captures exterior and wrist RGB plus Franka state, validates and applies bounded position targets |
-| policy server | B200 (`sm_100`) | digest-pinned private OpenPI BYOF image; runtime-fetches `pi05_droid_jointpos_polaris` only after the exact run-scoped Gemma gate, serves upstream MessagePack/WebSocket on port 8000 |
+| policy server | B200 (`sm_100`) | digest-pinned OpenPI runtime image; an init container runtime-fetches `pi05_droid_jointpos_polaris` and its PaliGemma tokenizer only after the exact run-scoped Gemma gate, then the credential-free server serves upstream MessagePack/WebSocket on port 8000 from a read-only cache |
 
 The policy Service is `ClusterIP`; no Ingress, NodePort, or load balancer is
 created. A NetworkPolicy admits port 8000 only from the run's bridge pod. The
@@ -69,13 +69,39 @@ npa workbench antioch openpi-stack \
   --output json
 ```
 
+Create secrets from protected files or a secret-manager sync, never literal
+values on a command line. The policy terms Secret is referenced only by the
+single-writer cache init container. The policy server does not receive it, the
+simulator never receives it, and the policy server never receives the Antioch
+configuration or Isaac acceptance Secret.
+
+### Runtime cache tiers
+
+Without `--policy-cache-pvc`, the policy Deployment uses a named `emptyDir`.
+That is the explicit node-local ephemeral tier: it survives container restarts
+inside one pod but is lost with the pod or node and is never described as image
+state. For production reuse, create a project-controlled PVC and pass its DNS
+label with `--policy-cache-pvc <claim>`. The warmer mounts that volume
+read-write; the policy server mounts the same volume read-only. A restarted
+policy pod can therefore reuse a verified durable cache without redownloading.
+
+The cache has two independently immutable GCS identities: the checkpoint tree
+is keyed by provider, bucket/artifact, canonical object-generation-manifest
+SHA-256, and format version; the tokenizer is keyed by provider, bucket/object,
+exact generation, and format version. Population is serialized by a volume
+lock, downloads into unique temporary directories, verifies the exact file set,
+sizes, and upstream MD5 values, and publishes by atomic rename plus a ready
+marker. The tokenizer's upstream-compatible path is a symlink to its immutable
+identity. An existing mismatched alias is never overwritten. Partial or corrupt
+state fails closed and can be rebuilt without replacing a valid identity.
+
 Inspect the manifest, then repeat with `--apply`. Secret objects and values are
 never rendered. The command rejects mutable image tags. After collecting the
 report, rerun the same command with `--delete` to remove the Deployment,
 Service, Job, and NetworkPolicy; `--apply` and `--delete` are mutually
 exclusive.
 
-## Antioch-hosted execution and the token gate
+## Antioch-hosted execution
 
 `npa/examples/antioch-openpi-franka` is a thin Antioch scenario over the same
 bridge function. Antioch's runner owns Kit startup; the wrapper does not fork a
@@ -83,14 +109,15 @@ second simulator or duplicate control logic. The exact NPA revision must be
 installed in the private project image.
 
 An Antioch account session is required only to allocate/start that hosted
-engine and publish its managed scenario record. When no session is available,
-do not recover credentials or weaken the gate. The strongest independent proof
-is the private Kubernetes run: real runtime-fetched Isaac on RTX PRO 6000, real
-B200 checkpoint inference, camera/state serialization, cross-GPU ClusterIP
-transport, safe target application, and failure-path smokes. The single
-deferred check is then: authenticate through the supported Antioch CLI, package
-the example at the tested NPA revision, run suite `openpi_franka_smoke` in the
-private Isaac Lab engine, and verify its two checks and managed artifact record.
+engine and publish its managed scenario record. Select the intended organization
+with supported `antioch auth switch` behavior and verify it with
+`antioch auth whoami`; never inspect or copy the underlying auth file. Package
+the example at the reviewed NPA revision, run suite `openpi_franka_smoke` in the
+private Isaac Lab engine, and require its finite `[15,8]` action and positive
+safe-target checks. If the supported status call reports no usable session or
+no assigned compatible machine, preserve the credential-free RTX/B200 result
+and report that exact external assignment gate without attempting browser-token
+extraction or credential recovery.
 
 Antioch does not accept secret mounts in `antioch.yaml`. For a hosted smoke,
 keep the Kubernetes credential on the operator host: the example's loopback

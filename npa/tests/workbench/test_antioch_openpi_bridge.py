@@ -534,6 +534,9 @@ def test_stack_warms_checkpoint_in_init_and_serves_from_readonly_cache() -> None
     ]
     assert warmer["env"][0]["valueFrom"]["secretKeyRef"]["name"] == "openpi-terms"
     assert "NPA_OPENPI_ACCEPT_GEMMA_TERMS" not in json.dumps(server)
+    assert {item["name"]: item.get("value") for item in server["env"]}[
+        "OPENPI_DATA_HOME"
+    ] == "/opt/npa-model-cache/openpi/openpi-data"
     assert server["volumeMounts"] == [
         {
             "name": "policy-cache",

@@ -45,6 +45,7 @@ TOKENIZER_MANIFEST_SHA256 = (
     "1e0c7ffebf2ed3b8e861f008d0aa9fa6304b39ac43254a14d332e0f992ad661b"
 )
 DEFAULT_CACHE_ROOT = "/opt/npa-model-cache/openpi"
+OPENPI_DATA_DIRNAME = "openpi-data"
 READY_MARKER = ".npa-ready.json"
 
 
@@ -206,7 +207,11 @@ def tokenizer_object_path(cache_root: str | Path) -> Path:
 def tokenizer_alias_path(cache_root: str | Path) -> Path:
     """Path OpenPI's upstream downloader derives from its immutable gs:// URL."""
 
-    return Path(cache_root) / TOKENIZER_BUCKET / TOKENIZER_OBJECT
+    return openpi_data_home(cache_root) / TOKENIZER_BUCKET / TOKENIZER_OBJECT
+
+
+def openpi_data_home(cache_root: str | Path) -> Path:
+    return Path(cache_root) / OPENPI_DATA_DIRNAME
 
 
 def _relative_path(record: Mapping[str, object]) -> Path:
@@ -426,9 +431,12 @@ def populate_cache(
     root = Path(cache_root)
     root.mkdir(parents=True, exist_ok=True)
     # OpenPI calls chmod on OPENPI_DATA_HOME even for a fully warm cache.  Set
-    # the requested mode while the init container owns the RW mount so that the
-    # credential-free server can safely use the same directory read-only.
-    root.chmod(0o777)
+    # the requested mode on a warmer-owned child while the init container has a
+    # RW mount. CSI volume roots are commonly group-writable but not owned by
+    # the pod user, so changing the root mode would incorrectly require root.
+    data_home = openpi_data_home(root)
+    data_home.mkdir(parents=True, exist_ok=True)
+    data_home.chmod(0o777)
     lock_dir = root / ".locks"
     lock_dir.mkdir(parents=True, exist_ok=True)
     lock_path = lock_dir / f"{EXPECTED_MANIFEST_SHA256}.lock"
