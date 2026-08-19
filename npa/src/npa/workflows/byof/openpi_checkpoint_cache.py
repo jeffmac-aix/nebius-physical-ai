@@ -221,6 +221,22 @@ def checkpoint_assets_alias_path(cache_root: str | Path) -> Path:
     return openpi_data_home(cache_root) / BUCKET / ARTIFACT / "assets"
 
 
+def checkpoint_assets_identity_root(cache_root: str | Path) -> Path:
+    return (
+        openpi_data_home(cache_root)
+        / ".npa-identities"
+        / PROVIDER
+        / BUCKET
+        / ARTIFACT
+        / f"generation-manifest-sha256-{EXPECTED_MANIFEST_SHA256}"
+        / "v1"
+    )
+
+
+def checkpoint_assets_path(cache_root: str | Path) -> Path:
+    return checkpoint_assets_identity_root(cache_root) / "assets"
+
+
 def openpi_data_home(cache_root: str | Path) -> Path:
     return Path(cache_root) / OPENPI_DATA_DIRNAME
 
@@ -369,13 +385,69 @@ def verify_runtime_cache(
 ) -> Path:
     checkpoint = verify_cache(cache_root, records)
     verify_tokenizer_cache(cache_root, tokenizer_record)
-    assets = checkpoint / "assets"
+    assets = verify_checkpoint_assets_cache(cache_root, records)
     alias = checkpoint_assets_alias_path(cache_root)
     if not alias.is_symlink() or alias.resolve() != assets.resolve():
         raise OpenPICacheError(
             "OpenPI checkpoint normalization-assets alias is missing or mismatched"
         )
     return checkpoint
+
+
+def _checkpoint_assets_records(
+    records: Sequence[Mapping[str, object]],
+) -> list[Mapping[str, object]]:
+    selected = [
+        record for record in records if _relative_path(record).parts[0] == "assets"
+    ]
+    if not selected:
+        raise OpenPICacheError("OpenPI checkpoint contains no normalization assets")
+    return selected
+
+
+def verify_checkpoint_assets_cache(
+    cache_root: str | Path, records: Sequence[Mapping[str, object]]
+) -> Path:
+    selected = _checkpoint_assets_records(records)
+    identity = checkpoint_assets_identity_root(cache_root)
+    marker = identity / READY_MARKER
+    expected_marker = {
+        "format": CACHE_FORMAT,
+        "provider": PROVIDER,
+        "bucket": BUCKET,
+        "artifact": f"{ARTIFACT}/assets",
+        "revision": EXPECTED_MANIFEST_SHA256,
+        "object_count": len(selected),
+        "total_size_bytes": sum(int(record["size"]) for record in selected),
+    }
+    try:
+        metadata = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise OpenPICacheError(
+            "OpenPI normalization-assets cache has no valid ready marker"
+        ) from exc
+    if metadata != expected_marker:
+        raise OpenPICacheError(
+            "OpenPI normalization-assets ready marker does not match its identity"
+        )
+    assets = checkpoint_assets_path(cache_root)
+    expected_paths = {Path(*_relative_path(record).parts[1:]) for record in selected}
+    actual_paths = (
+        {path.relative_to(assets) for path in assets.rglob("*") if path.is_file()}
+        if assets.is_dir()
+        else set()
+    )
+    if actual_paths != expected_paths:
+        raise OpenPICacheError(
+            "OpenPI normalization-assets file set is incomplete or unexpected"
+        )
+    for record in selected:
+        path = assets / Path(*_relative_path(record).parts[1:])
+        if path.stat().st_size != int(record["size"]):
+            raise OpenPICacheError("OpenPI normalization-assets size mismatch")
+        if _file_md5_base64(path) != str(record["md5Hash"]):
+            raise OpenPICacheError("OpenPI normalization-assets checksum mismatch")
+    return assets
 
 
 def _download_url(record: Mapping[str, object], *, bucket: str = BUCKET) -> str:
@@ -452,6 +524,61 @@ def _populate_tokenizer(
     return True
 
 
+def _populate_checkpoint_assets(
+    cache_root: Path, records: Sequence[Mapping[str, object]]
+) -> bool:
+    try:
+        verify_checkpoint_assets_cache(cache_root, records)
+        return False
+    except OpenPICacheError:
+        pass
+    selected = _checkpoint_assets_records(records)
+    identity = checkpoint_assets_identity_root(cache_root)
+    identity.parent.mkdir(parents=True, exist_ok=True)
+    if identity.exists():
+        shutil.rmtree(identity)
+    temporary = Path(
+        tempfile.mkdtemp(prefix=f".{identity.name}.tmp-", dir=identity.parent)
+    )
+    try:
+        destination_root = temporary / "assets"
+        source_root = checkpoint_path(cache_root)
+        for record in selected:
+            relative = _relative_path(record)
+            source = source_root / relative
+            destination = destination_root / Path(*relative.parts[1:])
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
+        marker = {
+            "format": CACHE_FORMAT,
+            "provider": PROVIDER,
+            "bucket": BUCKET,
+            "artifact": f"{ARTIFACT}/assets",
+            "revision": EXPECTED_MANIFEST_SHA256,
+            "object_count": len(selected),
+            "total_size_bytes": sum(int(record["size"]) for record in selected),
+        }
+        (temporary / READY_MARKER).write_bytes(_canonical_json(marker) + b"\n")
+        published_assets = temporary / "assets"
+        for record in selected:
+            relative = _relative_path(record)
+            path = published_assets / Path(*relative.parts[1:])
+            if path.stat().st_size != int(record["size"]):
+                raise OpenPICacheError(
+                    "copied OpenPI normalization-assets size mismatch"
+                )
+            if _file_md5_base64(path) != str(record["md5Hash"]):
+                raise OpenPICacheError(
+                    "copied OpenPI normalization-assets checksum mismatch"
+                )
+        os.rename(temporary, identity)
+    except Exception:
+        shutil.rmtree(temporary, ignore_errors=True)
+        raise
+    verify_checkpoint_assets_cache(cache_root, records)
+    return True
+
+
 def populate_cache(
     cache_root: str | Path,
     *,
@@ -525,9 +652,10 @@ def populate_cache(
         populated = (
             _populate_tokenizer(root, tokenizer_record, tokenizer_download) or populated
         )
+        populated = _populate_checkpoint_assets(root, records) or populated
         _ensure_relative_alias(
             checkpoint_assets_alias_path(root),
-            checkpoint_path(root) / "assets",
+            checkpoint_assets_path(root),
             description="OpenPI checkpoint normalization-assets cache",
         )
         return verify_runtime_cache(root, records, tokenizer_record), populated

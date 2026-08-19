@@ -106,7 +106,10 @@ def test_cold_population_and_verified_warm_readonly_reuse(
     )
     assets_alias = cache.checkpoint_assets_alias_path(tmp_path)
     assert assets_alias.is_symlink()
-    assert assets_alias.resolve() == (path / "assets").resolve()
+    assert assets_alias.resolve() == cache.checkpoint_assets_path(tmp_path).resolve()
+    assert cache.checkpoint_assets_path(tmp_path).is_relative_to(
+        cache.openpi_data_home(tmp_path)
+    )
     assert cache.openpi_data_home(tmp_path).stat().st_mode & 0o777 == 0o777
 
 
@@ -183,6 +186,24 @@ def test_corrupt_and_partial_cache_refuses_then_recovers(
     )
     assert populated is True
     cache.verify_tokenizer_cache(tmp_path, tokenizer_record)
+
+    assets_file = next(
+        path
+        for path in cache.checkpoint_assets_path(tmp_path).rglob("*")
+        if path.is_file()
+    )
+    assets_file.write_bytes(b"corrupt")
+    with pytest.raises(cache.OpenPICacheError, match="size mismatch|checksum mismatch"):
+        cache.verify_checkpoint_assets_cache(tmp_path, records)
+    _, populated = cache.populate_cache(
+        tmp_path,
+        environ=environ,
+        read_json=read_json,
+        download=download,
+        tokenizer_download=download,
+    )
+    assert populated is True
+    cache.verify_checkpoint_assets_cache(tmp_path, records)
 
 
 def test_cache_miss_without_terms_fails_before_metadata_or_download(
