@@ -29,6 +29,15 @@ from npa.cli.agent import (
 
 runner = CliRunner()
 
+# A few tests evaluate the emitted JavaScript with a real engine, which is the only
+# way to check it rather than pattern-match it. `node` is not a suite prerequisite,
+# so skip rather than fail -- and skip rather than return early, so a machine
+# without it reports the coverage it did not run.
+requires_node = pytest.mark.skipif(
+    shutil.which("node") is None,
+    reason="needs node to evaluate the emitted JavaScript",
+)
+
 
 def test_fail_is_typed_as_non_returning_and_preserves_cli_exit() -> None:
     assert get_type_hints(agent_module._fail)["return"] is NoReturn
@@ -1606,6 +1615,7 @@ def test_lichtblick_nginx_inline_javascript_has_no_nginx_variables_or_controls()
         assert not [char for char in script if ord(char) < 32 or ord(char) == 127]
 
 
+@requires_node
 def test_lichtblick_worker_accepts_only_same_origin_lichtblick_javascript() -> None:
     from npa.cli.agent_site import _lichtblick_worker_script
 
@@ -3373,9 +3383,8 @@ def test_bootstrap_chat_copy_yaml_support_present() -> None:
     assert "copyTextToClipboard" in source
 
 
+@requires_node
 def test_bootstrap_emitted_ui_script_is_valid_javascript(monkeypatch) -> None:
-    if not shutil.which("node"):
-        return
     from npa.cli import agent as agent_module
 
     captured: dict[str, str] = {}
