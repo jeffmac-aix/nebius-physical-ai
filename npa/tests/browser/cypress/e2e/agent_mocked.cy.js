@@ -3164,3 +3164,84 @@ describe("NPA agent UI with mocked APIs", () => {
     });
   });
 });
+
+describe("NPA agent preferred-recording mount handoff", () => {
+  it("replaces an in-flight page-boot mount with the selected run capability", () => {
+    const runId = "boot-handoff-run";
+    const runRef = "npa1_boot_handoff";
+    const projectId = "project-a";
+    const bucket = "project-artifacts";
+    const resolvedPrefix = "workflow-runs";
+    const key = `${resolvedPrefix}/${runId}/reports/sim2real.rrd`;
+    const capabilityPath = `/rerun/recordings/cap-${"B".repeat(43)}.rrd`;
+    let mountRequests = 0;
+
+    cy.installAgentApiMocks();
+    cy.intercept({ method: "GET", pathname: "/rerun/" }, (req) => {
+      mountRequests += 1;
+      req.reply({
+        delay: 2500,
+        fixture: "mock_rerun.html",
+        headers: { "content-type": "text/html; charset=utf-8" },
+      });
+    }).as("delayedRerunMount");
+    cy.intercept("POST", "/api/sim-viz/load-artifact", (req) => {
+      expect(req.body).to.deep.include({
+        run_id: runId,
+        run_ref: runRef,
+        project_id: projectId,
+        resource_bucket: bucket,
+        resolved_prefix: resolvedPrefix,
+        source_selected: true,
+        key,
+      });
+      req.reply({
+        statusCode: 200,
+        body: {
+          ok: true,
+          render: "rerun",
+          run_ref: runRef,
+          artifact_uri: `s3://${bucket}/${key}`,
+          sim_viz: {
+            ...SIM_VIZ,
+            run_id: runId,
+            active_run_id: runId,
+            stage: "artifact-loaded",
+            artifact_render: "rerun",
+            artifact_key: key,
+            artifact_run_ref: runRef,
+            artifact_preview_url: capabilityPath,
+            rerun_ready: true,
+          },
+        },
+      });
+    }).as("handoffArtifactLoad");
+    cy.visit("/");
+    cy.wrap(null).should(() => {
+      expect(mountRequests, "page-boot mount started").to.be.greaterThan(0);
+    });
+    cy.window().then((win) => {
+      const load = win.__NPA_AGENT_TEST__.loadArtifact({
+        run_id: runId,
+        run_ref: runRef,
+        project_id: projectId,
+        resource_bucket: bucket,
+        resolved_prefix: resolvedPrefix,
+        source_selected: true,
+        key,
+      });
+      return cy.wrap(load, { timeout: 30000 }).should("eq", true);
+    });
+    cy.wait("@handoffArtifactLoad");
+    cy.wrap(null).should(() => {
+      expect(mountRequests, "selected recording remount").to.be.greaterThan(1);
+    });
+    cy.get("#rerunFrame").should(($frame) => {
+      const frame = $frame[0];
+      expect(frame.hidden).to.eq(false);
+      expect(frame.dataset.rerunRunKey).to.eq(runId);
+      expect(frame.dataset.rerunRecordingUrl).to.include(capabilityPath);
+      expect(decodeURIComponent(String(frame.getAttribute("src") || ""))).to.include(capabilityPath);
+    });
+  });
+});

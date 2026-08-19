@@ -11465,6 +11465,7 @@
           lastRerunRecordingUrl = recordingUrl;
           mountedRerunRunKey = mountKey;
           iframe.dataset.rerunRunKey = mountKey;
+          iframe.dataset.rerunRecordingUrl = recordingUrl;
           if (!safeHideRerunBundleCover(iframe)) {
             scheduleRerunBundleUncover(iframe).catch(() => { /* best-effort */ });
           }
@@ -11540,6 +11541,7 @@
         }
         rerunIframeLoaded = true;
         mountedRerunRunKey = mountKey;
+        iframe.dataset.rerunRecordingUrl = lastRerunRecordingUrl;
         // Re-evaluate the CTA now that the iframe is up. `cta.hidden` is
         // `ready && rerunIframeLoaded`, so a status refresh that lands while the
         // iframe is still booting leaves the "No run-specific Rerun recording
@@ -14022,21 +14024,40 @@
           setRenderMode("rerun", renderModeOptions);
           hideArtifactPreview();
           lastRrdUpdatedAt = "";
+          const frameMatchesSelectedRecording = () => {
+            const frame = document.getElementById("rerunFrame");
+            const frameSrc = String((frame && frame.getAttribute("src")) || "");
+            const frameRunKey = String((frame && frame.dataset.rerunRunKey) || "").trim();
+            const frameRecordingUrl = String((frame && frame.dataset.rerunRecordingUrl) || "").trim();
+            const capabilityPath = String(simViz.artifact_preview_url || "").trim();
+            let decodedSrc = frameSrc;
+            try { decodedSrc = decodeURIComponent(frameSrc); } catch (_decodeErr) { /* compare raw */ }
+            const capabilityMatches = !capabilityPath ||
+              decodedSrc.includes(capabilityPath) || frameRecordingUrl.endsWith(capabilityPath);
+            return Boolean(
+              frame && !frame.hidden && frameSrc && frameRunKey === loadedRunId &&
+              capabilityMatches
+            );
+          };
           // Soft-swap when possible; only force remount if the viewer is not alive.
           if (!(await swapRerunRecordingInPlace(String(simViz.camera || "workspace"), loadedRunId))) {
             // Let mountRerunIframe inspect the existing viewer. It can reuse a
             // display-ready same-run mount even when add_receiver is unavailable;
             // pre-emptively marking it dead causes a needless second navigation.
             await mountRerunIframeUntilSuccess(String(simViz.camera || "workspace"), 8, loadedRunId);
-            // A boot-time mount may have been in flight when the source-aware
-            // switch cleared the old frame. The single-flight promise can finish
-            // successfully for that superseded frame, so verify the DOM target
-            // before declaring the selected run mounted and retry once if needed.
-            const selectedFrame = document.getElementById("rerunFrame");
-            if (!selectedFrame || !selectedFrame.getAttribute("src")) {
+            // A page-boot mount may already own the single-flight promise. Its
+            // completion is not success for this selection unless both the run
+            // identity and per-object capability match. Retry after that older
+            // mount releases the single-flight slot instead of leaving its
+            // nonblank but unrelated recording in the selected run's pane.
+            if (!frameMatchesSelectedRecording()) {
               rerunIframeLoaded = false;
+              mountedRerunRunKey = "";
               await mountRerunIframeUntilSuccess(String(simViz.camera || "workspace"), 8, loadedRunId);
             }
+          }
+          if (!frameMatchesSelectedRecording()) {
+            throw new Error("Rerun viewer did not mount the selected recording capability.");
           }
         } else if (render === "mcap" || render === "lichtblick") {
           hideArtifactPreview();
