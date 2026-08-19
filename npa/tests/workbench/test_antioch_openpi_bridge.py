@@ -112,6 +112,9 @@ def test_hosted_example_pins_reviewed_npa_source_revision() -> None:
     dockerfile = (EXAMPLE_DIR / "Dockerfile").read_text()
     assert "ARG NPA_SOURCE_REF" in dockerfile
     assert "@${NPA_SOURCE_REF}#subdirectory=npa" in dockerfile
+    assert "COPY scenarios.py reverse_policy_relay.py /workspace/project/" in dockerfile
+    dockerignore = (EXAMPLE_DIR / ".dockerignore").read_text().splitlines()
+    assert ".antioch/" in dockerignore
     service = manifest["services"]["sim"]
     assert service["environment"] == {
         "OPENPI_POLICY_HOST": "127.0.0.1",
