@@ -142,6 +142,17 @@ images:
     notes: >-
       CPU-only control-plane wrapper. The proprietary antioch-sim CLI and all
       operator credentials are runtime-only in mounted volumes; neither is baked.
+  openpi-policy:
+    dockerfile: openpi-policy/Dockerfile
+    tier: service
+    ports: [8000]
+    redistribution: public
+    notes: >-
+      Immutable Apache-2.0 OpenPI source and lock-resolved dependencies only.
+      The pi0.5-DROID/Gemma-derived checkpoint is fetched at runtime by a run-scoped cache
+      warmer, verified against the pinned GCS object-generation manifest, and
+      mounted read-only into the server. Built-image layer, credential, model,
+      and cache scans are mandatory before publication.
   lerobot:
     dockerfile: lerobot/Dockerfile
     tier: service

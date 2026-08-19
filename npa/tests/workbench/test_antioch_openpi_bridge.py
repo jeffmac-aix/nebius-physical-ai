@@ -455,6 +455,46 @@ def test_stack_scopes_antioch_and_isaac_secrets_to_bridge_only() -> None:
     assert "token" not in serialized_bridge.lower()
 
 
+def test_stack_warms_checkpoint_in_init_and_serves_from_readonly_cache() -> None:
+    policy = _stack(policy_cache_pvc="openpi-model-cache")["items"][0]
+    pod = policy["spec"]["template"]["spec"]
+    warmer = pod["initContainers"][0]
+    server = pod["containers"][0]
+    assert warmer["name"] == "warm-openpi-checkpoint"
+    assert warmer["command"][-3:] == [
+        "warm",
+        "--cache-root",
+        "/opt/npa-model-cache/openpi",
+    ]
+    assert warmer["env"][0]["valueFrom"]["secretKeyRef"]["name"] == "openpi-terms"
+    assert "NPA_OPENPI_ACCEPT_GEMMA_TERMS" not in json.dumps(server)
+    assert server["volumeMounts"] == [
+        {
+            "name": "policy-cache",
+            "mountPath": "/opt/npa-model-cache/openpi",
+            "readOnly": True,
+        }
+    ]
+    assert pod["volumes"] == [
+        {
+            "name": "policy-cache",
+            "persistentVolumeClaim": {"claimName": "openpi-model-cache"},
+        }
+    ]
+
+
+def test_stack_defaults_to_named_node_local_ephemeral_cache() -> None:
+    policy = _stack()["items"][0]
+    assert policy["spec"]["template"]["spec"]["volumes"] == [
+        {"name": "policy-cache", "emptyDir": {"sizeLimit": "40Gi"}}
+    ]
+
+
+def test_stack_rejects_invalid_policy_cache_pvc() -> None:
+    with pytest.raises(OpenPIBridgeError, match="Kubernetes DNS label"):
+        _stack(policy_cache_pvc="Not/A/Claim")
+
+
 def test_stack_rejects_mutable_images() -> None:
     with pytest.raises(OpenPIBridgeError, match="policy image must be digest-pinned"):
         _stack(policy_image="registry.example.invalid/openpi:latest")

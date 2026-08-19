@@ -296,6 +296,7 @@ def render_stack(
     antioch_config_secret: str = "",
     output_uri: str = "",
     s3_credentials_secret: str = "",
+    policy_cache_pvc: str = "",
     prompt: str = "pick up the fork",
     policy_ready_timeout_seconds: int = 1800,
 ) -> dict[str, object]:
@@ -319,12 +320,19 @@ def render_stack(
             name for name, value in required.items() if not value.strip()
         )
         raise OpenPIBridgeError(f"required deployment values are empty: {missing}")
+    if policy_cache_pvc and not re.fullmatch(
+        r"[a-z0-9](?:[-a-z0-9]*[a-z0-9])?", policy_cache_pvc
+    ):
+        raise OpenPIBridgeError("policy cache PVC must be a Kubernetes DNS label")
     if policy_ready_timeout_seconds <= 0:
         raise OpenPIBridgeError("policy readiness timeout must be positive")
     name = _safe_name(run_id)
     policy_labels = {"app": f"{name}-policy", "npa.nebius.ai/run": name}
     bridge_labels = {"app": f"{name}-bridge", "npa.nebius.ai/run": name}
     pull_secrets = [{"name": image_pull_secret}] if image_pull_secret else []
+    cache_root = "/opt/npa-model-cache/openpi"
+    cache_program = "/opt/npa-openpi/openpi_checkpoint_cache.py"
+    server_program = "/opt/npa-openpi/openpi_policy_server.py"
     policy_container = {
         "name": "openpi-policy",
         "image": policy_image,
@@ -332,27 +340,11 @@ def render_stack(
         "command": ["/bin/bash", "-lc"],
         "args": [
             "set -euo pipefail; "
-            'test "$NPA_OPENPI_ACCEPT_GEMMA_TERMS" = YES || exit 64; '
-            "checkpoint_dir=$(/opt/venv/bin/python -c 'from openpi.shared import download; "
-            'print(download.maybe_download("gs://openpi-assets/checkpoints/polaris/'
-            'pi05_droid_jointpos_polaris", token="anon"))\'); '
-            "exec /opt/venv/bin/python /opt/byof/scripts/serve_policy.py --port=8000 "
-            "policy:checkpoint --policy.config=pi05_droid_jointpos_polaris "
-            '--policy.dir="$checkpoint_dir"'
+            f"exec /opt/venv/bin/python {server_program} "
+            f"--cache-root {cache_root} --port 8000"
         ],
         "ports": [{"name": "policy", "containerPort": 8000}],
-        "env": [
-            {
-                "name": "NPA_OPENPI_ACCEPT_GEMMA_TERMS",
-                "valueFrom": {
-                    "secretKeyRef": {
-                        "name": policy_terms_secret,
-                        "key": "NPA_OPENPI_ACCEPT_GEMMA_TERMS",
-                    }
-                },
-            },
-            {"name": "OPENPI_DATA_HOME", "value": "/workspace/openpi-cache"},
-        ],
+        "env": [{"name": "OPENPI_DATA_HOME", "value": cache_root}],
         "resources": {
             "requests": {"cpu": "16", "memory": "96Gi", "nvidia.com/gpu": "1"},
             "limits": {"nvidia.com/gpu": "1"},
@@ -369,7 +361,7 @@ def render_stack(
             "failureThreshold": 6,
         },
         "volumeMounts": [
-            {"name": "policy-cache", "mountPath": "/workspace/openpi-cache"}
+            {"name": "policy-cache", "mountPath": cache_root, "readOnly": True}
         ],
         "securityContext": {
             "allowPrivilegeEscalation": False,
@@ -455,11 +447,58 @@ def render_stack(
                                 "fsGroup": 1000,
                                 "seccompProfile": {"type": "RuntimeDefault"},
                             },
+                            "initContainers": [
+                                {
+                                    "name": "warm-openpi-checkpoint",
+                                    "image": policy_image,
+                                    "imagePullPolicy": "IfNotPresent",
+                                    "command": [
+                                        "/opt/venv/bin/python",
+                                        cache_program,
+                                        "warm",
+                                        "--cache-root",
+                                        cache_root,
+                                    ],
+                                    "env": [
+                                        {
+                                            "name": "NPA_OPENPI_ACCEPT_GEMMA_TERMS",
+                                            "valueFrom": {
+                                                "secretKeyRef": {
+                                                    "name": policy_terms_secret,
+                                                    "key": "NPA_OPENPI_ACCEPT_GEMMA_TERMS",
+                                                }
+                                            },
+                                        }
+                                    ],
+                                    "volumeMounts": [
+                                        {
+                                            "name": "policy-cache",
+                                            "mountPath": cache_root,
+                                        }
+                                    ],
+                                    "resources": {
+                                        "requests": {"cpu": "2", "memory": "4Gi"},
+                                        "limits": {"cpu": "8", "memory": "16Gi"},
+                                    },
+                                    "securityContext": {
+                                        "allowPrivilegeEscalation": False,
+                                        "capabilities": {"drop": ["ALL"]},
+                                    },
+                                }
+                            ],
                             "containers": [policy_container],
                             "volumes": [
                                 {
                                     "name": "policy-cache",
-                                    "emptyDir": {"sizeLimit": "40Gi"},
+                                    **(
+                                        {
+                                            "persistentVolumeClaim": {
+                                                "claimName": policy_cache_pvc
+                                            }
+                                        }
+                                        if policy_cache_pvc
+                                        else {"emptyDir": {"sizeLimit": "40Gi"}}
+                                    ),
                                 }
                             ],
                         },

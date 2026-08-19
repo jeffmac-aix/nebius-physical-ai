@@ -464,6 +464,11 @@ def openpi_stack(
     image_pull_secret: str = typer.Option("", "--image-pull-secret"),
     antioch_config_secret: str = typer.Option("", "--antioch-config-secret"),
     s3_credentials_secret: str = typer.Option("", "--s3-credentials-secret"),
+    policy_cache_pvc: str = typer.Option(
+        "",
+        "--policy-cache-pvc",
+        help="Optional durable shared PVC; default is node-local ephemeral cache.",
+    ),
     output_path: str = typer.Option("", "--output-path"),
     prompt: str = typer.Option("pick up the fork", "--prompt"),
     policy_ready_timeout_seconds: int = typer.Option(
@@ -493,9 +498,14 @@ def openpi_stack(
             antioch_config_secret=antioch_config_secret,
             output_uri=output_path,
             s3_credentials_secret=s3_credentials_secret,
+            policy_cache_pvc=policy_cache_pvc,
             prompt=prompt,
             policy_ready_timeout_seconds=policy_ready_timeout_seconds,
         )
+        if apply:
+            from npa.workflows.byof.openpi_checkpoint_cache import preflight
+
+            preflight()
         if apply or delete:
             result = subprocess.run(
                 ["kubectl", "delete" if delete else "apply", "-f", "-"],
