@@ -42,6 +42,10 @@ touch "$target/payload/libnvidia-glcore.so.580.95.05"
 touch "$target/payload/libnvidia-eglcore.so.580.95.05"
 touch "$target/payload/libGLX_nvidia.so.580.95.05"
 touch "$target/payload/libEGL_nvidia.so.580.95.05"
+touch "$target/payload/libGL.so.1.7.0"
+touch "$target/payload/libGLdispatch.so.0"
+touch "$target/payload/libGLESv1_CM.so.1.2.0"
+touch "$target/payload/libGLESv2.so.2.1.0"
 """,
     )
     digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
@@ -91,6 +95,9 @@ def test_cold_population_is_verified_atomic_and_warm_reuse_skips_download(
         f"driver={DRIVER_VERSION}\nsha256="
     )
     assert (current / "libGLX_nvidia.so.0").is_symlink()
+    assert (current / "libGL.so.1").resolve() == current / "libGL.so.1.7.0"
+    assert (current / "libGLESv1_CM.so.1").is_symlink()
+    assert (current / "libGLESv2.so.2").is_symlink()
     assert (cache / "runtime.env").is_file()
     assert (tmp_path / "downloads").read_text(encoding="utf-8").count("download") == 2
 

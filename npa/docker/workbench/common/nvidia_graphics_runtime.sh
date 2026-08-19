@@ -51,6 +51,8 @@ verify_tree() {
   test -s "${tree}/.ready" \
     && test -e "${tree}/libGLX_nvidia.so.0" \
     && test -e "${tree}/libEGL_nvidia.so.0" \
+    && test -e "${tree}/libGL.so.1" \
+    && test -e "${tree}/libGLdispatch.so.0" \
     && test -e "${tree}/libnvidia-glcore.so.${version}" \
     && test -e "${tree}/libnvidia-eglcore.so.${version}" \
     && grep -qxF "driver=${version}" "${tree}/.ready"
@@ -95,6 +97,16 @@ if ! verify_tree "$target"; then
     || die "$EX_SOFTWARE" "extracted payload has no NVIDIA EGL library"
 
   ln -sf "libGLX_nvidia.so.${version}" "${library_root}/libGLX_nvidia.so.0"
+  # `--extract-only` does not create the GLVND links the interactive installer
+  # normally publishes. Without the matching libGL.so.1, the loader combines
+  # the distro GL library with this driver's libGLdispatch and Isaac/Iray fails
+  # on `_glapi_tls_Current` before camera rendering can advance.
+  test ! -f "${library_root}/libGL.so.1.7.0" \
+    || ln -sf "libGL.so.1.7.0" "${library_root}/libGL.so.1"
+  test ! -f "${library_root}/libGLESv1_CM.so.1.2.0" \
+    || ln -sf "libGLESv1_CM.so.1.2.0" "${library_root}/libGLESv1_CM.so.1"
+  test ! -f "${library_root}/libGLESv2.so.2.1.0" \
+    || ln -sf "libGLESv2.so.2.1.0" "${library_root}/libGLESv2.so.2"
   test ! -f "${library_root}/libEGL_nvidia.so.${version}" \
     || ln -sf "libEGL_nvidia.so.${version}" "${library_root}/libEGL_nvidia.so.0"
   test ! -f "${library_root}/libnvidia-egl-gbm.so.${version}" \
