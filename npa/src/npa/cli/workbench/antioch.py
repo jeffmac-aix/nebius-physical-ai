@@ -474,6 +474,43 @@ def openpi_stack(
     policy_ready_timeout_seconds: int = typer.Option(
         1800, "--policy-ready-timeout-seconds", min=1
     ),
+    control_mode: str = typer.Option(
+        "continuous",
+        "--control-mode",
+        help="Production continuous control or explicit finite-smoke diagnostic.",
+    ),
+    stream_duration_seconds: float = typer.Option(
+        0.0,
+        "--stream-duration-seconds",
+        min=0,
+        help="Zero is long-lived; a positive duration renders a sustained-test Job.",
+    ),
+    observation_hz: float = typer.Option(10.0, "--observation-hz", min=0.001),
+    policy_request_hz: float = typer.Option(2.0, "--policy-request-hz", min=0.001),
+    control_hz: float = typer.Option(10.0, "--control-hz", min=0.001),
+    executed_targets_per_chunk: int = typer.Option(
+        5, "--executed-targets-per-chunk", min=1, max=15
+    ),
+    maximum_observation_age_seconds: float = typer.Option(
+        0.75, "--maximum-observation-age-seconds", min=0.001
+    ),
+    maximum_response_age_seconds: float = typer.Option(
+        1.5, "--maximum-response-age-seconds", min=0.001
+    ),
+    inference_deadline_seconds: float = typer.Option(
+        10.0, "--inference-deadline-seconds", min=0.001
+    ),
+    ping_interval_seconds: float = typer.Option(
+        5.0, "--ping-interval-seconds", min=0.001
+    ),
+    safe_hold_behavior: str = typer.Option("hold-current", "--safe-hold-behavior"),
+    minimum_ready_cycles: int = typer.Option(3, "--minimum-ready-cycles", min=1),
+    minimum_ready_seconds: float = typer.Option(
+        5.0, "--minimum-ready-seconds", min=0.001
+    ),
+    maximum_joint_delta_rad: float = typer.Option(
+        0.08, "--maximum-joint-delta-rad", min=0.001
+    ),
     apply: bool = typer.Option(False, "--apply"),
     delete: bool = typer.Option(False, "--delete"),
     output: OutputFormat = typer.Option(OutputFormat.text, "--output"),
@@ -501,6 +538,20 @@ def openpi_stack(
             policy_cache_pvc=policy_cache_pvc,
             prompt=prompt,
             policy_ready_timeout_seconds=policy_ready_timeout_seconds,
+            control_mode=control_mode,
+            stream_duration_seconds=stream_duration_seconds,
+            observation_hz=observation_hz,
+            policy_request_hz=policy_request_hz,
+            control_hz=control_hz,
+            executed_targets_per_chunk=executed_targets_per_chunk,
+            maximum_observation_age_seconds=maximum_observation_age_seconds,
+            maximum_response_age_seconds=maximum_response_age_seconds,
+            inference_deadline_seconds=inference_deadline_seconds,
+            ping_interval_seconds=ping_interval_seconds,
+            safe_hold_behavior=safe_hold_behavior,
+            minimum_ready_cycles=minimum_ready_cycles,
+            minimum_ready_seconds=minimum_ready_seconds,
+            maximum_joint_delta_rad=maximum_joint_delta_rad,
         )
         if apply:
             from npa.workflows.byof.openpi_checkpoint_cache import preflight

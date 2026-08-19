@@ -12,11 +12,23 @@ services:
     environment:
       OPENPI_POLICY_HOST: 127.0.0.1
       OPENPI_POLICY_PORT: "8000"
+      OPENPI_CONTROL_MODE: continuous
+      OPENPI_STREAM_DURATION_SECONDS: "30"
+      OPENPI_OBSERVATION_HZ: "5"
+      OPENPI_POLICY_REQUEST_HZ: "1"
+      OPENPI_CONTROL_HZ: "10"
+      OPENPI_EXECUTED_TARGETS_PER_CHUNK: "5"
+      OPENPI_MAXIMUM_OBSERVATION_AGE_SECONDS: "2"
+      OPENPI_MAXIMUM_RESPONSE_AGE_SECONDS: "10"
+      OPENPI_INFERENCE_DEADLINE_SECONDS: "15"
+      OPENPI_SAFE_HOLD_BEHAVIOR: hold-current
+      OPENPI_MINIMUM_READY_CYCLES: "3"
+      OPENPI_MINIMUM_READY_SECONDS: "10"
     ports:
       - "18123:18123"
 
 suites:
-  openpi_franka_smoke:
-    description: Run the two-camera Franka bridge against a private OpenPI service.
+  openpi_franka_streaming:
+    description: Sustain two-camera Franka control against a private OpenPI service.
     select:
       - tags: [npa-openpi-franka]

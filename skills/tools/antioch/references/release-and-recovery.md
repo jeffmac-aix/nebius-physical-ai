@@ -20,9 +20,12 @@ Apply `skills/atomic/solution-licensing/SKILL.md`,
 
 ## Validate and publish
 
-1. Build in the trusted private registry with an immutable additive tag and
-   exact source revision. Resolve and independently verify the manifest digest,
-   config user, labels, history, and pullability.
+1. Prove the selected build environment is explicitly mutable. Never infer
+   build authority from access to an operator/developer VM. When a host is
+   read-only, use the trusted registry's or authorized Kubernetes-native build
+   path. Build with an immutable additive tag and exact source revision, then
+   independently verify the manifest digest, config user, labels, history, and
+   pullability.
 2. Scan the digest—not the Dockerfile—with the repository Antioch, OpenPI, and
    Omniverse payload scanners. Produce an SBOM and vulnerability/secret report.
 3. Run the real capability smoke on the intended GPUs: B200 `sm_100` checkpoint

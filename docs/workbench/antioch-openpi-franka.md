@@ -28,19 +28,63 @@ Every request must contain exactly:
 
 Every response must contain finite absolute targets with exact shape `[15,8]`.
 The seven arm targets must be inside Franka position limits and the gripper must
-be in `[0,1]`. The bridge executes five targets by default, limits each joint to
-at most `0.08` radians of change per control step, and then re-observes. A
-timeout, disconnect, text frame, malformed MessagePack, wrong shape, non-finite
-value, or unsafe target closes the connection and produces `failed-no-action`;
-no stale or random action is substituted. Connect and inference calls have
-explicit deadlines. Transient failures reconnect with bounded exponential
-backoff (four attempts, 0.5 to 8 seconds).
+be in `[0,1]`.
+
+Continuous soft-real-time control is the default. Isaac render/physics work and
+camera acquisition are cadence-scheduled on the simulator-safe thread while a
+dedicated policy worker owns one persistent binary MessagePack WebSocket. The
+worker permits at most one inference request in flight. Its observation queue
+has capacity one: a newer completed exterior/wrist/state observation replaces a
+superseded frame instead of accumulating stale work. Requests carry a local
+sequence, monotonic capture time, and control epoch; responses older than the
+configured age or produced across a reconnect epoch are rejected.
+
+Validated chunks are consumed as a receding horizon. Five targets are eligible
+by default, each joint changes by at most `0.08` radians per control step, and a
+new valid chunk supersedes the unused tail of the old one. On underrun, timeout,
+disconnect, malformed MessagePack, wrong shape, non-finite value, unsafe target,
+or stale response, the bridge immediately uses the configured `hold-current` or
+`no-action` behavior. It never substitutes a stale, random, clipped-through, or
+best-effort policy target. Reconnect uses bounded exponential backoff and resets
+the epoch before another response can execute.
+
+These are soft-real-time semantics. Python, WebSocket, Kubernetes scheduling,
+and the authenticated Antioch relay do not provide deterministic latency or a
+hard-real-time guarantee. The bridge emits sanitized counts/rates and latency/
+age percentiles only—never frames, prompts, endpoints, credentials, or live
+infrastructure identities.
+
+`--control-mode finite-smoke` retains the old one-observation, one-`[15,8]`
+chunk diagnostic. It is a finite Job and is not the production mode.
 
 Before Isaac starts, a non-GPU init container polls the private policy health
 endpoint with bounded requests and exponential backoff. Its readiness deadline
 defaults to 1,800 seconds and is configurable with
 `--policy-ready-timeout-seconds`; expiry prevents simulator startup and action
-application.
+application. Continuous bridge readiness is separate: a readiness marker is
+published only after camera observation sequences/timestamps advance, multiple
+policy round trips succeed, multiple safe targets are applied, and the minimum
+sustained interval elapses. A live viewport, screenshot, PID, tunnel, or policy
+health response alone is insufficient.
+
+The main streaming controls are exposed by `openpi-stack`:
+
+| Option | Default | Meaning |
+| --- | ---: | --- |
+| `--observation-hz` | 10 | requested camera/state acquisition cadence |
+| `--policy-request-hz` | 2 | maximum inference request cadence |
+| `--control-hz` | 10 | target-consumption/hold cadence |
+| `--executed-targets-per-chunk` | 5 | receding-horizon prefix, from 1 to 15 |
+| `--maximum-observation-age-seconds` | 0.75 | oldest observation accepted for a request |
+| `--maximum-response-age-seconds` | 1.5 | oldest request/response accepted for control |
+| `--inference-deadline-seconds` | 10 | socket/inference deadline before safe recovery |
+| `--safe-hold-behavior` | `hold-current` | `hold-current` or `no-action` on underrun/failure |
+| `--minimum-ready-cycles` | 3 | required round trips and applied policy targets |
+| `--minimum-ready-seconds` | 5 | sustained interval before readiness |
+
+Actual achieved rates depend on rendering, capture, policy, and transport
+latency and must be read from the emitted metrics rather than inferred from the
+requested values.
 
 ## Build and deployment
 
@@ -99,9 +143,9 @@ and can be rebuilt without replacing a valid identity.
 
 Inspect the manifest, then repeat with `--apply`. Secret objects and values are
 never rendered. The command rejects mutable image tags. After collecting the
-report, rerun the same command with `--delete` to remove the Deployment,
-Service, Job, and NetworkPolicy; `--apply` and `--delete` are mutually
-exclusive.
+report, rerun the same command with `--delete` to remove the exact rendered
+policy Deployment, private Service, bridge Deployment or validation Job, and
+NetworkPolicy; `--apply` and `--delete` are mutually exclusive.
 
 ## Antioch-hosted execution
 
@@ -114,19 +158,24 @@ An Antioch account session is required only to allocate/start that hosted
 engine and publish its managed scenario record. Select the intended organization
 with supported `antioch auth switch` behavior and verify it with
 `antioch auth whoami`; never inspect or copy the underlying auth file. Package
-the example at the reviewed NPA revision, run suite `openpi_franka_smoke` in the
-private Isaac Lab engine, and require its finite `[15,8]` action and positive
-safe-target checks. If the supported status call reports no usable session or
+the example at the reviewed NPA revision, run suite
+`openpi_franka_streaming` in the private Isaac Lab engine, and require advancing
+camera observations, multiple finite `[15,8]` responses, multiple safely
+applied targets, and sustained readiness. If the supported status call reports no usable session or
 no assigned compatible machine, preserve the credential-free RTX/B200 result
 and report that exact external assignment gate without attempting browser-token
 extraction or credential recovery.
 
-Antioch does not accept secret mounts in `antioch.yaml`. For a hosted smoke,
+Antioch does not accept secret mounts in `antioch.yaml`. For hosted streaming,
 keep the Kubernetes credential on the operator host: the example's loopback
 reverse relay uses Antioch's authenticated port tunnel, and the local connector
 pairs it with `kubectl port-forward` to the ClusterIP policy Service. This gives
 the hosted simulator a private byte stream without copying a kubeconfig into the
-Antioch service or creating an Ingress, NodePort, or load balancer.
+Antioch service or creating an Ingress, NodePort, or load balancer. No supported
+direct private Antioch-to-cluster network path is assumed by this example; use
+one only when current documented Antioch APIs expose it. The authenticated
+operator-host relay is the compatible fallback and its jitter/availability is
+part of measured soft-real-time performance.
 
 ## Licensing and artifacts
 

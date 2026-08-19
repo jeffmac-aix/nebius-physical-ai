@@ -96,9 +96,7 @@ def test_hosted_viewport_capture_advances_kit_application_loop(
         SimpleNamespace(set_camera_view=lambda **_kwargs: None),
     )
 
-    image = _capture_viewport_rgb(
-        _Sim(), eye=np.zeros(3), target=np.ones(3)
-    )
+    image = _capture_viewport_rgb(_Sim(), eye=np.zeros(3), target=np.ones(3))
 
     assert image.shape == (1, 2, 3)
     assert image.tolist() == [[[0, 1, 2], [4, 5, 6]]]
@@ -259,6 +257,18 @@ def test_hosted_example_pins_reviewed_npa_source_revision() -> None:
     assert service["environment"] == {
         "OPENPI_POLICY_HOST": "127.0.0.1",
         "OPENPI_POLICY_PORT": "8000",
+        "OPENPI_CONTROL_MODE": "continuous",
+        "OPENPI_STREAM_DURATION_SECONDS": "30",
+        "OPENPI_OBSERVATION_HZ": "5",
+        "OPENPI_POLICY_REQUEST_HZ": "1",
+        "OPENPI_CONTROL_HZ": "10",
+        "OPENPI_EXECUTED_TARGETS_PER_CHUNK": "5",
+        "OPENPI_MAXIMUM_OBSERVATION_AGE_SECONDS": "2",
+        "OPENPI_MAXIMUM_RESPONSE_AGE_SECONDS": "10",
+        "OPENPI_INFERENCE_DEADLINE_SECONDS": "15",
+        "OPENPI_SAFE_HOLD_BEHAVIOR": "hold-current",
+        "OPENPI_MINIMUM_READY_CYCLES": "3",
+        "OPENPI_MINIMUM_READY_SECONDS": "10",
     }
     assert service["ports"] == ["18123:18123"]
     assert "secrets" not in service
@@ -272,6 +282,8 @@ def test_hosted_reverse_policy_relay_is_bidirectional() -> None:
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    assert module.ReversePolicyRelay.BACKEND_BIND_HOST == "0.0.0.0"
+    assert module.ReversePolicyRelay.FRONTEND_BIND_HOST == "127.0.0.1"
 
     def unused_port() -> int:
         with socket.socket() as probe:
@@ -317,6 +329,40 @@ def test_hosted_policy_relay_reports_transferred_bytes() -> None:
     right_peer.close()
     worker.join(2)
     assert result == [15]
+
+
+def test_policy_tunnel_connector_retries_with_bounded_backoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.syspath_prepend(str(EXAMPLE_DIR))
+    spec = importlib.util.spec_from_file_location(
+        "npa_antioch_policy_tunnel_connector",
+        EXAMPLE_DIR / "policy_tunnel_connector.py",
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    calls = 0
+    delays: list[float] = []
+
+    def unavailable(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        raise ConnectionRefusedError
+
+    monkeypatch.setattr(module.socket, "create_connection", unavailable)
+    monkeypatch.setattr(module.time, "sleep", delays.append)
+
+    with pytest.raises(ConnectionError, match="exhausted connection attempts"):
+        module._connect(
+            "127.0.0.1",
+            18123,
+            attempts=3,
+            initial_backoff_seconds=0.25,
+            maximum_backoff_seconds=0.5,
+        )
+    assert calls == 3
+    assert delays == [0.25, 0.5]
 
 
 def _observation() -> dict[str, object]:
@@ -400,6 +446,7 @@ class _FakeConnection:
         self.sent: list[bytes] = []
         self.closed = False
         self.timeout = 0.0
+        self.pings = 0
 
     def recv(self) -> bytes | str:
         return self.frames.pop(0)
@@ -409,6 +456,9 @@ class _FakeConnection:
 
     def settimeout(self, timeout: float) -> None:
         self.timeout = timeout
+
+    def ping(self) -> None:
+        self.pings += 1
 
     def close(self) -> None:
         self.closed = True
@@ -439,6 +489,28 @@ def test_client_reconnects_then_returns_exact_chunk() -> None:
     assert calls == 2
     assert sleeps == [0.25]
     assert len(connection.sent) == 1
+    assert client.generation == 1
+    assert client.reconnect_count == 0
+
+
+def test_client_ping_reuses_connection_and_tracks_reconnect_generation() -> None:
+    first = _FakeConnection([pack_message({"model": "pi0.5"})])
+    second = _FakeConnection([pack_message({"model": "pi0.5"})])
+    connections = iter([first, second])
+    client = OpenPIWebsocketClient(
+        "policy.default.svc",
+        retry=RetryPolicy(attempts=1),
+        connection_factory=lambda *_args, **_kwargs: next(connections),
+    )
+    client.ping()
+    client.ping()
+    assert first.pings == 2
+    assert client.generation == 1
+    client.close()
+    client.ping()
+    assert second.pings == 1
+    assert client.generation == 2
+    assert client.reconnect_count == 1
 
 
 def test_client_exhaustion_is_no_action_and_hides_transport_detail() -> None:
@@ -455,7 +527,7 @@ def test_client_exhaustion_is_no_action_and_hides_transport_detail() -> None:
     assert "sensitive endpoint" not in str(caught.value)
 
 
-def _stack(**overrides: str) -> dict[str, object]:
+def _stack(**overrides: object) -> dict[str, object]:
     values = {
         "run_id": "test-run",
         "namespace": "default",
@@ -504,6 +576,60 @@ def test_stack_uses_separate_gpu_placement_and_private_policy_service() -> None:
     ]
     assert network["kind"] == "NetworkPolicy"
     assert network["spec"]["ingress"][0]["ports"][0]["port"] == 8000
+
+
+def test_stack_defaults_to_long_lived_continuous_control_with_readiness() -> None:
+    bridge = _stack()["items"][2]
+    assert bridge["kind"] == "Deployment"
+    pod = bridge["spec"]["template"]["spec"]
+    assert pod["restartPolicy"] == "Always"
+    container = pod["containers"][0]
+    env = {item["name"]: item.get("value") for item in container["env"]}
+    assert env["OPENPI_CONTROL_MODE"] == "continuous"
+    assert env["OPENPI_STREAM_DURATION_SECONDS"] == "0.0"
+    assert env["OPENPI_OBSERVATION_HZ"] == "10.0"
+    assert env["OPENPI_POLICY_REQUEST_HZ"] == "2.0"
+    assert env["OPENPI_CONTROL_HZ"] == "10.0"
+    assert env["OPENPI_EXECUTED_TARGETS_PER_CHUNK"] == "5"
+    assert env["OPENPI_MAXIMUM_RESPONSE_AGE_SECONDS"] == "1.5"
+    assert env["OPENPI_INFERENCE_DEADLINE_SECONDS"] == "10.0"
+    assert env["OPENPI_SAFE_HOLD_BEHAVIOR"] == "hold-current"
+    assert container["readinessProbe"]["exec"]["command"] == [
+        "test",
+        "-f",
+        "/tmp/npa-openpi-stream-ready",
+    ]
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"control_mode": "finite-smoke"},
+        {"control_mode": "continuous", "stream_duration_seconds": 15.0},
+    ],
+)
+def test_finite_smoke_and_sustained_validation_are_explicit_jobs(
+    overrides: dict[str, object],
+) -> None:
+    bridge = _stack(**overrides)["items"][2]
+    assert bridge["kind"] == "Job"
+    assert bridge["spec"]["template"]["spec"]["restartPolicy"] == "Never"
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"control_mode": "single"}, "control mode"),
+        ({"observation_hz": 0.0}, "positive and finite"),
+        ({"executed_targets_per_chunk": 16}, "between 1 and 15"),
+        ({"safe_hold_behavior": "random"}, "safe hold behavior"),
+    ],
+)
+def test_stack_rejects_unsafe_streaming_configuration(
+    overrides: dict[str, object], message: str
+) -> None:
+    with pytest.raises(OpenPIBridgeError, match=message):
+        _stack(**overrides)
 
 
 def test_stack_scopes_antioch_and_isaac_secrets_to_bridge_only() -> None:
@@ -613,6 +739,16 @@ def test_cli_renders_stack_without_secret_values() -> None:
             "terms",
             "--isaac-acceptance-secret",
             "isaac",
+            "--observation-hz",
+            "8",
+            "--policy-request-hz",
+            "1.5",
+            "--control-hz",
+            "20",
+            "--maximum-response-age-seconds",
+            "2",
+            "--safe-hold-behavior",
+            "no-action",
             "--output",
             "json",
         ],
@@ -621,6 +757,15 @@ def test_cli_renders_stack_without_secret_values() -> None:
     payload = json.loads(result.output)
     assert payload["status"] == "rendered"
     assert payload["manifest"]["kind"] == "List"
+    bridge_env = payload["manifest"]["items"][2]["spec"]["template"]["spec"][
+        "containers"
+    ][0]["env"]
+    env = {item["name"]: item.get("value") for item in bridge_env}
+    assert env["OPENPI_OBSERVATION_HZ"] == "8.0"
+    assert env["OPENPI_POLICY_REQUEST_HZ"] == "1.5"
+    assert env["OPENPI_CONTROL_HZ"] == "20.0"
+    assert env["OPENPI_MAXIMUM_RESPONSE_AGE_SECONDS"] == "2.0"
+    assert env["OPENPI_SAFE_HOLD_BEHAVIOR"] == "no-action"
 
 
 def test_cli_contract_smoke() -> None:

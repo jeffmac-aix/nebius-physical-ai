@@ -11,9 +11,11 @@ import json
 import os
 from pathlib import Path
 import re
+import signal
 import shutil
 import subprocess
 import threading
+import time
 from typing import Any
 import urllib.error
 import urllib.request
@@ -25,8 +27,10 @@ from .openpi_bridge import (
     ACTION_SHAPE,
     OpenPIBridgeError,
     OpenPIWebsocketClient,
+    RetryPolicy,
     safe_position_targets,
 )
+from .openpi_streaming import StreamingConfig, StreamingPolicyLoop
 
 
 def _verify_vulkan_runtime() -> None:
@@ -221,15 +225,17 @@ def _capture_viewport_rgb(
 
 
 def run(*, launch_application: bool = True) -> dict[str, object]:
-    """Capture two cameras, request one chunk, and apply five safe targets.
+    """Run continuous soft-real-time control, or an explicit finite smoke.
 
     Antioch's scenario runner already owns Kit startup, so an authored scenario
-    passes ``launch_application=False``.  The Kubernetes image owns its process
-    and uses the default standalone launcher.
+    passes ``launch_application=False``. The default ``continuous`` mode is
+    long-lived when no duration is configured. ``finite-smoke`` preserves the
+    one-observation/one-chunk diagnostic and is never the production default.
     """
 
     env = None
     client = None
+    stream = None
     simulation_app = None
     report: dict[str, object]
     try:
@@ -250,6 +256,11 @@ def run(*, launch_application: bool = True) -> dict[str, object]:
 
         from npa.workflows.isaac_capture import look_at_quaternion
 
+        control_mode = os.environ.get("OPENPI_CONTROL_MODE", "continuous")
+        if control_mode not in {"continuous", "finite-smoke"}:
+            raise OpenPIBridgeError(
+                "OPENPI_CONTROL_MODE must be continuous or finite-smoke"
+            )
         client = OpenPIWebsocketClient(
             os.environ.get("OPENPI_POLICY_HOST", ""),
             port=int(os.environ.get("OPENPI_POLICY_PORT", "8000")),
@@ -257,8 +268,12 @@ def run(*, launch_application: bool = True) -> dict[str, object]:
                 os.environ.get("OPENPI_CONNECT_TIMEOUT_SECONDS", "10")
             ),
             inference_timeout_seconds=float(
-                os.environ.get("OPENPI_INFERENCE_TIMEOUT_SECONDS", "60")
+                os.environ.get(
+                    "OPENPI_INFERENCE_TIMEOUT_SECONDS",
+                    os.environ.get("OPENPI_INFERENCE_DEADLINE_SECONDS", "10"),
+                )
             ),
+            retry=RetryPolicy(attempts=1 if control_mode == "continuous" else 4),
         )
         if not torch.cuda.is_available():
             raise OpenPIBridgeError("CUDA is unavailable; refusing non-render fallback")
@@ -305,60 +320,69 @@ def run(*, launch_application: bool = True) -> dict[str, object]:
             uenv.scene.write_data_to_sim()
             uenv.sim.step(render=True)
             uenv.scene.update(uenv.sim.get_physics_dt())
-        joint_position = robot.data.joint_pos[0, :7].detach().cpu().numpy()
-        finger = robot.data.joint_pos[0, 7:9].mean().item()
-        gripper = np.asarray([np.clip(finger / 0.04, 0.0, 1.0)], dtype=np.float32)
-        if launch_application:
-            exterior_rgb = _resize_rgb(
-                uenv.scene["npa_exterior_camera"].data.output["rgb"]
-            )
-            wrist_rgb = _resize_rgb(uenv.scene["npa_wrist_camera"].data.output["rgb"])
-            camera_backend = "isaac-lab-camera-sensors"
-        else:
-            from isaaclab.utils.math import quat_apply
-
-            hand_ids, _ = robot.find_bodies("panda_hand")
-            hand_position = robot.data.body_pos_w[0, hand_ids[0]]
-            hand_rotation = robot.data.body_quat_w[0, hand_ids[0]]
-            wrist_eye = hand_position + quat_apply(
-                hand_rotation,
-                torch.tensor([0.08, 0.0, 0.02], device=robot.device),
-            )
-            wrist_target = wrist_eye + quat_apply(
-                hand_rotation,
-                torch.tensor([0.3, 0.0, 0.0], device=robot.device),
-            )
-            exterior_rgb = _capture_viewport_rgb(
-                uenv.sim,
-                eye=np.asarray([1.4, 1.4, 1.2]),
-                target=np.asarray([0.5, 0.0, 0.6]),
-            )
-            wrist_rgb = _capture_viewport_rgb(
-                uenv.sim,
-                eye=wrist_eye.detach().cpu().numpy(),
-                target=wrist_target.detach().cpu().numpy(),
-            )
-            exterior_rgb = _resize_rgb(torch.as_tensor(exterior_rgb))
-            wrist_rgb = _resize_rgb(torch.as_tensor(wrist_rgb))
-            camera_backend = "antioch-authenticated-rtx-viewport"
-        observation = {
-            "observation/exterior_image_1_left": exterior_rgb,
-            "observation/wrist_image_left": wrist_rgb,
-            "observation/joint_position": joint_position.astype(np.float32),
-            "observation/gripper_position": gripper,
-            "prompt": os.environ.get("OPENPI_PROMPT", "pick up the fork"),
-        }
-        actions = client.infer(observation)
-        targets = safe_position_targets(
-            actions,
-            joint_position,
-            max_joint_delta_rad=float(
-                os.environ.get("OPENPI_MAX_JOINT_DELTA_RAD", "0.08")
-            ),
-            execute_steps=int(os.environ.get("OPENPI_EXECUTE_STEPS", "5")),
+        camera_backend = (
+            "isaac-lab-camera-sensors"
+            if launch_application
+            else "antioch-authenticated-rtx-viewport"
         )
-        executed = 0
-        for target in targets:
+
+        def current_state() -> tuple[np.ndarray, float]:
+            joints = robot.data.joint_pos[0, :7].detach().cpu().numpy()
+            finger = robot.data.joint_pos[0, 7:9].mean().item()
+            return joints, float(np.clip(finger / 0.04, 0.0, 1.0))
+
+        def capture_observation() -> dict[str, object]:
+            joint_position, gripper_position = current_state()
+            if launch_application:
+                exterior_rgb = _resize_rgb(
+                    uenv.scene["npa_exterior_camera"].data.output["rgb"]
+                )
+                wrist_rgb = _resize_rgb(
+                    uenv.scene["npa_wrist_camera"].data.output["rgb"]
+                )
+            else:
+                from isaaclab.utils.math import quat_apply
+
+                hand_ids, _ = robot.find_bodies("panda_hand")
+                hand_position = robot.data.body_pos_w[0, hand_ids[0]]
+                hand_rotation = robot.data.body_quat_w[0, hand_ids[0]]
+                wrist_eye = hand_position + quat_apply(
+                    hand_rotation,
+                    torch.tensor([0.08, 0.0, 0.02], device=robot.device),
+                )
+                wrist_target = wrist_eye + quat_apply(
+                    hand_rotation,
+                    torch.tensor([0.3, 0.0, 0.0], device=robot.device),
+                )
+                exterior_rgb = _resize_rgb(
+                    torch.as_tensor(
+                        _capture_viewport_rgb(
+                            uenv.sim,
+                            eye=np.asarray([1.4, 1.4, 1.2]),
+                            target=np.asarray([0.5, 0.0, 0.6]),
+                        )
+                    )
+                )
+                wrist_rgb = _resize_rgb(
+                    torch.as_tensor(
+                        _capture_viewport_rgb(
+                            uenv.sim,
+                            eye=wrist_eye.detach().cpu().numpy(),
+                            target=wrist_target.detach().cpu().numpy(),
+                        )
+                    )
+                )
+            return {
+                "observation/exterior_image_1_left": exterior_rgb,
+                "observation/wrist_image_left": wrist_rgb,
+                "observation/joint_position": joint_position.astype(np.float32),
+                "observation/gripper_position": np.asarray(
+                    [gripper_position], dtype=np.float32
+                ),
+                "prompt": os.environ.get("OPENPI_PROMPT", "pick up the fork"),
+            }
+
+        def set_position_target(target: np.ndarray) -> None:
             fingers = np.repeat(float(target[7]) * 0.04, 2)
             full_target = torch.as_tensor(
                 np.concatenate([target[:7], fingers]),
@@ -366,42 +390,200 @@ def run(*, launch_application: bool = True) -> dict[str, object]:
                 dtype=robot.data.joint_pos.dtype,
             ).unsqueeze(0)
             robot.set_joint_position_target(full_target)
+
+        def advance_simulation() -> None:
             uenv.scene.write_data_to_sim()
             uenv.sim.step(render=True)
             uenv.scene.update(uenv.sim.get_physics_dt())
-            executed += 1
-        report = {
-            "schema": "npa.antioch.openpi-franka-bridge.v1",
-            "status": "passed",
-            "simulator": "isaac-lab",
-            "antioch_compatible": True,
-            "gpu_compute_capability": capability,
-            "asset_root": asset_compatibility,
-            "camera_shapes": [[224, 224, 3], [224, 224, 3]],
-            "camera_backend": camera_backend,
-            "policy_action_shape": list(ACTION_SHAPE),
-            "targets_executed": executed,
-            "position_control": "absolute-rate-limited",
-            "policy_transport": "private-openpi-websocket",
-            "fail_closed": True,
-        }
+
+        if control_mode == "finite-smoke":
+            observation = capture_observation()
+            actions = client.infer(observation)
+            targets = safe_position_targets(
+                actions,
+                np.asarray(observation["observation/joint_position"]),
+                max_joint_delta_rad=float(
+                    os.environ.get("OPENPI_MAX_JOINT_DELTA_RAD", "0.08")
+                ),
+                execute_steps=int(os.environ.get("OPENPI_EXECUTE_STEPS", "5")),
+            )
+            for target in targets:
+                set_position_target(target)
+                advance_simulation()
+            report = {
+                "schema": "npa.antioch.openpi-franka-bridge.v2",
+                "status": "passed",
+                "control_mode": "finite-smoke",
+                "simulator": "isaac-lab",
+                "antioch_compatible": True,
+                "gpu_compute_capability": capability,
+                "asset_root": asset_compatibility,
+                "camera_shapes": [[224, 224, 3], [224, 224, 3]],
+                "camera_backend": camera_backend,
+                "policy_action_shape": list(ACTION_SHAPE),
+                "targets_executed": len(targets),
+                "position_control": "absolute-rate-limited",
+                "policy_transport": "private-openpi-websocket",
+                "fail_closed": True,
+            }
+        else:
+            config = StreamingConfig(
+                observation_hz=float(os.environ.get("OPENPI_OBSERVATION_HZ", "10")),
+                policy_request_hz=float(
+                    os.environ.get("OPENPI_POLICY_REQUEST_HZ", "2")
+                ),
+                control_hz=float(os.environ.get("OPENPI_CONTROL_HZ", "10")),
+                executed_targets_per_chunk=int(
+                    os.environ.get("OPENPI_EXECUTED_TARGETS_PER_CHUNK", "5")
+                ),
+                maximum_observation_age_seconds=float(
+                    os.environ.get("OPENPI_MAXIMUM_OBSERVATION_AGE_SECONDS", "0.75")
+                ),
+                maximum_response_age_seconds=float(
+                    os.environ.get("OPENPI_MAXIMUM_RESPONSE_AGE_SECONDS", "1.5")
+                ),
+                inference_deadline_seconds=float(
+                    os.environ.get("OPENPI_INFERENCE_DEADLINE_SECONDS", "10")
+                ),
+                ping_interval_seconds=float(
+                    os.environ.get("OPENPI_PING_INTERVAL_SECONDS", "5")
+                ),
+                safe_hold_behavior=os.environ.get(
+                    "OPENPI_SAFE_HOLD_BEHAVIOR", "hold-current"
+                ),
+                minimum_ready_cycles=int(
+                    os.environ.get("OPENPI_MINIMUM_READY_CYCLES", "3")
+                ),
+                minimum_ready_seconds=float(
+                    os.environ.get("OPENPI_MINIMUM_READY_SECONDS", "5")
+                ),
+                maximum_joint_delta_rad=float(
+                    os.environ.get("OPENPI_MAX_JOINT_DELTA_RAD", "0.08")
+                ),
+            )
+            duration_seconds = float(
+                os.environ.get("OPENPI_STREAM_DURATION_SECONDS", "0")
+            )
+            if not np.isfinite(duration_seconds) or duration_seconds < 0:
+                raise OpenPIBridgeError(
+                    "OPENPI_STREAM_DURATION_SECONDS must be finite and non-negative"
+                )
+            stream = StreamingPolicyLoop(client, config=config)
+            shutdown = threading.Event()
+            ready_path = Path(
+                os.environ.get("OPENPI_READY_FILE", "/tmp/npa-openpi-stream-ready")
+            )
+            ready_path.unlink(missing_ok=True)
+            old_handlers: dict[int, object] = {}
+
+            def request_shutdown(_signum: int, _frame: object) -> None:
+                shutdown.set()
+
+            if threading.current_thread() is threading.main_thread():
+                for signum in (signal.SIGINT, signal.SIGTERM):
+                    old_handlers[signum] = signal.getsignal(signum)
+                    signal.signal(signum, request_shutdown)
+            started = time.monotonic()
+            next_observation = started
+            next_control = started
+            next_metrics = started + 10.0
+            stream.start()
+            try:
+                while not shutdown.is_set() and (
+                    duration_seconds == 0
+                    or time.monotonic() - started < duration_seconds
+                ):
+                    advance_simulation()
+                    stream.record_render_tick()
+                    now = time.monotonic()
+                    if now >= next_observation:
+                        observation = capture_observation()
+                        stream.publish_observation(
+                            observation, monotonic_seconds=time.monotonic()
+                        )
+                        next_observation = now + 1.0 / config.observation_hz
+                    if now >= next_control:
+                        joints, gripper_position = current_state()
+                        decision = stream.next_control_decision(
+                            joints, gripper_position, monotonic_seconds=now
+                        )
+                        if decision.source == "policy":
+                            stream.apply_if_current(decision, set_position_target)
+                        elif decision.target is not None:
+                            set_position_target(decision.target)
+                        next_control = now + 1.0 / config.control_hz
+                    if now >= next_metrics:
+                        print(
+                            "NPA_OPENPI_STREAM_METRICS="
+                            + json.dumps(stream.metrics_snapshot(), sort_keys=True),
+                            flush=True,
+                        )
+                        next_metrics = now + 10.0
+                    if not ready_path.exists() and stream.metrics_snapshot()["ready"]:
+                        temporary_ready = ready_path.with_suffix(".tmp")
+                        temporary_ready.write_text("ready\n", encoding="utf-8")
+                        temporary_ready.replace(ready_path)
+                    next_due = min(next_observation, next_control, next_metrics)
+                    time.sleep(min(0.01, max(0.001, next_due - time.monotonic())))
+            finally:
+                stream.stop()
+                for signum, handler in old_handlers.items():
+                    signal.signal(signum, handler)
+            metrics = stream.metrics_snapshot()
+            if not metrics["ready"]:
+                raise OpenPIBridgeError(
+                    "continuous bridge stopped before sustained streaming readiness"
+                )
+            report = {
+                "schema": "npa.antioch.openpi-franka-bridge.v2",
+                "status": "passed",
+                "control_mode": "continuous",
+                "soft_real_time": True,
+                "hard_real_time": False,
+                "simulator": "isaac-lab",
+                "antioch_compatible": True,
+                "gpu_compute_capability": capability,
+                "asset_root": asset_compatibility,
+                "camera_shapes": [[224, 224, 3], [224, 224, 3]],
+                "camera_backend": camera_backend,
+                "policy_action_shape": list(ACTION_SHAPE),
+                "targets_executed": metrics["safely_applied_targets"],
+                "position_control": "receding-horizon-absolute-rate-limited",
+                "policy_transport": "persistent-private-msgpack-websocket",
+                "streaming_metrics": metrics,
+                "fail_closed": True,
+            }
     except Exception as exc:
+        streaming_metrics = stream.metrics_snapshot() if stream is not None else None
         report = {
-            "schema": "npa.antioch.openpi-franka-bridge.v1",
-            "status": "failed-no-action",
+            "schema": "npa.antioch.openpi-franka-bridge.v2",
+            "status": (
+                "failed-safe-hold" if streaming_metrics is not None else "failed-no-action"
+            ),
             "error_type": type(exc).__name__,
-            "targets_executed": 0,
+            "targets_executed": (
+                streaming_metrics["safely_applied_targets"]
+                if streaming_metrics is not None
+                else 0
+            ),
+            **(
+                {"streaming_metrics": streaming_metrics}
+                if streaming_metrics is not None
+                else {}
+            ),
             "fail_closed": True,
         }
         _write_report(os.environ.get("NPA_OPENPI_BRIDGE_OUTPUT_URI", ""), report)
         raise
     finally:
+        if stream is not None and stream.is_running():
+            stream.stop()
         if client is not None:
             client.close()
         if env is not None:
             env.close()
-        # Keep the launcher-owned app reachable until after environment cleanup.
-        _ = simulation_app
+        if launch_application and simulation_app is not None:
+            simulation_app.close()
     _write_report(os.environ.get("NPA_OPENPI_BRIDGE_OUTPUT_URI", ""), report)
     return report
 

@@ -1,11 +1,23 @@
 version: 1
+host_authority:
+  mutation_requires: explicit_authorization
+  read_only_host:
+    build: forbidden
+    runtime: forbidden
+    relay: forbidden
+    cleanup: forbidden
+  build_fallback:
+    - trusted_registry
+    - authorized_kubernetes
 readiness:
   required_evidence:
     - supported_api_state
     - application_health
     - camera_frames
-    - finite_action_chunk
-    - safe_target_application
+    - advancing_camera_sequence
+    - repeated_finite_action_chunks
+    - repeated_safe_target_application
+    - sustained_interval
   insufficient_evidence:
     - process_exists
     - pid_exists
@@ -18,6 +30,15 @@ policy_boundary:
     port: 8000
   action_shape: [15, 8]
   finite: true
+  production_mode: continuous_soft_real_time
+  smoke_mode: finite_one_observation
+  hard_real_time: false
+  maximum_in_flight_requests: 1
+  observation_queue_capacity: 1
+  response_queue_capacity: 1
+  backpressure: replace_superseded_observation
+  reconnect_behavior: reset_control_epoch
+  control: receding_horizon
   fail_closed: true
   no_action_on:
     - timeout
@@ -27,6 +48,9 @@ policy_boundary:
     - joint_limit
     - rate_limit
     - reconnect_exhausted
+    - stale_response
+    - control_epoch_mismatch
+    - chunk_underrun
 secret_scopes:
   model_entitlement: cache_warmer_only
   model_cache_writer: cache_warmer_only

@@ -57,11 +57,15 @@ detached logs outside the repository; emit only sanitized assertions.
 - Give the model warmer alone the model entitlement and writable cache. Give
   the policy server a verified read-only cache. Give only the simulator side
   Antioch/Isaac runtime secrets. Never cross those secret scopes.
+- Treat continuous soft-real-time streaming as production and the finite
+  one-observation path as smoke only. Keep camera, policy, and control cadences
+  distinct; neither console video nor a connected tunnel proves readiness.
 - Treat exact finite `[15,8]` actions, Franka joint/gripper limits, bounded
-  per-step motion, timeouts, reconnect backoff, and rate limiting as one
-  fail-closed/no-action boundary.
-- On failure, preserve zero applied targets and close the client. Never convert
-  malformed or late policy output into a hold or best-effort action.
+  per-step motion, age/deadline checks, one in-flight request, reconnect epoch,
+  and rate limiting as one fail-closed boundary.
+- On failure, apply no new policy target and enter the configured safe hold/no-
+  action state. Never reinterpret malformed or late output as a hold command or
+  best-effort action, and never claim hard-real-time guarantees.
 
 ## Finish safely
 

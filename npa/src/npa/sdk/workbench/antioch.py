@@ -98,7 +98,7 @@ def collect(
     )
 
 
-def render_openpi_stack(**kwargs: str) -> dict[str, object]:
+def render_openpi_stack(**kwargs: Any) -> dict[str, object]:
     """Render the digest-pinned RTX bridge + B200 policy Kubernetes stack."""
 
     return render_stack(**kwargs)

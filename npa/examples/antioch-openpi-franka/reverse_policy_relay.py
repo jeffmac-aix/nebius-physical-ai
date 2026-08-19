@@ -10,6 +10,9 @@ from types import TracebackType
 class ReversePolicyRelay:
     """Pair a local tunnel backend with the hosted OpenPI WebSocket client."""
 
+    BACKEND_BIND_HOST = "0.0.0.0"  # noqa: S104 - authenticated declared port
+    FRONTEND_BIND_HOST = "127.0.0.1"
+
     def __init__(self, *, backend_port: int, frontend_port: int) -> None:
         self.backend_port = backend_port
         self.frontend_port = frontend_port
@@ -37,10 +40,10 @@ class ReversePolicyRelay:
         if self._thread is not None:
             self._thread.join(10)
 
-    def _listen(self, port: int) -> socket.socket:
+    def _listen(self, host: str, port: int) -> socket.socket:
         listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        listener.bind(("127.0.0.1", port))
+        listener.bind((host, port))
         listener.listen(1)
         listener.settimeout(1)
         self._listeners.append(listener)
@@ -61,8 +64,11 @@ class ReversePolicyRelay:
         return None
 
     def _serve(self) -> None:
-        backend_listener = self._listen(self.backend_port)
-        frontend_listener = self._listen(self.frontend_port)
+        # The authenticated Antioch port tunnel enters through the service
+        # network interface, while the policy frontend must remain accessible
+        # only to the scenario process in this container.
+        backend_listener = self._listen(self.BACKEND_BIND_HOST, self.backend_port)
+        frontend_listener = self._listen(self.FRONTEND_BIND_HOST, self.frontend_port)
         self._ready.set()
         while not self._stop.is_set():
             backend = self._accept(backend_listener)

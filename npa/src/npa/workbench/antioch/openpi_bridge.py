@@ -42,6 +42,8 @@ class _Connection(Protocol):
 
     def settimeout(self, timeout: float) -> None: ...
 
+    def ping(self) -> object: ...
+
     def close(self) -> None: ...
 
 
@@ -219,7 +221,19 @@ class OpenPIWebsocketClient:
         self._factory = connection_factory
         self._sleep = sleep
         self._connection: _Connection | None = None
+        self._generation = 0
+        self._reconnect_count = 0
         self.server_metadata: Mapping[str, object] = {}
+
+    @property
+    def generation(self) -> int:
+        """Connection identity used to reject replies across reconnects."""
+
+        return self._generation
+
+    @property
+    def reconnect_count(self) -> int:
+        return self._reconnect_count
 
     def _connect(self) -> _Connection:
         factory = self._factory
@@ -230,7 +244,7 @@ class OpenPIWebsocketClient:
         connection = factory(
             self._url,
             timeout=self._connect_timeout,
-            enable_multithread=False,
+            enable_multithread=True,
             skip_utf8_validation=False,
         )
         connection.settimeout(self._inference_timeout)
@@ -244,12 +258,37 @@ class OpenPIWebsocketClient:
             raise OpenPIBridgeError("OpenPI metadata frame is malformed")
         self.server_metadata = metadata
         self._connection = connection
+        if self._generation:
+            self._reconnect_count += 1
+        self._generation += 1
         return connection
 
     def close(self) -> None:
         if self._connection is not None:
             self._connection.close()
             self._connection = None
+
+    def ping(self) -> None:
+        """Keep the persistent socket active without sending an inference."""
+
+        last_error: Exception | None = None
+        for attempt in range(self._retry.attempts):
+            try:
+                connection = self._connection or self._connect()
+                connection.ping()
+                return
+            except Exception as exc:
+                last_error = exc
+                self.close()
+                if attempt + 1 < self._retry.attempts:
+                    delay = min(
+                        self._retry.maximum_backoff_seconds,
+                        self._retry.initial_backoff_seconds * 2**attempt,
+                    )
+                    self._sleep(delay)
+        raise OpenPIBridgeError(
+            f"OpenPI ping failed after {self._retry.attempts} attempts"
+        ) from last_error
 
     def infer(self, observation: Mapping[str, object]) -> np.ndarray:
         payload = pack_message(validate_observation(observation))
@@ -299,6 +338,20 @@ def render_stack(
     policy_cache_pvc: str = "",
     prompt: str = "pick up the fork",
     policy_ready_timeout_seconds: int = 1800,
+    control_mode: str = "continuous",
+    stream_duration_seconds: float = 0.0,
+    observation_hz: float = 10.0,
+    policy_request_hz: float = 2.0,
+    control_hz: float = 10.0,
+    executed_targets_per_chunk: int = 5,
+    maximum_observation_age_seconds: float = 0.75,
+    maximum_response_age_seconds: float = 1.5,
+    inference_deadline_seconds: float = 10.0,
+    ping_interval_seconds: float = 5.0,
+    safe_hold_behavior: str = "hold-current",
+    minimum_ready_cycles: int = 3,
+    minimum_ready_seconds: float = 5.0,
+    maximum_joint_delta_rad: float = 0.08,
 ) -> dict[str, object]:
     """Render a private two-workload Kubernetes stack with disjoint secrets/GPUs."""
 
@@ -326,6 +379,37 @@ def render_stack(
         raise OpenPIBridgeError("policy cache PVC must be a Kubernetes DNS label")
     if policy_ready_timeout_seconds <= 0:
         raise OpenPIBridgeError("policy readiness timeout must be positive")
+    if control_mode not in {"continuous", "finite-smoke"}:
+        raise OpenPIBridgeError("control mode must be continuous or finite-smoke")
+    positive_stream_values = {
+        "observation rate": observation_hz,
+        "policy request rate": policy_request_hz,
+        "control rate": control_hz,
+        "maximum observation age": maximum_observation_age_seconds,
+        "maximum response age": maximum_response_age_seconds,
+        "inference deadline": inference_deadline_seconds,
+        "ping interval": ping_interval_seconds,
+        "minimum ready duration": minimum_ready_seconds,
+        "maximum joint delta": maximum_joint_delta_rad,
+    }
+    invalid_stream_values = [
+        label
+        for label, value in positive_stream_values.items()
+        if not math.isfinite(value) or value <= 0
+    ]
+    if invalid_stream_values:
+        raise OpenPIBridgeError(
+            "streaming values must be positive and finite: "
+            + ", ".join(invalid_stream_values)
+        )
+    if not math.isfinite(stream_duration_seconds) or stream_duration_seconds < 0:
+        raise OpenPIBridgeError("stream duration must be finite and non-negative")
+    if not 1 <= executed_targets_per_chunk <= ACTION_SHAPE[0]:
+        raise OpenPIBridgeError("executed targets per chunk must be between 1 and 15")
+    if minimum_ready_cycles < 1:
+        raise OpenPIBridgeError("minimum ready cycles must be positive")
+    if safe_hold_behavior not in {"hold-current", "no-action"}:
+        raise OpenPIBridgeError("safe hold behavior must be hold-current or no-action")
     name = _safe_name(run_id)
     policy_labels = {"app": f"{name}-policy", "npa.nebius.ai/run": name}
     bridge_labels = {"app": f"{name}-bridge", "npa.nebius.ai/run": name}
@@ -344,9 +428,7 @@ def render_stack(
             f"--cache-root {cache_root} --port 8000"
         ],
         "ports": [{"name": "policy", "containerPort": 8000}],
-        "env": [
-            {"name": "OPENPI_DATA_HOME", "value": f"{cache_root}/openpi-data"}
-        ],
+        "env": [{"name": "OPENPI_DATA_HOME", "value": f"{cache_root}/openpi-data"}],
         "resources": {
             "requests": {"cpu": "16", "memory": "96Gi", "nvidia.com/gpu": "1"},
             "limits": {"nvidia.com/gpu": "1"},
@@ -382,6 +464,49 @@ def render_stack(
             "value": f"{name}-policy,{name}-policy.{namespace}.svc,.svc,.cluster.local",
         },
         {"name": "OPENPI_PROMPT", "value": prompt},
+        {"name": "OPENPI_CONTROL_MODE", "value": control_mode},
+        {
+            "name": "OPENPI_STREAM_DURATION_SECONDS",
+            "value": str(stream_duration_seconds),
+        },
+        {"name": "OPENPI_OBSERVATION_HZ", "value": str(observation_hz)},
+        {"name": "OPENPI_POLICY_REQUEST_HZ", "value": str(policy_request_hz)},
+        {"name": "OPENPI_CONTROL_HZ", "value": str(control_hz)},
+        {
+            "name": "OPENPI_EXECUTED_TARGETS_PER_CHUNK",
+            "value": str(executed_targets_per_chunk),
+        },
+        {"name": "OPENPI_EXECUTE_STEPS", "value": str(executed_targets_per_chunk)},
+        {
+            "name": "OPENPI_MAXIMUM_OBSERVATION_AGE_SECONDS",
+            "value": str(maximum_observation_age_seconds),
+        },
+        {
+            "name": "OPENPI_MAXIMUM_RESPONSE_AGE_SECONDS",
+            "value": str(maximum_response_age_seconds),
+        },
+        {
+            "name": "OPENPI_INFERENCE_DEADLINE_SECONDS",
+            "value": str(inference_deadline_seconds),
+        },
+        {"name": "OPENPI_PING_INTERVAL_SECONDS", "value": str(ping_interval_seconds)},
+        {"name": "OPENPI_SAFE_HOLD_BEHAVIOR", "value": safe_hold_behavior},
+        {
+            "name": "OPENPI_MINIMUM_READY_CYCLES",
+            "value": str(minimum_ready_cycles),
+        },
+        {
+            "name": "OPENPI_MINIMUM_READY_SECONDS",
+            "value": str(minimum_ready_seconds),
+        },
+        {
+            "name": "OPENPI_MAX_JOINT_DELTA_RAD",
+            "value": str(maximum_joint_delta_rad),
+        },
+        {
+            "name": "OPENPI_READY_FILE",
+            "value": "/tmp/npa-openpi-stream-ready",
+        },
         {"name": "NPA_OPENPI_BRIDGE_OUTPUT_URI", "value": output_uri},
         {
             "name": "ACCEPT_EULA",
@@ -421,8 +546,92 @@ def render_stack(
             "capabilities": {"drop": ["ALL"]},
         },
     }
+    if control_mode == "continuous":
+        bridge_container["readinessProbe"] = {
+            "exec": {"command": ["test", "-f", "/tmp/npa-openpi-stream-ready"]},
+            "periodSeconds": 2,
+            "failureThreshold": 900,
+        }
     if s3_credentials_secret:
         bridge_container["envFrom"] = [{"secretRef": {"name": s3_credentials_secret}}]
+    bridge_pod_spec = {
+        "imagePullSecrets": pull_secrets,
+        "nodeSelector": {bridge_gpu_selector_key: bridge_gpu_selector_value},
+        "securityContext": {
+            "runAsNonRoot": True,
+            "runAsUser": 1000,
+            "runAsGroup": 1000,
+            "fsGroup": 1000,
+            "seccompProfile": {"type": "RuntimeDefault"},
+        },
+        "initContainers": [
+            {
+                "name": "wait-for-policy",
+                "image": bridge_image,
+                "imagePullPolicy": "IfNotPresent",
+                "command": ["/opt/npa/sim/venv/bin/python"],
+                "args": [
+                    "-m",
+                    "npa.workbench.antioch.openpi_health",
+                    "--host",
+                    f"{name}-policy",
+                    "--port",
+                    "8000",
+                    "--timeout-seconds",
+                    str(policy_ready_timeout_seconds),
+                ],
+                "env": [
+                    {
+                        "name": proxy_name,
+                        "value": (
+                            f"{name}-policy,"
+                            f"{name}-policy.{namespace}.svc,.svc,.cluster.local"
+                        ),
+                    }
+                    for proxy_name in ("NO_PROXY", "no_proxy")
+                ],
+                "resources": {
+                    "requests": {"cpu": "100m", "memory": "128Mi"},
+                    "limits": {"cpu": "1", "memory": "512Mi"},
+                },
+                "securityContext": {
+                    "allowPrivilegeEscalation": False,
+                    "capabilities": {"drop": ["ALL"]},
+                },
+            }
+        ],
+        "containers": [bridge_container],
+        "volumes": bridge_volumes,
+    }
+    if control_mode == "continuous" and stream_duration_seconds == 0:
+        bridge_pod_spec["restartPolicy"] = "Always"
+        bridge_workload = {
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "metadata": {"name": f"{name}-bridge", "namespace": namespace},
+            "spec": {
+                "replicas": 1,
+                "selector": {"matchLabels": bridge_labels},
+                "template": {
+                    "metadata": {"labels": bridge_labels},
+                    "spec": bridge_pod_spec,
+                },
+            },
+        }
+    else:
+        bridge_pod_spec["restartPolicy"] = "Never"
+        bridge_workload = {
+            "apiVersion": "batch/v1",
+            "kind": "Job",
+            "metadata": {"name": f"{name}-bridge", "namespace": namespace},
+            "spec": {
+                "backoffLimit": 0,
+                "template": {
+                    "metadata": {"labels": bridge_labels},
+                    "spec": bridge_pod_spec,
+                },
+            },
+        }
     return {
         "apiVersion": "v1",
         "kind": "List",
@@ -517,75 +726,7 @@ def render_stack(
                     "ports": [{"name": "policy", "port": 8000, "targetPort": 8000}],
                 },
             },
-            {
-                "apiVersion": "batch/v1",
-                "kind": "Job",
-                "metadata": {"name": f"{name}-bridge", "namespace": namespace},
-                "spec": {
-                    "backoffLimit": 0,
-                    "template": {
-                        "metadata": {"labels": bridge_labels},
-                        "spec": {
-                            "restartPolicy": "Never",
-                            "imagePullSecrets": pull_secrets,
-                            "nodeSelector": {
-                                bridge_gpu_selector_key: bridge_gpu_selector_value
-                            },
-                            "securityContext": {
-                                "runAsNonRoot": True,
-                                "runAsUser": 1000,
-                                "runAsGroup": 1000,
-                                "fsGroup": 1000,
-                                "seccompProfile": {"type": "RuntimeDefault"},
-                            },
-                            "initContainers": [
-                                {
-                                    "name": "wait-for-policy",
-                                    "image": bridge_image,
-                                    "imagePullPolicy": "IfNotPresent",
-                                    "command": ["/opt/npa/sim/venv/bin/python"],
-                                    "args": [
-                                        "-m",
-                                        "npa.workbench.antioch.openpi_health",
-                                        "--host",
-                                        f"{name}-policy",
-                                        "--port",
-                                        "8000",
-                                        "--timeout-seconds",
-                                        str(policy_ready_timeout_seconds),
-                                    ],
-                                    "env": [
-                                        {
-                                            "name": "NO_PROXY",
-                                            "value": (
-                                                f"{name}-policy,"
-                                                f"{name}-policy.{namespace}.svc,.svc,.cluster.local"
-                                            ),
-                                        },
-                                        {
-                                            "name": "no_proxy",
-                                            "value": (
-                                                f"{name}-policy,"
-                                                f"{name}-policy.{namespace}.svc,.svc,.cluster.local"
-                                            ),
-                                        },
-                                    ],
-                                    "resources": {
-                                        "requests": {"cpu": "100m", "memory": "128Mi"},
-                                        "limits": {"cpu": "1", "memory": "512Mi"},
-                                    },
-                                    "securityContext": {
-                                        "allowPrivilegeEscalation": False,
-                                        "capabilities": {"drop": ["ALL"]},
-                                    },
-                                }
-                            ],
-                            "containers": [bridge_container],
-                            "volumes": bridge_volumes,
-                        },
-                    },
-                },
-            },
+            bridge_workload,
             {
                 "apiVersion": "networking.k8s.io/v1",
                 "kind": "NetworkPolicy",

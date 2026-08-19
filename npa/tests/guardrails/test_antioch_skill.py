@@ -68,9 +68,17 @@ def test_antioch_contract_matches_rendered_network_and_secret_boundaries() -> No
     assert tuple(boundary["action_shape"]) == ACTION_SHAPE
     assert boundary["finite"] is True
     assert boundary["fail_closed"] is True
+    assert boundary["production_mode"] == "continuous_soft_real_time"
+    assert boundary["smoke_mode"] == "finite_one_observation"
+    assert boundary["hard_real_time"] is False
+    assert boundary["maximum_in_flight_requests"] == 1
+    assert boundary["observation_queue_capacity"] == 1
+    assert boundary["response_queue_capacity"] == 1
+    assert boundary["reconnect_behavior"] == "reset_control_epoch"
 
     items = _rendered_items()
-    deployment, service, job, network_policy = items
+    deployment, service, bridge, network_policy = items
+    assert bridge["kind"] == "Deployment"
     assert service["spec"]["type"] == "ClusterIP"
     assert service["spec"]["ports"] == [
         {"name": "policy", "port": boundary["service"]["port"], "targetPort": 8000}
@@ -78,7 +86,7 @@ def test_antioch_contract_matches_rendered_network_and_secret_boundaries() -> No
     assert network_policy["spec"]["policyTypes"] == ["Ingress"]
 
     policy_text = yaml.safe_dump(deployment)
-    bridge_text = yaml.safe_dump(job)
+    bridge_text = yaml.safe_dump(bridge)
     assert "model-terms" in policy_text
     assert "model-terms" not in bridge_text
     assert "antioch-session" not in policy_text
@@ -102,8 +110,10 @@ def test_antioch_contract_rejects_process_only_readiness_and_broad_cleanup() -> 
         "supported_api_state",
         "application_health",
         "camera_frames",
-        "finite_action_chunk",
-        "safe_target_application",
+        "advancing_camera_sequence",
+        "repeated_finite_action_chunks",
+        "repeated_safe_target_application",
+        "sustained_interval",
     }
     assert {"process_exists", "pid_exists", "tunnel_connected"} <= insufficient
     assert required.isdisjoint(insufficient)
@@ -118,6 +128,16 @@ def test_antioch_contract_rejects_process_only_readiness_and_broad_cleanup() -> 
             "release_exact_machine",
         ],
     }
+
+
+def test_antioch_contract_routes_mutation_away_from_read_only_hosts() -> None:
+    authority = _contracts()["host_authority"]
+    assert authority["mutation_requires"] == "explicit_authorization"
+    assert set(authority["read_only_host"].values()) == {"forbidden"}
+    assert authority["build_fallback"] == [
+        "trusted_registry",
+        "authorized_kubernetes",
+    ]
 
 
 def test_antioch_public_contract_covers_all_restricted_payload_classes() -> None:

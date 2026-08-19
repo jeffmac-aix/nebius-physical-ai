@@ -1,5 +1,23 @@
 # Authentication and lifecycle
 
+## Establish host authority before operating
+
+Classify each available host as either read-only operator/developer access or an
+explicitly authorized mutable build/runtime environment. A usable CLI session,
+SSH access, Docker socket, disk space, or cached source does not grant authority
+to build, pull, install, authenticate, relay, start, stop, or clean up there.
+Before any mutation, require explicit operator authorization for that host and
+purpose.
+
+When a host is read-only, leave it untouched, including prior task state: do not
+"clean up" files, processes, images, caches, services, credentials, or history.
+Prefer no access. If inspection is necessary, use supported read-only commands,
+suppress identities and sensitive output, and avoid commands that refresh caches
+or metadata. Route builds through the trusted private registry and authorized
+Kubernetes-native builders/workloads; route GPU execution through authorized
+managed Kubernetes or Antioch resources. Never use a read-only host as a relay
+or staging hop.
+
 ## Authentication decision tree
 
 Use a private temporary file with restrictive permissions for structured CLI

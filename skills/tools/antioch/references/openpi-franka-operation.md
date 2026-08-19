@@ -22,18 +22,22 @@ Follow `docs/workbench/antioch-openpi-franka.md` for the user workflow and
 ## Private cross-GPU transport
 
 Keep the B200 policy endpoint as ClusterIP port 8000. Use an ingress policy that
-allows only the RTX bridge. For Antioch-hosted execution, use the declared
-authenticated local port plus `policy_tunnel_connector.py`; do not expose the
-policy publicly or copy Kubernetes credentials to Antioch.
+allows only the RTX bridge. For Antioch-hosted execution, bind the relay backend
+to the service interface reached only through Antioch's declared authenticated
+port, keep its OpenPI frontend on loopback, and use `policy_tunnel_connector.py`;
+do not expose the policy publicly or copy Kubernetes credentials to Antioch.
 
 Tunnel readiness requires all of:
 
 1. supported Antioch service/API state is ready;
 2. the B200 `/healthz` endpoint passes through the local port-forward;
-3. the connector completes a session carrying a valid OpenPI handshake/request;
-4. two non-empty camera frames and an exact finite `[15,8]` action chunk are
-   observed; and
-5. at least one rate-limited target is safely applied.
+3. the connector completes a session carrying repeated valid OpenPI
+   handshakes/requests;
+4. exterior and wrist camera sequence/timestamps advance over a sustained
+   interval;
+5. multiple exact finite `[15,8]` chunks are observed; and
+6. multiple rate-limited targets are safely applied while physics and viewport
+   frames continue advancing.
 
 An empty accepted tunnel session commonly means the hosted frontend opened and
 closed before the local connector reached the policy, the service port was not
@@ -41,6 +45,34 @@ converged, or one side restarted. Keep the policy port-forward alive, re-check
 service/API and health state, then reconnect with bounded exponential backoff.
 Do not loop without a cap, bypass auth, scrape cookies, or declare success from
 an open socket.
+
+## Distinguish the four rates
+
+- **Console video** proves that Antioch can stream a viewport to a viewer. It
+  does not prove the bridge captured policy observations.
+- **Observation streaming** is the completed exterior+wrist+state acquisition
+  sequence. Under backpressure, only the newest completed observation is kept.
+- **Policy cadence** is bounded by one in-flight request over one persistent
+  binary MessagePack WebSocket. Requested frequency is not achieved frequency.
+- **Physics control** consumes the current validated receding-horizon chunk and
+  safely holds on underrun. It continues independently of policy latency.
+
+Python, WebSocket, Kubernetes, and the authenticated relay provide soft-real-
+time operation only. Never claim a hard-real-time rate or deterministic bound.
+Declare readiness only from advancing camera timestamps, multiple successful
+round trips, multiple safe applications, and a sustained interval. Publish the
+measured observation/control FPS, inference latency, frame/response age, drops,
+underruns, reconnects, rejections, and safe-target counts without frames,
+prompts, endpoints, or infrastructure identities.
+
+For stalled frames, first distinguish an active console viewport from advancing
+camera sequence. Check the supported service/API state and camera callback, then
+the observation drop count. For stale actions, compare observation/response age
+to the configured maxima and confirm the reconnect epoch advanced. For tunnel
+jitter, keep latest-observation semantics, reduce requested policy cadence if
+needed, and measure—never queue stale frames. Any timeout, disconnect, malformed
+reply, unsafe target, queue underrun, or epoch mismatch must enter the configured
+hold/no-action behavior until a fresh validated chunk arrives.
 
 ## Compatibility failures to handle explicitly
 
@@ -67,15 +99,22 @@ an open socket.
 
 ## Control safety and evidence
 
-Validate observation keys, two `uint8[224,224,3]` images, seven joints, one
+Continuous soft-real-time streaming is the production default. The finite
+one-observation/one-chunk path is an explicit smoke only. Validate observation
+keys, two `uint8[224,224,3]` images, seven joints, one
 normalized gripper value, and a bounded prompt before serialization. Validate
 the response as finite absolute targets shaped `[15,8]`; enforce Franka joint
-limits, gripper `[0,1]`, per-step joint delta, execution-step cap, connect and
-inference timeouts, and bounded reconnect backoff.
+limits, gripper `[0,1]`, per-step joint delta, execution-step cap, observation
+and response age, connect and inference timeouts, and bounded reconnect backoff.
+Use a capacity-one latest-observation queue, capacity-one response handoff, a
+bounded action horizon, bounded metric windows, and a local sequence/timestamp/
+epoch. Reset the epoch on reconnect so a pre-disconnect reply cannot execute.
 
 Timeout, malformed MessagePack, wrong shape/dtype, non-finite or out-of-range
-values, camera failure, rate-limit failure, and exhausted reconnects must yield
-zero applied targets and a failed-no-action report. Capture sanitized camera
-shapes/backend, compute capability, action shape, executed-target count, asset
-identity, and fail-closed status. Never record frames containing customer data
-without explicit artifact authorization.
+values, stale replies, camera failure, rate-limit failure, underrun, and
+exhausted reconnects must apply no new policy target and must safely hold/stop.
+Previously safe applications remain evidence; never overstate this as zero total
+targets after a later stream fault. Capture sanitized camera shapes/backend,
+compute capability, action shape, achieved rates/latencies, rejection counts,
+executed-target count, asset identity, and fail-closed status. Never record
+frames containing customer data without explicit artifact authorization.
