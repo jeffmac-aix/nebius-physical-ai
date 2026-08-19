@@ -32,6 +32,7 @@ from npa.workbench.antioch.openpi_bridge import (
 )
 from npa.workbench.antioch.openpi_health import wait_for_health
 from npa.workbench.antioch.openpi_isaac import (
+    _camera_frame,
     _compatible_franka_asset_url,
     _ensure_franka_asset_root,
     _verify_vulkan_runtime,
@@ -155,6 +156,18 @@ def test_franka_compatibility_rewrites_an_already_imported_task_config() -> None
         "https://assets.example/Assets/Isaac/5.1/Isaac/Franka/panda.usd"
     )
     assert _compatible_franka_asset_url(stale, "native") == stale
+
+
+def test_camera_adapter_accepts_regular_and_tiled_rgb_frames() -> None:
+    regular = _camera_frame(np.zeros((32, 48, 4), dtype=np.float32))
+    tiled = _camera_frame(np.ones((1, 32, 48, 4), dtype=np.float32))
+    assert regular.shape == (32, 48, 3)
+    assert tiled.shape == (32, 48, 3)
+
+
+def test_camera_adapter_rejects_malformed_frame_rank() -> None:
+    with pytest.raises(OpenPIBridgeError, match="invalid RGB shape"):
+        _camera_frame(np.zeros((32, 48), dtype=np.float32))
 
 
 def test_hosted_example_pins_reviewed_npa_source_revision() -> None:

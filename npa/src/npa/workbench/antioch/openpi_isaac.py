@@ -137,10 +137,19 @@ def _write_report(uri: str, report: dict[str, object]) -> None:
     path.write_bytes(payload)
 
 
+def _camera_frame(image: Any) -> Any:
+    value = image[0] if image.ndim == 4 else image
+    if value.ndim != 3 or value.shape[-1] < 3:
+        raise OpenPIBridgeError(
+            f"camera returned invalid RGB shape {tuple(image.shape)}"
+        )
+    return value[:, :, :3]
+
+
 def _resize_rgb(image: Any) -> np.ndarray:
     import torch
 
-    value = image[0, :, :, :3].permute(2, 0, 1).unsqueeze(0).float()
+    value = _camera_frame(image).permute(2, 0, 1).unsqueeze(0).float()
     resized = torch.nn.functional.interpolate(
         value, size=(224, 224), mode="bilinear", align_corners=False
     )
@@ -172,7 +181,7 @@ def run(*, launch_application: bool = True) -> dict[str, object]:
         asset_compatibility = _ensure_franka_asset_root(asset_utils)
         import isaaclab_tasks  # noqa: F401
         import torch
-        from isaaclab.sensors import TiledCameraCfg
+        from isaaclab.sensors import CameraCfg
         from isaaclab_tasks.utils import parse_env_cfg
 
         from npa.workflows.isaac_capture import look_at_quaternion
@@ -199,9 +208,9 @@ def run(*, launch_application: bool = True) -> dict[str, object]:
         cfg.scene.robot.spawn.usd_path = _compatible_franka_asset_url(
             cfg.scene.robot.spawn.usd_path, asset_compatibility
         )
-        cfg.scene.npa_exterior_camera = TiledCameraCfg(
+        cfg.scene.npa_exterior_camera = CameraCfg(
             prim_path="{ENV_REGEX_NS}/NpaExteriorCamera",
-            offset=TiledCameraCfg.OffsetCfg(
+            offset=CameraCfg.OffsetCfg(
                 pos=(1.4, 1.4, 1.2),
                 rot=look_at_quaternion((1.4, 1.4, 1.2), (0.5, 0.0, 0.6)),
                 convention="world",
@@ -211,9 +220,9 @@ def run(*, launch_application: bool = True) -> dict[str, object]:
             height=320,
             spawn=sim_utils.PinholeCameraCfg(focal_length=24.0),
         )
-        cfg.scene.npa_wrist_camera = TiledCameraCfg(
+        cfg.scene.npa_wrist_camera = CameraCfg(
             prim_path="{ENV_REGEX_NS}/Robot/panda_hand/NpaWristCamera",
-            offset=TiledCameraCfg.OffsetCfg(
+            offset=CameraCfg.OffsetCfg(
                 pos=(0.08, 0.0, 0.02),
                 rot=(0.7071068, 0.0, 0.7071068, 0.0),
                 convention="ros",
