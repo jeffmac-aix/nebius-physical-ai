@@ -37,8 +37,41 @@ from npa.workbench.antioch.openpi_isaac import (
     _capture_viewport_rgb,
     _compatible_franka_asset_url,
     _ensure_franka_asset_root,
+    _position_target_tensor,
     _verify_vulkan_runtime,
 )
+
+
+def test_position_target_uses_torch_dtype_not_hosted_backend_dtype() -> None:
+    sentinel_dtype = object()
+
+    class Tensor:
+        value: np.ndarray
+
+        def unsqueeze(self, dimension: int) -> tuple[int, np.ndarray]:
+            assert dimension == 0
+            return dimension, self.value
+
+    class FakeTorch:
+        float32 = sentinel_dtype
+
+        @staticmethod
+        def as_tensor(value: np.ndarray, *, device: object, dtype: object) -> Tensor:
+            assert device == "cuda:0"
+            assert dtype is sentinel_dtype
+            tensor = Tensor()
+            tensor.value = value
+            return tensor
+
+    result = _position_target_tensor(
+        FakeTorch,
+        np.asarray([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.5]),
+        device="cuda:0",
+    )
+    assert result[0] == 0
+    np.testing.assert_allclose(
+        result[1], [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.02, 0.02]
+    )
 
 
 def test_hosted_viewport_capture_advances_kit_application_loop(

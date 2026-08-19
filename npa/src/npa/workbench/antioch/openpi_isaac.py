@@ -151,6 +151,19 @@ def _camera_frame(image: Any) -> Any:
     return value[:, :, :3]
 
 
+def _position_target_tensor(
+    torch_module: Any, target: np.ndarray, *, device: Any
+) -> Any:
+    """Create one Isaac target without trusting hosted backend dtype wrappers."""
+
+    fingers = np.repeat(float(target[7]) * 0.04, 2)
+    return torch_module.as_tensor(
+        np.concatenate([target[:7], fingers]),
+        device=device,
+        dtype=torch_module.float32,
+    ).unsqueeze(0)
+
+
 def _resize_rgb(image: Any) -> np.ndarray:
     import torch
 
@@ -383,12 +396,9 @@ def run(*, launch_application: bool = True) -> dict[str, object]:
             }
 
         def set_position_target(target: np.ndarray) -> None:
-            fingers = np.repeat(float(target[7]) * 0.04, 2)
-            full_target = torch.as_tensor(
-                np.concatenate([target[:7], fingers]),
-                device=robot.device,
-                dtype=robot.data.joint_pos.dtype,
-            ).unsqueeze(0)
+            full_target = _position_target_tensor(
+                torch, target, device=robot.device
+            )
             robot.set_joint_position_target(full_target)
 
         def advance_simulation() -> None:
