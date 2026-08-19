@@ -2,7 +2,9 @@
 # never pi0.5/Gemma weights, credentials, or a populated cache.
 FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04@sha256:24c8e3581ea6330038b0d374920721983312627f8adbfcf390bdb4b399d280ed AS build
 
-ENV DEBIAN_FRONTEND=noninteractive UV_PROJECT_ENVIRONMENT=/opt/venv
+ENV DEBIAN_FRONTEND=noninteractive \
+    UV_PROJECT_ENVIRONMENT=/opt/venv \
+    UV_PYTHON_DOWNLOADS=never
 SHELL ["/bin/bash", "-lc"]
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -17,7 +19,7 @@ RUN GIT_LFS_SKIP_SMUDGE=1 git clone --filter=blob:none \
     && test "$(git -C /opt/byof rev-parse HEAD)" = \
       15a9616a00943ada6c20a0f158e3adb39df2ccac \
     && cd /opt/byof \
-    && /opt/uv/bin/uv sync --frozen --no-dev --no-editable \
+    && /opt/uv/bin/uv sync --frozen --no-dev --no-editable --python /usr/bin/python3 \
     && /opt/uv/bin/uv pip check --python /opt/venv/bin/python \
     && rm -rf /opt/byof/.git /root/.cache /tmp/*
 
