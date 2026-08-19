@@ -72,6 +72,31 @@ def test_pr_test_matrix_uses_one_version_and_main_keeps_compatibility() -> None:
     assert "[\"3.10\",\"3.12\",\"3.14\"]" in versions
 
 
+def test_test_workflow_uses_the_pinned_development_ffmpeg() -> None:
+    """Media validation must not silently skip or wait on runner OS mutation."""
+
+    workflow = _load_workflow("test.yml")
+    job = workflow["jobs"]["test"]
+    steps = job["steps"]
+    install_index = next(
+        index for index, step in enumerate(steps) if step.get("name") == "Install npa"
+    )
+    ffmpeg_index = next(
+        index
+        for index, step in enumerate(steps)
+        if step.get("name") == "Configure test ffmpeg"
+    )
+    ffmpeg_step = steps[ffmpeg_index]["run"]
+
+    assert job["env"]["NPA_REQUIRE_FFMPEG"] == "1"
+    assert install_index < ffmpeg_index
+    assert "imageio_ffmpeg.get_ffmpeg_exe()" in ffmpeg_step
+    assert 'test -x "$ffmpeg_bin"' in ffmpeg_step
+    assert 'ln -s "$ffmpeg_bin" "$RUNNER_TEMP/npa-bin/ffmpeg"' in ffmpeg_step
+    assert 'echo "$RUNNER_TEMP/npa-bin" >> "$GITHUB_PATH"' in ffmpeg_step
+    assert "apt-get" not in ffmpeg_step
+
+
 def _make_recipe(target: str) -> list[str]:
     """The command lines of one Makefile target, with variables left unexpanded."""
 
