@@ -568,6 +568,16 @@ def test_stack_uses_separate_gpu_placement_and_private_policy_service() -> None:
     assert init["name"] == "wait-for-policy"
     assert init["args"][-1] == "1800"
     assert any(env["name"] == "NO_PROXY" for env in init["env"])
+    graphics_init = bridge["spec"]["template"]["spec"]["initContainers"][1]
+    assert graphics_init["name"] == "fetch-nvidia-graphics-runtime"
+    assert graphics_init["command"] == [
+        "/opt/npa/docker/workbench/common/nvidia_graphics_runtime.sh"
+    ]
+    assert graphics_init["resources"]["limits"]["nvidia.com/gpu"] == "1"
+    assert graphics_init["env"][1]["valueFrom"]["secretKeyRef"] == {
+        "name": "isaac-acceptance",
+        "key": "ACCEPT_EULA",
+    }
     bridge_env = bridge["spec"]["template"]["spec"]["containers"][0]["env"]
     assert any(env["name"] == "NO_PROXY" for env in bridge_env)
     assert service["spec"]["type"] == "ClusterIP"
@@ -576,6 +586,26 @@ def test_stack_uses_separate_gpu_placement_and_private_policy_service() -> None:
     ]
     assert network["kind"] == "NetworkPolicy"
     assert network["spec"]["ingress"][0]["ports"][0]["port"] == 8000
+
+
+def test_stack_mounts_runtime_fetched_graphics_readonly_in_bridge() -> None:
+    bridge = _stack()["items"][2]
+    pod = bridge["spec"]["template"]["spec"]
+    container = pod["containers"][0]
+    graphics_mount = next(
+        mount
+        for mount in container["volumeMounts"]
+        if mount["name"] == "nvidia-graphics-runtime"
+    )
+    assert graphics_mount == {
+        "name": "nvidia-graphics-runtime",
+        "mountPath": "/opt/nvidia-graphics",
+        "readOnly": True,
+    }
+    assert "source /opt/nvidia-graphics/runtime.env" in container["args"][0]
+    serialized_server = json.dumps(_stack()["items"][0], sort_keys=True)
+    assert "nvidia-graphics-runtime" not in serialized_server
+    assert "isaac-acceptance" not in serialized_server
 
 
 def test_stack_defaults_to_long_lived_continuous_control_with_readiness() -> None:

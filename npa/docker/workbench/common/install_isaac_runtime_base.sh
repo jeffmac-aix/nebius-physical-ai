@@ -20,11 +20,10 @@
 #   * any NVIDIA Isaac Sim / Isaac Lab wheel (proprietary; fetched on first run under the
 #     operator's own EULA acceptance - see isaac_bootstrap.sh)
 #   * any EULA acceptance variable (that refusal is the legal mechanism)
-#   * NVIDIA driver userspace libraries. Verified on an RTX PRO 6000 pod: with
-#     NVIDIA_DRIVER_CAPABILITIES=all the container runtime injects libEGL_nvidia,
-#     libGLX_nvidia, libnvidia-glcore AND /etc/vulkan/icd.d/nvidia_icd.json, and
-#     `vulkaninfo --summary` reports the discrete GPU with driverInfo 580.95.05. Baking
-#     driver libs is therefore unnecessary as well as a separate redistribution question.
+#   * NVIDIA driver userspace libraries. A graphics-capable container runtime may inject
+#     them. The Antioch/OpenPI stack also supports checksum-verified, driver-matched
+#     runtime delivery into an operator-owned volume for managed compute-only nodes.
+#     Either path keeps those third-party bytes out of the public image.
 #
 # Baking the OSS closure is what lets the runtime fetch use --no-deps --require-hashes:
 # pip needs no dependency resolution at run time, so every byte it downloads is pinned to

@@ -67,6 +67,17 @@ policy round trips succeed, multiple safe targets are applied, and the minimum
 sustained interval elapses. A live viewport, screenshot, PID, tunnel, or policy
 health response alone is insufficient.
 
+Some managed GPU node images expose CUDA compute but omit the Vulkan ICD and
+NVIDIA GL/EGL userspace required by Isaac rendering. The bridge therefore has a
+second, GPU-bound init stage. It reads the running kernel-driver version,
+downloads that exact `no-compat32` driver runfile and its SHA-256 file directly
+from NVIDIA under the runtime acceptance, extracts only into an operator-owned
+volume, and atomically publishes a version-keyed ready tree. The bridge mounts
+that tree read-only. A missing acceptance, unavailable checksum, mismatch,
+partial tree, or absent Vulkan library prevents Isaac startup. This runtime
+delivery does not modify the node and does not place driver userspace in the
+public image.
+
 The main streaming controls are exposed by `openpi-stack`:
 
 | Option | Default | Meaning |
@@ -182,7 +193,8 @@ part of measured soft-real-time performance.
 - NPA and OpenPI source are Apache-2.0.
 - The bridge image is eligible for public redistribution only because its built
   layers contain no Isaac, Omniverse Kit, Antioch SDK, checkpoint, cache, or
-  credential bytes, and because it uses distro FFmpeg instead of the separately
+  credential bytes. Driver-matched Vulkan/GL userspace is delivered by NVIDIA
+  into a runtime volume and is not an image layer. The image also uses distro FFmpeg instead of the separately
   licensed static executable bundled in the `imageio-ffmpeg` wheel. Publish an
   exact scanned digest only after the repository's guarded GHCR procedure.
 - The OpenPI policy image is independently public-eligible only when its layers

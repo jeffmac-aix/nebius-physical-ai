@@ -517,9 +517,18 @@ def render_stack(
     ]
     bridge_mounts: list[dict[str, object]] = [
         {"name": "isaac-cache", "mountPath": "/opt/isaac-cache"},
+        {
+            "name": "nvidia-graphics-runtime",
+            "mountPath": "/opt/nvidia-graphics",
+            "readOnly": True,
+        },
     ]
     bridge_volumes: list[dict[str, object]] = [
         {"name": "isaac-cache", "emptyDir": {"sizeLimit": "16Gi"}},
+        {
+            "name": "nvidia-graphics-runtime",
+            "emptyDir": {"sizeLimit": "1Gi"},
+        },
     ]
     if antioch_config_secret:
         bridge_env.append({"name": "ANTIOCH_CONFIG_DIR", "value": "/etc/antioch"})
@@ -533,8 +542,12 @@ def render_stack(
         "name": "isaac-franka-bridge",
         "image": bridge_image,
         "imagePullPolicy": "IfNotPresent",
-        "command": ["/isaac-sim/python.sh"],
-        "args": ["-m", "npa.workbench.antioch.openpi_isaac"],
+        "command": ["/bin/bash", "-lc"],
+        "args": [
+            "set -euo pipefail; "
+            "source /opt/nvidia-graphics/runtime.env; "
+            "exec /isaac-sim/python.sh -m npa.workbench.antioch.openpi_isaac"
+        ],
         "env": bridge_env,
         "resources": {
             "requests": {"cpu": "8", "memory": "32Gi", "nvidia.com/gpu": "1"},
@@ -594,6 +607,44 @@ def render_stack(
                     "requests": {"cpu": "100m", "memory": "128Mi"},
                     "limits": {"cpu": "1", "memory": "512Mi"},
                 },
+                "securityContext": {
+                    "allowPrivilegeEscalation": False,
+                    "capabilities": {"drop": ["ALL"]},
+                },
+            },
+            {
+                "name": "fetch-nvidia-graphics-runtime",
+                "image": bridge_image,
+                "imagePullPolicy": "IfNotPresent",
+                "command": [
+                    "/opt/npa/docker/workbench/common/nvidia_graphics_runtime.sh"
+                ],
+                "env": [
+                    {"name": "NVIDIA_DRIVER_CAPABILITIES", "value": "all"},
+                    {
+                        "name": "ACCEPT_EULA",
+                        "valueFrom": {
+                            "secretKeyRef": {
+                                "name": isaac_acceptance_secret,
+                                "key": "ACCEPT_EULA",
+                            }
+                        },
+                    },
+                ],
+                "resources": {
+                    "requests": {
+                        "cpu": "1",
+                        "memory": "1Gi",
+                        "nvidia.com/gpu": "1",
+                    },
+                    "limits": {"cpu": "4", "memory": "4Gi", "nvidia.com/gpu": "1"},
+                },
+                "volumeMounts": [
+                    {
+                        "name": "nvidia-graphics-runtime",
+                        "mountPath": "/opt/nvidia-graphics",
+                    }
+                ],
                 "securityContext": {
                     "allowPrivilegeEscalation": False,
                     "capabilities": {"drop": ["ALL"]},

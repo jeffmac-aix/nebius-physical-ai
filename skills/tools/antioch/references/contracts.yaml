@@ -59,6 +59,15 @@ secret_scopes:
   isaac_acceptance: simulator_only
   simulator_model_entitlement: forbidden
   policy_antioch_session: forbidden
+  nvidia_graphics_acceptance: simulator_init_only
+runtime_fetch:
+  nvidia_graphics:
+    source: vendor_direct
+    identity: running_driver_version
+    checksum: upstream_sha256
+    publication: atomic_ready_tree
+    inference_mount: read_only
+    host_mutation: forbidden
 public_artifacts:
   prohibited_payloads:
     - credentials

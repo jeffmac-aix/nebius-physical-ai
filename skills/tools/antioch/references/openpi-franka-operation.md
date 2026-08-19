@@ -85,6 +85,14 @@ hold/no-action behavior until a fresh validated chunk arrives.
   RGBA bytes. Do not create a second SimulationApp.
 - **Standalone cameras:** launch Isaac with camera support and configure exterior
   and wrist sensors inside the same one-environment scene.
+- **Compute-only managed driver:** CUDA readiness does not prove Vulkan
+  readiness. Require an NVIDIA ICD plus a real `vulkaninfo` renderer probe. If
+  the node runtime omits graphics userspace, use the repository's simulator-only
+  init stage: it fetches the exact running-driver `no-compat32` runfile and
+  upstream SHA-256 directly from NVIDIA under runtime acceptance, atomically
+  publishes an immutable volume tree, and mounts it read-only into the bridge.
+  Never install it on the host, copy it into an image, substitute a different
+  driver series, or treat `nvidia-smi` as rendering evidence.
 - **Franka assets:** probe the runtime-advertised immutable asset root. If its
   Franka sentinel is unpublished, use only the reviewed published compatibility
   root after probing it. Rewrite both module asset constants and any task config
@@ -94,8 +102,9 @@ hold/no-action behavior until a fresh validated chunk arrives.
   importable. Keep the policy health helper isolated from dataset, manager,
   storage, and optional control dependencies.
 - **Identity:** pin hosted source, image digest, adapter version, engine, SDK, and
-  asset compatibility independently in evidence. An image version is not the
-  runtime/engine version.
+  asset compatibility independently in evidence. Record the driver-matched
+  graphics runtime identity separately. An image version is not the runtime,
+  engine, or driver-userspace version.
 
 ## Control safety and evidence
 
