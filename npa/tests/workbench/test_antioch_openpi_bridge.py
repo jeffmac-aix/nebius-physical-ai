@@ -635,6 +635,12 @@ def test_stack_mounts_runtime_fetched_graphics_readonly_in_bridge() -> None:
         "mountPath": "/opt/nvidia-graphics",
         "readOnly": True,
     }
+    graphics_volume = next(
+        volume
+        for volume in pod["volumes"]
+        if volume["name"] == "nvidia-graphics-runtime"
+    )
+    assert graphics_volume["emptyDir"]["sizeLimit"] == "4Gi"
     assert "source /opt/nvidia-graphics/runtime.env" in container["args"][0]
     serialized_server = json.dumps(_stack()["items"][0], sort_keys=True)
     assert "nvidia-graphics-runtime" not in serialized_server

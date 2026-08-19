@@ -527,7 +527,11 @@ def render_stack(
         {"name": "isaac-cache", "emptyDir": {"sizeLimit": "16Gi"}},
         {
             "name": "nvidia-graphics-runtime",
-            "emptyDir": {"sizeLimit": "1Gi"},
+            # The no-compat32 runfile is roughly 300 MiB compressed, but its
+            # driver-matched Vulkan/EGL userspace expands beyond 1 GiB. Keep
+            # the run-scoped volume bounded while leaving headroom for atomic
+            # extraction and publication of the immutable ready tree.
+            "emptyDir": {"sizeLimit": "4Gi"},
         },
     ]
     if antioch_config_secret:

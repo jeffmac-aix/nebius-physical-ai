@@ -501,7 +501,7 @@ def test_isaac_lab_deploy_runtime_container_starts_image(
     deploy_container.assert_called_once()
     assert deploy_container.call_args.kwargs["container_name"] == "npa-isaac-lab"
     assert deploy_container.call_args.kwargs["image_ref"].endswith(
-        "/npa-isaac-lab:2.3.2.post1-antioch-openpi-20260819-r9"
+        "/npa-isaac-lab:2.3.2.post1-antioch-openpi-20260819-r10"
     )
     wb_cfg = write_config.call_args.args[0]["projects"]["proj"]["workbenches"][
         "isaac-container"
