@@ -47,7 +47,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     JAX_COMPILATION_CACHE_DIR=/workspace/.cache/jax \
     XLA_PYTHON_CLIENT_PREALLOCATE=false \
     PYTHONUNBUFFERED=1 \
-    PATH=/opt/venv/bin:/usr/local/bin:/usr/bin:/bin
+    PATH=/opt/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 SHELL ["/bin/bash", "-lc"]
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
