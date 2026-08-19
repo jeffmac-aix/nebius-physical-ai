@@ -32,6 +32,7 @@ from npa.workbench.antioch.openpi_bridge import (
 )
 from npa.workbench.antioch.openpi_health import wait_for_health
 from npa.workbench.antioch.openpi_isaac import (
+    _compatible_franka_asset_url,
     _ensure_franka_asset_root,
     _verify_vulkan_runtime,
 )
@@ -146,6 +147,14 @@ def test_franka_asset_root_fails_closed_when_compatibility_asset_is_missing(
     monkeypatch.setattr("urllib.request.urlopen", missing)
     with pytest.raises(OpenPIBridgeError, match="reviewed compatibility roots"):
         _ensure_franka_asset_root(assets)
+
+
+def test_franka_compatibility_rewrites_an_already_imported_task_config() -> None:
+    stale = "https://assets.example/Assets/Isaac/6.0/Isaac/Franka/panda.usd"
+    assert _compatible_franka_asset_url(stale, "nvidia-5.1-compatibility") == (
+        "https://assets.example/Assets/Isaac/5.1/Isaac/Franka/panda.usd"
+    )
+    assert _compatible_franka_asset_url(stale, "native") == stale
 
 
 def test_hosted_example_pins_reviewed_npa_source_revision() -> None:

@@ -105,6 +105,12 @@ def _ensure_franka_asset_root(assets: Any | None = None) -> str:
     return "nvidia-5.1-compatibility"
 
 
+def _compatible_franka_asset_url(url: str, asset_compatibility: str) -> str:
+    if asset_compatibility == "nvidia-5.1-compatibility":
+        return url.replace("/Assets/Isaac/6.0/", "/Assets/Isaac/5.1/", 1)
+    return url
+
+
 def _write_report(uri: str, report: dict[str, object]) -> None:
     if not uri:
         print(
@@ -190,6 +196,9 @@ def run(*, launch_application: bool = True) -> dict[str, object]:
                 f"Isaac bridge requires RTX PRO 6000 sm_120, received compute capability {capability}"
             )
         cfg = parse_env_cfg("Isaac-Lift-Cube-Franka-v0", device="cuda:0", num_envs=1)
+        cfg.scene.robot.spawn.usd_path = _compatible_franka_asset_url(
+            cfg.scene.robot.spawn.usd_path, asset_compatibility
+        )
         cfg.scene.npa_exterior_camera = TiledCameraCfg(
             prim_path="{ENV_REGEX_NS}/NpaExteriorCamera",
             offset=TiledCameraCfg.OffsetCfg(
