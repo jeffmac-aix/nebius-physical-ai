@@ -1752,7 +1752,9 @@ def test_bootstrap_ui_mcap_cards_bind_exact_provenance_in_page() -> None:
     exact_source_handler = source.split("async function loadExactArtifactSource", 1)[
         1
     ].split("function learningStagesFromContract", 1)[0]
-    assert "deferPreferredViewer: true" in exact_source_handler
+    # Exact-source inventory now discovers every page before selecting and
+    # immediately opens the global preferred recording.
+    assert "deferPreferredViewer: false" in exact_source_handler
     assert "loadArtifactsForSelectedRun(runRef" in exact_source_handler
     external_handler = source.split("async function openFoxgloveWeb", 1)[1].split(
         "async function captureFoxgloveContext", 1
@@ -2390,12 +2392,36 @@ def test_direct_run_load_cancels_background_discovery_and_uses_exact_artifacts()
     assert "singlePage: true," in source
     assert "background: true," in source
     assert "Render the authoritative workflow timeline before attempting" in source
-    assert "!context.deferPreferredViewer && preferred" in source
+    assert "!context.deferPreferredViewer && !context.suppressPreferredAutoload && preferred" in source
     assert "deferPreferredViewer: true" in source
     assert 'showToast("Run loaded; preferred viewer failed: "' in source
     assert '"#stageList .stage-physical-job"' in source
     assert (
         "if (!physicalStageCount) await loadRunDetails(runId, detailOptions);" in source
+    )
+
+
+def test_artifact_inventory_autopaginates_before_global_preference_and_selection() -> None:
+    source = _agent_ui_bundle()
+    block = source.split(
+        "async function loadArtifactsForSelectedRun", 1
+    )[1].split("async function loadExactArtifactSource", 1)[0]
+
+    assert "const seenCursors = new Set();" in block
+    assert "while (nextCursor)" in block
+    assert "seenCursors.has(nextCursor)" in block
+    assert "paginationEmptyPageCount" in block
+    assert "paginationDuplicateCount" in block
+    assert "Artifact inventory source changed during pagination" in block
+    assert "Artifact inventory is truncated but the server returned no continuation cursor" in block
+    assert 'continuation.set("project_id", selectedSource.project_id);' in block
+    assert 'continuation.set("resource_bucket", selectedSource.bucket);' in block
+    assert 'continuation.set("resolved_prefix", selectedSource.resolved_prefix);' in block
+    assert 'continuation.set("source_selected", "1");' in block
+    assert "const preferred = selectPreferredArtifact(artifacts);" in block
+    assert block.index("while (nextCursor)") < block.index("setActiveRunId(runId)")
+    assert block.index("selectPreferredArtifact(artifacts)") < block.index(
+        "setActiveRunId(runId)"
     )
 
 

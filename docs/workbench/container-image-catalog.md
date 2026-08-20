@@ -72,6 +72,17 @@ guard.
 | Cosmos Evaluator 0.1.2 | `npa-cosmos-evaluator` | `0.1.2-skypilot-v1-20260813T164700Z` | 2026-08-13 | Runs the upstream `HallucinationProcessor` quality gate on generated video using classical computer vision and no weights. Attribute verification calls an OpenAI-compatible endpoint; the LFS/EULA-gated obstacle checker is deliberately not fetched. |
 | FiftyOne 1.15.0.post1 (Voxel51) | `npa-fiftyone` | `1.15.0.post1` | 2026-08-13 | Dataset curation and visualization UI on port 5151, including uniqueness, similarity, and embedding visualization. Bundles a `mongod` binary so FiftyOne can launch its own metadata database. |
 
+## Validated source-registry candidates pending public release
+
+The supported worker defaults currently select additive Cosmos Transfer,
+FiftyOne, and Rerun releases with the immutable SkyPilot Kubernetes bootstrap
+closure. Those candidate tags are present in the maintainer source registry but
+were not anonymously available in the 2026-08-17 audit. The public resolver and
+publisher therefore retain the prior verified tags shown above. Moving any of
+these candidates to GHCR requires the separately authorized publication workflow
+and a successful unauthenticated manifest check; private availability and
+redistribution eligibility are not evidence of publication.
+
 ## Intentionally not published as separate images
 
 - **`npa-sim2real-control`** is an internal workflow artifact, not a public-mirror

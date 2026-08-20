@@ -69,6 +69,7 @@ SKYPILOT_BOOTSTRAP_ATTESTED_TOOLS: frozenset[str] = frozenset(
         "cosmos-curate",
         "cosmos-evaluator",
         "fiftyone",
+        "rerun-viewer",
     }
 )
 
@@ -159,6 +160,18 @@ UNVALIDATED_PUBLICATION_TOOLS: frozenset[str] = frozenset({"ltx2"})
 PUBLIC_CONTAINER_REGISTRY_ENV = "NPA_PUBLIC_REGISTRY"
 DEFAULT_PUBLIC_CONTAINER_REGISTRY = "ghcr.io/nebius/nebius-physical-ai"
 
+# A supported worker release can be available in the maintainer source registry
+# before an authorized human publishes it to the anonymous mirror. Keep public
+# resolution on the last anonymously verified tag in that interval. Remove an
+# override only after the replacement tag has been copied and an unauthenticated
+# manifest check succeeds; ``contribute-workbench-image`` deliberately makes
+# public publication a separate, explicit decision.
+PUBLIC_MIRROR_TAG_OVERRIDES: dict[str, str] = {
+    "cosmos2-transfer": "2.5.1-skypilot-ready-20260801T053000Z",
+    "fiftyone": "1.15.0.post1",
+    "rerun-viewer": "0.31.4",
+}
+
 # Registry hosts that serve anonymous/public pulls. Resolving a restricted image
 # against one of these is always wrong: either it is not there (we never publish
 # it) or someone has published a non-redistributable runtime to third parties.
@@ -184,23 +197,27 @@ SUPPORTED_TOOL_VERSIONS = {
     "isaac-lab": "2.3.2.post1",
     "leisaac": "0.4.0-20260817T231825Z",
     "cosmos": "cu128-torch27-sm100-1.0.9-20260803T002017Z",
-    "cosmos2-transfer": "2.5.1-skypilot-ready-20260801T053000Z",
+    "cosmos2-transfer": "2.5.1-sam2-multigpu-20260817-r2",
     # Additive r2 release of cosmos-framework 1.2.2 (pinned commit 5e67049c) +
     # torch cu130. The immutable 1.2.2-cu130 tag remains rollback provenance.
     # No weights baked; gated Cosmos3 checkpoints download at runtime.
     "cosmos3": "1.2.2-cu130-r2",
     "cosmos3-reason": "cuda13-b300-3.0.1-sm80-sm90-sm100-sm103-sm120-20260803T034152Z",
+    # Additive image releases that preserve the tool versions while including
+    # the immutable SkyPilot 0.12.2 Kubernetes bootstrap closure. The original
+    # semantic-version tags remain valid for direct container use, but cannot be
+    # workflow-worker defaults because their published bytes predate that closure.
     "cosmos-curate": "0.1.2-skypilot-v1-20260813T164700Z",
     "cosmos-evaluator": "0.1.2-skypilot-v1-20260813T164700Z",
     "groot": "0.1.0",
-    "fiftyone": "1.15.0.post1",
+    "fiftyone": "1.15.0-post1-skypilot-v1-20260815-review5",
     "sonic": "cuda13-b300-0.1.2-k8s-runtime-sm80-sm90-sm100-sm103-sm120-20260803T034152Z",
     "retargeting": "0.1.1",
     "envgen": "cuda13-b300-0.1.2-sm80-sm90-sm100-sm103-sm120-20260803T034152Z",
     "reference-policy": "cuda13-b300-0.1.2-sm80-sm90-sm100-sm103-sm120-20260803T034152Z",
     "lerobot-vlm-rl": "cuda13-b300-0.1.1-sm80-sm90-sm100-sm103-sm120-20260803T034152Z",
     "loop-eval": "cuda13-b300-0.1.3-sm80-sm90-sm100-sm103-sm120-20260803T034152Z",
-    "rerun-viewer": "0.31.4",
+    "rerun-viewer": "0.31.4-skypilot-v1-20260815-review5-r2",
     # Tracks the pinned @foxglove/embed SDK release (npa.workbench.foxglove).
     "foxglove-embed": "0.58.0",
     # Lichtblick (MPL-2.0): OSS, Foxglove-compatible static web viewer bundle.
@@ -305,7 +322,7 @@ def public_mirror_tag_for_tool(tool: str) -> str:
     """
     if tool == "sonic":
         return SUPPORTED_TOOL_VERSIONS[tool]
-    return supported_tool_version(tool)
+    return PUBLIC_MIRROR_TAG_OVERRIDES.get(tool, supported_tool_version(tool))
 
 
 def supported_lerobot_versions() -> tuple[str, ...]:
@@ -389,6 +406,7 @@ def container_image_for_tool(
     image_variant: str | None = None,
 ) -> str:
     """Return the fully qualified image ref for a Workbench tool."""
+    resolved_registry = registry or _primary_registry()
     if tool == "sonic":
         entry = sonic_image_entry(gpu_target=gpu_target, image_variant=image_variant)
         image_name = str(entry["name"])
@@ -399,8 +417,11 @@ def container_image_for_tool(
                 f"Image variants are only defined for SONIC, got tool={tool!r}"
             )
         image_name = CONTAINER_IMAGE_NAMES[tool]
-        resolved_tag = tag or supported_tool_version(tool)
-    resolved_registry = registry or _primary_registry()
+        resolved_tag = tag or (
+            public_mirror_tag_for_tool(tool)
+            if is_public_registry(resolved_registry)
+            else supported_tool_version(tool)
+        )
     if not is_publicly_redistributable(tool) and is_public_registry(resolved_registry):
         raise ValueError(
             f"{tool!r} is not publicly redistributable and is never distributed from a "
