@@ -227,9 +227,9 @@ otherwise it proposes a fresh project-scoped bucket, without listing or rotating
 unrelated access keys.
 
 Run interactive setup in a terminal. `npa configure` creates or reuses your
-Nebius CLI profile first, then prompts for your tenant id and project id, your
-region and container registry (defaults are discovered from the project), guides
-you to reuse an existing bucket or create a default `npa-bucket-<hash>` bucket
+Nebius CLI profile first, then prompts for your tenant id, project id, and
+region, guides you to reuse an existing bucket or create a default
+`npa-bucket-<hash>` bucket
 (standard storage, size limit in GB), and asks for a local **project alias**
 (default = region; used later as `-p <alias>`).
 
@@ -247,6 +247,12 @@ cannot) access — see [§4e](#4e-accept-and-verify-gated-model-access):
 ```bash
 npa configure
 ```
+
+Workbench images resolve from the anonymous
+`ghcr.io/nebius/nebius-physical-ai` mirror by default, so configure does not ask
+for or save a container registry. Existing `container_registry` entries remain
+supported as custom overrides; for new private or locally modified images, set
+`NPA_REGISTRY` or pass the command's explicit image/registry option.
 
 Storage is committed after its declared write/read capability probe succeeds.
 Delete is best-effort probe cleanup and is reported independently. The declared
