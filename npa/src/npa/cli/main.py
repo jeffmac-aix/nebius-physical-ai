@@ -413,9 +413,11 @@ Then secure it:
 chmod 600 ~/.npa/credentials.yaml
 
 `npa configure` also writes ~/.npa/config.yaml with your Nebius project id,
-tenant id, region, and container registry so commands no longer need those
-values exported in the shell or read from the Nebius CLI. Deploy commands
-extend the same file with workbench endpoints and Terraform state.
+tenant id, and region so commands no longer need those values exported in the
+shell or read from the Nebius CLI. Workbench images use the anonymous GHCR
+mirror by default; set NPA_REGISTRY or pass an explicit image when you need a
+private or locally modified image. Deploy commands extend the same file with
+workbench endpoints and Terraform state.
 
 Treat ~/.npa/config.yaml as sensitive too: deploys persist the Terraform remote
 state S3 access key and secret under projects.<alias>.terraform_state. npa keeps
@@ -506,38 +508,6 @@ def _list_nebius_profiles(
         if name:
             profiles.append(name)
     return profiles
-
-
-def _region_from_registry_host(registry: str) -> str:
-    """Best-effort region from a container registry host such as cr.eu-north1.nebius.cloud."""
-
-    host = (registry or "").split("/", 1)[0].strip()
-    parts = host.split(".")
-    if len(parts) >= 4 and parts[0] == "cr" and parts[2] == "nebius":
-        return parts[1]
-    return ""
-
-
-def _preferred_container_registry(nebius_client, project_id: str) -> str:
-    """Return the container registry to configure for *project_id*.
-
-    Prefer a discovered registry ONLY when it is in ``DEFAULT_REGION``
-    (eu-north1), where the first-party workbench images live; otherwise use the
-    first-party default. A project whose only registry is in another region
-    (e.g. a us-central1-only project) does NOT hold the ``npa-*`` workbench
-    images, so pinning that project-local registry would break later workbench
-    deploys with image-not-found. Both configure paths (manual entry and project
-    discovery) share this so they never diverge on which registry gets saved.
-    """
-    from npa.deploy.images import DEFAULT_CONTAINER_REGISTRY
-
-    try:
-        discovered = nebius_client.discover_container_registry(project_id)
-    except Exception:  # noqa: BLE001 - registry discovery is best-effort
-        discovered = ""
-    if discovered and _region_from_registry_host(discovered) == DEFAULT_REGION:
-        return discovered
-    return DEFAULT_CONTAINER_REGISTRY
 
 
 def _create_nebius_profile(*, runner: Callable[..., object] = subprocess.run) -> bool:
@@ -1057,7 +1027,6 @@ def _warn_repointed_alias(alias: str, stanza: dict[str, Any], project_id: str) -
 def _select_discovered_projects(
     projects: list[dict[str, str]],
     ask: Callable[..., str],
-    nebius_client: Any,
     *,
     current_project_id: str = "",
     existing_projects: dict[str, dict[str, Any]] | None = None,
@@ -1065,15 +1034,15 @@ def _select_discovered_projects(
 ) -> tuple[list[tuple[str, dict[str, str]]], str]:
     """Present discovered projects and return ``([(alias, stanza)...], default_alias)``.
 
-    Auto-derives tenant/project/region from each pick and best-effort discovers
-    the container registry. npa is multi-project: the user may select several.
+    Auto-derives tenant/project/region from each pick. npa is multi-project: the
+    user may select several.
     Aliases reuse the stanza a project already has in ``~/.npa/config.yaml`` so a
     re-run updates it in place instead of stranding the workbench endpoints and
     Terraform state saved under the old alias.
     """
     # Large Nebius accounts can expose hundreds/thousands of projects. Dumping
-    # them all (and defaulting to 'all', which then discovers a registry per
-    # project) is unusable, so offer a name/id filter and cap the printed list.
+    # and configuring them all by default is unusable, so offer a name/id filter
+    # and cap the printed list.
     display_cap = 40
     shown = list(projects)
     if len(shown) > display_cap:
@@ -1109,7 +1078,7 @@ def _select_discovered_projects(
             f"({region})  [{proj['id']}]"
         )
     # Default to the current project (never 'all', which would configure every
-    # discovered project and run per-project registry discovery).
+    # discovered project).
     default_pick = "1"
     for i, proj in enumerate(shown, start=1):
         if proj["id"] == current_project_id:
@@ -1137,15 +1106,10 @@ def _select_discovered_projects(
             used_aliases,
         )
         used_aliases.add(alias)
-        # Prefer an eu-north1 registry (workbench images live there); a
-        # project-local registry in another region lacks the npa-* images and
-        # would break later workbench deploys. Mirrors the manual-entry path.
-        registry = _preferred_container_registry(nebius_client, proj["id"])
         stanza = {
             "project_id": proj["id"],
             "tenant_id": proj["tenant_id"],
             "region": proj.get("region", "") or DEFAULT_REGION,
-            "container_registry": registry,
         }
         selected.append((alias, stanza))
 
@@ -1410,7 +1374,6 @@ def _run_interactive_configure(
         discovered_selection, discovered_default_alias = _select_discovered_projects(
             discovered_projects,
             ask,
-            nebius_client,
             current_project_id=nebius_client.current_project_id(),
             existing_projects=existing_projects,
             existing_default_alias=existing_default_alias,
@@ -1427,7 +1390,6 @@ def _run_interactive_configure(
         tenant_id = str(default_stanza.get("tenant_id", ""))
         project_id = str(default_stanza.get("project_id", ""))
         region = str(default_stanza.get("region", "") or DEFAULT_REGION)
-        registry = str(default_stanza.get("container_registry", ""))
     else:
         # Tenant is the parent of the project, so ask for it first.
         tenant_id = ask(
@@ -1436,28 +1398,11 @@ def _run_interactive_configure(
         project_id = ask(
             "Nebius project id", default=str(existing_stanza.get("project_id", ""))
         )
-        existing_registry = str(existing_stanza.get("container_registry", ""))
-        # The main NPA registry (workbench images) is in eu-north1, and registries
-        # are readable cross-region, so default to eu-north1: keep a saved registry,
-        # else use the project's own eu-north1 registry if it has one, else the
-        # eu-north1 first-party default. A discovered non-eu-north1 registry is not
-        # auto-selected as the default (the operator can still type it). Only hit
-        # Nebius for discovery when nothing is saved (idempotent re-runs stay offline).
-        if existing_registry:
-            registry_default = existing_registry
-        else:
-            registry_default = _preferred_container_registry(nebius_client, project_id)
         region_default = (
             str(existing_stanza.get("region", ""))
-            or _region_from_registry_host(registry_default)
             or DEFAULT_REGION
         )
         region = ask("Region", default=region_default)
-        # The registry host region is only used as a sensible default guess for the
-        # region above; it is not a constraint. Container registries are readable
-        # cross-region and a project can hold registries in several regions, so we do
-        # not warn when the chosen region differs from the registry's region.
-        registry = ask("Container registry", default=registry_default)
 
     operation = current_operation()
     if operation is not None:
@@ -1727,7 +1672,6 @@ def _run_interactive_configure(
                 ("project_id", project_id),
                 ("tenant_id", tenant_id),
                 ("region", region),
-                ("container_registry", registry),
             )
             if value
         }
@@ -1961,7 +1905,6 @@ def _configured_env_lines() -> str:
             ("NPA_PROJECT_ID", "project_id"),
             ("NPA_TENANT_ID", "tenant_id"),
             ("NPA_REGION", "region"),
-            ("NPA_REGISTRY", "container_registry"),
         ):
             value = str((stanza or {}).get(key, "") or "")
             if value:
@@ -2067,7 +2010,6 @@ def _configured_summary() -> str:
         ("project id", "project_id"),
         ("tenant id", "tenant_id"),
         ("region", "region"),
-        ("container registry", "container_registry"),
     ):
         value = str((stanza or {}).get(key, "") or "")
         lines.append(f"  {label + ':':<19} {value or '(unset)'}")
@@ -2203,7 +2145,6 @@ def _run_known_project_configure(
     project_id: str,
     region: str,
     project_alias: str,
-    container_registry: str,
     provision: bool,
 ) -> None:
     """Configure a known project without profile creation, discovery, or prompts."""
@@ -2250,15 +2191,6 @@ def _run_known_project_configure(
     _warn_repointed_alias(
         alias, existing_projects.get(alias) or {}, values["--project-id"]
     )
-    registry = str(container_registry or "").strip()
-    if not registry:
-        from npa.deploy.images import DEFAULT_CONTAINER_REGISTRY
-
-        registry = str(
-            (existing_projects.get(alias) or {}).get("container_registry")
-            or DEFAULT_CONTAINER_REGISTRY
-        )
-
     existing = load_credentials(environ={})
     storage: dict[str, str] = {}
     existing_complete = bool(
@@ -2373,7 +2305,6 @@ def _run_known_project_configure(
                     "project_id": values["--project-id"],
                     "tenant_id": values["--tenant-id"],
                     "region": values["--region"],
-                    "container_registry": registry,
                 }
             },
             "default_project": alias,
@@ -2413,7 +2344,6 @@ def _configure_impl(
     project_id: str = "",
     region: str = "",
     project_alias: str = "",
-    container_registry: str = "",
 ) -> None:
     if src_s3_uri.strip():
         _store_src_s3_uri(src_s3_uri.strip())
@@ -2488,7 +2418,6 @@ def _configure_impl(
             project_id=project_id,
             region=region,
             project_alias=project_alias,
-            container_registry=container_registry,
             provision=provision,
         )
         return
@@ -2732,11 +2661,6 @@ def configure(
         "--project-alias",
         help="Local NPA alias to write for the known project (prompt-free configure).",
     ),
-    container_registry: str = typer.Option(
-        "",
-        "--container-registry",
-        help="Optional non-secret registry override for prompt-free configure.",
-    ),
 ) -> None:
     """Interactively write ~/.npa credentials and config, or show guidance."""
     _configure_impl(
@@ -2751,7 +2675,6 @@ def configure(
         project_id=project_id,
         region=region,
         project_alias=project_alias,
-        container_registry=container_registry,
     )
 
 
@@ -2817,9 +2740,6 @@ def init(
     project_alias: str = typer.Option(
         "", "--project-alias", help="Local NPA alias for prompt-free configure."
     ),
-    container_registry: str = typer.Option(
-        "", "--container-registry", help="Optional non-secret registry override."
-    ),
 ) -> None:
     """Interactively write ~/.npa credentials and config, or show guidance."""
     _configure_impl(
@@ -2833,7 +2753,6 @@ def init(
         project_id=project_id,
         region=region,
         project_alias=project_alias,
-        container_registry=container_registry,
     )
 
 
