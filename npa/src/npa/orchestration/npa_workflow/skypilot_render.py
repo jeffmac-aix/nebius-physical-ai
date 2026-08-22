@@ -980,7 +980,15 @@ def render_task_run_script(command: Sequence[str], *, preamble: str = "") -> str
         # succeeds), the overlay lands in the vendor interpreter, and the stage runs the stale
         # CLI. Live job 284: `No such command 'cosmos2'. Did you mean 'cosmos'?` — from an npa
         # predating the subcommand, while the recorded interpreter had the current one.
-        '  printf \'#!/bin/sh\\nexec "%s" -m npa "$@"\\n\' '
+        # The distribution intentionally has no top-level ``npa.__main__``.
+        # Import and CALL the same lightweight entry function used by the
+        # installed console script so the shim stays bound to the recorded
+        # interpreter without relying on a scripts directory that may be
+        # outside PATH.  Calling it explicitly also supports older baked NPA
+        # images whose entry module defines ``main`` but has no ``__main__``
+        # guard: ``python -m npa.cli.entry`` silently exited 0 in a live Cosmos
+        # Evaluator stage and therefore produced no declared report.
+        '  printf \'#!/bin/sh\\nexec "%s" -c "from npa.cli.entry import main; main()" "$@"\\n\' '
         '"$npa_python" > /tmp/npa-shim/npa\n'
         "  chmod +x /tmp/npa-shim/npa\n"
         '  export PATH="/tmp/npa-shim:$PATH"\n'
