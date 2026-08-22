@@ -164,6 +164,7 @@ from npa.provisioning_journal import (
     operation_heartbeats,
 )
 from npa.cli import agent_foxglove_config
+from npa.cli.agent_benchmark import benchmark_cmd
 
 app = typer.Typer(
     name="agent",
@@ -172,6 +173,7 @@ app = typer.Typer(
 )
 app.command("auth-profile")(auth_profile_cmd)
 app.command("list")(agent_list_cmd)
+app.command("benchmark")(benchmark_cmd)
 
 DEFAULT_AGENT_PORT = 8088
 DEFAULT_BACKEND_PORT = 8787

@@ -70,6 +70,23 @@ Pure, side-effect-free functions (no network) so they unit-test cheaply:
 The `/chat` handler classifies the tier, enforces the input guardrail, honors an
 explicit model override, and returns `tier` + `usage` + `input_budget_ok`.
 
+## Reproducible external-model benchmark
+
+`npa agent benchmark` is the operator-side live benchmark for an
+OpenAI-compatible text model. Its implementation is
+`npa/src/npa/cli/agent_benchmark.py`; it reuses `run_action_loop` with a distinct
+fixed allowlist and never exposes a shell/SSH primitive. Mutating tools require
+explicit task-scoped action classes, and every execution records both the
+normalized action digest and the fixed operation digest. The ordinary agent API
+does not pass an `action_authorizer`, so its single-use confirmation-token
+contract is unchanged.
+
+The report measures streaming TTFT/latency/tokens/throughput, tool timing,
+representative high context, concurrency, resume state, and a clearly labeled
+non-agentic deterministic baseline. Exact provider and infrastructure identity
+stays out of the sanitized report. See
+`docs/workbench/agent-benchmark.md` and its JSON schema.
+
 ## Adding a capability cheaply (decision order)
 
 1. **Grounded intent** — can a regex intent + grounded state reply answer it?

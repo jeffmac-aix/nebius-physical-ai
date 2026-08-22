@@ -750,6 +750,7 @@ def run_action_loop(
     max_steps: int = DEFAULT_MAX_STEPS,
     allowlist: Mapping[str, ToolSpec] | None = None,
     live_context: str = "",
+    action_authorizer: Callable[[Mapping[str, Any], str], bool] | None = None,
 ) -> dict[str, Any]:
     """Run the bounded classify->plan->call->observe->decide->stop loop.
 
@@ -773,6 +774,11 @@ def run_action_loop(
         escalate via ``agent_routing.classify_tier``).
     max_steps:
         Hard guard on planner/tool iterations.
+    action_authorizer:
+        Optional task-scoped authorizer invoked with the normalized action and
+        its digest. This is for explicit non-interactive operator scopes such as
+        ``npa agent benchmark``; ordinary chat/API callers leave it unset and
+        retain the single-use confirmation-token flow.
     """
     resolved_allow = allowlist if allowlist is not None else TOOL_ALLOWLIST
     steps: list[dict[str, Any]] = []
@@ -1060,14 +1066,16 @@ def run_action_loop(
             replans += 1
             continue
 
+        scoped_ok = False
         if requires_confirmation(tool, resolved_allow):
             proposed = {"tool": tool, "args": args}
             digest = action_digest(proposed)
             token_ok = confirmation_ok(confirm_token, session_token) and not confirmation_consumed
+            scoped_ok = bool(action_authorizer and action_authorizer(proposed, digest))
             # The token is bound to a specific action digest; a token issued for
             # one action can never authorize a different (or repeated) one.
             digest_ok = (not confirm_digest) or confirm_digest == digest
-            if not (token_ok and digest_ok):
+            if not ((token_ok and digest_ok) or scoped_ok):
                 proposed_action = dict(proposed)
                 proposed_action["digest"] = digest
                 steps.append(
@@ -1092,7 +1100,8 @@ def run_action_loop(
             # One matching token authorizes one attempt inside this loop. Consume
             # it before invoking the executor so errors and planner repeats cannot
             # turn one confirmation into multiple state changes.
-            confirmation_consumed = True
+            if token_ok:
+                confirmation_consumed = True
 
         executor = tools.get(tool)
         if executor is None:
@@ -1148,6 +1157,14 @@ def run_action_loop(
                 "status": status,
                 "thought": thought,
                 "observation": observed,
+                **(
+                    {
+                        "action_digest": planned_digest,
+                        "authorization": "task_scope" if scoped_ok else "confirm_token",
+                    }
+                    if requires_confirmation(tool, resolved_allow)
+                    else {}
+                ),
                 **({"terminal_observation": True} if terminal_empty else {}),
                 **({"replan_reason": replan_reason} if replan_reason else {}),
             }

@@ -12,6 +12,7 @@ Options
 Commands
 auth-profile  Complete a human Nebius CLI profile on this operator/dev VM.
 list  List agent deployments recorded in ~/.npa/config.yaml.
+benchmark  Benchmark a real model-guided NPA setup-to-workflow loop with bounded tools.
 preflight  Check Route C prerequisites before `npa agent deploy` / `fresh-setup`.
 deploy  Provision VM + bootstrap the public NPA agent stack.
 fresh-setup  Initialize fresh project config and deploy a new agent from scratch.
@@ -34,6 +35,7 @@ verify-live  Exit 0 only when live infra checks and tests pass.
 | --- | --- |
 | `auth-profile` | Complete a human Nebius CLI profile on this operator/dev VM. |
 | `list` | List agent deployments recorded in ~/.npa/config.yaml. |
+| `benchmark` | Benchmark a real model-guided NPA setup-to-workflow loop with bounded tools. |
 | `preflight` | Check Route C prerequisites before `npa agent deploy` / `fresh-setup`. |
 | `deploy` | Provision VM + bootstrap the public NPA agent stack. |
 | `fresh-setup` | Initialize fresh project config and deploy a new agent from scratch. |
