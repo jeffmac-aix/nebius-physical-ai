@@ -20,6 +20,7 @@ import httpx
 import typer
 
 from npa.agent_backend.actions import ToolSpec, run_action_loop
+from npa.deploy.images import DEFAULT_PUBLIC_CONTAINER_REGISTRY, is_public_registry
 from npa.lifecycle_intent import json_stdout_contract
 
 REPORT_SCHEMA = "npa.agent.benchmark.v1"
@@ -31,6 +32,9 @@ _SECRET_RE = re.compile(
 )
 _OPAQUE_ID_RE = re.compile(
     r"(?<![a-z0-9])(?:tenant|project|cluster|bucket|registry)-[a-z0-9][a-z0-9-]{6,}"
+)
+_NEBIUS_ACCOUNT_ID_RE = re.compile(
+    r"(?i)(?<![a-z0-9])(?:e|u)00[a-z0-9]{12,}(?![a-z0-9])"
 )
 
 
@@ -50,11 +54,16 @@ def _digest(value: Any, *, length: int = 16) -> str:
 
 def _redact_text(text: str, replacements: Mapping[str, str] | None = None) -> str:
     value = str(text or "")
-    for raw, label in sorted((replacements or {}).items(), key=lambda item: -len(item[0])):
+    for raw, label in sorted(
+        (replacements or {}).items(), key=lambda item: -len(item[0])
+    ):
         if raw:
             value = value.replace(raw, label)
-    value = _SECRET_RE.sub(lambda match: f"{match.group(1)}{match.group(2)}<redacted>", value)
-    return _OPAQUE_ID_RE.sub("<live-resource>", value)
+    value = _SECRET_RE.sub(
+        lambda match: f"{match.group(1)}{match.group(2)}<redacted>", value
+    )
+    value = _OPAQUE_ID_RE.sub("<live-resource>", value)
+    return _NEBIUS_ACCOUNT_ID_RE.sub("<live-resource>", value)
 
 
 def _sanitize(value: Any, replacements: Mapping[str, str]) -> Any:
@@ -64,7 +73,9 @@ def _sanitize(value: Any, replacements: Mapping[str, str]) -> Any:
         sanitized: dict[str, Any] = {}
         for key, item in value.items():
             name = str(key)
-            if re.search(r"(?i)(api_key|secret|password|authorization|credential_value)", name):
+            if re.search(
+                r"(?i)(api_key|secret|password|authorization|credential_value)", name
+            ):
                 sanitized[name] = "<redacted>"
             else:
                 sanitized[name] = _sanitize(item, replacements)
@@ -76,7 +87,9 @@ def _sanitize(value: Any, replacements: Mapping[str, str]) -> Any:
 
 def _atomic_write(path: Path, payload: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary = path.with_name(
+        f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+    )
     temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
     os.chmod(temporary, 0o600)
     temporary.replace(path)
@@ -177,10 +190,18 @@ class StreamingPlanner:
                             if not isinstance(choices, list) or not choices:
                                 continue
                             choice = choices[0] if isinstance(choices[0], dict) else {}
-                            finish_reason = str(choice.get("finish_reason") or finish_reason)
-                            delta = choice.get("delta") if isinstance(choice.get("delta"), dict) else {}
+                            finish_reason = str(
+                                choice.get("finish_reason") or finish_reason
+                            )
+                            delta = (
+                                choice.get("delta")
+                                if isinstance(choice.get("delta"), dict)
+                                else {}
+                            )
                             piece = delta.get("content")
-                            thought = delta.get("reasoning_content") or delta.get("reasoning")
+                            thought = delta.get("reasoning_content") or delta.get(
+                                "reasoning"
+                            )
                             if piece:
                                 content += str(piece)
                             if thought:
@@ -195,7 +216,11 @@ class StreamingPlanner:
                                     "message": {
                                         "role": "assistant",
                                         "content": content,
-                                        **({"reasoning_content": reasoning} if reasoning else {}),
+                                        **(
+                                            {"reasoning_content": reasoning}
+                                            if reasoning
+                                            else {}
+                                        ),
                                     },
                                     "finish_reason": finish_reason,
                                 }
@@ -229,7 +254,10 @@ class StreamingPlanner:
                         retries=retries,
                         error=type(exc).__name__,
                         message_count=len(messages),
-                        input_chars=sum(len(str(message.get("content") or "")) for message in messages),
+                        input_chars=sum(
+                            len(str(message.get("content") or ""))
+                            for message in messages
+                        ),
                     )
                     raise RuntimeError(
                         f"provider request failed after {attempt + 1} attempt(s); status={status or 'transport'}"
@@ -249,7 +277,9 @@ class StreamingPlanner:
             retries=retries,
             error="",
             message_count=len(messages),
-            input_chars=sum(len(str(message.get("content") or "")) for message in messages),
+            input_chars=sum(
+                len(str(message.get("content") or "")) for message in messages
+            ),
         )
         return response_data
 
@@ -258,26 +288,40 @@ class StreamingPlanner:
         ttft = values.get("ttft_s")
         latency = float(values.get("latency_s") or 0.0)
         throughput = None
-        if isinstance(completion, (int, float)) and ttft is not None and latency > float(ttft):
+        if (
+            isinstance(completion, (int, float))
+            and ttft is not None
+            and latency > float(ttft)
+        ):
             throughput = float(completion) / (latency - float(ttft))
         record = {
             "call_index": 0,
             **values,
             "latency_s": round(latency, 6),
             "ttft_s": round(float(ttft), 6) if ttft is not None else None,
-            "output_tokens_per_s": round(throughput, 6) if throughput is not None else None,
+            "output_tokens_per_s": round(throughput, 6)
+            if throughput is not None
+            else None,
             "response_digest": _digest(
-                {"output_chars": values.get("output_chars"), "finish": values.get("finish_reason")}
+                {
+                    "output_chars": values.get("output_chars"),
+                    "finish": values.get("finish_reason"),
+                }
             ),
         }
         with self._lock:
             record["call_index"] = len(self.records) + 1
             self.records.append(record)
-        if self.on_record:
-            self.on_record()
+            # Preserve append/write ordering when the concurrency probe records
+            # several calls at once. A later snapshot must never be overwritten
+            # by an earlier callback that happened to finish its disk write last.
+            if self.on_record:
+                self.on_record()
 
 
-def _command_json(argv: Sequence[str], *, cwd: Path) -> dict[str, Any]:
+def _command_json(
+    argv: Sequence[str], *, cwd: Path, env: Mapping[str, str] | None = None
+) -> dict[str, Any]:
     started = time.monotonic()
     result = subprocess.run(
         list(argv),
@@ -285,6 +329,7 @@ def _command_json(argv: Sequence[str], *, cwd: Path) -> dict[str, Any]:
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        env=dict(env) if env is not None else None,
         check=False,
     )
     elapsed = time.monotonic() - started
@@ -323,8 +368,8 @@ class BenchmarkToolbox:
         "workflow_validate",
         "workflow_plan",
         "infra_plan",
-        "infra_provision",
         "skypilot_bootstrap",
+        "infra_provision",
         "skypilot_verify",
         "workflow_preflight_images",
         "workflow_submit",
@@ -343,6 +388,8 @@ class BenchmarkToolbox:
         cluster: str,
         bucket: str,
         accelerator: str,
+        registry: str,
+        rerun_image: str,
         spec: Path,
     ) -> None:
         self.repo = repo
@@ -352,6 +399,9 @@ class BenchmarkToolbox:
         self.cluster = cluster
         self.bucket = bucket
         self.accelerator = accelerator
+        self.registry = registry
+        self.rerun_image = rerun_image
+        self.command_env = {**os.environ, "NPA_REGISTRY": registry}
         self.spec = spec
         self.npa = str(repo / "npa" / ".venv" / "bin" / "npa")
         self.run_id = str(state["run_id"])
@@ -361,7 +411,12 @@ class BenchmarkToolbox:
             cluster: "<cluster-context>",
             bucket: "<bucket>",
             self.run_id: "<run-id>",
+            registry: "<public-registry>",
+            rerun_image: "<rerun-image>",
         }
+
+    def _command(self, argv: Sequence[str]) -> dict[str, Any]:
+        return _command_json(argv, cwd=self.repo, env=self.command_env)
 
     @classmethod
     def allowlist(cls) -> dict[str, ToolSpec]:
@@ -399,25 +454,44 @@ class BenchmarkToolbox:
         return specs
 
     def executors(self) -> dict[str, Callable[[dict[str, Any]], Any]]:
-        return {name: (lambda args, selected=name: self.execute(selected, args)) for name in self.ORDER}
+        return {
+            name: (lambda args, selected=name: self.execute(selected, args))
+            for name in self.ORDER
+        }
 
     def execute(self, name: str, args: Mapping[str, Any]) -> dict[str, Any]:
-        if name in self.MUTATING and str(args.get("operation_digest") or "") != self.operation_digest:
-            return {"ok": False, "error": "operation_digest must match the fixed benchmark operation"}
-        if name in {"workflow_status", "workflow_artifacts"} and str(args.get("run_id") or "") != self.run_id:
+        if (
+            name in self.MUTATING
+            and str(args.get("operation_digest") or "") != self.operation_digest
+        ):
+            return {
+                "ok": False,
+                "error": "operation_digest must match the fixed benchmark operation",
+            }
+        if (
+            name in {"workflow_status", "workflow_artifacts"}
+            and str(args.get("run_id") or "") != self.run_id
+        ):
             return {"ok": False, "error": "run_id must match the fixed benchmark run"}
         prerequisites = {
-            "infra_provision": {"health_access", "infra_plan"},
+            "infra_provision": {"health_access", "infra_plan", "skypilot_bootstrap"},
             "skypilot_verify": {"infra_provision", "skypilot_bootstrap"},
             "workflow_preflight_images": {"workflow_plan", "skypilot_verify"},
-            "workflow_submit": {"health_access", "workflow_plan", "workflow_preflight_images"},
+            "workflow_submit": {
+                "health_access",
+                "workflow_plan",
+                "workflow_preflight_images",
+            },
             "workflow_status": {"workflow_submit"},
             "workflow_artifacts": {"workflow_submit"},
         }
         completed = set(self.state.get("completed_tools") or [])
         missing = sorted(prerequisites.get(name, set()) - completed)
         if missing:
-            return {"ok": False, "error": "missing prerequisite observations: " + ", ".join(missing)}
+            return {
+                "ok": False,
+                "error": "missing prerequisite observations: " + ", ".join(missing),
+            }
         started = time.monotonic()
         try:
             result = self._execute(name)
@@ -442,7 +516,12 @@ class BenchmarkToolbox:
     def _execute(self, name: str) -> dict[str, Any]:
         if name == "inspect_environment":
             version = subprocess.run(
-                [self.npa, "--version"], cwd=self.repo, text=True, capture_output=True, check=False
+                [self.npa, "--version"],
+                cwd=self.repo,
+                text=True,
+                capture_output=True,
+                check=False,
+                env=self.command_env,
             )
             return {
                 "ok": version.returncode == 0,
@@ -462,23 +541,49 @@ class BenchmarkToolbox:
             }
         if name == "inspect_repository_context":
             context, manifest = representative_context(self.repo, max_chars=12_000)
-            return {"ok": True, "context_chars": len(context), "files": manifest, "excerpt": context}
+            return {
+                "ok": True,
+                "context_chars": len(context),
+                "files": manifest,
+                "excerpt": context,
+            }
         if name == "health_preflight":
-            return _command_json(
-                [self.npa, "workbench", "health", "preflight", "--checks", "hf,ngc,s3,token_factory", "--json"],
-                cwd=self.repo,
+            return self._command(
+                [
+                    self.npa,
+                    "workbench",
+                    "health",
+                    "preflight",
+                    "--checks",
+                    "hf,ngc,s3,token_factory",
+                    "--json",
+                ]
             )
         if name == "health_access":
-            return _command_json(
-                [self.npa, "workbench", "health", "access", "--capability", "cosmos3,paidf", "--json"],
-                cwd=self.repo,
+            return self._command(
+                [
+                    self.npa,
+                    "workbench",
+                    "health",
+                    "access",
+                    "--capability",
+                    "cosmos3,paidf",
+                    "--json",
+                ]
             )
         if name == "workflow_validate":
-            return _command_json(
-                [self.npa, "workbench", "workflow", "validate-spec", str(self.spec), "--json"], cwd=self.repo
+            return self._command(
+                [
+                    self.npa,
+                    "workbench",
+                    "workflow",
+                    "validate-spec",
+                    str(self.spec),
+                    "--json",
+                ]
             )
         if name == "workflow_plan":
-            return _command_json(
+            return self._command(
                 [
                     self.npa,
                     "workbench",
@@ -497,7 +602,6 @@ class BenchmarkToolbox:
                     "variant_parallelism=1",
                     "--json",
                 ],
-                cwd=self.repo,
             )
         if name in {"infra_plan", "infra_provision"}:
             argv = [
@@ -514,9 +618,9 @@ class BenchmarkToolbox:
             ]
             if name == "infra_plan":
                 argv.append("--dry-run")
-            return _command_json(argv, cwd=self.repo)
+            return self._command(argv)
         if name == "skypilot_bootstrap":
-            result = _command_json([self.npa, "skypilot", "bootstrap"], cwd=self.repo)
+            result = self._command([self.npa, "skypilot", "bootstrap"])
             # bootstrap is a human-text command; retain only a bounded digest in
             # the model observation while its exit code remains authoritative.
             return {
@@ -526,89 +630,128 @@ class BenchmarkToolbox:
                 "output_digest": _digest(result),
             }
         if name == "skypilot_verify":
-            return _command_json(
-                [self.npa, "skypilot", "verify", "--cluster", self.cluster, "--output-format", "json"], cwd=self.repo
-            )
-        if name == "workflow_preflight_images":
-            return _command_json(
+            return self._command(
                 [
                     self.npa,
-                    "workbench",
-                    "workflow",
-                    "preflight-images",
-                    str(self.spec),
-                    "--project",
-                    self.project,
-                    "--var",
-                    f"bucket={self.bucket}",
-                    "--var",
-                    "variant_count=1",
-                    "--var",
-                    "variant_parallelism=1",
-                    "--assume-decision",
-                    "promote_checkpoint",
-                    "--infra",
-                    f"k8s/{self.cluster}",
-                    "--json",
-                ],
-                cwd=self.repo,
-            )
-        if name == "workflow_submit":
-            self.state["submission_intent"] = {"run_id": self.run_id, "recorded_at": _utc_now()}
-            self.save()
-            return _command_json(
-                [
-                    self.npa,
-                    "workbench",
-                    "workflow",
-                    "submit",
-                    str(self.spec),
-                    "--run-id",
-                    self.run_id,
-                    "--runtime",
-                    "--max-wait-seconds",
-                    "0",
-                    "--no-cancel-on-timeout",
-                    "--assume-decision",
-                    "promote_checkpoint",
-                    "--var",
-                    f"bucket={self.bucket}",
-                    "--var",
-                    "variant_count=1",
-                    "--var",
-                    "variant_parallelism=1",
-                    "--infra",
-                    f"k8s/{self.cluster}",
-                    "--project",
-                    self.project,
-                    "--seed-fixture",
-                    "--secret-env",
-                    "HF_TOKEN",
-                    "--secret-env",
-                    "NEBIUS_TOKEN_FACTORY_KEY",
-                    "--secret-env",
-                    "AWS_ACCESS_KEY_ID",
-                    "--secret-env",
-                    "AWS_SECRET_ACCESS_KEY",
+                    "skypilot",
+                    "verify",
+                    "--cluster",
+                    self.cluster,
                     "--output-format",
                     "json",
-                ],
-                cwd=self.repo,
+                ]
             )
+        if name == "workflow_preflight_images":
+            argv = [
+                self.npa,
+                "workbench",
+                "workflow",
+                "preflight-images",
+                str(self.spec),
+                "--project",
+                self.project,
+                "--var",
+                f"bucket={self.bucket}",
+                "--var",
+                "variant_count=1",
+                "--var",
+                "variant_parallelism=1",
+                "--assume-decision",
+                "promote_checkpoint",
+                "--infra",
+                f"k8s/{self.cluster}",
+                "--json",
+            ]
+            if self.rerun_image:
+                argv.extend(
+                    [
+                        "--image-override",
+                        f"workbench.nurec.visualize={self.rerun_image}",
+                    ]
+                )
+            return self._command(argv)
+        if name == "workflow_submit":
+            self.state["submission_intent"] = {
+                "run_id": self.run_id,
+                "recorded_at": _utc_now(),
+            }
+            self.save()
+            argv = [
+                self.npa,
+                "workbench",
+                "workflow",
+                "submit",
+                str(self.spec),
+                "--run-id",
+                self.run_id,
+                "--runtime",
+                "--max-wait-seconds",
+                "0",
+                "--no-cancel-on-timeout",
+                "--assume-decision",
+                "promote_checkpoint",
+                "--var",
+                f"bucket={self.bucket}",
+                "--var",
+                "variant_count=1",
+                "--var",
+                "variant_parallelism=1",
+                "--infra",
+                f"k8s/{self.cluster}",
+                "--project",
+                self.project,
+                "--seed-fixture",
+                "--secret-env",
+                "HF_TOKEN",
+                "--secret-env",
+                "NEBIUS_TOKEN_FACTORY_KEY",
+                "--secret-env",
+                "AWS_ACCESS_KEY_ID",
+                "--secret-env",
+                "AWS_SECRET_ACCESS_KEY",
+                "--output-format",
+                "json",
+            ]
+            if self.rerun_image:
+                argv.extend(
+                    [
+                        "--image-override",
+                        f"workbench.nurec.visualize={self.rerun_image}",
+                    ]
+                )
+            return self._command(argv)
         if name == "workflow_status":
-            return _command_json(
-                [self.npa, "workbench", "workflow", "status", self.run_id, "--project", self.project, "--json"],
-                cwd=self.repo,
+            return self._command(
+                [
+                    self.npa,
+                    "workbench",
+                    "workflow",
+                    "status",
+                    self.run_id,
+                    "--project",
+                    self.project,
+                    "--json",
+                ]
             )
         if name == "workflow_artifacts":
-            return _command_json(
-                [self.npa, "workbench", "workflow", "artifacts", self.run_id, "--project", self.project, "--json"],
-                cwd=self.repo,
+            return self._command(
+                [
+                    self.npa,
+                    "workbench",
+                    "workflow",
+                    "artifacts",
+                    self.run_id,
+                    "--project",
+                    self.project,
+                    "--json",
+                ]
             )
         raise ValueError(f"unsupported benchmark tool: {name}")
 
 
-def representative_context(repo: Path, *, max_chars: int = 60_000) -> tuple[str, list[dict[str, Any]]]:
+def representative_context(
+    repo: Path, *, max_chars: int = 60_000
+) -> tuple[str, list[dict[str, Any]]]:
     """Build meaningful high-context input from public repository sources only."""
     relative_paths = (
         "AGENTS.md",
@@ -642,7 +785,9 @@ def representative_context(repo: Path, *, max_chars: int = 60_000) -> tuple[str,
     return "".join(chunks), manifest
 
 
-def _context_probe(planner: StreamingPlanner, repo: Path, context_chars: int) -> dict[str, Any]:
+def _context_probe(
+    planner: StreamingPlanner, repo: Path, context_chars: int
+) -> dict[str, Any]:
     context, manifest = representative_context(repo, max_chars=context_chars)
     response = planner(
         [
@@ -674,12 +819,19 @@ def _concurrency_probe(planner: StreamingPlanner, concurrency: int) -> dict[str,
     def call(index: int) -> dict[str, Any]:
         response = planner(
             [
-                {"role": "system", "content": "Reply with one JSON object and no prose."},
+                {
+                    "role": "system",
+                    "content": "Reply with one JSON object and no prose.",
+                },
                 {
                     "role": "user",
                     "content": (
                         "Classify this NPA operation as read_only or state_changing: "
-                        + ("workflow validate-spec" if index % 2 == 0 else "workflow submit")
+                        + (
+                            "workflow validate-spec"
+                            if index % 2 == 0
+                            else "workflow submit"
+                        )
                     ),
                 },
             ],
@@ -713,7 +865,9 @@ def _baseline(toolbox: BenchmarkToolbox) -> dict[str, Any]:
     steps: list[dict[str, Any]] = []
     for name in names:
         before = time.monotonic()
-        result = toolbox._execute(name)  # deterministic baseline intentionally bypasses agent state
+        result = toolbox._execute(
+            name
+        )  # deterministic baseline intentionally bypasses agent state
         sanitized = _sanitize(result, toolbox.replacements)
         steps.append(
             {
@@ -763,11 +917,19 @@ def _execution_evidence(state: Mapping[str, Any]) -> dict[str, Any]:
                 item_path = f"{path}.{key}" if path else str(key)
                 if key in timing_names and isinstance(item, (int, float)):
                     stage_timings.append(
-                        {"stage": next_stage or path or "workflow", "metric": key, "seconds": item}
+                        {
+                            "stage": next_stage or path or "workflow",
+                            "metric": key,
+                            "seconds": item,
+                        }
                     )
                 if key in resource_names and isinstance(item, (int, float)):
                     resource_measurements.append(
-                        {"stage": next_stage or path or "workflow", "metric": key, "value": item}
+                        {
+                            "stage": next_stage or path or "workflow",
+                            "metric": key,
+                            "value": item,
+                        }
                     )
                 visit(item, path=item_path, stage=next_stage)
         elif isinstance(value, list):
@@ -777,7 +939,8 @@ def _execution_evidence(state: Mapping[str, Any]) -> dict[str, Any]:
     relevant = [
         call
         for call in state.get("tool_calls") or []
-        if call.get("tool") in {"workflow_submit", "workflow_status", "workflow_artifacts"}
+        if call.get("tool")
+        in {"workflow_submit", "workflow_status", "workflow_artifacts"}
     ]
     for call in relevant:
         visit(call.get("observation"), path=str(call.get("tool") or "workflow"))
@@ -785,11 +948,15 @@ def _execution_evidence(state: Mapping[str, Any]) -> dict[str, Any]:
         "stage_timings": stage_timings,
         "resource_measurements": resource_measurements,
         "source_tool_calls": len(relevant),
-        "availability": "measured" if stage_timings or resource_measurements else "not_reported",
+        "availability": "measured"
+        if stage_timings or resource_measurements
+        else "not_reported",
     }
 
 
-def _summary(state: Mapping[str, Any], planner: StreamingPlanner, started: float) -> dict[str, Any]:
+def _summary(
+    state: Mapping[str, Any], planner: StreamingPlanner, started: float
+) -> dict[str, Any]:
     usage_keys = ("prompt_tokens", "completion_tokens", "total_tokens")
     usage: dict[str, int | None] = {}
     for key in usage_keys:
@@ -805,7 +972,9 @@ def _summary(state: Mapping[str, Any], planner: StreamingPlanner, started: float
         "completed_tools": list(state.get("completed_tools") or []),
         "usage": usage,
         "retries": retries,
-        "errors": [record["error"] for record in planner.records if record.get("error")],
+        "errors": [
+            record["error"] for record in planner.records if record.get("error")
+        ],
         "execution_evidence": _execution_evidence(state),
         "cost": {
             "monetary": None,
@@ -819,17 +988,45 @@ def _summary(state: Mapping[str, Any], planner: StreamingPlanner, started: float
 
 @json_stdout_contract
 def benchmark_cmd(
-    project: str = typer.Option(..., "--project", help="Configured task project alias."),
-    cluster: str = typer.Option(..., "--cluster", help="Exact configured Kubernetes context."),
-    bucket: str = typer.Option(..., "--bucket", help="Configured task bucket; never written to public output."),
-    accelerator: str = typer.Option(..., "--accelerator", help="Compatible requestable accelerator name/count."),
-    endpoint: str = typer.Option(..., "--endpoint", help="TLS OpenAI-compatible base URL."),
+    project: str = typer.Option(
+        ..., "--project", help="Configured task project alias."
+    ),
+    cluster: str = typer.Option(
+        ..., "--cluster", help="Exact configured Kubernetes context."
+    ),
+    bucket: str = typer.Option(
+        ..., "--bucket", help="Configured task bucket; never written to public output."
+    ),
+    accelerator: str = typer.Option(
+        ..., "--accelerator", help="Compatible requestable accelerator name/count."
+    ),
+    registry: str = typer.Option(
+        DEFAULT_PUBLIC_CONTAINER_REGISTRY,
+        "--registry",
+        help="Public container registry pinned for every bounded NPA subprocess.",
+    ),
+    rerun_image: str = typer.Option(
+        "",
+        "--rerun-image",
+        help="Exact npa-rerun-viewer override for its visualization stages only.",
+    ),
+    endpoint: str = typer.Option(
+        ..., "--endpoint", help="TLS OpenAI-compatible base URL."
+    ),
     model: str = typer.Option(DEFAULT_MODEL, "--model"),
-    api_key_file: Path | None = typer.Option(None, "--api-key-file", exists=True, dir_okay=False),
+    api_key_file: Path | None = typer.Option(
+        None, "--api-key-file", exists=True, dir_okay=False
+    ),
     api_key_env: str = typer.Option("NPA_AGENT_BENCHMARK_API_KEY", "--api-key-env"),
-    spec: Path = typer.Option(Path(DEFAULT_SPEC), "--spec", exists=True, dir_okay=False),
-    state_path: Path = typer.Option(..., "--state-path", help="Owner-only resumable state outside Git."),
-    report_path: Path = typer.Option(..., "--report-path", help="Sanitized machine-readable report."),
+    spec: Path = typer.Option(
+        Path(DEFAULT_SPEC), "--spec", exists=True, dir_okay=False
+    ),
+    state_path: Path = typer.Option(
+        ..., "--state-path", help="Owner-only resumable state outside Git."
+    ),
+    report_path: Path = typer.Option(
+        ..., "--report-path", help="Sanitized machine-readable report."
+    ),
     confirm_action: list[str] | None = typer.Option(
         None,
         "--confirm-action",
@@ -842,20 +1039,39 @@ def benchmark_cmd(
 ) -> None:
     """Benchmark a real model-guided NPA setup-to-workflow loop with bounded tools."""
     repo = Path.cwd().resolve()
-    resolved_spec = (repo / spec).resolve() if not spec.is_absolute() else spec.resolve()
-    if not resolved_spec.is_relative_to(repo) or resolved_spec.name != "paidf-cosmos3.yaml":
-        raise typer.BadParameter("--spec must resolve to the repository paidf-cosmos3.yaml")
+    resolved_spec = (
+        (repo / spec).resolve() if not spec.is_absolute() else spec.resolve()
+    )
+    if (
+        not resolved_spec.is_relative_to(repo)
+        or resolved_spec.name != "paidf-cosmos3.yaml"
+    ):
+        raise typer.BadParameter(
+            "--spec must resolve to the repository paidf-cosmos3.yaml"
+        )
     key = ""
     if api_key_file is not None:
         key = api_key_file.read_text().strip()
     if not key:
         key = str(os.environ.get(api_key_env, "")).strip()
     if not key:
-        raise typer.BadParameter(f"provider key is missing ({api_key_env} or --api-key-file)")
+        raise typer.BadParameter(
+            f"provider key is missing ({api_key_env} or --api-key-file)"
+        )
+    if not is_public_registry(registry):
+        raise typer.BadParameter("--registry must be an anonymous/public registry")
+    if rerun_image and not any(
+        marker in rerun_image for marker in ("/npa-rerun-viewer:", "/npa-rerun-viewer@")
+    ):
+        raise typer.BadParameter(
+            "--rerun-image must be an exact npa-rerun-viewer reference"
+        )
     authorized = set(confirm_action or [])
     unknown = authorized - BenchmarkToolbox.MUTATING
     if unknown:
-        raise typer.BadParameter("unknown --confirm-action value(s): " + ", ".join(sorted(unknown)))
+        raise typer.BadParameter(
+            "unknown --confirm-action value(s): " + ", ".join(sorted(unknown))
+        )
 
     existing = _load_state(state_path)
     operation = {
@@ -863,6 +1079,20 @@ def benchmark_cmd(
         "cluster": cluster,
         "bucket": bucket,
         "accelerator": accelerator,
+        "registry": registry,
+        "rerun_image_digest": _digest(rerun_image) if rerun_image else "",
+        # Resuming under another NPA config root could silently change project,
+        # credential, cluster-state, and controller-ownership evidence while the
+        # user-facing aliases stay identical. Bind the state to that local scope
+        # without publishing its path.
+        "npa_config_scope_digest": _digest(
+            str(
+                Path(
+                    os.environ.get("NPA_CONFIG_DIR", "").strip()
+                    or (Path.home() / ".npa")
+                ).resolve()
+            )
+        ),
         "spec_sha256": hashlib.sha256(resolved_spec.read_bytes()).hexdigest(),
         "seed_fixture": True,
         "variant_count": 1,
@@ -875,7 +1105,9 @@ def benchmark_cmd(
     }
     operation_digest = _digest(operation, length=24)
     if existing and existing.get("operation_digest") != operation_digest:
-        raise typer.BadParameter("state operation does not match the requested benchmark")
+        raise typer.BadParameter(
+            "state operation does not match the requested benchmark"
+        )
     state = existing or {
         "schema": STATE_SCHEMA,
         "created_at": _utc_now(),
@@ -909,6 +1141,8 @@ def benchmark_cmd(
         cluster=cluster,
         bucket=bucket,
         accelerator=accelerator,
+        registry=registry,
+        rerun_image=rerun_image,
         spec=resolved_spec,
     )
     started = time.monotonic()
@@ -942,7 +1176,11 @@ def benchmark_cmd(
         return allowed
 
     while True:
-        remaining = [name for name in BenchmarkToolbox.ORDER if name not in set(state["completed_tools"])]
+        remaining = [
+            name
+            for name in BenchmarkToolbox.ORDER
+            if name not in set(state["completed_tools"])
+        ]
         if not remaining:
             state["status"] = "complete"
             break

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import concurrent.futures
 from pathlib import Path
 
 import httpx
@@ -32,7 +33,9 @@ def test_streaming_planner_collects_usage_and_never_disables_tls() -> None:
                 + json.dumps(
                     {
                         "id": "call-1",
-                        "choices": [{"delta": {"content": 'ok"}'}, "finish_reason": "stop"}],
+                        "choices": [
+                            {"delta": {"content": 'ok"}'}, "finish_reason": "stop"}
+                        ],
                     }
                 ),
                 "data: "
@@ -40,14 +43,20 @@ def test_streaming_planner_collects_usage_and_never_disables_tls() -> None:
                     {
                         "id": "call-1",
                         "choices": [],
-                        "usage": {"prompt_tokens": 11, "completion_tokens": 3, "total_tokens": 14},
+                        "usage": {
+                            "prompt_tokens": 11,
+                            "completion_tokens": 3,
+                            "total_tokens": 14,
+                        },
                     }
                 ),
                 "data: [DONE]",
                 "",
             ]
         )
-        return httpx.Response(200, text=body, headers={"content-type": "text/event-stream"})
+        return httpx.Response(
+            200, text=body, headers={"content-type": "text/event-stream"}
+        )
 
     planner = StreamingPlanner(
         endpoint="https://provider.example/v1",
@@ -71,6 +80,38 @@ def test_streaming_planner_rejects_non_tls_endpoint() -> None:
         StreamingPlanner(endpoint="http://provider.example/v1", model="m", api_key="k")
 
 
+def test_streaming_planner_serializes_concurrent_record_callbacks() -> None:
+    body = "\n".join(
+        [
+            'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}',
+            'data: {"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}',
+            "data: [DONE]",
+            "",
+        ]
+    )
+    planner = StreamingPlanner(
+        endpoint="https://provider.example/v1",
+        model="test-model",
+        api_key="not-recorded",
+        transport=httpx.MockTransport(lambda _request: httpx.Response(200, text=body)),
+    )
+    snapshots: list[list[int]] = []
+    planner.on_record = lambda: snapshots.append(
+        [int(record["call_index"]) for record in planner.records]
+    )
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+        list(
+            pool.map(
+                lambda index: planner([{"role": "user", "content": str(index)}]),
+                range(4),
+            )
+        )
+
+    assert [record["call_index"] for record in planner.records] == [1, 2, 3, 4]
+    assert snapshots == [[1], [1, 2], [1, 2, 3], [1, 2, 3, 4]]
+
+
 def test_benchmark_toolbox_fails_closed_on_prerequisites_and_operation_digest(
     tmp_path: Path,
 ) -> None:
@@ -90,6 +131,8 @@ def test_benchmark_toolbox_fails_closed_on_prerequisites_and_operation_digest(
         cluster="cluster-context",
         bucket="bucket-name",
         accelerator="RTXPRO6000:1",
+        registry="ghcr.io/nebius/nebius-physical-ai",
+        rerun_image="",
         spec=spec,
     )
 
@@ -117,11 +160,20 @@ def test_sanitizer_removes_credentials_and_live_identifiers() -> None:
     assert "<redacted>" in encoded
 
 
+def test_sanitizer_removes_bare_nebius_account_ids() -> None:
+    identifier = "u00" + "a" * 16
+    sanitized = _sanitize(f"cr.us-central1.nebius.cloud/{identifier}/image:tag", {})
+    assert identifier not in sanitized
+    assert "<live-resource>" in sanitized
+
+
 def test_representative_context_uses_real_files_and_is_bounded() -> None:
     repo_root = Path(__file__).resolve().parents[3]
     context, manifest = representative_context(repo_root, max_chars=5_000)
     assert context
-    assert len(context) <= 5_500  # section headers are intentionally outside the content cap
+    assert (
+        len(context) <= 5_500
+    )  # section headers are intentionally outside the content cap
     assert manifest[0]["path"] == "AGENTS.md"
     assert all(item["sha256"] for item in manifest)
     assert not any("padding" in item["path"] for item in manifest)
@@ -135,7 +187,11 @@ def test_execution_evidence_extracts_stage_and_resource_seconds() -> None:
                     "tool": "workflow_status",
                     "observation": {
                         "stages": [
-                            {"stage": "generate", "duration_s": 12.5, "gpu_seconds": 25.0}
+                            {
+                                "stage": "generate",
+                                "duration_s": 12.5,
+                                "gpu_seconds": 25.0,
+                            }
                         ]
                     },
                 },

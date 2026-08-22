@@ -233,6 +233,40 @@ def _verify_completed_phase_for_resume(
     """Re-verify stable absence for phases that can safely avoid replay."""
 
     prior = {"durable_prior_completion": True, "resume_contract": "reverify_or_replay"}
+    if phase.name in {"workflows", "agents", "controller", "clusters", "network"}:
+        from npa.clients.nebius import (
+            NebiusError,
+            get_project_identity,
+            list_project_dependencies,
+        )
+
+        observations = 0
+        project_absent_observations = 0
+        try:
+            for index in range(PROJECT_STABLE_ABSENCE_OBSERVATIONS):
+                if get_project_identity(project_id) is None:
+                    project_absent_observations += 1
+                else:
+                    dependencies = list_project_dependencies(project_id)
+                    if any(dependencies.values()):
+                        return ResumeVerification(False, prior)
+                observations += 1
+                if index + 1 < PROJECT_STABLE_ABSENCE_OBSERVATIONS:
+                    time.sleep(PROJECT_DELETE_VERIFY_INTERVAL_SECONDS)
+        except (NebiusError, OSError, RuntimeError, ValueError):
+            return ResumeVerification(False, prior)
+        return ResumeVerification(
+            True,
+            {
+                **prior,
+                "provider_child_inventory": (
+                    "project_verified_absent"
+                    if project_absent_observations == observations
+                    else "verified_empty"
+                ),
+                "stable_absence_observations": observations,
+            },
+        )
     if phase.name == "bucket":
         bucket_name = str(phase.metadata.get("logical_name") or "").strip()
         if not bucket_name:
@@ -1082,6 +1116,28 @@ def execute_project_destroy(
                         "evidence": {**resume.evidence, "command_results": []},
                     }
                 )
+                try:
+                    from npa.teardown_receipts import record_teardown_event
+
+                    record_teardown_event(
+                        phase=f"project_destroy_{phase.name}",
+                        resource=project,
+                        terminal_state="completed",
+                        project_alias=project,
+                        project_id=project_id,
+                        precheck={"planned_command_count": len(phase.commands)},
+                        action={"kind": "verified_resume_skip", "executed_count": 0},
+                        verification={
+                            "converged": True,
+                            "resume_reverified": True,
+                            **resume.evidence,
+                        },
+                    )
+                except (OSError, RuntimeError, ValueError) as exc:
+                    error = f"receipt write failed: {type(exc).__name__}"
+                    statuses[phase.name] = "partial"
+                    results[-1]["status"] = "partial"
+                    results[-1]["errors"] = [error]
                 continue
         commands = list(phase.commands)
         phase_errors: list[str] = []

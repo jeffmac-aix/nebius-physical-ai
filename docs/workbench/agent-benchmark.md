@@ -24,6 +24,8 @@ components. The benchmark does not substitute mocks for workflow stages.
   NPA records the normalized action digest and the benchmark operation digest;
   an omitted or mismatched digest fails closed.
 - Runtime submission passes secret *names* through `--secret-env`, never values.
+- Every bounded subprocess is pinned to the selected anonymous/public registry;
+  an ambient private `NPA_REGISTRY` cannot silently redirect image pulls.
 - The seed fixture is repository-generated synthetic media. It contains no
   customer or private production data.
 - Runtime submission uses `--max-wait-seconds 0`; the benchmark does not add a
@@ -40,6 +42,8 @@ npa agent benchmark \
   --cluster <cluster-context> \
   --bucket <bucket> \
   --accelerator <requestable-accelerator>:1 \
+  --registry ghcr.io/nebius/nebius-physical-ai \
+  --rerun-image <task-registry>/npa-rerun-viewer:<attested-tag> \
   --endpoint https://<provider>/v1 \
   --model <model> \
   --api-key-file /owner-only/provider-key.txt \
@@ -60,7 +64,14 @@ after running the confidentiality scan.
 Re-run the same command with the same state path after a process interruption.
 The operation fingerprint prevents a state file from being reused for a
 different project, cluster, bucket, spec, accelerator, seed posture, or secret
-set. Durable NPA run identity remains fixed across resumes.
+set. It also binds the state to a digest of `NPA_CONFIG_DIR`, preventing a
+resume from silently switching local project, credential, cluster-identity, or
+controller-ownership state. Durable NPA run identity remains fixed across
+resumes.
+
+`--rerun-image` is the only per-tool image escape hatch. It accepts an exact
+`npa-rerun-viewer` reference and applies only to the two
+`workbench.nurec.visualize` stages; all other images remain on `--registry`.
 
 ## Measurements
 
