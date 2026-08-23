@@ -1048,6 +1048,7 @@ def test_workflow_dns_failure_is_unavailable_and_eight_ledger_stages_remain_visi
             "attempt": 1,
             "logical_state": "PENDING",
             "managed_job_id": str(100 + index),
+            "sky_task_id": index,
             "last_observed_at": "2026-08-04T00:02:00Z",
             "last_heartbeat_at": ("2026-08-04T00:01:00Z" if index == 0 else ""),
             "heartbeat_source": ("scheduler_task_progress" if index == 0 else ""),
@@ -1107,11 +1108,17 @@ def test_workflow_dns_failure_is_unavailable_and_eight_ledger_stages_remain_visi
     assert "npa workbench workflow status" in human.output
     assert synthetic_secret not in human.output
 
+    log_task_ids: list[str] = []
+
+    def unavailable_logs(**kwargs):  # noqa: ANN003, ANN202
+        log_task_ids.append(kwargs["stage"])
+        return subprocess.CompletedProcess(
+            ["sky", "jobs", "logs"], 1, "", dns_error
+        )
+
     monkeypatch.setattr(
         "npa.orchestration.skypilot.workflow_state.tail_live_job_logs",
-        lambda **kwargs: subprocess.CompletedProcess(
-            ["sky", "jobs", "logs"], 1, "", dns_error
-        ),
+        unavailable_logs,
     )
     monkeypatch.setattr(
         "npa.cli.workbench.workflow._resolve_sky_bin", lambda value: "synthetic-sky"
@@ -1162,6 +1169,7 @@ def test_workflow_dns_failure_is_unavailable_and_eight_ledger_stages_remain_visi
     assert successful_logs.exit_code == 0, successful_logs.output
     assert synthetic_secret not in successful_logs.output
     assert "<redacted>" in json.loads(successful_logs.output)["log"]
+    assert log_task_ids == ["0"]
 
 
 def test_workflow_cached_status_is_opt_in_and_skips_live_controller(

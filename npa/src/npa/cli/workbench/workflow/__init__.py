@@ -5191,18 +5191,27 @@ def logs_cmd(
                     for wave in resolution.runtime_state.get("waves") or []:
                         if not isinstance(wave, dict):
                             continue
-                        for state_name in wave.get("states") or []:
-                            runtime_stages.append(
-                                {
-                                    "stage": str(state_name),
-                                    "attempt": int(wave.get("attempt") or 1),
-                                    "managed_job_id": str(wave.get("job_id") or ""),
-                                    "logical_state": str(
-                                        wave.get("status") or "unknown"
-                                    ),
-                                    "provenance": "legacy_runtime_wave_reconstruction",
-                                }
-                            )
+                        wave_states = list(wave.get("states") or [])
+                        wave_tasks = [
+                            item
+                            for item in wave.get("tasks") or []
+                            if isinstance(item, dict)
+                        ]
+                        for index, state_name in enumerate(wave_states):
+                            reconstructed = {
+                                "stage": str(state_name),
+                                "attempt": int(wave.get("attempt") or 1),
+                                "managed_job_id": str(wave.get("job_id") or ""),
+                                "logical_state": str(
+                                    wave.get("status") or "unknown"
+                                ),
+                                "provenance": "legacy_runtime_wave_reconstruction",
+                            }
+                            if len(wave_tasks) == len(wave_states):
+                                task_id = wave_tasks[index].get("task_id")
+                                if task_id is not None:
+                                    reconstructed["sky_task_id"] = str(task_id)
+                            runtime_stages.append(reconstructed)
                 available = list(
                     dict.fromkeys(
                         [str(item.get("state") or "") for item in steps]
@@ -5344,10 +5353,16 @@ def logs_cmd(
                         typer.echo(f"cause: {reason}")
                         typer.echo(f"retry: {live_verification['retry_command']}")
                     raise typer.Exit(code=2)
+                sky_task_id = selected_attempt.get("sky_task_id")
+                live_stage = (
+                    str(sky_task_id)
+                    if sky_task_id is not None and str(sky_task_id) != ""
+                    else selected_stage
+                )
                 live = tail_live_job_logs(
                     sky_bin=_resolve_sky_bin(sky_bin),
                     job_id=job_id,
-                    stage=selected_stage,
+                    stage=live_stage,
                     follow=follow,
                     timeout=86400 if follow else 300,
                 )
