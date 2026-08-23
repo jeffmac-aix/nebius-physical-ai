@@ -162,6 +162,7 @@ def test_ensure_runtime_publishes_relocatable_executable(
     launcher = executable.read_text(encoding="utf-8")
     assert ".antioch-install-" not in launcher
     assert '"$bin_dir/python"' in launcher
+    assert 'sys.argv[0]="antioch"' in launcher
 
     read_fd, write_fd = os.pipe()
     process = subprocess.Popen(  # noqa: S603 - generated test executable
