@@ -1037,6 +1037,7 @@ def test_workflow_dns_failure_is_unavailable_and_eight_ledger_stages_remain_visi
             "sky_status": "PENDING",
             "job_id": str(100 + index),
             "job_name": f"synthetic-{name}",
+            "tasks": [{"task_id": index, "task_name": f"synthetic-{name}"}],
             "started_at": "2026-08-04T00:00:00Z",
         }
         for index, name in enumerate(stage_names)
@@ -1048,7 +1049,6 @@ def test_workflow_dns_failure_is_unavailable_and_eight_ledger_stages_remain_visi
             "attempt": 1,
             "logical_state": "PENDING",
             "managed_job_id": str(100 + index),
-            "sky_task_id": index,
             "last_observed_at": "2026-08-04T00:02:00Z",
             "last_heartbeat_at": ("2026-08-04T00:01:00Z" if index == 0 else ""),
             "heartbeat_source": ("scheduler_task_progress" if index == 0 else ""),

@@ -5243,6 +5243,36 @@ def logs_cmd(
                 stage_attempts.sort(key=lambda item: int(item.get("attempt") or 1))
                 selected_attempt = stage_attempts[-1] if stage_attempts else {}
                 job_id = str(selected_attempt.get("managed_job_id") or "")
+                if selected_attempt.get("sky_task_id") in (None, ""):
+                    matching_waves = [
+                        wave
+                        for wave in resolution.runtime_state.get("waves") or []
+                        if isinstance(wave, dict)
+                        and selected_stage in list(wave.get("states") or [])
+                        and (
+                            not job_id
+                            or str(wave.get("job_id") or "") == job_id
+                        )
+                    ]
+                    matching_waves.sort(
+                        key=lambda wave: int(wave.get("attempt") or 1)
+                    )
+                    if matching_waves:
+                        selected_wave = matching_waves[-1]
+                        wave_states = list(selected_wave.get("states") or [])
+                        wave_tasks = [
+                            item
+                            for item in selected_wave.get("tasks") or []
+                            if isinstance(item, dict)
+                        ]
+                        if len(wave_states) == len(wave_tasks):
+                            index = wave_states.index(selected_stage)
+                            task_id = wave_tasks[index].get("task_id")
+                            if task_id is not None:
+                                selected_attempt = {
+                                    **selected_attempt,
+                                    "sky_task_id": str(task_id),
+                                }
                 if not job_id and not resolution.runtime_state.get("waves"):
                     # Root job IDs are compatible only for the historical one-job
                     # manifest contract. Never broadcast one ID across runtime waves.
