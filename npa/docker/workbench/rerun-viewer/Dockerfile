@@ -40,6 +40,8 @@ RUN apt-get update \
 RUN useradd -m -s /bin/bash -u 1000 ubuntu \
     && printf 'ubuntu ALL=(ALL) NOPASSWD:ALL\n' > /etc/sudoers.d/99-npa-runtime-user \
     && chmod 0440 /etc/sudoers.d/99-npa-runtime-user \
+    && printf 'export PATH="/usr/local/sbin:/usr/sbin:/sbin:$PATH"\n' > /etc/profile.d/99-npa-runtime-path.sh \
+    && chmod 0644 /etc/profile.d/99-npa-runtime-path.sh \
     && install -d -m 0755 -o ubuntu -g ubuntu \
       /opt/npa/docker/workbench/rerun-viewer \
       /opt/rerun \

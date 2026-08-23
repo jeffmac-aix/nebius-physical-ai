@@ -40,6 +40,8 @@ build-rerun-viewer` → `inspect-rerun-viewer` → `push-rerun-viewer` →
 `verify-rerun-viewer` binds the pushed bytes to the local config digest and full
 bootstrap capability probe. Use the returned immutable digest as the
 `workbench.nurec.visualize` image override.
+The source preserves `/usr/sbin` in the non-root login-shell path so the
+attested `sshd` and `service` commands remain discoverable during bootstrap.
 
 ## Inventory
 
