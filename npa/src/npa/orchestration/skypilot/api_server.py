@@ -48,6 +48,7 @@ def ensure_isolated_api_server(
 
     root = _validate_state_dir(state_dir)
     endpoint = f"http://127.0.0.1:{_validate_port(port)}"
+    queue_port = _validate_port(port + 1_000)
     record_path = root / "server.json"
     existing = _load_record(record_path)
     if existing:
@@ -60,9 +61,10 @@ def ensure_isolated_api_server(
             )
         record_path.unlink(missing_ok=True)
 
-    if not _port_available(port):
+    occupied = [candidate for candidate in (port, queue_port) if not _port_available(candidate)]
+    if occupied:
         raise IsolatedApiServerError(
-            f"loopback port {port} is already occupied by an unowned process"
+            f"loopback port {occupied[0]} is already occupied by an unowned process"
         )
     executable = ensure_skypilot_version(sky_bin)
     python_bin = executable.parent / "python"
@@ -74,10 +76,20 @@ def ensure_isolated_api_server(
     os.fchmod(log_fd, 0o600)
     env = sky_environment(root)
     env.pop("SKYPILOT_API_SERVER_ENDPOINT", None)
+    # SkyPilot 0.12.2 exposes the HTTP port but hardcodes its multiprocessing
+    # queue manager to 50011. Set that imported constant before loading the
+    # server module so multiple owner-scoped servers can coexist safely.
+    server_entrypoint = (
+        "import runpy,sys;"
+        "from sky.server.requests.queues import mp_queue;"
+        "mp_queue.DEFAULT_QUEUE_MANAGER_PORT=int(sys.argv.pop(1));"
+        "runpy.run_module('sky.server.server',run_name='__main__')"
+    )
     command = [
         str(python_bin),
-        "-m",
-        "sky.server.server",
+        "-c",
+        server_entrypoint,
+        str(queue_port),
         "--host",
         "127.0.0.1",
         "--port",
@@ -108,6 +120,7 @@ def ensure_isolated_api_server(
                     {
                         "pid": process.pid,
                         "port": port,
+                        "queue_port": queue_port,
                         "python": str(python_bin.resolve()),
                         "started_at": datetime.now(timezone.utc).isoformat(),
                     },
@@ -191,7 +204,7 @@ def _owned_process(pid: int, port: int) -> bool:
         return False
     decoded = [item.decode("utf-8", "replace") for item in argv if item]
     return (
-        "-m" in decoded
+        "-c" in decoded
         and "sky.server.server" in decoded
         and "--port" in decoded
         and str(port) in decoded

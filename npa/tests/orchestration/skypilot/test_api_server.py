@@ -46,8 +46,14 @@ def test_ensure_starts_exact_loopback_server_and_writes_owner_record(
     assert result.reused is False
     assert seen["argv"] == [
         str(python),
-        "-m",
-        "sky.server.server",
+        "-c",
+        (
+            "import runpy,sys;"
+            "from sky.server.requests.queues import mp_queue;"
+            "mp_queue.DEFAULT_QUEUE_MANAGER_PORT=int(sys.argv.pop(1));"
+            "runpy.run_module('sky.server.server',run_name='__main__')"
+        ),
+        "49123",
         "--host",
         "127.0.0.1",
         "--port",
