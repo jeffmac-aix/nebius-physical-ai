@@ -206,6 +206,50 @@ def test_cli_rejects_malformed_success(monkeypatch: pytest.MonkeyPatch) -> None:
         AntiochCli("antioch").show(Path("."), kind="scenario", remote_id="r")
 
 
+def test_supported_live_service_commands_never_inline_credentials(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls: list[list[str]] = []
+
+    def run(args, **_kwargs):  # noqa: ANN001, ANN202
+        calls.append(list(args))
+        payload = "{}" if "--json" in args else "ok"
+        return subprocess.CompletedProcess(args, 0, payload, "")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    cli = AntiochCli("antioch")
+    cli.services_up(tmp_path)
+    cli.services_exec(
+        tmp_path, "sim", ["install", "-d", "-m", "0700", "/workspace/client"]
+    )
+    cli.services_copy(tmp_path, tmp_path / "api-key", "sim:/workspace/client/api-key")
+    cli.services_down(tmp_path)
+
+    assert calls == [
+        ["antioch", "services", "up", "--json"],
+        [
+            "antioch",
+            "services",
+            "exec",
+            "sim",
+            "install",
+            "-d",
+            "-m",
+            "0700",
+            "/workspace/client",
+        ],
+        [
+            "antioch",
+            "services",
+            "cp",
+            str(tmp_path / "api-key"),
+            "sim:/workspace/client/api-key",
+            "--json",
+        ],
+        ["antioch", "services", "down", "--json"],
+    ]
+
+
 def _project_bundle(
     tmp_path: Path, member_name: str = "project/antioch.yaml"
 ) -> tuple[bytes, bytes]:
@@ -294,7 +338,7 @@ def _episode(path: Path, **replacements: Any) -> None:
         seed=7,
         parameters={"mass": 1.0},
         engine_version="1",
-        sdk_version="0.3.47",
+        sdk_version="0.3.63",
         source_sha256="a" * 64,
         assets_sha256={"cart": "b" * 64},
         observation_schema=["position", "velocity"],
@@ -356,7 +400,7 @@ def test_episode_contract_rejects_single_channel_act_data(tmp_path: Path) -> Non
         seed=7,
         parameters={},
         engine_version="1",
-        sdk_version="0.3.47",
+        sdk_version="0.3.63",
         source_sha256="a" * 64,
         assets_sha256={"cart": "b" * 64},
         observation_schema=["position", "velocity"],

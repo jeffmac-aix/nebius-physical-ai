@@ -19,7 +19,7 @@ npa workbench antioch health --output json
 
 `NPA_ANTIOCH_ACCEPT_TERMS=YES` is an exact, explicit attestation that the
 operator reviewed the [Antioch Terms of Service](https://antioch.com/terms)
-(version dated 2026-02-28) for the scoped use of `antioch-sim==0.3.47` and the
+(version dated 2026-02-28) for the scoped use of `antioch-sim==0.3.63` and the
 Antioch Service. Any customer MSA or order form remains controlling. Other
 spellings fail closed. The adapter records only the agreement name, public URL,
 version, scope, and accepted boolean in durable operation state; it never stores
@@ -39,12 +39,18 @@ modules. The optional secret uses
 the ordinary `AWS_ENDPOINT_URL`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and
 optional `AWS_SESSION_TOKEN` keys.
 
-The public adapter pins `antioch-sim==0.3.47` and its reviewed SHA-256. On first
+The public adapter pins `antioch-sim==0.3.63` and its reviewed SHA-256. On first
 use it fetches the wheel directly from the vendor's PyPI delivery into
 `NPA_ANTIOCH_RUNTIME_CACHE`, verifies it, and installs it in that writable volume.
 `NPA_ANTIOCH_RUNTIME_OFFLINE=1` fails closed when the cache is cold. Neither the
 wheel nor runtime cache belongs in the adapter image. The operator's direct
 delivery and use remain subject to the operator's Antioch/NVIDIA terms.
+
+On a host, the default cache is `$XDG_CACHE_HOME/npa/antioch` or
+`~/.cache/npa/antioch`. The adapter container explicitly keeps its writable
+`/workspace/.cache/npa/antioch` mount. The virtual environment is created at its
+final versioned path under a file lock and publishes `.complete` last; moving a
+prepared virtualenv is invalid because its generated command shebangs are absolute.
 
 Today the CLI session is personal OAuth stored in Antioch's config directory.
 That is suitable for a human-operated smoke, but not a production unattended
@@ -106,6 +112,37 @@ Antioch Mission Control console using the authenticated account; never paste a
 signed console URL into logs, manifests, issues, or pull requests. If a supported
 CLI response supplies a non-signed console URL, the adapter may expose its
 redacted form. It does not construct undocumented Rome URLs.
+
+## Continuing OpenPI live demonstration
+
+`npa/examples/antioch-openpi-live` is a separate live-control example, not an
+offline dataset claim. It renders a real Franka scene and two current policy
+cameras, sends observations through an authenticated TLS connection to the
+persistent OpenPI service, requires exact finite `[15, 8]` action chunks, and
+applies at most five validated targets per observation at a nominal 15 Hz. Joint
+limits, a per-target delta bound, a response-age deadline, and reconnect backoff
+fail closed into safe hold. Report measured rates and latency; this is not hard
+real-time control.
+
+The live viewer includes the normal streamed Isaac viewport, current camera images
+in Antioch telemetry, and counters for observation sequence/time, requests, round
+trips, latency, action shape/index, safe hold, reconnects, and safely applied
+targets. These are emitted by the running scenario, not inferred from an `.rrd`.
+
+The OpenPI side is built by `npa.workflows.byof.openpi_live`: a single B200
+Deployment with readiness/liveness, `Recreate` rollout semantics, and a PVC-backed
+runtime checkpoint cache. Only a bounded TLS WebSocket gateway is exposed; an
+API-key Secret and TLS Secret are generated per live deployment, while the raw
+policy and diagnostic ports remain outside the Service and blocked by ingress
+policy. The checkpoint, keys, CA private material, credentials, and simulator
+payload never enter the public image or project source.
+
+The controller uses supported `antioch services up|exec|cp` commands to place the
+0600 client bundle in the sim service, then runs `antioch scenario run --stream
+--verbose` under a named tmux session with `pipe-pane`. Scenario timeout is a
+finite platform boundary, so the supervisor renews indefinitely until explicitly
+stopped. Renewal resets the simulated episode and briefly interrupts the viewport;
+it is continuous service supervision, not one immortal scenario process.
 
 ## Policy data contract
 

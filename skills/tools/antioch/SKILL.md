@@ -29,9 +29,31 @@ endpoints, print identity/config/environment data, or inspect unrelated runs.
 - The dataset is for offline imitation learning only. Use the LeRobot policy trainer;
   do not describe it as online PPO or RSL-RL.
 
+### Continuing live viewport + external policy
+
+- Use only `antioch services up|exec|cp|down` and `antioch scenario run
+  --stream --verbose`. Do not call Rome or infer a console URL.
+- Start the sim service before copying a run-scoped CA/API-key/endpoint bundle into
+  a 0700 service directory. Never use `--set`, environment dumps, tmux command
+  arguments, or project source for policy credentials.
+- Supervise the foreground streamed run in a named tmux session and capture its
+  ordinary output with `pipe-pane`. The tmux supervisor may renew after the CLI's
+  finite per-scenario timeout, but must have no total run limit unless requested.
+- Describe renewal honestly: each boundary resets the simulated episode and briefly
+  interrupts the viewport; it does not create one infinitely lived simulator process.
+- A live policy loop must log current camera frames and decision counters from the
+  executing scenario. Reject stale, malformed, non-finite, wrong-shaped, or unsafe
+  actions and hold position while reconnecting. Do not claim hard real-time control.
+- `npa/examples/antioch-openpi-live` is the public-source reference. Its checked-in
+  project identity is intentionally unusable and is replaced only in private runtime
+  state. The OpenPI gateway/controller lives in
+  `npa.workflows.byof.openpi_live`.
+
 ## Cleanup and evidence
 
-Cancel the exact test run before releasing its exact project machine. Record only
+Cancel the exact test run before releasing its exact project machine. A requested
+retained live demo is the exception: leave its exact sim service and policy
+Deployment running, and provide exact supported stop commands privately. Record only
 run ids, states, check names, schemas, checksums, artifact basenames, and sanitized
 links. Never record tokens, signed URLs, config contents, organization/customer
 identifiers, unrelated run metadata, or internal infrastructure coordinates.

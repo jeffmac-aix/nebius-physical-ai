@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 NPA_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 NPA_PYTHON="${NPA_ROOT}/.venv/bin/python"
 REGISTRY=""
-TAG="0.1.0-cli0.3.47"
+TAG="0.1.0-cli0.3.63"
 PUSH=0
 
 usage() {

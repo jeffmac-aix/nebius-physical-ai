@@ -1,0 +1,19 @@
+# Replace this local-only placeholder with the operator's assigned Antioch
+# project ID before dispatch. Never commit a live project or machine ID.
+id: "replace-at-runtime"
+name: "npa-openpi-live"
+scenario_paths: ["src/scenario.py"]
+
+services:
+  sim:
+    image: "antioch-engine/isaac-sim-6.0.1"
+    watch:
+      - action: sync
+        path: .
+        target: /workspace/project
+
+suites:
+  live:
+    description: "Continuing Franka camera-to-policy live demonstration"
+    select:
+      - tags: ["openpi-live"]

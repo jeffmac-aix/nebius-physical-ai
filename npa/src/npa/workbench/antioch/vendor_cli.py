@@ -244,6 +244,51 @@ class AntiochCli:
             )
         return redact_payload(payload)
 
+    def services_up(self, cwd: Path) -> dict[str, Any]:
+        payload = self._run(["services", "up", "--json"], cwd=cwd).payload
+        if not isinstance(payload, dict):
+            raise AntiochCliError(
+                "Antioch service startup response was malformed",
+                error_type="malformed_cli_output",
+            )
+        return payload
+
+    def services_exec(self, cwd: Path, service: str, command: Sequence[str]) -> str:
+        if not service or not command:
+            raise AntiochCliError(
+                "Antioch service exec requires a service and command",
+                error_type="invalid_request",
+            )
+        return str(
+            self._run(
+                ["services", "exec", service, *command],
+                cwd=cwd,
+                expect_json=False,
+            ).payload
+        )
+
+    def services_copy(
+        self, cwd: Path, source: Path, destination: str
+    ) -> dict[str, Any]:
+        payload = self._run(
+            ["services", "cp", str(source), destination, "--json"], cwd=cwd
+        ).payload
+        if not isinstance(payload, dict):
+            raise AntiochCliError(
+                "Antioch service copy response was malformed",
+                error_type="malformed_cli_output",
+            )
+        return payload
+
+    def services_down(self, cwd: Path) -> dict[str, Any]:
+        payload = self._run(["services", "down", "--json"], cwd=cwd).payload
+        if not isinstance(payload, dict):
+            raise AntiochCliError(
+                "Antioch service teardown response was malformed",
+                error_type="malformed_cli_output",
+            )
+        return payload
+
 
 def remote_id(payload: dict[str, Any], *, kind: str) -> str:
     keys = (

@@ -20,12 +20,12 @@ from pathlib import Path
 from .vendor_cli import AntiochCli, AntiochCliError
 
 
-ANTIOCH_CLI_VERSION = "0.3.47"
-ANTIOCH_CLI_SHA256 = "9037118b94d1b8241ca7e693b34a7a6ccffa7f47492b929b56c6f3b813032e8c"
+ANTIOCH_CLI_VERSION = "0.3.63"
+ANTIOCH_CLI_SHA256 = "cbcf4775472dacab19f1536053d8d1d2f9dd12d47c1af8a39599ee2dbdc2f39e"
 ANTIOCH_CLI_URL = (
-    "https://files.pythonhosted.org/packages/e5/61/"
-    "577030f1ebdbd8591947bfc326a4eb357020e885ffa1011986eececae2c4/"
-    "antioch_sim-0.3.47-py3-none-any.whl"
+    "https://files.pythonhosted.org/packages/4e/d3/"
+    "bfa7d596641baad314860087bf0ea62d3e0afa77f66155e8ef5cb426cab4/"
+    "antioch_sim-0.3.63-py3-none-any.whl"
 )
 ANTIOCH_TERMS_ENV = "NPA_ANTIOCH_ACCEPT_TERMS"
 ANTIOCH_TERMS_NAME = "Antioch Terms of Service"
@@ -71,9 +71,11 @@ def terms_preflight() -> dict[str, str | bool]:
 
 
 def runtime_cache_root() -> Path:
-    return Path(
-        os.environ.get("NPA_ANTIOCH_RUNTIME_CACHE", "/workspace/.cache/npa/antioch")
-    )
+    configured = os.environ.get("NPA_ANTIOCH_RUNTIME_CACHE", "").strip()
+    if configured:
+        return Path(configured)
+    cache_home = os.environ.get("XDG_CACHE_HOME", "").strip()
+    return (Path(cache_home) if cache_home else Path.home() / ".cache") / "npa/antioch"
 
 
 def _sha256(path: Path) -> str:
@@ -98,6 +100,21 @@ def _verified_executable(path: Path, expected_version: str) -> Path:
     return path
 
 
+def _cached_executable(
+    executable: Path, ready: Path, expected_version: str
+) -> Path | None:
+    if not ready.is_file():
+        return None
+    if ready.read_text(encoding="utf-8").strip() != ANTIOCH_CLI_SHA256:
+        return None
+    try:
+        return _verified_executable(executable, expected_version)
+    except AntiochRuntimeError:
+        # A completion marker alone is not proof that the environment remains
+        # executable. The locked installer below repairs interrupted/legacy caches.
+        return None
+
+
 def ensure_runtime(*, expected_version: str = ANTIOCH_CLI_VERSION) -> Path:
     """Return an exact Antioch CLI, populating the runtime cache if necessary."""
 
@@ -115,11 +132,9 @@ def ensure_runtime(*, expected_version: str = ANTIOCH_CLI_VERSION) -> Path:
     version_root = root / expected_version
     executable = version_root / "venv" / "bin" / "antioch"
     ready = version_root / ".complete"
-    if (
-        ready.is_file()
-        and ready.read_text(encoding="utf-8").strip() == ANTIOCH_CLI_SHA256
-    ):
-        return _verified_executable(executable, expected_version)
+    cached = _cached_executable(executable, ready, expected_version)
+    if cached is not None:
+        return cached
     if os.environ.get("NPA_ANTIOCH_RUNTIME_OFFLINE", "").strip().lower() in {
         "1",
         "true",
@@ -133,11 +148,9 @@ def ensure_runtime(*, expected_version: str = ANTIOCH_CLI_VERSION) -> Path:
     lock_path = root / ".install.lock"
     with lock_path.open("a+b") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-        if (
-            ready.is_file()
-            and ready.read_text(encoding="utf-8").strip() == ANTIOCH_CLI_SHA256
-        ):
-            return _verified_executable(executable, expected_version)
+        cached = _cached_executable(executable, ready, expected_version)
+        if cached is not None:
+            return cached
         url = os.environ.get("NPA_ANTIOCH_CLI_URL", ANTIOCH_CLI_URL).strip()
         expected_sha = (
             os.environ.get("NPA_ANTIOCH_CLI_SHA256", ANTIOCH_CLI_SHA256).strip().lower()
@@ -146,14 +159,14 @@ def ensure_runtime(*, expected_version: str = ANTIOCH_CLI_VERSION) -> Path:
             raise AntiochRuntimeError("NPA_ANTIOCH_CLI_URL must not be empty")
         if expected_sha != ANTIOCH_CLI_SHA256:
             raise AntiochRuntimeError(
-                "NPA_ANTIOCH_CLI_SHA256 must match the adapter's reviewed 0.3.47 wheel digest"
+                "NPA_ANTIOCH_CLI_SHA256 must match the adapter's reviewed 0.3.63 wheel digest"
             )
 
         with tempfile.TemporaryDirectory(
             prefix=".antioch-install-", dir=root
         ) as temp_name:
             temp = Path(temp_name)
-            wheel = temp / "antioch_sim-0.3.47-py3-none-any.whl"
+            wheel = temp / "antioch_sim-0.3.63-py3-none-any.whl"
             try:
                 with (
                     urllib.request.urlopen(url) as response,
@@ -199,9 +212,7 @@ def ensure_runtime(*, expected_version: str = ANTIOCH_CLI_VERSION) -> Path:
             )
             _verified_executable(environment / "bin" / "antioch", expected_version)
             if version_root.exists():
-                raise AntiochRuntimeError(
-                    "Antioch runtime cache contains an incomplete pinned version"
-                )
+                shutil.rmtree(version_root)
             os.replace(install_root, version_root)
 
     return _verified_executable(executable, expected_version)
