@@ -838,6 +838,8 @@ def list_registry_identities(
             "--all",
         ]
     )
+    if payload == {} or payload == {"items": None}:
+        return ()
     items = payload.get("items") if isinstance(payload, dict) else None
     if not isinstance(items, list):
         raise NebiusError("Nebius returned schema-invalid registry inventory")

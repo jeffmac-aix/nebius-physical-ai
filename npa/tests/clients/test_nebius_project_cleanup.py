@@ -236,6 +236,14 @@ def test_registry_inventory_is_exact_project_scoped_and_allowlisted(monkeypatch)
     assert calls == [["registry", "list", "--parent-id", "project-a", "--all"]]
 
 
+@pytest.mark.parametrize("payload", [{}, {"items": None}])
+def test_registry_inventory_accepts_provider_empty_shapes(monkeypatch, payload) -> None:
+    monkeypatch.setattr(nebius, "_iam_profile_args", lambda _profile: ([], "test"))
+    monkeypatch.setattr(nebius, "_run_json", lambda _args: payload)
+
+    assert nebius.list_registry_identities("project-a") == ()
+
+
 def test_create_registry_uses_fixed_project_and_name(monkeypatch) -> None:
     monkeypatch.setattr(nebius, "_iam_profile_args", lambda _profile: ([], "test"))
     calls = []
