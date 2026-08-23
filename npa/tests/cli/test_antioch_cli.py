@@ -77,3 +77,68 @@ def test_antioch_image_contains_self_contained_storage_resolver() -> None:
     assert "COPY src/npa/workbench/antioch" in dockerfile
     assert "storage_config import resolve_storage_client" in dockerfile
     assert "COPY src/npa/clients/config.py" not in dockerfile
+
+
+def test_live_start_uses_sdk_without_putting_credentials_in_options(
+    monkeypatch, tmp_path: Path
+) -> None:  # noqa: ANN001
+    source = tmp_path / "source"
+    bundle = tmp_path / "bundle"
+    source.mkdir()
+    bundle.mkdir()
+    captured = {}
+
+    def start(**kwargs):  # noqa: ANN003, ANN202
+        captured.update(kwargs)
+        return {"status": "running", "session": "npa-live-test"}
+
+    monkeypatch.setattr("npa.sdk.workbench.antioch.live_start", start)
+    result = CliRunner().invoke(
+        app,
+        [
+            "workbench",
+            "antioch",
+            "live-start",
+            "--source",
+            str(source),
+            "--project-id",
+            "assigned-project",
+            "--client-bundle",
+            str(bundle),
+            "--scenario-timeout-seconds",
+            "14400",
+            "--output",
+            "json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured == {
+        "source": source,
+        "project_id": "assigned-project",
+        "client_bundle": bundle,
+        "scenario_timeout_seconds": 14_400,
+    }
+    assert "api-key" not in result.output
+
+
+def test_live_stop_orders_through_sdk(monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setattr(
+        "npa.sdk.workbench.antioch.live_stop",
+        lambda **kwargs: {"status": "stopped", **kwargs},
+    )
+    result = CliRunner().invoke(
+        app,
+        [
+            "workbench",
+            "antioch",
+            "live-stop",
+            "--project-id",
+            "assigned-project",
+            "--timeout-seconds",
+            "30",
+            "--output",
+            "json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["status"] == "stopped"

@@ -63,6 +63,20 @@ def _session_running(name: str) -> bool:
     return _tmux("has-session", "-t", name, check=False).returncode == 0
 
 
+def _state_path(project_id: str) -> Path:
+    return live_state_root() / _session_name(project_id) / "state.json"
+
+
+def _read_state(project_id: str) -> dict[str, Any]:
+    path = _state_path(project_id)
+    if not path.is_file() or path.is_symlink():
+        raise AntiochLiveError("no exact live-session state exists for this project")
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict) or value.get("project_id") != project_id:
+        raise AntiochLiveError("live-session state identity is malformed")
+    return value
+
+
 def _validate_bundle(bundle: Path) -> None:
     for name in REQUIRED_BUNDLE_FILES:
         path = bundle / name
@@ -222,6 +236,7 @@ def start_live(
         "scenario": "openpi_droid_live",
         "renewal_boundary_seconds": scenario_timeout_seconds,
         "service": "sim",
+        "cli": str(cli_path),
     }
     state_path = root / "state.json"
     state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
@@ -232,6 +247,50 @@ def start_live(
         "scenario": state["scenario"],
         "renewal_boundary_seconds": scenario_timeout_seconds,
         "credentials_in_process_arguments": False,
+    }
+
+
+def status_live(*, project_id: str) -> dict[str, Any]:
+    """Return local supervisor state without reading auth storage or process lists."""
+
+    state = _read_state(project_id)
+    session = str(state["session"])
+    runtime = Path(str(state["runtime"]))
+    log = runtime / "live.log"
+    return {
+        "status": "running" if _session_running(session) else "stopped",
+        "session": session,
+        "scenario": state["scenario"],
+        "renewal_boundary_seconds": state["renewal_boundary_seconds"],
+        "log_exists": log.is_file(),
+        "runtime": str(runtime),
+    }
+
+
+def stop_live(*, project_id: str, timeout_seconds: float = 120.0) -> dict[str, Any]:
+    """Stop the exact streamed run first, then its exact supported sim service."""
+
+    state = _read_state(project_id)
+    session = str(state["session"])
+    runtime = Path(str(state["runtime"]))
+    stop_file = runtime / ".stop"
+    stop_file.touch(mode=0o600, exist_ok=True)
+    if _session_running(session):
+        _tmux("send-keys", "-t", f"{session}:0.0", "C-c")
+        deadline = time.monotonic() + timeout_seconds
+        while _session_running(session) and time.monotonic() < deadline:
+            time.sleep(1)
+        if _session_running(session):
+            raise AntiochLiveError(
+                "scenario cancellation did not finish; refusing to tear down its service"
+            )
+    cli_path = Path(str(state["cli"]))
+    AntiochCli(cli_path).services_down(runtime)
+    return {
+        "status": "stopped",
+        "session": session,
+        "service_stopped_after_scenario": True,
+        "runtime_preserved": str(runtime),
     }
 
 

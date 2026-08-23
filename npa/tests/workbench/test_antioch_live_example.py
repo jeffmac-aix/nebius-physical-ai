@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import importlib.util
 import re
 from pathlib import Path
 
+import numpy as np
+import pytest
 import yaml
 
 from npa.workbench.antioch import live
@@ -14,7 +17,9 @@ EXAMPLE = ROOT / "npa/examples/antioch-openpi-live"
 def test_live_example_uses_only_runtime_project_identity() -> None:
     manifest = yaml.safe_load((EXAMPLE / "antioch.yaml").read_text(encoding="utf-8"))
     assert manifest["id"] == "replace-at-runtime"
-    assert manifest["services"]["sim"]["image"] == "antioch-engine/isaac-sim-6.0.1"
+    sim = manifest["services"]["sim"]
+    assert "image" not in sim
+    assert sim["build"] == {"context": ".", "dockerfile": "Dockerfile"}
     rendered = (EXAMPLE / "antioch.yaml").read_text(encoding="utf-8")
     assert not re.search(r"(?:project|tenant|cluster)-[a-z0-9]+", rendered)
 
@@ -43,6 +48,30 @@ def test_live_scenario_is_real_bounded_and_fail_closed() -> None:
     assert "WebsocketClientPolicy(" not in source
     assert "verify_mode = ssl.CERT_NONE" not in source
     assert "while True:" in source
+
+
+def test_live_protocol_codec_round_trips_arrays_and_rejects_objects() -> None:
+    pytest.importorskip("msgpack")
+    path = EXAMPLE / "src/openpi_protocol.py"
+    spec = importlib.util.spec_from_file_location("openpi_protocol_test", path)
+    assert spec is not None and spec.loader is not None
+    codec = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(codec)
+
+    value = np.arange(24, dtype=np.float32).reshape(3, 8)
+    decoded = codec.unpackb(codec.Packer().pack({"actions": value}))
+    np.testing.assert_array_equal(decoded["actions"], value)
+    with pytest.raises(ValueError, match="unsupported array dtype"):
+        codec.Packer().pack(np.asarray([object()], dtype=object))
+
+
+def test_live_sim_image_contains_only_protocol_dependencies() -> None:
+    dockerfile = (EXAMPLE / "Dockerfile").read_text(encoding="utf-8")
+    assert dockerfile.startswith("FROM antioch-engine/isaac-sim-6.0.1:0.3.63\n")
+    assert '"msgpack==1.1.1"' in dockerfile
+    assert '"websockets==15.0.1"' in dockerfile
+    assert "git clone" not in dockerfile
+    assert "checkpoint" not in dockerfile.lower()
 
 
 def test_live_example_documents_supported_renewal_boundary() -> None:
@@ -99,3 +128,42 @@ def test_client_bundle_requires_private_files(tmp_path: Path) -> None:
         assert "group/world" in str(exc)
     else:
         raise AssertionError("a public client credential was accepted")
+
+
+def test_live_stop_cancels_scenario_before_service(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls: list[str] = []
+    states = iter((True, False, False))
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    monkeypatch.setattr(
+        live,
+        "_read_state",
+        lambda _project_id: {
+            "project_id": "assigned-project-for-test",
+            "session": "exact-session",
+            "runtime": str(runtime),
+            "cli": "/opt/antioch/bin/antioch",
+        },
+    )
+    monkeypatch.setattr(live, "_session_running", lambda _session: next(states))
+    monkeypatch.setattr(
+        live,
+        "_tmux",
+        lambda *args, **_kwargs: calls.append("tmux:" + " ".join(args)),
+    )
+
+    class FakeCli:
+        def __init__(self, _path: Path) -> None:
+            pass
+
+        def services_down(self, _runtime: Path) -> None:
+            calls.append("services-down")
+
+    monkeypatch.setattr(live, "AntiochCli", FakeCli)
+    result = live.stop_live(project_id="assigned-project-for-test")
+
+    assert calls == ["tmux:send-keys -t exact-session:0.0 C-c", "services-down"]
+    assert result["service_stopped_after_scenario"] is True
+    assert (runtime / ".stop").stat().st_mode & 0o777 == 0o600

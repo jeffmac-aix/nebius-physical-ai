@@ -7,11 +7,21 @@ chunks, enters safe hold on stale/malformed/unsafe responses, and reconnects wit
 bounded exponential backoff. Antioch telemetry and a viewport overlay report the
 live counters; neither is reconstructed from a recording.
 
+The client uses a 90-second response-age safety deadline because this large VLA's
+measured B200 latency is in the tens of seconds. The five returned targets are
+applied at a nominal 15 Hz only after validation; the observation-to-action loop
+is therefore intentionally described as best-effort and not hard real time.
+
 The checked-in project ID is deliberately unusable. The live controller creates a
 private runtime copy with an assigned Antioch project ID, starts the supported sim
 service, and copies `ca.crt`, `api-key`, and `endpoint.json` into the running sim
 service with `antioch services cp`. Credentials are never passed through scenario
 parameters, tmux commands, Git, or images.
+
+The project Dockerfile adds only pinned `msgpack` and `websockets` wire-protocol
+dependencies to Antioch's version-matched Isaac Sim base. The small local codec
+is adapted from the pinned Apache-2.0 OpenPI client and rejects object arrays;
+neither OpenPI model code nor weights are included in the sim image.
 
 The scenario is continuous within one Antioch run. Since scenario runs have a
 finite supported timeout, the controller renews them in tmux until explicitly

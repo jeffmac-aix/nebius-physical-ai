@@ -157,6 +157,61 @@ def system_info(
     )
 
 
+@app.command("live-start")
+def live_start_cmd(
+    source: Path = typer.Option(..., "--source", exists=True, file_okay=False),
+    project_id: str = typer.Option(..., "--project-id"),
+    client_bundle: Path = typer.Option(
+        ..., "--client-bundle", exists=True, file_okay=False
+    ),
+    scenario_timeout_seconds: int = typer.Option(
+        14_400, "--scenario-timeout-seconds", min=60
+    ),
+    output: OutputFormat = typer.Option(OutputFormat.text, "--output"),
+) -> None:
+    """Start a continuing streamed OpenPI scenario under tmux supervision."""
+    try:
+        _emit(
+            sdk.live_start(
+                source=source,
+                project_id=project_id,
+                client_bundle=client_bundle,
+                scenario_timeout_seconds=scenario_timeout_seconds,
+            ),
+            output,
+        )
+    except Exception as exc:
+        _fail(exc)
+
+
+@app.command("live-status")
+def live_status_cmd(
+    project_id: str = typer.Option(..., "--project-id"),
+    output: OutputFormat = typer.Option(OutputFormat.text, "--output"),
+) -> None:
+    """Inspect exact local tmux supervisor state without reading auth storage."""
+    try:
+        _emit(sdk.live_status(project_id=project_id), output)
+    except Exception as exc:
+        _fail(exc)
+
+
+@app.command("live-stop")
+def live_stop_cmd(
+    project_id: str = typer.Option(..., "--project-id"),
+    timeout_seconds: float = typer.Option(120.0, "--timeout-seconds", min=1.0),
+    output: OutputFormat = typer.Option(OutputFormat.text, "--output"),
+) -> None:
+    """Cancel the exact scenario, then stop its exact sim service."""
+    try:
+        _emit(
+            sdk.live_stop(project_id=project_id, timeout_seconds=timeout_seconds),
+            output,
+        )
+    except Exception as exc:
+        _fail(exc)
+
+
 def _submit_action(
     action: str,
     input_path: str,

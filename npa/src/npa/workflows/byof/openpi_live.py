@@ -49,6 +49,7 @@ import time
 
 from websockets.sync.client import connect
 from websockets.sync.server import serve
+from websockets.exceptions import ConnectionClosedOK
 
 TOKEN = open("/run/npa-openpi-auth/api-key", encoding="utf-8").read().strip()
 if len(TOKEN) < 32:
@@ -95,7 +96,7 @@ class Health(http.server.BaseHTTPRequestHandler):
         return
 
 threading.Thread(
-    target=lambda: http.server.ThreadingHTTPServer(("127.0.0.1", 8002), Health).serve_forever(),
+    target=lambda: http.server.ThreadingHTTPServer(("0.0.0.0", 8002), Health).serve_forever(),
     daemon=True,
 ).start()
 
@@ -133,6 +134,8 @@ def handle(client):
                     state["requests"] += 1
                     state["last_latency_ms"] = round(latency, 3)
                     state["latencies_ms"].append(latency)
+    except ConnectionClosedOK:
+        pass
     except Exception:
         with lock:
             state["failures"] += 1
@@ -209,6 +212,11 @@ def build_live_manifests(
     pod = deployment["spec"]["template"]["spec"]
     selector = deployment["spec"]["selector"]["matchLabels"]
     labels = deployment["metadata"]["labels"]
+    live_labels = _live_labels(run_id)
+    labels.update(live_labels)
+    deployment["spec"]["template"]["metadata"].setdefault("labels", {}).update(
+        live_labels
+    )
 
     deployment["spec"].update(
         {"strategy": {"type": "Recreate"}, "revisionHistoryLimit": 2}
@@ -242,6 +250,8 @@ def build_live_manifests(
     ]
     policy = pod["containers"][0]
     policy["securityContext"] = {
+        "runAsUser": 1000,
+        "runAsGroup": 1000,
         "runAsNonRoot": True,
         "allowPrivilegeEscalation": False,
     }
@@ -279,6 +289,8 @@ def build_live_manifests(
             "limits": {"cpu": "2", "memory": "2Gi"},
         },
         "securityContext": {
+            "runAsUser": 1000,
+            "runAsGroup": 1000,
             "runAsNonRoot": True,
             "allowPrivilegeEscalation": False,
         },
@@ -614,6 +626,9 @@ def deploy_live(args: argparse.Namespace) -> dict[str, Any]:
     )
     for manifest in manifests.values():
         manifest["metadata"].setdefault("labels", {}).update(labels)
+    manifests["deployment"]["spec"]["template"]["metadata"].setdefault(
+        "labels", {}
+    ).update(labels)
     service = manifests["service"]
     _apply_owned(
         read=core.read_namespaced_service,

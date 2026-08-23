@@ -14,6 +14,9 @@ health
 terms-preflight  Verify explicit, scoped Antioch terms acceptance before runtime use.
 package-project  Build a deterministic, credential-free immutable project package.
 system-info
+live-start  Start a continuing streamed OpenPI scenario under tmux supervision.
+live-status  Inspect exact local tmux supervisor state without reading auth storage.
+live-stop  Cancel the exact scenario, then stop its exact sim service.
 submit
 run
 status
@@ -36,7 +39,10 @@ deploy
 | Command | Description |
 | --- | --- |
 | `terms-preflight` | Verify explicit, scoped Antioch terms acceptance before runtime use. |
-| `package-project` | Build a deterministic, credential-free immutable project package. system-info submit run status reconcile cancel resume collect list deploy |
+| `package-project` | Build a deterministic, credential-free immutable project package. system-info |
+| `live-start` | Start a continuing streamed OpenPI scenario under tmux supervision. |
+| `live-status` | Inspect exact local tmux supervisor state without reading auth storage. |
+| `live-stop` | Cancel the exact scenario, then stop its exact sim service. submit run status reconcile cancel resume collect list deploy |
 
 ## Examples
 

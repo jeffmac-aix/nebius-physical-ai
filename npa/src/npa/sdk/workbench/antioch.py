@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Any
 
 import httpx
 
 from npa.workbench.antioch.manager import AntiochManager
 from npa.workbench.antioch.manager import AntiochOperationError
+from npa.workbench.antioch.live import start_live, status_live, stop_live
 from npa.workbench.antioch.schemas import (
     CollectRequest,
     OperationRecord,
@@ -107,3 +109,26 @@ def collect(
     return _call(
         "collect", request.model_dump(mode="json"), endpoint=endpoint, token=token
     )
+
+
+def live_start(
+    *,
+    source: Path,
+    project_id: str,
+    client_bundle: Path,
+    scenario_timeout_seconds: int = 14_400,
+) -> dict[str, Any]:
+    return start_live(
+        source=source,
+        project_id=project_id,
+        client_bundle=client_bundle,
+        scenario_timeout_seconds=scenario_timeout_seconds,
+    )
+
+
+def live_status(*, project_id: str) -> dict[str, Any]:
+    return status_live(project_id=project_id)
+
+
+def live_stop(*, project_id: str, timeout_seconds: float = 120.0) -> dict[str, Any]:
+    return stop_live(project_id=project_id, timeout_seconds=timeout_seconds)

@@ -6,7 +6,9 @@ scenario_paths: ["src/scenario.py"]
 
 services:
   sim:
-    image: "antioch-engine/isaac-sim-6.0.1"
+    build:
+      context: "."
+      dockerfile: "Dockerfile"
     watch:
       - action: sync
         path: .

@@ -340,6 +340,12 @@ def test_live_service_is_persistent_authenticated_and_cache_backed(
     deployment = manifests["deployment"]
     assert deployment["spec"]["strategy"] == {"type": "Recreate"}
     assert deployment["spec"]["replicas"] == 1
+    assert (
+        deployment["spec"]["template"]["metadata"]["labels"][
+            "app.kubernetes.io/managed-by"
+        ]
+        == openpi_live.LIVE_MANAGED_BY
+    )
     pod = deployment["spec"]["template"]["spec"]
     assert {
         "name": "openpi-cache",
@@ -355,11 +361,17 @@ def test_live_service_is_persistent_authenticated_and_cache_backed(
     assert all(
         item["securityContext"]["runAsNonRoot"] is True for item in containers.values()
     )
+    assert all(
+        item["securityContext"]["runAsUser"] == 1000
+        and item["securityContext"]["runAsGroup"] == 1000
+        for item in containers.values()
+    )
     gateway = containers["authenticated-gateway"]
     assert gateway["readinessProbe"]["httpGet"]["port"] == 8002
     assert gateway["livenessProbe"]["httpGet"]["port"] == 8002
     assert gateway["command"][:2] == ["/opt/venv/bin/python", "-c"]
     compile(gateway["command"][2], "openpi-authenticated-gateway", "exec")
+    assert '("0.0.0.0", 8002)' in gateway["command"][2]
     assert "Authorization" in gateway["command"][2]
     assert "MAX_MESSAGE" in gateway["command"][2]
     assert "REQUEST_TIMEOUT" in gateway["command"][2]

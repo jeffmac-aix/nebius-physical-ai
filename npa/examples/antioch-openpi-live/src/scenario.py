@@ -15,7 +15,9 @@ CLIENT_ROOT = Path("/workspace/npa-live-client")
 ACTION_SHAPE = (15, 8)
 CONTROL_HZ = 15.0
 TARGETS_PER_QUERY = 5
-MAX_RESPONSE_AGE_SECONDS = 20.0
+# The measured B200 round trip is tens of seconds for this large VLA. This is a
+# stale-response safety deadline, not a real-time claim or a total run limit.
+MAX_RESPONSE_AGE_SECONDS = 90.0
 JOINT_LOW = (-2.8973, -1.7628, -2.8973, -3.0718, -2.8973, -0.0175, -2.8973)
 JOINT_HIGH = (2.8973, 1.7628, 2.8973, -0.0698, 2.8973, 3.7525, 2.8973)
 MAX_JOINT_STEP = 0.35
@@ -42,7 +44,7 @@ class SafePolicyClient:
         return uri, token, context
 
     def connect(self) -> None:
-        from openpi_client import msgpack_numpy
+        import openpi_protocol
         from websockets.sync.client import connect
 
         uri, token, context = self._settings()
@@ -58,21 +60,21 @@ class SafePolicyClient:
             additional_headers={"Authorization": f"Api-Key {token}"},
         )
         greeting = self._connection.recv(timeout=30)
-        metadata = msgpack_numpy.unpackb(greeting)
+        metadata = openpi_protocol.unpackb(greeting)
         if not isinstance(metadata, dict):
             raise RuntimeError("policy server greeting is malformed")
         self._backoff = 1.0
 
     def infer(self, observation: dict) -> tuple[dict, float]:
-        from openpi_client import msgpack_numpy
+        import openpi_protocol
 
         if self._connection is None:
             self.connect()
         started = time.monotonic()
         try:
-            self._connection.send(msgpack_numpy.Packer().pack(observation))
+            self._connection.send(openpi_protocol.Packer().pack(observation))
             payload = self._connection.recv(timeout=MAX_RESPONSE_AGE_SECONDS)
-            result = msgpack_numpy.unpackb(payload)
+            result = openpi_protocol.unpackb(payload)
         except Exception:
             self.close()
             raise
