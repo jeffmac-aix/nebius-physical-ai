@@ -85,6 +85,9 @@ canonical image failure and then plan the task-owned remediation. The option is
 retained only to resume/import prior exact evidence. It accepts an exact
 `npa-rerun-viewer` reference and applies only to the two
 `workbench.nurec.visualize` stages; all other images remain on `--registry`.
+The selected `--accelerator` is also fixed as
+`NPA_WORKFLOW_GPU_ACCELERATOR` for every bounded subprocess, overriding the
+reference spec's portable H100 default without editing the workflow.
 
 Before SkyPilot bootstrap, the bounded `cluster_state_reconcile` action invokes
 only `npa cluster kubeconfig` for the already selected configured project,

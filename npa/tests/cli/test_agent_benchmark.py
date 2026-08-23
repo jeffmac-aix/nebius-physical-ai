@@ -253,6 +253,7 @@ def test_toolbox_normalizes_configured_s3_bucket_for_workflow_argv(
     argv = command.call_args.args[0]
     assert "bucket=bucket-name" in argv
     assert not any("s3://bucket-name" in item for item in argv)
+    assert toolbox.command_env["NPA_WORKFLOW_GPU_ACCELERATOR"] == "RTXPRO6000:1"
 
 
 def test_toolbox_rejects_bucket_prefix(tmp_path: Path) -> None:

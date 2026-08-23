@@ -431,7 +431,14 @@ class BenchmarkToolbox:
         self.operation_digest = str(state["operation_digest"])
         self.registry_name = f"npa-deepseek-{self.operation_digest[:16]}"
         self.rerun_tag = f"validation-{self.operation_digest}"
-        self.command_env = {**os.environ, "NPA_REGISTRY": registry}
+        self.command_env = {
+            **os.environ,
+            "NPA_REGISTRY": registry,
+            # The reference workflow keeps H100 as its portable default. Bind
+            # every bounded validate/plan/preflight/submit subprocess to the
+            # exact accelerator already included in the operation fingerprint.
+            "NPA_WORKFLOW_GPU_ACCELERATOR": accelerator,
+        }
         self.spec = spec
         self.npa = str(repo / "npa" / ".venv" / "bin" / "npa")
         self.run_id = str(state["run_id"])
