@@ -1247,10 +1247,30 @@ def test_adopt_npa_kubeconfig_points_kubeconfig_at_the_provisioned_cluster(
     monkeypatch.setenv("KUBECONFIG", str(other))
 
     assert _adopt_npa_kubeconfig("npa-cluster") is True
-    entries = os.environ["KUBECONFIG"].split(os.pathsep)
-    assert entries[0] == str(npa_kubeconfig)
-    assert str(other) in entries  # the operator's own contexts stay resolvable
-    assert _available_kube_contexts() == ["npa-cluster", "other-ctx"]
+    assert os.environ["KUBECONFIG"] == str(npa_kubeconfig)
+    assert str(other) not in os.environ["KUBECONFIG"]
+    assert _available_kube_contexts() == ["npa-cluster"]
+
+
+def test_adopt_npa_kubeconfig_replaces_ambient_copy_of_same_context(
+    monkeypatch, tmp_path
+) -> None:
+    """An explicit npa context must not fall through to stale merged state."""
+    import yaml
+
+    from npa.cli.workbench.workflow import _adopt_npa_kubeconfig
+    from npa.cluster import state as state_module
+
+    clusters = tmp_path / "clusters"
+    npa_kubeconfig = clusters / "npa-cluster" / "kubeconfig"
+    npa_kubeconfig.parent.mkdir(parents=True)
+    npa_kubeconfig.write_text(yaml.safe_dump({"contexts": [{"name": "npa-cluster"}]}))
+    monkeypatch.setattr(state_module, "CLUSTERS_DIR", clusters)
+    stale = _write_kubeconfig(tmp_path, "npa-cluster")
+    monkeypatch.setenv("KUBECONFIG", str(stale))
+
+    assert _adopt_npa_kubeconfig("npa-cluster") is True
+    assert os.environ["KUBECONFIG"] == str(npa_kubeconfig)
 
 
 def test_adopt_npa_kubeconfig_reports_a_context_npa_cannot_resolve(

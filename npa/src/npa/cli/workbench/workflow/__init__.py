@@ -3299,33 +3299,28 @@ def _adopt_npa_kubeconfig(context: str) -> bool:
     ``~/.kube/config``, while `sky jobs launch` reads ``KUBECONFIG`` (or
     ``~/.kube/config``). A cluster npa had just created was therefore invisible to
     the submit that asked for it — `Context <name> not found ... Available
-    contexts: []` — unless the operator knew to export KUBECONFIG by hand. Prepend
-    npa's kubeconfig when the context is missing from the active one.
+    contexts: []` — unless the operator knew to export KUBECONFIG by hand. When
+    npa owns the requested context, bind this process to that exact kubeconfig.
+    Keeping ambient kubeconfigs in the list is unsafe here: a long-lived local
+    SkyPilot API server can resolve the same context through a stale later entry
+    and launch against a different cluster than the one npa just verified.
     """
     if not context:
         return False
-    available = _available_kube_contexts()
-    if available is not None and context in available:
-        return True
-
     from npa.cluster.state import existing_kubeconfig
 
     path = existing_kubeconfig(context)
-    if path is None:
-        return False
-    current = os.environ.get("KUBECONFIG", "").strip()
-    entries = [str(path)] + [
-        entry
-        for entry in current.split(os.pathsep)
-        if entry.strip() and entry != str(path)
-    ]
-    os.environ["KUBECONFIG"] = os.pathsep.join(entries)
-    typer.echo(
-        f"Using the npa kubeconfig for context {context!r}: {path} "
-        "(prepended to KUBECONFIG for this run).",
-        err=True,
-    )
-    return True
+    if path is not None:
+        os.environ["KUBECONFIG"] = str(path)
+        typer.echo(
+            f"Using the npa kubeconfig for context {context!r}: {path} "
+            "(exclusive KUBECONFIG for this run).",
+            err=True,
+        )
+        return True
+
+    available = _available_kube_contexts()
+    return available is not None and context in available
 
 
 def _spec_self_provisions(yaml_path: Path) -> bool:
