@@ -386,6 +386,7 @@ class BenchmarkToolbox:
         "workflow_status",
         "workflow_artifacts",
     )
+    OPTIONAL = ("workflow_recovery_run",)
     MUTATING = frozenset(
         {
             "infra_provision",
@@ -396,6 +397,7 @@ class BenchmarkToolbox:
             "rerun_image_build",
             "rerun_image_push",
             "workflow_submit",
+            "workflow_recovery_run",
         }
     )
 
@@ -519,11 +521,12 @@ class BenchmarkToolbox:
             "rerun_image_push": "Push only the exact image ID bound to its prior inspection digest.",
             "rerun_image_verify": "Pull and re-probe the exact pushed immutable digest.",
             "workflow_submit": "Submit the fixed seed-fixture runtime workflow and wait without a deadline.",
+            "workflow_recovery_run": "Reserve one fresh run after NPA proves the prior run cannot safely resume a changed plan.",
             "workflow_status": "Read durable/live workflow status for the fixed run id.",
             "workflow_artifacts": "List durable artifacts for the fixed run id.",
         }
         specs: dict[str, ToolSpec] = {}
-        for name in cls.ORDER:
+        for name in (*cls.ORDER, *cls.OPTIONAL):
             params: tuple[str, ...] = ()
             if name in cls.MUTATING:
                 params = ("operation_digest",)
@@ -545,7 +548,7 @@ class BenchmarkToolbox:
     def executors(self) -> dict[str, Callable[[dict[str, Any]], Any]]:
         return {
             name: (lambda args, selected=name: self.execute(selected, args))
-            for name in self.ORDER
+            for name in (*self.ORDER, *self.OPTIONAL)
         }
 
     def execute(self, name: str, args: Mapping[str, Any]) -> dict[str, Any]:
@@ -632,6 +635,11 @@ class BenchmarkToolbox:
             return {
                 "ok": False,
                 "error": "observe the original workflow image preflight failure before planning remediation",
+            }
+        if name == "workflow_recovery_run" and not self._needs_plan_recovery():
+            return {
+                "ok": False,
+                "error": "recovery requires an observed NPA plan-fingerprint resume refusal",
             }
         started = time.monotonic()
         try:
@@ -1004,6 +1012,44 @@ class BenchmarkToolbox:
                     ]
                 )
             return self._command(argv)
+        if name == "workflow_recovery_run":
+            result = self._command(
+                [
+                    self.npa,
+                    "workbench",
+                    "workflow",
+                    "prepare-run",
+                    str(self.spec),
+                    "--project",
+                    self.project,
+                    "--json",
+                ]
+            )
+            if not result.get("ok"):
+                return result
+            payload = result.get("result")
+            new_run_id = (
+                str(payload.get("run_id") or "") if isinstance(payload, Mapping) else ""
+            )
+            if not new_run_id or new_run_id == self.run_id:
+                return {
+                    "ok": False,
+                    "error": "NPA did not reserve a distinct fresh recovery run",
+                }
+            old_run_id = self.run_id
+            self.state.setdefault("superseded_runs", []).append(old_run_id)
+            self.state["run_id"] = new_run_id
+            self.state.pop("submission_intent", None)
+            self.state["completed_tools"] = [
+                item
+                for item in self.state.get("completed_tools") or []
+                if item not in {"workflow_status", "workflow_artifacts"}
+            ]
+            self.run_id = new_run_id
+            self.replacements[old_run_id] = "<superseded-run-id>"
+            self.replacements[new_run_id] = "<run-id>"
+            self.save()
+            return result
         if name == "workflow_status":
             return self._command(
                 [
@@ -1031,6 +1077,16 @@ class BenchmarkToolbox:
                 ]
             )
         raise ValueError(f"unsupported benchmark tool: {name}")
+
+    def _needs_plan_recovery(self) -> bool:
+        for call in reversed(self.state.get("tool_calls") or []):
+            if call.get("tool") != "workflow_submit":
+                continue
+            if call.get("ok"):
+                return False
+            observation = json.dumps(call.get("observation") or {}, sort_keys=True)
+            return "recorded ledger describes a different plan" in observation
+        return False
 
 
 def representative_context(
@@ -1465,6 +1521,10 @@ def benchmark_cmd(
             for name in BenchmarkToolbox.ORDER
             if name not in set(state["completed_tools"])
         ]
+        if toolbox._needs_plan_recovery() and "workflow_recovery_run" not in set(
+            state["completed_tools"]
+        ):
+            remaining.insert(0, "workflow_recovery_run")
         if not remaining:
             state["status"] = "complete"
             break

@@ -329,6 +329,88 @@ def test_toolbox_resumes_failed_submission_and_allows_status_observation(
     assert second_argv[second_argv.index("--retries") + 1] == "1"
 
 
+def test_toolbox_recovery_reserves_distinct_run_only_after_plan_mismatch(
+    tmp_path: Path, mocker
+) -> None:
+    spec = tmp_path / "paidf-cosmos3.yaml"
+    spec.write_text("apiVersion: npa.workflow/v0.0.1\n")
+    state = {
+        "run_id": "run-failed",
+        "operation_digest": "op-fixed",
+        "completed_tools": ["workflow_status", "workflow_artifacts"],
+        "tool_calls": [
+            {
+                "tool": "workflow_submit",
+                "ok": False,
+                "observation": {
+                    "stderr": "refusing to resume: recorded ledger describes a different plan"
+                },
+            }
+        ],
+        "submission_intent": {"run_id": "run-failed"},
+    }
+    toolbox = BenchmarkToolbox(
+        repo=tmp_path,
+        state=state,
+        save=lambda: None,
+        project="project-alias",
+        cluster="cluster-context",
+        bucket="bucket-name",
+        accelerator="RTXPRO6000:1",
+        registry="ghcr.io/nebius/nebius-physical-ai",
+        rerun_image="registry.example/npa-rerun-viewer@sha256:" + "1" * 64,
+        spec=spec,
+    )
+    command = mocker.patch.object(
+        toolbox,
+        "_command",
+        return_value={
+            "ok": True,
+            "exit_code": 0,
+            "result": {"run_id": "run-recovery", "generated_new": True},
+        },
+    )
+
+    result = toolbox.execute("workflow_recovery_run", {"operation_digest": "op-fixed"})
+
+    assert result["ok"] is True
+    assert state["run_id"] == "run-recovery"
+    assert state["superseded_runs"] == ["run-failed"]
+    assert "submission_intent" not in state
+    assert "workflow_status" not in state["completed_tools"]
+    assert "workflow_artifacts" not in state["completed_tools"]
+    argv = command.call_args.args[0]
+    assert argv[-3:] == ["--project", "project-alias", "--json"]
+    assert "--resume-run" not in argv
+
+
+def test_toolbox_recovery_rejects_without_exact_plan_mismatch(tmp_path: Path) -> None:
+    spec = tmp_path / "paidf-cosmos3.yaml"
+    spec.write_text("apiVersion: npa.workflow/v0.0.1\n")
+    toolbox = BenchmarkToolbox(
+        repo=tmp_path,
+        state={
+            "run_id": "run-failed",
+            "operation_digest": "op-fixed",
+            "completed_tools": [],
+            "tool_calls": [],
+        },
+        save=lambda: None,
+        project="project-alias",
+        cluster="cluster-context",
+        bucket="bucket-name",
+        accelerator="RTXPRO6000:1",
+        registry="ghcr.io/nebius/nebius-physical-ai",
+        rerun_image="",
+        spec=spec,
+    )
+
+    result = toolbox.execute("workflow_recovery_run", {"operation_digest": "op-fixed"})
+
+    assert result["ok"] is False
+    assert "plan-fingerprint" in result["error"]
+
+
 def test_toolbox_rejects_bucket_prefix(tmp_path: Path) -> None:
     spec = tmp_path / "paidf-cosmos3.yaml"
     spec.write_text("apiVersion: npa.workflow/v0.0.1\n")

@@ -20,8 +20,9 @@ components. The benchmark does not substitute mocks for workflow stages.
 - There is no shell tool. Every executor uses a fixed argv template for a normal
   NPA command, and the workflow path is restricted to the repository's
   `paidf-cosmos3.yaml`.
-- `cluster_state_reconcile`, `infra_provision`, `skypilot_bootstrap`, `registry_provision`,
-  `rerun_image_build`, `rerun_image_push`, and `workflow_submit` are mutating.
+- `cluster_state_reconcile`, `infra_provision`, `skypilot_bootstrap`,
+  `skypilot_api_server`, `registry_provision`, `rerun_image_build`,
+  `rerun_image_push`, `workflow_submit`, and `workflow_recovery_run` are mutating.
   Each requires an explicit repeatable `--confirm-action` scope. At execution,
   NPA records the normalized action digest and the benchmark operation digest;
   an omitted or mismatched digest fails closed.
@@ -60,10 +61,12 @@ npa agent benchmark \
   --confirm-action cluster_state_reconcile \
   --confirm-action infra_provision \
   --confirm-action skypilot_bootstrap \
+  --confirm-action skypilot_api_server \
   --confirm-action registry_provision \
   --confirm-action rerun_image_build \
   --confirm-action rerun_image_push \
   --confirm-action workflow_submit \
+  --confirm-action workflow_recovery_run \
   --output-format json
 ```
 
@@ -79,7 +82,11 @@ different project, cluster, bucket, spec, accelerator, seed posture, or secret
 set. It also binds the state to a digest of `NPA_CONFIG_DIR`, preventing a
 resume from silently switching local project, credential, cluster-identity, or
 controller-ownership state. Durable NPA run identity remains fixed across
-resumes.
+ordinary resumes. If NPA refuses a resume because repaired repository bytes
+produce a different plan fingerprint, the optional confirmation-bound recovery
+tool may call `npa workbench workflow prepare-run` once. It preserves the failed
+run as evidence, reserves a distinct successor, and clears prior status/artifact
+completion so DeepSeek must submit and inspect the successor independently.
 
 The normal benchmark omits `--rerun-image`: DeepSeek must first observe the
 canonical image failure and then plan the task-owned remediation. The option is
