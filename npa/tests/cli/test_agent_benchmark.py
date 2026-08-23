@@ -261,12 +261,72 @@ def test_toolbox_normalizes_configured_s3_bucket_for_workflow_argv(
     assert "bucket=bucket-name" in argv
     assert not any("s3://bucket-name" in item for item in argv)
     assert toolbox.command_env["NPA_WORKFLOW_GPU_ACCELERATOR"] == "RTXPRO6000:1"
-    assert toolbox.command_env["NPA_SKYPILOT_BIN"].endswith(
-        "/skypilot-venv/bin/sky"
-    )
+    assert toolbox.command_env["NPA_SKYPILOT_BIN"].endswith("/skypilot-venv/bin/sky")
     assert toolbox.command_env["SKYPILOT_API_SERVER_ENDPOINT"].startswith(
         "http://127.0.0.1:"
     )
+
+
+def test_toolbox_resumes_failed_submission_and_allows_status_observation(
+    tmp_path: Path, mocker
+) -> None:
+    spec = tmp_path / "paidf-cosmos3.yaml"
+    spec.write_text("apiVersion: npa.workflow/v0.0.1\n")
+    state = {
+        "run_id": "run-fixed",
+        "operation_digest": "op-fixed",
+        "completed_tools": [
+            "health_access",
+            "workflow_plan",
+            "workflow_preflight_images",
+            "rerun_image_verify",
+            "skypilot_api_server",
+        ],
+        "tool_calls": [
+            {
+                "tool": "skypilot_api_server",
+                "ok": True,
+                "observation": {"result": {"context_bound": True}},
+            }
+        ],
+    }
+    toolbox = BenchmarkToolbox(
+        repo=tmp_path,
+        state=state,
+        save=lambda: None,
+        project="project-alias",
+        cluster="cluster-context",
+        bucket="bucket-name",
+        accelerator="RTXPRO6000:1",
+        registry="ghcr.io/nebius/nebius-physical-ai",
+        rerun_image="registry.example/npa-rerun-viewer@sha256:" + "1" * 64,
+        spec=spec,
+    )
+    command = mocker.patch.object(
+        toolbox,
+        "_command",
+        side_effect=[
+            {"ok": False, "error": "failed workload"},
+            {"ok": True, "status": "failed"},
+            {"ok": True, "status": "succeeded"},
+        ],
+    )
+
+    first = toolbox.execute("workflow_submit", {"operation_digest": "op-fixed"})
+    status = toolbox.execute("workflow_status", {"run_id": "run-fixed"})
+    second = toolbox.execute("workflow_submit", {"operation_digest": "op-fixed"})
+
+    assert first["ok"] is False
+    assert status["ok"] is True, status
+    assert second["ok"] is True
+    first_argv = command.call_args_list[0].args[0]
+    second_argv = command.call_args_list[2].args[0]
+    assert first_argv[first_argv.index("--run-id") + 1] == "run-fixed"
+    assert "--resume-run" not in first_argv
+    assert second_argv[second_argv.index("--resume-run") + 1] == "run-fixed"
+    assert "--run-id" not in second_argv
+    assert "--resume" in second_argv
+    assert second_argv[second_argv.index("--retries") + 1] == "1"
 
 
 def test_toolbox_rejects_bucket_prefix(tmp_path: Path) -> None:

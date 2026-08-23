@@ -36,9 +36,7 @@ _OPAQUE_ID_RE = re.compile(
 _NEBIUS_ACCOUNT_ID_RE = re.compile(
     r"(?i)(?<![a-z0-9])(?:e|u)00[a-z0-9]{12,}(?![a-z0-9])"
 )
-_NEBIUS_REGISTRY_RE = re.compile(
-    r"(?i)cr\.[a-z0-9-]+\.nebius\.cloud/[a-z0-9._/@:-]+"
-)
+_NEBIUS_REGISTRY_RE = re.compile(r"(?i)cr\.[a-z0-9-]+\.nebius\.cloud/[a-z0-9._/@:-]+")
 
 
 class OutputFormat(str, Enum):
@@ -434,8 +432,7 @@ class BenchmarkToolbox:
         self.registry_name = f"npa-deepseek-{self.operation_digest[:16]}"
         self.rerun_tag = f"validation-{self.operation_digest}"
         config_root = Path(
-            os.environ.get("NPA_CONFIG_DIR", "").strip()
-            or (Path.home() / ".npa")
+            os.environ.get("NPA_CONFIG_DIR", "").strip() or (Path.home() / ".npa")
         ).resolve()
         self.skypilot_api_state = config_root / "skypilot-api" / self.operation_digest
         self.selected_kubeconfig = config_root / "clusters" / cluster / "kubeconfig"
@@ -567,10 +564,10 @@ class BenchmarkToolbox:
             return {"ok": False, "error": "run_id must match the fixed benchmark run"}
         if name == "rerun_image_push":
             inspection = self._successful_observation("rerun_image_inspect")
-            if (
-                str(args.get("image_id") or "") != str(inspection.get("image_id") or "")
-                or str(args.get("inspection_digest") or "")
-                != str(inspection.get("inspection_digest") or "")
+            if str(args.get("image_id") or "") != str(
+                inspection.get("image_id") or ""
+            ) or str(args.get("inspection_digest") or "") != str(
+                inspection.get("inspection_digest") or ""
             ):
                 return {
                     "ok": False,
@@ -617,6 +614,12 @@ class BenchmarkToolbox:
         }
         completed = set(self.state.get("completed_tools") or [])
         missing = sorted(prerequisites.get(name, set()) - completed)
+        if (
+            name in {"workflow_status", "workflow_artifacts"}
+            and "workflow_submit" in missing
+            and self.state.get("submission_intent")
+        ):
+            missing.remove("workflow_submit")
         if missing:
             return {
                 "ok": False,
@@ -948,6 +951,7 @@ class BenchmarkToolbox:
                 )
             return self._command(argv)
         if name == "workflow_submit":
+            resume_submission = bool(self.state.get("submission_intent"))
             self.state["submission_intent"] = {
                 "run_id": self.run_id,
                 "recorded_at": _utc_now(),
@@ -959,7 +963,7 @@ class BenchmarkToolbox:
                 "workflow",
                 "submit",
                 str(self.spec),
-                "--run-id",
+                "--resume-run" if resume_submission else "--run-id",
                 self.run_id,
                 "--runtime",
                 "--max-wait-seconds",
@@ -989,6 +993,8 @@ class BenchmarkToolbox:
                 "--output-format",
                 "json",
             ]
+            if resume_submission:
+                argv.extend(["--resume", "--retries", "1"])
             selected_rerun = self._selected_rerun_image()
             if selected_rerun:
                 argv.extend(
@@ -1470,7 +1476,9 @@ def benchmark_cmd(
         goal = (
             "Autonomously take the fresh NPA environment through the real paidf-cosmos3 seed-data run. "
             "Call every explicitly named remaining tool with useful arguments, respond to observations, "
-            "and never invent success. Remaining tools: "
+            "and never invent success. A failed call is evidence, but does not complete its tool: inspect "
+            "status when useful and retry a remaining failed tool after the reported cause is remediated. "
+            "Remaining tools that still require a successful observation: "
             + ", ".join(remaining)
             + ". For each mutating tool pass operation_digest="
             + operation_digest
