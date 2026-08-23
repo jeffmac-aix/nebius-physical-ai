@@ -11,7 +11,7 @@ import antioch
 
 logger = antioch.Logger("openpi-live")
 
-CLIENT_ROOT = Path("/workspace/npa-live-client")
+CLIENT_ROOT = Path("/tmp/npa-live-client")
 ACTION_SHAPE = (15, 8)
 CONTROL_HZ = 15.0
 TARGETS_PER_QUERY = 5

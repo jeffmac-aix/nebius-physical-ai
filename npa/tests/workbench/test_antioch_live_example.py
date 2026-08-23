@@ -33,6 +33,7 @@ def test_live_scenario_is_real_bounded_and_fail_closed() -> None:
         "MAX_RESPONSE_AGE_SECONDS",
         "MAX_JOINT_STEP",
         "ssl.create_default_context",
+        'CLIENT_ROOT = Path("/tmp/npa-live-client")',
         'additional_headers={"Authorization": f"Api-Key {token}"}',
         'logger.image("camera/exterior"',
         'logger.image("camera/wrist"',

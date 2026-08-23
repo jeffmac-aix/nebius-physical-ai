@@ -20,7 +20,7 @@ import yaml
 from .runtime import ensure_runtime
 from .vendor_cli import AntiochCli, AntiochCliError
 
-REMOTE_CLIENT_ROOT = "/workspace/npa-live-client"
+REMOTE_CLIENT_ROOT = "/tmp/npa-live-client"
 REQUIRED_BUNDLE_FILES = ("ca.crt", "api-key", "endpoint.json")
 
 
@@ -144,9 +144,9 @@ def _write_supervisor(
             "sim",
             "/bin/sh",
             "-lc",
-            "test -r /workspace/npa-live-client/ca.crt "
-            "-a -r /workspace/npa-live-client/api-key "
-            "-a -r /workspace/npa-live-client/endpoint.json",
+            f"test -r {REMOTE_CLIENT_ROOT}/ca.crt "
+            f"-a -r {REMOTE_CLIENT_ROOT}/api-key "
+            f"-a -r {REMOTE_CLIENT_ROOT}/endpoint.json",
         ]
     )
     stage_commands = [
