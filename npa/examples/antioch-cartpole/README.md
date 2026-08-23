@@ -14,3 +14,7 @@ Package this directory as `project.tar.gz` without caches or credentials. Its
 `00481edd23e2ae6555e8bf3cc4f2118b90ff8a44c0fc57105501e0bc72891aaf`.
 Upload the archive and manifest to an immutable S3 prefix, then run suite
 `npa_cartpole_offline_smoke` through `npa workbench antioch run`.
+
+Pass `--robot-type cartpole --task "Balance a cartpole"` explicitly (the
+reference workflow exposes the same values as `antioch_robot_type` and
+`antioch_task`). The adapter deliberately has no dataset-label defaults.

@@ -23,6 +23,10 @@ COPY src/npa/adapter/sim_to_lerobot.py /app/npa/adapter/sim_to_lerobot.py
 COPY src/npa/smoke/test_antioch_functional.py /app/npa/smoke/test_antioch_functional.py
 RUN chown -R npa:npa /app
 
+# Build-time proof that the workload-identity resolver is self-contained and
+# does not depend on the host-only npa.clients.config graph.
+RUN python -c "from npa.workbench.antioch.storage_config import resolve_storage_client; assert callable(resolve_storage_client)"
+
 USER 10001
 EXPOSE 8789
 

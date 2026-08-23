@@ -15,6 +15,8 @@ config:
   antioch_run_uri: "s3://{{config.bucket}}/{{config.prefix}}/simulation"
   antioch_endpoint: "http://npa-antioch.default.svc.cluster.local:8789"
   antioch_suite: npa_cartpole_offline_smoke
+  antioch_robot_type: cartpole
+  antioch_task: Balance a cartpole
   lerobot_dataset: "{{config.antioch_run_uri}}/dataset"
   lerobot_output_dir: /tmp/antioch-policy
   artifacts_uri: "s3://{{config.bucket}}/{{config.prefix}}/training"

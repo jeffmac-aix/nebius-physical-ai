@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import tempfile
 import threading
 import time
@@ -18,7 +17,7 @@ from npa.clients.storage import StorageClient
 from .dataset import convert_episodes
 from .project import deterministic_project_id, stage_project
 from .redaction import redact_text
-from .runtime import ensure_runtime
+from .runtime import ensure_runtime, terms_preflight
 from .schemas import (
     ARTIFACT_MANIFEST_SCHEMA,
     COMPLETION_SCHEMA,
@@ -29,6 +28,7 @@ from .schemas import (
     utc_now,
 )
 from .storage import StateStore, canonical_json, join_uri, sha256_bytes, sha256_file
+from .storage_config import resolve_storage_client
 from .vendor_cli import (
     AntiochCli,
     AntiochCliError,
@@ -99,6 +99,17 @@ def _scenario_ids(kind: str, remote: dict[str, Any], own_id: str) -> list[str]:
     return sorted(set(ids))
 
 
+def _dataset_metadata(record: OperationRecord) -> tuple[str, str]:
+    robot_type = record.robot_type.strip()
+    task = record.task.strip()
+    if not robot_type or not task:
+        raise AntiochOperationError(
+            "durable operation is missing required robot_type/task dataset metadata",
+            error_type="dataset_metadata_missing",
+        )
+    return robot_type, task
+
+
 @contextmanager
 def _submission_heartbeat(states: StateStore, record: OperationRecord, owner: str):
     """Renew the S3 fencing lease while a vendor queue command is staging."""
@@ -134,20 +145,7 @@ def _submission_heartbeat(states: StateStore, record: OperationRecord, owner: st
 class AntiochManager:
     def __init__(self, storage: StorageClient | None = None) -> None:
         if storage is None:
-            endpoint = os.environ.get("AWS_ENDPOINT_URL", "") or os.environ.get(
-                "NEBIUS_S3_ENDPOINT", ""
-            )
-            if endpoint:
-                storage = StorageClient.from_environment(endpoint_url=endpoint)
-            else:
-                from npa.clients.config import resolve_project_storage
-
-                configured = resolve_project_storage()
-                storage = StorageClient.from_environment(
-                    endpoint_url=configured.endpoint_url,
-                    aws_access_key_id=configured.aws_access_key_id,
-                    aws_secret_access_key=configured.aws_secret_access_key,
-                )
+            storage = resolve_storage_client()
         self.storage = storage
         self.states = StateStore(self.storage)
 
@@ -165,6 +163,7 @@ class AntiochManager:
         return current[0]
 
     def submit(self, request: SubmitRequest) -> OperationRecord:
+        acceptance = terms_preflight()
         key = operation_key(request.workflow_run, request.state_id)
         kind = "suite" if request.suite else "scenario"
         record = self.states.claim(
@@ -173,6 +172,8 @@ class AntiochManager:
                 request_sha256=_request_digest(request),
                 workflow_run=request.workflow_run,
                 state_id=request.state_id,
+                robot_type=request.robot_type,
+                task=request.task,
                 input_path=request.input_path,
                 output_path=request.output_path,
                 derived_project_id=deterministic_project_id(
@@ -180,6 +181,11 @@ class AntiochManager:
                 ),
                 remote_kind=kind,
                 selection=request.suite or request.scenario,
+                terms_name=str(acceptance["name"]),
+                terms_url=str(acceptance["url"]),
+                terms_version=str(acceptance["version"]),
+                terms_scope=str(acceptance["scope"]),
+                terms_accepted=bool(acceptance["accepted"]),
             )
         )
         if record.remote_id:
@@ -257,6 +263,8 @@ class AntiochManager:
                 output_path=record.output_path,
                 workflow_run=record.workflow_run,
                 state_id=record.state_id,
+                robot_type=record.robot_type,
+                task=record.task,
                 **(
                     {"suite": record.selection}
                     if record.remote_kind == "suite"
@@ -298,43 +306,98 @@ class AntiochManager:
 
     def cancel(self, request: ResumeRequest) -> OperationRecord:
         record = self._record_for(request)
-        if record.status == "cancelled":
+        if record.status in {"completed", "failed", "cancelled"}:
             return record
         if not record.remote_id:
             return self.states.update(record, status="cancelled")
-        with tempfile.TemporaryDirectory(prefix="npa-antioch-cancel-") as temp_name:
-            project, _manifest, _digest = stage_project(
-                self.storage,
-                record.input_path,
-                Path(temp_name),
-                project_id=record.derived_project_id,
+        try:
+            with tempfile.TemporaryDirectory(
+                prefix="npa-antioch-cancel-"
+            ) as temp_name:
+                project, _manifest, _digest = stage_project(
+                    self.storage,
+                    record.input_path,
+                    Path(temp_name),
+                    project_id=record.derived_project_id,
+                )
+                cli = self._cli()
+                current = cli.show(
+                    project, kind=record.remote_kind, remote_id=record.remote_id
+                )
+                phase, outcome = _phase(current)
+                status = _local_status(phase, outcome)
+                record = self.states.update(
+                    record,
+                    remote_phase=phase,
+                    remote_outcome=outcome,
+                    status=status,
+                    retryable=False,
+                    error_type="",
+                    error_message="",
+                )
+                if status in {"completed", "failed", "cancelled"}:
+                    return record
+                cancelled = cli.cancel(
+                    project, kind=record.remote_kind, remote_id=record.remote_id
+                )
+                cancel_phase, cancel_outcome = _phase(cancelled)
+        except AntiochCliError as exc:
+            self.states.update(
+                record,
+                retryable=exc.retryable,
+                error_type=exc.error_type,
+                error_message=str(exc),
             )
-            self._cli().cancel(
-                project, kind=record.remote_kind, remote_id=record.remote_id
-            )
-        return self.states.update(record, status="cancelled", remote_phase="cancelled")
+            raise AntiochOperationError(
+                str(exc), retryable=exc.retryable, error_type=exc.error_type
+            ) from exc
+        return self.states.update(
+            record,
+            status="cancelled",
+            remote_phase=cancel_phase or "cancelled",
+            remote_outcome=cancel_outcome,
+            retryable=False,
+            error_type="",
+            error_message="",
+        )
 
     def resume(self, request: ResumeRequest) -> OperationRecord:
         record = self.reconcile(request)
         if not request.rerun_terminal or record.status not in {"failed", "cancelled"}:
             return record
-        with tempfile.TemporaryDirectory(prefix="npa-antioch-rerun-") as temp_name:
-            project, _manifest, _digest = stage_project(
-                self.storage,
-                record.input_path,
-                Path(temp_name),
-                project_id=record.derived_project_id,
+        try:
+            with tempfile.TemporaryDirectory(prefix="npa-antioch-rerun-") as temp_name:
+                project, _manifest, _digest = stage_project(
+                    self.storage,
+                    record.input_path,
+                    Path(temp_name),
+                    project_id=record.derived_project_id,
+                )
+                payload = self._cli().rerun(
+                    project, kind=record.remote_kind, remote_id=record.remote_id
+                )
+            rerun_id = remote_id(payload, kind=record.remote_kind)
+            rerun_invocation_id = invocation_id(payload)
+        except AntiochCliError as exc:
+            self.states.update(
+                record,
+                retryable=exc.retryable,
+                error_type=exc.error_type,
+                error_message=str(exc),
             )
-            payload = self._cli().rerun(
-                project, kind=record.remote_kind, remote_id=record.remote_id
-            )
+            raise AntiochOperationError(
+                str(exc), retryable=exc.retryable, error_type=exc.error_type
+            ) from exc
         return self.states.update(
             record,
-            remote_id=remote_id(payload, kind=record.remote_kind),
-            invocation_id=invocation_id(payload),
+            remote_id=rerun_id,
+            invocation_id=rerun_invocation_id,
             status="submitted",
             remote_phase="",
             remote_outcome="",
+            retryable=False,
+            error_type="",
+            error_message="",
         )
 
     def collect(self, request: CollectRequest) -> OperationRecord:
@@ -437,12 +500,13 @@ class AntiochManager:
             dataset_uri = ""
             dataset_files = []
             if request.require_policy_dataset:
+                robot_type, task = _dataset_metadata(record)
                 dataset = temp / "lerobot-dataset"
                 provenance = convert_episodes(
                     trajectories,
                     dataset,
-                    robot_type=request.robot_type,
-                    task=request.task,
+                    robot_type=robot_type,
+                    task=task,
                     source_sha256=source_manifest.source_sha256,
                     asset_hashes=source_manifest.asset_hashes,
                 )
@@ -505,12 +569,6 @@ class AntiochManager:
         )
         while not record.remote_id:
             time.sleep(poll_seconds)
-            current = self.states.read(record.output_path, record.idempotency_key)
-            if current is None:
-                raise AntiochOperationError(
-                    "durable Antioch state disappeared during submission"
-                )
-            record = current[0]
             # ``submit`` is a compare-and-swap operation. Calling it on every
             # pass lets this runner take over an expired fencing lease after a
             # submitting process dies; an active owner remains untouched.

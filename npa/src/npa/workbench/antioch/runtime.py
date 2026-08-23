@@ -27,10 +27,32 @@ ANTIOCH_CLI_URL = (
     "577030f1ebdbd8591947bfc326a4eb357020e885ffa1011986eececae2c4/"
     "antioch_sim-0.3.47-py3-none-any.whl"
 )
+ANTIOCH_TERMS_ENV = "NPA_ANTIOCH_ACCEPT_TERMS"
+ANTIOCH_TERMS_NAME = "Antioch Terms of Service"
+ANTIOCH_TERMS_URL = "https://antioch.com/terms"
+ANTIOCH_TERMS_VERSION = "2026-02-28"
+ANTIOCH_TERMS_SCOPE = f"antioch-sim=={ANTIOCH_CLI_VERSION} and Antioch Service use"
 
 
 class AntiochRuntimeError(RuntimeError):
     """The pinned vendor runtime is unavailable or failed verification."""
+
+
+def terms_preflight() -> dict[str, str | bool]:
+    """Require the operator's exact, scoped Antioch terms attestation."""
+
+    if os.environ.get(ANTIOCH_TERMS_ENV, "") != "YES":
+        raise AntiochRuntimeError(
+            f"{ANTIOCH_TERMS_ENV}=YES is required before fetching or using "
+            f"{ANTIOCH_TERMS_SCOPE}; review {ANTIOCH_TERMS_URL}"
+        )
+    return {
+        "name": ANTIOCH_TERMS_NAME,
+        "url": ANTIOCH_TERMS_URL,
+        "version": ANTIOCH_TERMS_VERSION,
+        "scope": ANTIOCH_TERMS_SCOPE,
+        "accepted": True,
+    }
 
 
 def runtime_cache_root() -> Path:
@@ -63,6 +85,8 @@ def _verified_executable(path: Path, expected_version: str) -> Path:
 
 def ensure_runtime(*, expected_version: str = ANTIOCH_CLI_VERSION) -> Path:
     """Return an exact Antioch CLI, populating the runtime cache if necessary."""
+
+    terms_preflight()
 
     explicit = os.environ.get("NPA_ANTIOCH_CLI", "").strip()
     if explicit:

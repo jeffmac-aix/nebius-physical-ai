@@ -11,14 +11,17 @@ endpoints, print identity/config/environment data, or inspect unrelated runs.
 ## Before spending
 
 1. Run `npa workbench health preflight --checks s3 --json`.
-2. Run `npa workbench antioch health --output json`; do not start interactive login.
-3. Confirm inputs are public or synthetic and output is a unique run-scoped S3 prefix.
-4. Use the pinned runtime-fetch adapter documented in `docs/workbench/antioch.md`.
+2. Explicitly set `NPA_ANTIOCH_ACCEPT_TERMS=YES`, then run
+   `npa workbench antioch terms-preflight --output json` for the pinned scope.
+3. Run `npa workbench antioch health --output json`; do not start interactive login.
+4. Confirm inputs are public or synthetic and output is a unique run-scoped S3 prefix.
+5. Use the pinned runtime-fetch adapter documented in `docs/workbench/antioch.md`.
 
 ## Operate
 
 - Use `run` for blocking workflow composition; `submit` plus `status` for manual control.
 - Always pass `--input-path`, `--output-path`, `--workflow-run`, and `--state-id`.
+- Always pass explicit `--robot-type` and `--task`; collection has no fallback labels.
 - Reuse the same identities after a retry. `reconcile` closes a submission crash window.
 - Treat 429/5xx as retryable. Treat auth, malformed output, id conflicts, checksums,
   and episode schema errors as terminal.

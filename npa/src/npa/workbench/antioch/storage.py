@@ -104,6 +104,19 @@ class StateStore:
                     "cannot update missing Antioch operation state"
                 )
             latest, etag = current
+            requested_status = changes.get("status")
+            terminal = {"completed", "failed", "cancelled"}
+            if latest.status == "completed" and requested_status not in {
+                None,
+                "completed",
+            }:
+                return latest
+            if (
+                latest.status in terminal
+                and requested_status in terminal
+                and requested_status != latest.status
+            ):
+                return latest
             updated = latest.model_copy(
                 update={
                     **changes,

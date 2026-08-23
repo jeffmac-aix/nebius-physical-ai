@@ -11,6 +11,7 @@ Options
 --help  Show this message and exit.
 Commands
 health
+terms-preflight  Verify explicit, scoped Antioch terms acceptance before runtime use.
 package-project  Build a deterministic, credential-free immutable project package.
 system-info
 submit
@@ -34,13 +35,14 @@ deploy
 
 | Command | Description |
 | --- | --- |
+| `terms-preflight` | Verify explicit, scoped Antioch terms acceptance before runtime use. |
 | `package-project` | Build a deterministic, credential-free immutable project package. system-info submit run status reconcile cancel resume collect list deploy |
 
 ## Examples
 
 ```bash
 npa workbench antioch --help
-npa workbench antioch package-project --help
+npa workbench antioch terms-preflight --help
 ```
 
 Regenerate this page with `bash scripts/build_docs.sh` after changing `antioch`.

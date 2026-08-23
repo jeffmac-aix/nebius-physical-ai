@@ -12,15 +12,30 @@ Install Antioch's CLI normally and authenticate once as the operator. Confirm th
 existing session without printing identity data:
 
 ```bash
+export NPA_ANTIOCH_ACCEPT_TERMS=YES
+npa workbench antioch terms-preflight --output json
 npa workbench antioch health --output json
 ```
+
+`NPA_ANTIOCH_ACCEPT_TERMS=YES` is an exact, explicit attestation that the
+operator reviewed the [Antioch Terms of Service](https://antioch.com/terms)
+(version dated 2026-02-28) for the scoped use of `antioch-sim==0.3.47` and the
+Antioch Service. Any customer MSA or order form remains controlling. Other
+spellings fail closed. The adapter records only the agreement name, public URL,
+version, scope, and accepted boolean in durable operation state; it never stores
+the environment value in an image, cache, project, dataset, or credentials file.
 
 Do not copy the Antioch config into an image. For Kubernetes, create a secret from
 the existing config out of band and mount it read-only with `deploy
 --antioch-config-secret`; create a separate secret whose `token` key protects the
-adapter HTTP API. The deploy command prints secret *names*, never values.
+adapter HTTP API. Create another runtime-only secret whose `accepted` key is the
+exact value `YES`, and pass its name through `--terms-acceptance-secret`. The
+deploy command prints secret *names*, never values.
 Provide S3 credentials through a pre-created `--s3-credentials-secret`, or omit
-that option when the pod workload identity supplies S3 access. The secret uses
+that option when the pod workload identity supplies S3 access. The adapter's
+self-contained resolver uses `--storage-endpoint` and leaves credentials to
+boto's workload-identity chain; it does not import host-only NPA configuration
+modules. The optional secret uses
 the ordinary `AWS_ENDPOINT_URL`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and
 optional `AWS_SESSION_TOKEN` keys.
 
@@ -64,7 +79,8 @@ workflow runs.
 ```bash
 npa workbench antioch submit --input-path s3://BUCKET/input \
   --output-path s3://BUCKET/runs/RUN/simulation \
-  --workflow-run RUN --state-id simulate --suite SUITE --output json
+  --workflow-run RUN --state-id simulate --robot-type ROBOT \
+  --task "TASK DESCRIPTION" --suite SUITE --output json
 npa workbench antioch status --output-path s3://BUCKET/runs/RUN/simulation \
   --workflow-run RUN --state-id simulate --output json
 npa workbench antioch resume --output-path s3://BUCKET/runs/RUN/simulation \
@@ -79,7 +95,11 @@ billable suite. `reconcile` repairs the submission-to-state crash window. `resum
 does not rerun terminal work unless `--rerun-terminal` is explicit. HTTP 429 and
 5xx failures are retryable; authentication failures, malformed JSON, conflicting
 identity, invalid artifacts, and schema failures are terminal. Cancel is
-idempotent. Cancel test work before releasing any machine it used.
+idempotent. Cancelling a completed, failed, or already-cancelled operation is a
+no-op that preserves its status and immutable completion/dataset records. Cancel
+and rerun failures retain the CLI's retryable/terminal classification in both the
+returned error envelope and durable operation state. Cancel test work before
+releasing any machine it used.
 
 The sanitized operation record contains the vendor run id. Open that run in the
 Antioch Mission Control console using the authenticated account; never paste a
@@ -106,6 +126,11 @@ Validated episodes are converted by the real NPA LeRobot v3 adapter, with
 `meta/antioch-provenance.json` retaining provenance. This supports static offline
 imitation training. It does **not** turn the export into an online PPO/RSL-RL
 environment.
+
+`--robot-type` and `--task` are required at submit/run time and are bound into
+the idempotent operation record before the remote run starts. Collection always
+uses those immutable values. Missing metadata fails before submission; there is
+no cartpole fallback and a later collector cannot silently relabel a dataset.
 
 The executable example
 `npa/workflows/workbench/npa-workflows/antioch-offline-policy-train.yaml` follows

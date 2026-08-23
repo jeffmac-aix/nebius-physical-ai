@@ -154,7 +154,8 @@ images:
     redistribution: public
     notes: >-
       CPU-only control-plane wrapper. The proprietary antioch-sim CLI and all
-      operator credentials are runtime-only in mounted volumes; neither is baked.
+      operator credentials and scoped terms acceptance are runtime-only in
+      mounted volumes; none is baked.
   lerobot:
     dockerfile: lerobot/Dockerfile
     tier: service

@@ -10,9 +10,17 @@ from typing import Any
 import numpy as np
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
+from typer.testing import CliRunner
 
+from npa.cli.main import app
 from npa.workbench.antioch.dataset import AntiochDatasetError, validate_episode
-from npa.workbench.antioch.manager import AntiochManager, operation_key
+from npa.workbench.antioch.manager import (
+    AntiochManager,
+    AntiochOperationError,
+    _dataset_metadata,
+    operation_key,
+)
 from npa.workbench.antioch.project import (
     AntiochProjectError,
     deterministic_project_id,
@@ -36,6 +44,10 @@ from npa.workbench.antioch.storage import (
     sha256_bytes,
 )
 from npa.workbench.antioch.service import create_app
+from npa.workbench.antioch.storage_config import (
+    DEFAULT_NEBIUS_STORAGE_ENDPOINT,
+    resolve_storage_client,
+)
 from npa.workbench.antioch.vendor_cli import AntiochCli, AntiochCliError
 
 
@@ -68,14 +80,75 @@ class MemoryStorage:
         return etag
 
 
+@pytest.fixture(autouse=True)
+def _accept_antioch_terms(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("NPA_ANTIOCH_ACCEPT_TERMS", "YES")
+
+
 def _submit() -> SubmitRequest:
     return SubmitRequest(
         input_path="s3://safe/input",
         output_path="s3://safe/run",
         workflow_run="run-1",
         state_id="simulate",
+        robot_type="dual-camera-cart",
+        task="Move the cart to the requested target",
         suite="smoke",
     )
+
+
+def test_submit_metadata_is_required_and_non_cartpole_values_are_preserved() -> None:
+    with pytest.raises(ValidationError):
+        SubmitRequest(
+            input_path="s3://safe/input",
+            output_path="s3://safe/run",
+            workflow_run="run-1",
+            state_id="simulate",
+            suite="smoke",
+        )
+    request = _submit()
+    assert request.robot_type == "dual-camera-cart"
+    assert request.task == "Move the cart to the requested target"
+
+
+def test_collection_fails_closed_for_legacy_state_without_dataset_metadata() -> None:
+    request = _submit()
+    record = OperationRecord(
+        idempotency_key="a" * 64,
+        request_sha256="b" * 64,
+        workflow_run=request.workflow_run,
+        state_id=request.state_id,
+        input_path=request.input_path,
+        output_path=request.output_path,
+        derived_project_id="npa-legacy",
+        remote_kind="suite",
+        selection=request.suite,
+    )
+    with pytest.raises(AntiochOperationError) as raised:
+        _dataset_metadata(record)
+    assert raised.value.error_type == "dataset_metadata_missing"
+
+
+def test_workload_identity_storage_resolver_needs_no_static_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, str] = {}
+
+    def fake_from_environment(**kwargs):  # noqa: ANN003, ANN202
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.delenv("AWS_ENDPOINT_URL", raising=False)
+    monkeypatch.delenv("NEBIUS_S3_ENDPOINT", raising=False)
+    monkeypatch.delenv("NPA_STORAGE_ENDPOINT", raising=False)
+    monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
+    monkeypatch.delenv("AWS_SECRET_ACCESS_KEY", raising=False)
+    monkeypatch.setattr(
+        "npa.workbench.antioch.storage_config.StorageClient.from_environment",
+        fake_from_environment,
+    )
+    assert resolve_storage_client() is not None
+    assert captured == {"endpoint_url": DEFAULT_NEBIUS_STORAGE_ENDPOINT}
 
 
 def test_redaction_covers_nested_credentials_and_signed_urls() -> None:
@@ -319,6 +392,9 @@ class FakeCli:
         self.cancellations += 1
         return {"suite_run_id": "suite-safe", "phase": "cancelled"}
 
+    def rerun(self, *args, **kwargs):  # noqa: ANN002, ANN003, ANN201
+        return {"suite_run_id": "suite-rerun", "invocation_id": "invoke-rerun"}
+
 
 def test_idempotent_retry_restart_reconcile_and_cancel(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -335,6 +411,9 @@ def test_idempotent_retry_restart_reconcile_and_cancel(
     first._cli = lambda *a, **k: cli  # type: ignore[method-assign]
     record = first.submit(_submit())
     assert record.remote_id == "suite-safe" and cli.submissions == 1
+    assert record.robot_type == "dual-camera-cart"
+    assert record.task == "Move the cart to the requested target"
+    assert record.terms_accepted is True
     assert first.submit(_submit()).remote_id == "suite-safe" and cli.submissions == 1
 
     restarted = AntiochManager.__new__(AntiochManager)
@@ -348,6 +427,122 @@ def test_idempotent_retry_restart_reconcile_and_cancel(
     assert restarted.cancel(resume).status == "cancelled"
     assert restarted.cancel(resume).status == "cancelled"
     assert cli.cancellations == 1
+
+
+@pytest.mark.parametrize("operation", ["cancel", "resume"])
+@pytest.mark.parametrize("retryable", [False, True])
+def test_cancel_and_rerun_persist_typed_cli_failures(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    operation: str,
+    retryable: bool,
+) -> None:
+    memory = MemoryStorage()
+    manager = AntiochManager.__new__(AntiochManager)
+    manager.storage = memory
+    manager.states = StateStore(memory)
+    monkeypatch.setattr(
+        "npa.workbench.antioch.manager.stage_project",
+        lambda *a, **k: (tmp_path, object(), "c" * 64),
+    )
+    cli = FakeCli()
+    manager._cli = lambda *a, **k: cli  # type: ignore[method-assign]
+    record = manager.submit(_submit())
+    if operation == "resume":
+        record = manager.states.update(record, status="failed")
+        cli.show = lambda *a, **k: {  # type: ignore[method-assign]
+            "suite_run_id": "suite-safe",
+            "phase": "failed",
+        }
+
+    def fail(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        raise AntiochCliError(
+            "classified failure",
+            error_type="capacity" if retryable else "authentication",
+            retryable=retryable,
+        )
+
+    setattr(cli, "cancel" if operation == "cancel" else "rerun", fail)
+    request = ResumeRequest(
+        output_path=record.output_path,
+        workflow_run=record.workflow_run,
+        state_id=record.state_id,
+        rerun_terminal=operation == "resume",
+    )
+    with pytest.raises(AntiochOperationError) as raised:
+        getattr(manager, operation)(request)
+    assert raised.value.retryable is retryable
+    durable = manager._record_for(request)
+    assert durable.retryable is retryable
+    assert durable.error_type == ("capacity" if retryable else "authentication")
+    assert durable.status == ("failed" if operation == "resume" else "running")
+
+
+@pytest.mark.parametrize("terminal", ["completed", "failed", "cancelled"])
+def test_cancel_does_not_clobber_terminal_records(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, terminal: str
+) -> None:
+    memory = MemoryStorage()
+    manager = AntiochManager.__new__(AntiochManager)
+    manager.storage = memory
+    manager.states = StateStore(memory)
+    monkeypatch.setattr(
+        "npa.workbench.antioch.manager.stage_project",
+        lambda *a, **k: (tmp_path, object(), "c" * 64),
+    )
+    cli = FakeCli()
+    manager._cli = lambda *a, **k: cli  # type: ignore[method-assign]
+    record = manager.submit(_submit())
+    immutable = {
+        "artifact_manifest_uri": "s3://safe/run/manifests/v1.json",
+        "dataset_uri": "s3://safe/run/dataset",
+        "completion_uri": "s3://safe/run/_SUCCESS.json",
+    }
+    record = manager.states.update(record, status=terminal, **immutable)
+    request = ResumeRequest(
+        output_path=record.output_path,
+        workflow_run=record.workflow_run,
+        state_id=record.state_id,
+    )
+    result = manager.cancel(request)
+    assert result.status == terminal
+    assert {key: getattr(result, key) for key in immutable} == immutable
+    assert cli.cancellations == 0
+
+
+def test_cli_failure_envelope_exposes_retry_classification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        raise AntiochOperationError(
+            "try later", retryable=True, error_type="capacity"
+        )
+
+    monkeypatch.setattr("npa.sdk.workbench.antioch.cancel", fail)
+    result = CliRunner().invoke(
+        app,
+        [
+            "workbench",
+            "antioch",
+            "cancel",
+            "--output-path",
+            "s3://safe/run",
+            "--workflow-run",
+            "run-1",
+            "--state-id",
+            "simulate",
+            "--output",
+            "json",
+        ],
+    )
+    assert result.exit_code == 1
+    envelope = json.loads(result.stderr)
+    assert envelope["error"] == {
+        "type": "capacity",
+        "message": "try later",
+        "retryable": True,
+        "terminal": False,
+    }
 
 
 def test_concurrent_submitter_is_fenced_and_expired_restart_reconciles(
@@ -367,6 +562,8 @@ def test_concurrent_submitter_is_fenced_and_expired_restart_reconciles(
             ),
             workflow_run=request.workflow_run,
             state_id=request.state_id,
+            robot_type=request.robot_type,
+            task=request.task,
             input_path=request.input_path,
             output_path=request.output_path,
             derived_project_id=deterministic_project_id(
@@ -405,6 +602,86 @@ def test_atomic_immutable_completion_conflict() -> None:
     states.put_immutable_json(uri, {"schema": "v1", "ok": True})
     with pytest.raises(Exception, match="different content"):
         states.put_immutable_json(uri, {"schema": "v1", "ok": False})
+
+
+def test_stale_cancel_update_cannot_overwrite_concurrent_completion() -> None:
+    memory = MemoryStorage()
+    states = StateStore(memory)
+    request = _submit()
+    stale = states.claim(
+        OperationRecord(
+            idempotency_key=operation_key(request.workflow_run, request.state_id),
+            request_sha256=sha256_bytes(
+                canonical_json(request.model_dump(mode="json"))
+            ),
+            workflow_run=request.workflow_run,
+            state_id=request.state_id,
+            robot_type=request.robot_type,
+            task=request.task,
+            input_path=request.input_path,
+            output_path=request.output_path,
+            derived_project_id="npa-race-test",
+            remote_kind="suite",
+            selection=request.suite,
+            status="running",
+        )
+    )
+    immutable = {
+        "artifact_manifest_uri": "s3://safe/run/manifests/v1.json",
+        "dataset_uri": "s3://safe/run/dataset",
+        "completion_uri": "s3://safe/run/_SUCCESS.json",
+    }
+    states.update(stale, status="completed", **immutable)
+    result = states.update(stale, status="cancelled", remote_phase="cancelled")
+    assert result.status == "completed"
+    assert {key: getattr(result, key) for key in immutable} == immutable
+
+
+def test_run_poll_loop_does_not_read_state_before_resubmitting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = AntiochManager.__new__(AntiochManager)
+    request = _submit()
+    claimed_record = OperationRecord(
+            idempotency_key="a" * 64,
+            request_sha256="b" * 64,
+            workflow_run=request.workflow_run,
+            state_id=request.state_id,
+            robot_type=request.robot_type,
+            task=request.task,
+            input_path=request.input_path,
+            output_path=request.output_path,
+            derived_project_id="npa-poll-test",
+            remote_kind="suite",
+            selection=request.suite,
+            status="claimed",
+        )
+    completed_record = OperationRecord(
+            idempotency_key="a" * 64,
+            request_sha256="b" * 64,
+            workflow_run=request.workflow_run,
+            state_id=request.state_id,
+            robot_type=request.robot_type,
+            task=request.task,
+            input_path=request.input_path,
+            output_path=request.output_path,
+            derived_project_id="npa-poll-test",
+            remote_kind="suite",
+            selection=request.suite,
+            remote_id="suite-safe",
+            status="completed",
+        )
+    records = [claimed_record, completed_record]
+    manager.submit = lambda _request: records.pop(0)  # type: ignore[method-assign]
+    manager.collect = lambda _request: completed_record  # type: ignore[method-assign]
+    manager.states = type(
+        "NoReadState",
+        (),
+        {"read": lambda *a, **k: pytest.fail("poll loop performed a wasted S3 read")},
+    )()
+    monkeypatch.setattr("npa.workbench.antioch.manager.time.sleep", lambda _delay: None)
+    completed = manager.run(request, poll_seconds=0)
+    assert completed.remote_id == "suite-safe"
 
 
 def test_artifact_verification_accepts_s3_metadata_header_casing(
@@ -448,3 +725,34 @@ def test_service_auth_fails_closed_without_exposing_token() -> None:
     )
     assert allowed.status_code == 200
     assert allowed.json()["cpu_only"] is True
+
+
+def test_service_preserves_submit_dataset_metadata() -> None:
+    captured: dict[str, SubmitRequest] = {}
+
+    class Manager:
+        def run(self, body: SubmitRequest) -> OperationRecord:
+            captured["body"] = body
+            return OperationRecord(
+                idempotency_key="a" * 64,
+                request_sha256="b" * 64,
+                workflow_run=body.workflow_run,
+                state_id=body.state_id,
+                robot_type=body.robot_type,
+                task=body.task,
+                input_path=body.input_path,
+                output_path=body.output_path,
+                derived_project_id="npa-service-test",
+                remote_kind="suite",
+                selection=body.suite,
+                status="completed",
+            )
+
+    client = TestClient(create_app(manager=Manager(), auth_mode="none"))
+    body = _submit().model_dump(mode="json")
+    body["robot_type"] = "inspection-arm"
+    body["task"] = "Inspect the valve seal"
+    response = client.post("/run", json=body)
+    assert response.status_code == 200
+    assert captured["body"].robot_type == "inspection-arm"
+    assert captured["body"].task == "Inspect the valve seal"

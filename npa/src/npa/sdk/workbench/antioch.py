@@ -8,6 +8,7 @@ from typing import Any
 import httpx
 
 from npa.workbench.antioch.manager import AntiochManager
+from npa.workbench.antioch.manager import AntiochOperationError
 from npa.workbench.antioch.schemas import (
     CollectRequest,
     OperationRecord,
@@ -39,7 +40,18 @@ def _call(
         headers=headers,
         timeout=None,
     )
-    response.raise_for_status()
+    if response.is_error:
+        try:
+            detail = response.json().get("detail", {})
+        except (ValueError, AttributeError):
+            detail = {}
+        if isinstance(detail, dict):
+            raise AntiochOperationError(
+                str(detail.get("message") or "Antioch Workbench request failed"),
+                retryable=bool(detail.get("retryable")),
+                error_type=str(detail.get("type") or "service_error"),
+            )
+        response.raise_for_status()
     return OperationRecord.model_validate(response.json())
 
 

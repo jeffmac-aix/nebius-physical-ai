@@ -16,6 +16,7 @@ from npa.workbench.antioch.project import package_project
 from npa.workbench.antioch.runtime import (
     ensure_runtime,
     runtime_has_proprietary_distribution,
+    terms_preflight,
 )
 from npa.workbench.antioch.schemas import CollectRequest, ResumeRequest, SubmitRequest
 from npa.workbench.antioch.vendor_cli import AntiochCli
@@ -42,8 +43,19 @@ def _emit(value: Any, output: OutputFormat) -> None:
 
 
 def _fail(exc: Exception) -> None:
+    retryable = bool(getattr(exc, "retryable", False))
+    error_type = str(getattr(exc, "error_type", type(exc).__name__))
     typer.echo(
-        json.dumps({"error": {"type": type(exc).__name__, "message": str(exc)}}),
+        json.dumps(
+            {
+                "error": {
+                    "type": error_type,
+                    "message": str(exc),
+                    "retryable": retryable,
+                    "terminal": not retryable,
+                }
+            }
+        ),
         err=True,
     )
     raise typer.Exit(1)
@@ -54,6 +66,8 @@ def _request(
     output_path: str,
     workflow_run: str,
     state_id: str,
+    robot_type: str,
+    task: str,
     suite: str,
     scenario: str,
     scenario_case: str,
@@ -67,6 +81,8 @@ def _request(
         output_path=output_path,
         workflow_run=workflow_run,
         state_id=state_id,
+        robot_type=robot_type,
+        task=task,
         suite=suite,
         scenario=scenario,
         scenario_case=scenario_case,
@@ -78,6 +94,17 @@ def _request(
 def health(output: OutputFormat = typer.Option(OutputFormat.text, "--output")) -> None:
     try:
         _emit({"status": "ok", **AntiochCli(ensure_runtime()).health()}, output)
+    except Exception as exc:
+        _fail(exc)
+
+
+@app.command("terms-preflight")
+def terms_preflight_cmd(
+    output: OutputFormat = typer.Option(OutputFormat.text, "--output"),
+) -> None:
+    """Verify explicit, scoped Antioch terms acceptance before runtime use."""
+    try:
+        _emit({"status": "accepted", **terms_preflight()}, output)
     except Exception as exc:
         _fail(exc)
 
@@ -136,6 +163,8 @@ def _submit_action(
     output_path: str,
     workflow_run: str,
     state_id: str,
+    robot_type: str,
+    task: str,
     suite: str,
     scenario: str,
     scenario_case: str,
@@ -151,6 +180,8 @@ def _submit_action(
                     output_path,
                     workflow_run,
                     state_id,
+                    robot_type,
+                    task,
                     suite,
                     scenario,
                     scenario_case,
@@ -170,6 +201,8 @@ def submit(
     output_path: str = typer.Option(..., "--output-path"),
     workflow_run: str = typer.Option(..., "--workflow-run"),
     state_id: str = typer.Option(..., "--state-id"),
+    robot_type: str = typer.Option(..., "--robot-type"),
+    task: str = typer.Option(..., "--task"),
     suite: str = typer.Option("", "--suite"),
     scenario: str = typer.Option("", "--scenario"),
     scenario_case: str = typer.Option("", "--case"),
@@ -183,6 +216,8 @@ def submit(
         output_path,
         workflow_run,
         state_id,
+        robot_type,
+        task,
         suite,
         scenario,
         scenario_case,
@@ -198,6 +233,8 @@ def run(
     output_path: str = typer.Option(..., "--output-path"),
     workflow_run: str = typer.Option(..., "--workflow-run"),
     state_id: str = typer.Option(..., "--state-id"),
+    robot_type: str = typer.Option(..., "--robot-type"),
+    task: str = typer.Option(..., "--task"),
     suite: str = typer.Option("", "--suite"),
     scenario: str = typer.Option("", "--scenario"),
     scenario_case: str = typer.Option("", "--case"),
@@ -211,6 +248,8 @@ def run(
         output_path,
         workflow_run,
         state_id,
+        robot_type,
+        task,
         suite,
         scenario,
         scenario_case,
@@ -296,8 +335,6 @@ def collect(
     require_policy_dataset: bool = typer.Option(
         True, "--require-policy-dataset/--allow-artifacts-only"
     ),
-    robot_type: str = typer.Option("cartpole", "--robot-type"),
-    task: str = typer.Option("Balance a cartpole", "--task"),
     endpoint: str = typer.Option("", "--endpoint"),
     output: OutputFormat = typer.Option(OutputFormat.text, "--output"),
 ) -> None:
@@ -307,8 +344,6 @@ def collect(
             workflow_run=workflow_run,
             state_id=state_id,
             require_policy_dataset=require_policy_dataset,
-            robot_type=robot_type,
-            task=task,
         )
         _emit(sdk.collect(request, endpoint=endpoint), output)
     except Exception as exc:
@@ -341,7 +376,11 @@ def deploy(
     namespace: str = typer.Option("default", "--namespace"),
     antioch_config_secret: str = typer.Option(..., "--antioch-config-secret"),
     service_token_secret: str = typer.Option(..., "--service-token-secret"),
+    terms_acceptance_secret: str = typer.Option(..., "--terms-acceptance-secret"),
     s3_credentials_secret: str = typer.Option("", "--s3-credentials-secret"),
+    storage_endpoint: str = typer.Option(
+        "https://storage.eu-north1.nebius.cloud", "--storage-endpoint"
+    ),
     apply: bool = typer.Option(False, "--apply"),
     output: OutputFormat = typer.Option(OutputFormat.text, "--output"),
 ) -> None:
@@ -351,7 +390,9 @@ def deploy(
         namespace,
         antioch_config_secret,
         service_token_secret,
+        terms_acceptance_secret,
         s3_credentials_secret,
+        storage_endpoint,
     )
     if apply:
         result = subprocess.run(
@@ -372,7 +413,9 @@ def _deployment(
     namespace: str,
     config_secret: str,
     token_secret: str,
+    terms_secret: str,
     s3_secret: str = "",
+    storage_endpoint: str = "https://storage.eu-north1.nebius.cloud",
 ) -> dict[str, Any]:
     labels = {"app.kubernetes.io/name": name}
     container = {
@@ -389,6 +432,13 @@ def _deployment(
                 "name": "ANTIOCH_WORKBENCH_TOKEN",
                 "valueFrom": {"secretKeyRef": {"name": token_secret, "key": "token"}},
             },
+            {
+                "name": "NPA_ANTIOCH_ACCEPT_TERMS",
+                "valueFrom": {
+                    "secretKeyRef": {"name": terms_secret, "key": "accepted"}
+                },
+            },
+            {"name": "AWS_ENDPOINT_URL", "value": storage_endpoint},
         ],
         "volumeMounts": [
             {"name": "antioch-config", "mountPath": "/etc/antioch", "readOnly": True},

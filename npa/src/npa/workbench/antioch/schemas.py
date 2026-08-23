@@ -45,6 +45,8 @@ class SubmitRequest(BaseModel):
     output_path: str = Field(..., description="Run-scoped S3 output prefix")
     workflow_run: str = Field(..., min_length=1, max_length=128)
     state_id: str = Field(..., min_length=1, max_length=128)
+    robot_type: str = Field(..., min_length=1, max_length=128)
+    task: str = Field(..., min_length=1, max_length=512)
     suite: str = ""
     scenario: str = ""
     scenario_case: str = ""
@@ -59,7 +61,15 @@ class SubmitRequest(BaseModel):
             raise ValueError("must be a non-empty s3:// URI")
         return resolved
 
-    @field_validator("workflow_run", "state_id", "suite", "scenario", "scenario_case")
+    @field_validator(
+        "workflow_run",
+        "state_id",
+        "robot_type",
+        "task",
+        "suite",
+        "scenario",
+        "scenario_case",
+    )
     @classmethod
     def _strip(cls, value: str) -> str:
         return value.strip()
@@ -98,8 +108,6 @@ class CollectRequest(ResumeRequest):
     """Collect and normalize the completed remote operation."""
 
     require_policy_dataset: bool = True
-    robot_type: str = "cartpole"
-    task: str = "Balance a cartpole"
 
 
 class ArtifactRecord(BaseModel):
@@ -123,6 +131,8 @@ class OperationRecord(BaseModel):
     request_sha256: str
     workflow_run: str
     state_id: str
+    robot_type: str = ""
+    task: str = ""
     input_path: str
     output_path: str
     input_sha256: str = ""
@@ -142,6 +152,11 @@ class OperationRecord(BaseModel):
     artifact_manifest_uri: str = ""
     dataset_uri: str = ""
     completion_uri: str = ""
+    terms_name: str = ""
+    terms_url: str = ""
+    terms_version: str = ""
+    terms_scope: str = ""
+    terms_accepted: bool = False
     created_at: str = Field(default_factory=utc_now)
     updated_at: str = Field(default_factory=utc_now)
     revision: int = Field(default=1, ge=1)
