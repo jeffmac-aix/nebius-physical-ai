@@ -48,7 +48,7 @@ reserved-capacity setup first. Supply live identifiers only as runtime values:
 npa agent benchmark \
   --project <project-alias> \
   --cluster <cluster-context> \
-  --bucket <bucket> \
+  --bucket <bucket-or-s3://bucket> \
   --accelerator <requestable-accelerator>:1 \
   --registry ghcr.io/nebius/nebius-physical-ai \
   --endpoint https://<provider>/v1 \

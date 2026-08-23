@@ -418,7 +418,13 @@ class BenchmarkToolbox:
         self.save = save
         self.project = project
         self.cluster = cluster
-        self.bucket = bucket
+        raw_bucket = str(bucket or "").strip()
+        normalized_bucket = raw_bucket.removeprefix("s3://").strip("/")
+        if not normalized_bucket or "/" in normalized_bucket:
+            raise ValueError(
+                "benchmark bucket must be a bare bucket name or s3://bucket without a prefix"
+            )
+        self.bucket = normalized_bucket
         self.accelerator = accelerator
         self.registry = registry
         self.rerun_image = rerun_image
@@ -432,13 +438,14 @@ class BenchmarkToolbox:
         self.replacements = {
             project: "<project-alias>",
             cluster: "<cluster-context>",
-            bucket: "<bucket>",
+            raw_bucket: "<bucket>",
             self.run_id: "<run-id>",
             registry: "<public-registry>",
             rerun_image: "<rerun-image>",
             self.registry_name: "<task-registry-name>",
             self.rerun_tag: "<validation-tag>",
         }
+        self.replacements[self.bucket] = "<bucket>"
 
     def _successful_observation(self, tool: str) -> Mapping[str, Any]:
         for call in reversed(self.state.get("tool_calls") or []):

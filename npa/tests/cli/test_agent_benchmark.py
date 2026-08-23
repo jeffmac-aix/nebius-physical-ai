@@ -216,6 +216,64 @@ def test_cluster_state_reconcile_uses_fixed_selected_identity(
     ]
 
 
+def test_toolbox_normalizes_configured_s3_bucket_for_workflow_argv(
+    tmp_path: Path, mocker
+) -> None:
+    spec = tmp_path / "paidf-cosmos3.yaml"
+    spec.write_text("apiVersion: npa.workflow/v0.0.1\n")
+    state = {
+        "run_id": "run-fixed",
+        "operation_digest": "op-fixed",
+        "completed_tools": [
+            "health_access",
+            "workflow_plan",
+            "workflow_preflight_images",
+            "rerun_image_verify",
+        ],
+        "tool_calls": [],
+        "rerun_image": "registry.example/npa-rerun-viewer@sha256:" + "1" * 64,
+    }
+    toolbox = BenchmarkToolbox(
+        repo=tmp_path,
+        state=state,
+        save=lambda: None,
+        project="project-alias",
+        cluster="cluster-context",
+        bucket="s3://bucket-name",
+        accelerator="RTXPRO6000:1",
+        registry="ghcr.io/nebius/nebius-physical-ai",
+        rerun_image="",
+        spec=spec,
+    )
+    command = mocker.patch.object(toolbox, "_command", return_value={"ok": True})
+
+    result = toolbox.execute("workflow_submit", {"operation_digest": "op-fixed"})
+
+    assert result["ok"] is True
+    argv = command.call_args.args[0]
+    assert "bucket=bucket-name" in argv
+    assert not any("s3://bucket-name" in item for item in argv)
+
+
+def test_toolbox_rejects_bucket_prefix(tmp_path: Path) -> None:
+    spec = tmp_path / "paidf-cosmos3.yaml"
+    spec.write_text("apiVersion: npa.workflow/v0.0.1\n")
+
+    with pytest.raises(ValueError, match="without a prefix"):
+        BenchmarkToolbox(
+            repo=tmp_path,
+            state={"run_id": "run", "operation_digest": "op", "tool_calls": []},
+            save=lambda: None,
+            project="project-alias",
+            cluster="cluster-context",
+            bucket="s3://bucket-name/prefix",
+            accelerator="RTXPRO6000:1",
+            registry="ghcr.io/nebius/nebius-physical-ai",
+            rerun_image="",
+            spec=spec,
+        )
+
+
 def test_remediation_requires_observed_preflight_failure_and_digest_binding(
     tmp_path: Path, mocker
 ) -> None:
