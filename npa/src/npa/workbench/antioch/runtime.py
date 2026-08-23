@@ -38,6 +38,21 @@ class AntiochRuntimeError(RuntimeError):
     """The pinned vendor runtime is unavailable or failed verification."""
 
 
+def _write_relocatable_cli(environment: Path) -> Path:
+    """Replace pip's absolute-shebang launcher before atomically moving the venv."""
+
+    executable = environment / "bin" / "antioch"
+    executable.write_text(
+        "#!/bin/sh\n"
+        'bin_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)\n'
+        'exec "$bin_dir/python" -c '
+        "'from antioch.cli.main import cli; cli()' \"$@\"\n",
+        encoding="utf-8",
+    )
+    executable.chmod(0o755)
+    return executable
+
+
 def terms_preflight() -> dict[str, str | bool]:
     """Require the operator's exact, scoped Antioch terms attestation."""
 
@@ -175,6 +190,10 @@ def ensure_runtime(*, expected_version: str = ANTIOCH_CLI_VERSION) -> Path:
                 raise AntiochRuntimeError(
                     "pinned Antioch CLI runtime installation failed"
                 )
+            # pip writes an absolute interpreter path into console-script
+            # shebangs. The enclosing directory is published with os.replace,
+            # so keep the supported CLI entrypoint relative to its final venv.
+            _write_relocatable_cli(environment)
             (install_root / ".complete").write_text(
                 expected_sha + "\n", encoding="utf-8"
             )

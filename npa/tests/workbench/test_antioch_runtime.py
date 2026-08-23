@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import os
 import subprocess
 import threading
 import time
@@ -38,9 +39,14 @@ def runtime_harness(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str
         time.sleep(0.02)
         bin_dir = Path(environment) / "bin"
         bin_dir.mkdir(parents=True)
-        for name in ("pip", "antioch"):
+        for name in ("pip", "antioch", "python"):
             executable = bin_dir / name
-            executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            body = (
+                "#!/bin/sh\nprintf 'antioch 0.3.47\\n'\n"
+                if name == "python"
+                else "#!/bin/sh\nexit 0\n"
+            )
+            executable.write_text(body, encoding="utf-8")
             executable.chmod(0o755)
 
     monkeypatch.setattr(runtime.urllib.request, "urlopen", urlopen)
@@ -139,3 +145,23 @@ def test_ensure_runtime_reuses_verified_install_without_download(
     second = runtime.ensure_runtime()
     assert second == first
     assert runtime_harness == {"downloads": 1, "installs": 1}
+
+
+def test_ensure_runtime_publishes_relocatable_executable(
+    runtime_harness: dict[str, int],
+) -> None:
+    executable = runtime.ensure_runtime()
+    launcher = executable.read_text(encoding="utf-8")
+    assert ".antioch-install-" not in launcher
+    assert '"$bin_dir/python"' in launcher
+
+    read_fd, write_fd = os.pipe()
+    process = subprocess.Popen(  # noqa: S603 - generated test executable
+        [str(executable), "--version"],
+        stdout=write_fd,
+        stderr=subprocess.DEVNULL,
+    )
+    os.close(write_fd)
+    with os.fdopen(read_fd) as output:
+        assert output.read().strip() == "antioch 0.3.47"
+    assert process.wait() == 0
