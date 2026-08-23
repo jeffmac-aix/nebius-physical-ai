@@ -227,16 +227,20 @@ def _process_exists(pid: int) -> bool:
 
 def _owned_process(pid: int, port: int) -> bool:
     try:
-        argv = (Path("/proc") / str(pid) / "cmdline").read_bytes().split(b"\0")
+        argv = _read_process_argv(pid)
     except OSError:
         return False
     decoded = [item.decode("utf-8", "replace") for item in argv if item]
     return (
         "-c" in decoded
-        and "sky.server.server" in decoded
+        and any("sky.server.server" in item for item in decoded)
         and "--port" in decoded
         and str(port) in decoded
     )
+
+
+def _read_process_argv(pid: int) -> list[bytes]:
+    return (Path("/proc") / str(pid) / "cmdline").read_bytes().split(b"\0")
 
 
 def _terminate_owned_process(pid: int, port: int) -> None:

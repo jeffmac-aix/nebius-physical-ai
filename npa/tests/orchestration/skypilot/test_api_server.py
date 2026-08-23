@@ -91,3 +91,25 @@ def test_stop_absent_server_is_non_destructive(tmp_path: Path) -> None:
 
     assert result["status"] == "absent"
     assert result["stopped"] is False
+
+
+def test_owned_process_accepts_fixed_inline_server_entrypoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        api_server,
+        "_read_process_argv",
+        lambda _pid: [
+            b"/task/venv/bin/python",
+            b"-c",
+            b"runpy.run_module('sky.server.server',run_name='__main__')",
+            b"49123",
+            b"--host",
+            b"127.0.0.1",
+            b"--port",
+            b"48123",
+        ],
+    )
+
+    assert api_server._owned_process(4242, 48123) is True
+    assert api_server._owned_process(4242, 48124) is False
