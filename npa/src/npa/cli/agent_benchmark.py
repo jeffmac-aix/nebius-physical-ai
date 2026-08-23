@@ -374,6 +374,7 @@ class BenchmarkToolbox:
         "infra_plan",
         "cluster_state_reconcile",
         "skypilot_bootstrap",
+        "skypilot_api_server",
         "infra_provision",
         "skypilot_verify",
         "workflow_preflight_images",
@@ -392,6 +393,7 @@ class BenchmarkToolbox:
             "infra_provision",
             "cluster_state_reconcile",
             "skypilot_bootstrap",
+            "skypilot_api_server",
             "registry_provision",
             "rerun_image_build",
             "rerun_image_push",
@@ -431,9 +433,21 @@ class BenchmarkToolbox:
         self.operation_digest = str(state["operation_digest"])
         self.registry_name = f"npa-deepseek-{self.operation_digest[:16]}"
         self.rerun_tag = f"validation-{self.operation_digest}"
+        config_root = Path(
+            os.environ.get("NPA_CONFIG_DIR", "").strip()
+            or (Path.home() / ".npa")
+        ).resolve()
+        self.skypilot_api_state = config_root / "skypilot-api" / self.operation_digest
+        port_digest = hashlib.sha256(self.operation_digest.encode("utf-8")).hexdigest()
+        self.skypilot_api_port = 48_000 + int(port_digest[:4], 16) % 1_000
         self.command_env = {
             **os.environ,
             "NPA_REGISTRY": registry,
+            "NPA_SKYPILOT_BIN": str(config_root / "skypilot-venv" / "bin" / "sky"),
+            "NPA_SKYPILOT_ISOLATED_CONFIG_DIR": str(self.skypilot_api_state),
+            "SKYPILOT_API_SERVER_ENDPOINT": (
+                f"http://127.0.0.1:{self.skypilot_api_port}"
+            ),
             # The reference workflow keeps H100 as its portable default. Bind
             # every bounded validate/plan/preflight/submit subprocess to the
             # exact accelerator already included in the operation fingerprint.
@@ -451,6 +465,7 @@ class BenchmarkToolbox:
             rerun_image: "<rerun-image>",
             self.registry_name: "<task-registry-name>",
             self.rerun_tag: "<validation-tag>",
+            str(self.skypilot_api_state): "<isolated-skypilot-state>",
         }
         self.replacements[self.bucket] = "<bucket>"
 
@@ -483,6 +498,7 @@ class BenchmarkToolbox:
             "cluster_state_reconcile": "Regenerate the exact selected cluster's isolated kubeconfig and local state through NPA.",
             "infra_provision": "Apply additive NPA provisioning/validation for the fixed target.",
             "skypilot_bootstrap": "Install/repair the pinned SkyPilot runtime locally.",
+            "skypilot_api_server": "Ensure a task-isolated loopback SkyPilot API server without disturbing shared state.",
             "skypilot_verify": "Verify the exact Kubernetes context through NPA.",
             "workflow_preflight_images": "Prove every selected workflow image is pullable.",
             "registry_plan": "Plan a unique registry inside the exact NPA-created task project.",
@@ -556,13 +572,18 @@ class BenchmarkToolbox:
         prerequisites = {
             "cluster_state_reconcile": {"infra_plan"},
             "skypilot_bootstrap": {"cluster_state_reconcile"},
+            "skypilot_api_server": {"skypilot_bootstrap"},
             "infra_provision": {
                 "health_access",
                 "infra_plan",
                 "cluster_state_reconcile",
                 "skypilot_bootstrap",
             },
-            "skypilot_verify": {"infra_provision", "skypilot_bootstrap"},
+            "skypilot_verify": {
+                "infra_provision",
+                "skypilot_bootstrap",
+                "skypilot_api_server",
+            },
             "workflow_preflight_images": {"workflow_plan", "skypilot_verify"},
             "registry_plan": {"skypilot_verify"},
             "registry_provision": {"registry_plan"},
@@ -575,6 +596,7 @@ class BenchmarkToolbox:
                 "workflow_plan",
                 "workflow_preflight_images",
                 "rerun_image_verify",
+                "skypilot_api_server",
             },
             "workflow_status": {"workflow_submit"},
             "workflow_artifacts": {"workflow_submit"},
@@ -779,6 +801,20 @@ class BenchmarkToolbox:
                 if diagnostic:
                     observation["diagnostic"] = diagnostic[-2000:]
             return observation
+        if name == "skypilot_api_server":
+            return self._command(
+                [
+                    self.npa,
+                    "skypilot",
+                    "api-server-ensure",
+                    "--state-dir",
+                    str(self.skypilot_api_state),
+                    "--port",
+                    str(self.skypilot_api_port),
+                    "--sky-bin",
+                    self.command_env["NPA_SKYPILOT_BIN"],
+                ]
+            )
         if name == "skypilot_verify":
             return self._command(
                 [

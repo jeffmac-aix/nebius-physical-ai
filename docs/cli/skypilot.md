@@ -13,6 +13,8 @@ Commands
 bootstrap  Install SkyPilot into an isolated, idempotent virtualenv.
 uninstall  Remove the isolated SkyPilot venv and clear the saved sky binary.
 status  Report the isolated SkyPilot runtime status.
+api-server-ensure  Ensure a dedicated loopback SkyPilot API server with owner-only state.
+api-server-stop  Stop only the isolated server attested in the selected state directory.
 cleanup-controller  Tear down NPA's shared jobs controller after its managed jobs drain.
 bind-controller  Bind the shared jobs controller to one immutable project/cluster identity.
 verify  Run `sky check` against the isolated SkyPilot runtime.
@@ -31,6 +33,8 @@ verify  Run `sky check` against the isolated SkyPilot runtime.
 | `bootstrap` | Install SkyPilot into an isolated, idempotent virtualenv. |
 | `uninstall` | Remove the isolated SkyPilot venv and clear the saved sky binary. |
 | `status` | Report the isolated SkyPilot runtime status. |
+| `api-server-ensure` | Ensure a dedicated loopback SkyPilot API server with owner-only state. |
+| `api-server-stop` | Stop only the isolated server attested in the selected state directory. |
 | `cleanup-controller` | Tear down NPA's shared jobs controller after its managed jobs drain. |
 | `bind-controller` | Bind the shared jobs controller to one immutable project/cluster identity. |
 | `verify` | Run `sky check` against the isolated SkyPilot runtime. |

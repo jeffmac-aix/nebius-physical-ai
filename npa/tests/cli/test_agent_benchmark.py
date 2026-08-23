@@ -229,6 +229,7 @@ def test_toolbox_normalizes_configured_s3_bucket_for_workflow_argv(
             "workflow_plan",
             "workflow_preflight_images",
             "rerun_image_verify",
+            "skypilot_api_server",
         ],
         "tool_calls": [],
         "rerun_image": "registry.example/npa-rerun-viewer@sha256:" + "1" * 64,
@@ -254,6 +255,12 @@ def test_toolbox_normalizes_configured_s3_bucket_for_workflow_argv(
     assert "bucket=bucket-name" in argv
     assert not any("s3://bucket-name" in item for item in argv)
     assert toolbox.command_env["NPA_WORKFLOW_GPU_ACCELERATOR"] == "RTXPRO6000:1"
+    assert toolbox.command_env["NPA_SKYPILOT_BIN"].endswith(
+        "/skypilot-venv/bin/sky"
+    )
+    assert toolbox.command_env["SKYPILOT_API_SERVER_ENDPOINT"].startswith(
+        "http://127.0.0.1:"
+    )
 
 
 def test_toolbox_rejects_bucket_prefix(tmp_path: Path) -> None:
