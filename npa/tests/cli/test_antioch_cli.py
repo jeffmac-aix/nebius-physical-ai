@@ -70,7 +70,8 @@ def test_deployment_uses_terms_secret_and_workload_identity_storage() -> None:
 
 
 def test_antioch_image_contains_self_contained_storage_resolver() -> None:
-    dockerfile = Path("npa/docker/workbench/antioch/Dockerfile").read_text(
+    npa_root = Path(__file__).resolve().parents[2]
+    dockerfile = (npa_root / "docker/workbench/antioch/Dockerfile").read_text(
         encoding="utf-8"
     )
     assert "COPY src/npa/workbench/antioch" in dockerfile
