@@ -25,7 +25,7 @@ RUN chown -R npa:npa /app
 
 # Build-time proof that the workload-identity resolver is self-contained and
 # does not depend on the host-only npa.clients.config graph.
-RUN python -c "from npa.workbench.antioch.storage_config import resolve_storage_client; assert callable(resolve_storage_client)"
+RUN AWS_EC2_METADATA_DISABLED=true python -c "from npa.workbench.antioch.storage_config import resolve_storage_client; assert resolve_storage_client().s3"
 
 USER 10001
 EXPOSE 8789

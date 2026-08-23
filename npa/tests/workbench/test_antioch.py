@@ -147,7 +147,7 @@ def test_workload_identity_storage_resolver_needs_no_static_credentials(
         "npa.workbench.antioch.storage_config.StorageClient.from_environment",
         fake_from_environment,
     )
-    assert resolve_storage_client() is not None
+    assert resolve_storage_client(host_resolver=lambda: None) is not None
     assert captured == {"endpoint_url": DEFAULT_NEBIUS_STORAGE_ENDPOINT}
 
 
