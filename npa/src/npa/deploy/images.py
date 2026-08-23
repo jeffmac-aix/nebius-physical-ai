@@ -319,7 +319,12 @@ def public_release_manifest() -> dict[str, Any]:
     pending = payload.get("publication_pending")
     if not isinstance(releases, dict) or not isinstance(pending, dict):
         raise RuntimeError("Public release manifest inventories must be objects")
-    if set(releases) | set(pending) != set(publicly_publishable_tools()):
+    redistribution_eligible = {
+        tool
+        for tool in CONTAINER_IMAGE_NAMES
+        if tool not in RESTRICTED_PUBLICATION_TOOLS
+    }
+    if set(releases) | set(pending) != redistribution_eligible:
         raise RuntimeError(
             "Public release manifest must partition every publishable tool into "
             "published or publication-pending"
@@ -696,15 +701,18 @@ def omniverse_restricted_image_names() -> list[str]:
 
 
 def publicly_publishable_tools() -> list[str]:
-    """Return the workbench tools that are OSS-redistributable to a public registry.
+    """Return tools admitted to the current public publication inventory.
 
-    Excludes anything in ``RESTRICTED_PUBLICATION_TOOLS``. The Isaac images now
-    fetch Isaac Sim / Isaac Lab at run time under the operator's own EULA
-    acceptance. Cosmos3 serving and SONIC MuJoCo have exact accepted public
-    development digests and GPU evidence recorded for their current releases.
+    Redistribution eligibility is necessary but not sufficient: candidates stay
+    out until their exact image is validated, published, and anonymously
+    pullable. ``public_release_manifest()`` separately records those pending
+    candidates so the repository cannot lose track of them.
     """
     return sorted(
-        tool for tool in CONTAINER_IMAGE_NAMES if is_publicly_redistributable(tool)
+        tool
+        for tool in CONTAINER_IMAGE_NAMES
+        if is_publicly_redistributable(tool)
+        and tool not in PUBLICATION_QUARANTINE_TOOLS
     )
 
 

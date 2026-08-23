@@ -10,8 +10,8 @@ Physical AI workbench tools.
 Options
 --help  Show this message and exit.
 Commands
-lerobot  LeRobot policy training, evaluation, serving, and inference.
 antioch  Run Antioch simulations and collect policy-compatible data.
+lerobot  LeRobot policy training, evaluation, serving, and inference.
 cosmos  NVIDIA Cosmos world model serving and inference endpoints.
 cosmos2  Cosmos2 transfer workflow contracts.
 cosmos3  Cosmos3 omni-model generation and reasoning workflow contracts.
@@ -54,8 +54,8 @@ golden-eval  Per-container golden-eval / hello-world reruns.
 
 | Command | Description |
 | --- | --- |
-| `lerobot` | LeRobot policy training, evaluation, serving, and inference. |
 | `antioch` | Run Antioch simulations and collect policy-compatible data. |
+| `lerobot` | LeRobot policy training, evaluation, serving, and inference. |
 | `cosmos` | NVIDIA Cosmos world model serving and inference endpoints. |
 | `cosmos2` | Cosmos2 transfer workflow contracts. |
 | `cosmos3` | Cosmos3 omni-model generation and reasoning workflow contracts. |
@@ -89,7 +89,7 @@ golden-eval  Per-container golden-eval / hello-world reruns.
 
 ```bash
 npa workbench --help
-npa workbench lerobot --help
+npa workbench antioch --help
 ```
 
 Regenerate this page with `bash scripts/build_docs.sh` after changing `workbench`.
