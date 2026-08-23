@@ -39,6 +39,12 @@ endpoints, print identity/config/environment data, or inspect unrelated runs.
 - Supervise the foreground streamed run in a named tmux session and capture its
   ordinary output with `pipe-pane`. The tmux supervisor may renew after the CLI's
   finite per-scenario timeout, but must have no total run limit unless requested.
+- A scenario dispatch or renewal may recreate the sim container. While the
+  foreground run lives, verify the three bundle files through `services exec` and
+  re-stage missing files with `services cp`; never bake them into the sim image.
+- Treat livestream state `ready` as published but awaiting an authenticated Mission
+  Control viewer. Do not claim an actively viewed frame until a supported viewer
+  connection advances the first render, and never inspect browser auth storage.
 - Describe renewal honestly: each boundary resets the simulated episode and briefly
   interrupts the viewport; it does not create one infinitely lived simulator process.
 - A live policy loop must log current camera frames and decision counters from the

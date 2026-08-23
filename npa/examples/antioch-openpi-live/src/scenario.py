@@ -164,6 +164,10 @@ def openpi_droid_live(
     from isaacsim.core.api.objects import DynamicCuboid
     from isaacsim.core.utils.types import ArticulationAction
     from isaacsim.core.utils.viewports import set_camera_view
+    from isaacsim.core.utils.extensions import enable_extension
+
+    # Isaac Sim 6 keeps the legacy Franka helper as an opt-in extension.
+    enable_extension("isaacsim.robot.manipulators.examples")
     from isaacsim.robot.manipulators.examples.franka import Franka
     from isaacsim.sensors.camera import Camera
 
@@ -210,10 +214,15 @@ def openpi_droid_live(
     chunk = None
     chunk_index = 0
     last_apply = time.monotonic()
+    first_frame = True
 
+    print("NPA_OPENPI_LOOP_READY", flush=True)
     try:
         while True:
             world.step(render=True)
+            if first_frame:
+                print("NPA_OPENPI_FIRST_FRAME", flush=True)
+                first_frame = False
             now = time.monotonic()
             if chunk is None and now >= next_attempt:
                 observation_sequence += 1
@@ -232,6 +241,11 @@ def openpi_droid_live(
                     "prompt": prompt,
                 }
                 requests += 1
+                print(
+                    "NPA_OPENPI_REQUEST "
+                    f"observation={observation_sequence} requests={requests}",
+                    flush=True,
+                )
                 try:
                     response, last_latency = client.infer(observation)
                     if last_latency > MAX_RESPONSE_AGE_SECONDS:
@@ -239,11 +253,26 @@ def openpi_droid_live(
                     chunk = _validated_actions(response, joint_positions)
                     chunk_index = 0
                     round_trips += 1
+                    print(
+                        "NPA_OPENPI_ROUND_TRIP "
+                        f"observation={observation_sequence} "
+                        f"round_trips={round_trips} "
+                        f"latency_ms={last_latency * 1000.0:.3f} "
+                        "action_shape=[15,8] finite=true",
+                        flush=True,
+                    )
                 except Exception as exc:
                     safe_holds += 1
                     delay = client.reconnect_delay()
                     next_attempt = now + delay
                     logger.value("policy/error", rr.TextLog(type(exc).__name__))
+                    print(
+                        "NPA_OPENPI_SAFE_HOLD "
+                        f"observation={observation_sequence} "
+                        f"reason={type(exc).__name__} "
+                        f"reconnects={client.reconnects}",
+                        flush=True,
+                    )
 
                 logger.image("camera/exterior", exterior_rgb)
                 logger.image("camera/wrist", wrist_rgb)

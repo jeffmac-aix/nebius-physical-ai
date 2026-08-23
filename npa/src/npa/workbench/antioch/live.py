@@ -114,6 +114,7 @@ def _write_supervisor(
     path: Path,
     *,
     cli_path: Path,
+    client_bundle: Path,
     stop_file: Path,
     scenario_timeout_seconds: int,
 ) -> None:
@@ -134,11 +135,79 @@ def _write_supervisor(
             "--verbose",
         ]
     )
+    remote_files = [f"{REMOTE_CLIENT_ROOT}/{name}" for name in REQUIRED_BUNDLE_FILES]
+    bundle_check = shlex.join(
+        [
+            str(cli_path),
+            "services",
+            "exec",
+            "sim",
+            "/bin/sh",
+            "-lc",
+            "test -r /workspace/npa-live-client/ca.crt "
+            "-a -r /workspace/npa-live-client/api-key "
+            "-a -r /workspace/npa-live-client/endpoint.json",
+        ]
+    )
+    stage_commands = [
+        shlex.join(
+            [
+                str(cli_path),
+                "services",
+                "exec",
+                "sim",
+                "install",
+                "-d",
+                "-m",
+                "0700",
+                REMOTE_CLIENT_ROOT,
+            ]
+        ),
+        *[
+            shlex.join(
+                [
+                    str(cli_path),
+                    "services",
+                    "cp",
+                    str(client_bundle / name),
+                    f"sim:{REMOTE_CLIENT_ROOT}/{name}",
+                    "--json",
+                ]
+            )
+            for name in REQUIRED_BUNDLE_FILES
+        ],
+        shlex.join(
+            [
+                str(cli_path),
+                "services",
+                "exec",
+                "sim",
+                "chmod",
+                "0600",
+                *remote_files,
+            ]
+        ),
+    ]
+    stage_block = " &&\n      ".join(stage_commands)
     content = f"""#!/bin/sh
 set -u
 while [ ! -f {shlex.quote(str(stop_file))} ]; do
+  (
+    sleep 5
+    while [ ! -f {shlex.quote(str(stop_file))} ]; do
+      if ! {bundle_check} >/dev/null 2>&1; then
+        {{
+          {stage_block}
+        }} >/dev/null 2>&1 || true
+      fi
+      sleep 15
+    done
+  ) &
+  restager=$!
   {command}
   status=$?
+  kill "$restager" >/dev/null 2>&1 || true
+  wait "$restager" >/dev/null 2>&1 || true
   if [ -f {shlex.quote(str(stop_file))} ]; then
     break
   fi
@@ -179,6 +248,7 @@ def start_live(
     _write_supervisor(
         supervisor,
         cli_path=cli_path,
+        client_bundle=client_bundle.resolve(),
         stop_file=stop_file,
         scenario_timeout_seconds=scenario_timeout_seconds,
     )

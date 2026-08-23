@@ -143,6 +143,10 @@ The controller uses supported `antioch services up|exec|cp` commands to place th
 finite platform boundary, so the supervisor renews indefinitely until explicitly
 stopped. Renewal resets the simulated episode and briefly interrupts the viewport;
 it is continuous service supervision, not one immortal scenario process.
+The supervisor rechecks and re-stages the private client bundle after container
+recreation at a renewal boundary. A Mission Control stream in `ready` state is
+published but waiting for an authenticated viewer; do not describe it as actively
+viewed until the viewer connects and the first rendered frame advances.
 
 ## Policy data contract
 

@@ -27,6 +27,13 @@ The scenario is continuous within one Antioch run. Since scenario runs have a
 finite supported timeout, the controller renews them in tmux until explicitly
 stopped. A renewal resets the simulated episode and briefly interrupts the
 viewport; it is service continuity, not one infinitely lived simulator process.
+The supervisor also verifies and re-stages the private client bundle after a
+renewal because Antioch may legitimately recreate the sim container.
+
+Mission Control can report the livestream as `ready` until an authenticated
+viewer opens the supported console link. Isaac's first rendered camera frame may
+wait at that boundary; the controller never fabricates a viewer session or reads
+browser authentication storage.
 
 The source is original Apache-2.0 NPA example code. Isaac Sim is supplied by the
 Antioch-managed runtime under the operator-accepted NVIDIA terms. OpenPI source and

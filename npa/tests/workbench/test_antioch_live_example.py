@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import re
+import subprocess
 from pathlib import Path
 
 import numpy as np
@@ -43,6 +44,12 @@ def test_live_scenario_is_real_bounded_and_fail_closed() -> None:
         'logger.scalar("decision/reconnects"',
         'logger.scalar("decision/safe_targets_applied"',
         "ArticulationAction",
+        'enable_extension("isaacsim.robot.manipulators.examples")',
+        "NPA_OPENPI_ROUND_TRIP",
+        "NPA_OPENPI_SAFE_HOLD",
+        "NPA_OPENPI_LOOP_READY",
+        "NPA_OPENPI_FIRST_FRAME",
+        "NPA_OPENPI_REQUEST",
     ):
         assert contract in source
     assert "WebsocketClientPolicy(" not in source
@@ -98,6 +105,7 @@ def test_supervisor_has_finite_run_boundary_but_no_total_limit(tmp_path: Path) -
     live._write_supervisor(
         script,
         cli_path=Path("/opt/antioch/bin/antioch"),
+        client_bundle=tmp_path / "bundle",
         stop_file=tmp_path / ".stop",
         scenario_timeout_seconds=14_400,
     )
@@ -106,8 +114,12 @@ def test_supervisor_has_finite_run_boundary_but_no_total_limit(tmp_path: Path) -
     assert "scenario run --scenario openpi_droid_live" in source
     assert "--timeout 14400 --stream --verbose" in source
     assert "NPA_ANTIOCH_RENEWAL" in source
+    assert "services cp" in source
+    assert "services exec sim /bin/sh -lc" in source
+    assert "sleep 15" in source
     assert "timeout 14400s" not in source
     assert script.stat().st_mode & 0o777 == 0o700
+    subprocess.run(["sh", "-n", str(script)], check=True)
 
 
 def test_client_bundle_requires_private_files(tmp_path: Path) -> None:
