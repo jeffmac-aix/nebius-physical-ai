@@ -87,6 +87,15 @@ non-agentic deterministic baseline. Exact provider and infrastructure identity
 stays out of the sanitized report. See
 `docs/workbench/agent-benchmark.md` and its JSON schema.
 
+The PAIDF scenario deliberately lets the first Rerun image preflight fail before
+unlocking remediation. The external model must use the observed failure to plan
+`registry_plan`/`registry_provision`, then build, inspect, push, and verify the
+checked-in viewer through fixed `npa registry ensure` and `npa workbench image`
+commands. Build/push remain confirmation-gated. Push is additionally bound to the
+prior local image ID plus inspection digest, and submit consumes the verified
+immutable registry digest only. Do not replace this with an operator-scripted
+prelude or expose Docker/shell arguments to the model.
+
 ## Adding a capability cheaply (decision order)
 
 1. **Grounded intent** — can a regex intent + grounded state reply answer it?

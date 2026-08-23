@@ -575,6 +575,9 @@ def test_new_workbench_tools_require_contract_or_explicit_seam() -> None:
         "golden-eval",
         "groot",
         "health",
+        # Task-owned image lifecycle (CLI + SDK + local Docker/registry bytes),
+        # not a workload service and not invokable from an npa.workflow stage.
+        "image",
         "insights",
         "isaac-lab",
         "lancedb",

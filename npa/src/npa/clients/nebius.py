@@ -59,6 +59,7 @@ class RegistryIdentity:
     name: str
     project_id: str
     profile: str = ""
+    registry_fqdn: str = ""
 
 
 @dataclass(frozen=True)
@@ -809,7 +810,111 @@ def get_registry_identity(
     name = str(metadata.get("name") or "").strip()
     if returned_id != exact_id or not project_id or not name:
         raise NebiusError("Nebius returned incomplete or mismatched registry identity")
-    return RegistryIdentity(exact_id, name, project_id, resolved_profile)
+    status = payload.get("status") if isinstance(payload, dict) else None
+    registry_fqdn = str(
+        status.get("registry_fqdn") if isinstance(status, dict) else ""
+    ).strip()
+    return RegistryIdentity(
+        exact_id, name, project_id, resolved_profile, registry_fqdn
+    )
+
+
+def list_registry_identities(
+    project_id: str, *, profile: str | None = None
+) -> tuple[RegistryIdentity, ...]:
+    """List allowlisted registry identity fields for one exact project."""
+
+    exact_project = str(project_id or "").strip()
+    if not exact_project:
+        raise NebiusError("exact project ID is required")
+    profile_args, resolved_profile = _iam_profile_args(profile)
+    payload = _run_json(
+        [
+            *profile_args,
+            "registry",
+            "list",
+            "--parent-id",
+            exact_project,
+            "--all",
+        ]
+    )
+    items = payload.get("items") if isinstance(payload, dict) else None
+    if not isinstance(items, list):
+        raise NebiusError("Nebius returned schema-invalid registry inventory")
+    identities: list[RegistryIdentity] = []
+    for item in items:
+        metadata = item.get("metadata") if isinstance(item, dict) else None
+        status = item.get("status") if isinstance(item, dict) else None
+        registry_id = str(
+            metadata.get("id") if isinstance(metadata, dict) else ""
+        ).strip()
+        name = str(
+            metadata.get("name") if isinstance(metadata, dict) else ""
+        ).strip()
+        parent = str(
+            (
+                metadata.get("parent_id") or metadata.get("parentId")
+                if isinstance(metadata, dict)
+                else ""
+            )
+        ).strip()
+        fqdn = str(
+            status.get("registry_fqdn") if isinstance(status, dict) else ""
+        ).strip()
+        if not registry_id or not name or parent != exact_project:
+            raise NebiusError(
+                "Nebius returned incomplete or cross-project registry identity"
+            )
+        identities.append(
+            RegistryIdentity(registry_id, name, parent, resolved_profile, fqdn)
+        )
+    return tuple(sorted(identities, key=lambda item: (item.name, item.registry_id)))
+
+
+def create_registry(
+    project_id: str, name: str, *, profile: str | None = None
+) -> RegistryIdentity:
+    """Create one registry in an exact project and return allowlisted identity."""
+
+    exact_project = str(project_id or "").strip()
+    exact_name = str(name or "").strip()
+    if not exact_project or not exact_name:
+        raise NebiusError("exact project ID and registry name are required")
+    profile_args, resolved_profile = _iam_profile_args(profile)
+    payload = _run_json(
+        [
+            *profile_args,
+            "registry",
+            "create",
+            "--parent-id",
+            exact_project,
+            "--name",
+            exact_name,
+        ]
+    )
+    metadata = payload.get("metadata") if isinstance(payload, dict) else None
+    status = payload.get("status") if isinstance(payload, dict) else None
+    registry_id = str(
+        metadata.get("id") if isinstance(metadata, dict) else ""
+    ).strip()
+    parent = str(
+        (
+            metadata.get("parent_id") or metadata.get("parentId")
+            if isinstance(metadata, dict)
+            else ""
+        )
+    ).strip()
+    returned_name = str(
+        metadata.get("name") if isinstance(metadata, dict) else ""
+    ).strip()
+    fqdn = str(
+        status.get("registry_fqdn") if isinstance(status, dict) else ""
+    ).strip()
+    if not registry_id or parent != exact_project or returned_name != exact_name:
+        raise NebiusError("Nebius returned incomplete or mismatched created registry")
+    return RegistryIdentity(
+        registry_id, returned_name, parent, resolved_profile, fqdn
+    )
 
 
 def delete_registry(registry_id: str, *, profile: str | None = None) -> None:

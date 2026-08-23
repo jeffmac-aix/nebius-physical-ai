@@ -33,6 +33,14 @@ never a tag. Image-byte licensing scans remain mandatory before registry push.
 For a multi-tool spec, repeat `--image-override TOOL_REF=IMAGE` to select each
 tool's artifact independently; the preflight and renderer share that same map.
 
+For a task-owned Rerun validation build, use the guarded lifecycle rather than
+an ad-hoc Docker push: `npa registry ensure` creates or selects one exact registry
+only in an NPA-created disposable project, and `npa workbench image
+build-rerun-viewer` → `inspect-rerun-viewer` → `push-rerun-viewer` →
+`verify-rerun-viewer` binds the pushed bytes to the local config digest and full
+bootstrap capability probe. Use the returned immutable digest as the
+`workbench.nurec.visualize` image override.
+
 ## Inventory
 
 All first-class images live under `npa/docker/workbench/`:

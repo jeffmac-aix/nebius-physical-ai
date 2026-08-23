@@ -6,11 +6,40 @@ import json
 
 import typer
 
+from npa.lifecycle_intent import OperationIntent, intent_boundary
+
 app = typer.Typer(
     name="registry",
-    help="Inspect and tear down exact registries in NPA-created projects.",
+    help="Ensure and tear down exact registries in NPA-created projects.",
     no_args_is_help=True,
 )
+
+
+@app.command("ensure")
+@intent_boundary(OperationIntent.ENSURE_PRESENT)
+def ensure_registry_cmd(
+    project: str = typer.Option(..., "--project", help="Exact NPA project alias."),
+    name: str = typer.Option(..., "--name", help="Unique task registry name."),
+    profile: str = typer.Option("", "--profile", help="Exact Nebius CLI profile."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Create and persist when absent."),
+    output_json: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Plan or ensure a registry only inside an NPA-created project."""
+
+    from npa.clients.nebius import NebiusError
+    from npa.registry import ensure_registry
+
+    try:
+        payload = ensure_registry(
+            project=project, name=name, profile=profile, apply=yes
+        )
+    except (NebiusError, RuntimeError) as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    if output_json:
+        typer.echo(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        typer.echo(f"registry {payload['registry_name']}: {payload['outcome']}")
 
 
 @app.command("delete")

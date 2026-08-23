@@ -204,6 +204,71 @@ def test_registry_identity_is_exact_and_project_scoped(monkeypatch) -> None:
     )
 
 
+def test_registry_inventory_is_exact_project_scoped_and_allowlisted(monkeypatch) -> None:
+    monkeypatch.setattr(nebius, "_iam_profile_args", lambda _profile: ([], "test"))
+    calls = []
+
+    def run(args):  # noqa: ANN001, ANN202
+        calls.append(args)
+        return {
+            "items": [
+                {
+                    "metadata": {
+                        "id": "registry-a",
+                        "parent_id": "project-a",
+                        "name": "task-registry",
+                    },
+                    "status": {"registry_fqdn": "cr.example"},
+                    "ignored": {"private": "not-returned"},
+                }
+            ]
+        }
+
+    monkeypatch.setattr(nebius, "_run_json", run)
+
+    identities = nebius.list_registry_identities("project-a")
+
+    assert identities == (
+        nebius.RegistryIdentity(
+            "registry-a", "task-registry", "project-a", "test", "cr.example"
+        ),
+    )
+    assert calls == [["registry", "list", "--parent-id", "project-a", "--all"]]
+
+
+def test_create_registry_uses_fixed_project_and_name(monkeypatch) -> None:
+    monkeypatch.setattr(nebius, "_iam_profile_args", lambda _profile: ([], "test"))
+    calls = []
+
+    def run(args):  # noqa: ANN001, ANN202
+        calls.append(args)
+        return {
+            "metadata": {
+                "id": "registry-a",
+                "parent_id": "project-a",
+                "name": "task-registry",
+            },
+            "status": {"registry_fqdn": "cr.example"},
+        }
+
+    monkeypatch.setattr(nebius, "_run_json", run)
+
+    identity = nebius.create_registry("project-a", "task-registry")
+
+    assert identity.registry_id == "registry-a"
+    assert identity.project_id == "project-a"
+    assert calls == [
+        [
+            "registry",
+            "create",
+            "--parent-id",
+            "project-a",
+            "--name",
+            "task-registry",
+        ]
+    ]
+
+
 def test_registry_artifact_inventory_orders_tagged_roots_first(monkeypatch) -> None:
     monkeypatch.setattr(nebius, "_iam_profile_args", lambda _profile: ([], "test"))
     monkeypatch.setattr(

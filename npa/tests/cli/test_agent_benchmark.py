@@ -146,6 +146,75 @@ def test_benchmark_toolbox_fails_closed_on_prerequisites_and_operation_digest(
     assert state["tool_calls"] == [], "rejected proposals are not executed tool calls"
 
 
+def test_remediation_requires_observed_preflight_failure_and_digest_binding(
+    tmp_path: Path, mocker
+) -> None:
+    spec = tmp_path / "paidf-cosmos3.yaml"
+    spec.write_text("apiVersion: npa.workflow/v0.0.1\n")
+    state = {
+        "run_id": "run-fixed",
+        "operation_digest": "op-fixed",
+        "completed_tools": ["skypilot_verify"],
+        "tool_calls": [],
+    }
+    toolbox = BenchmarkToolbox(
+        repo=tmp_path,
+        state=state,
+        save=lambda: None,
+        project="project-alias",
+        cluster="cluster-context",
+        bucket="bucket-name",
+        accelerator="RTXPRO6000:1",
+        registry="ghcr.io/nebius/nebius-physical-ai",
+        rerun_image="",
+        spec=spec,
+    )
+
+    premature = toolbox.execute("registry_plan", {})
+    assert premature["ok"] is False
+    assert "preflight failure" in premature["error"]
+
+    state["tool_calls"].append(
+        {"tool": "workflow_preflight_images", "ok": False, "observation": {}}
+    )
+    command = mocker.patch.object(
+        toolbox,
+        "_command",
+        return_value={"ok": True, "result": {"outcome": "planned_create"}},
+    )
+    planned = toolbox.execute("registry_plan", {})
+    assert planned["ok"] is True
+    argv = command.call_args.args[0]
+    assert argv[:3] == [str(tmp_path / "npa/.venv/bin/npa"), "registry", "ensure"]
+    assert "--yes" not in argv
+
+    state["completed_tools"].extend(
+        ["registry_provision", "rerun_image_build", "rerun_image_inspect"]
+    )
+    state["tool_calls"].append(
+        {
+            "tool": "rerun_image_inspect",
+            "ok": True,
+            "observation": {
+                "result": {
+                    "image_id": "sha256:" + "1" * 64,
+                    "inspection_digest": "2" * 64,
+                }
+            },
+        }
+    )
+    rejected = toolbox.execute(
+        "rerun_image_push",
+        {
+            "operation_digest": "op-fixed",
+            "image_id": "sha256:" + "9" * 64,
+            "inspection_digest": "2" * 64,
+        },
+    )
+    assert rejected["ok"] is False
+    assert "prior exact inspection" in rejected["error"]
+
+
 def test_sanitizer_removes_credentials_and_live_identifiers() -> None:
     raw = {
         "project": "project-live123456",
@@ -164,7 +233,7 @@ def test_sanitizer_removes_bare_nebius_account_ids() -> None:
     identifier = "u00" + "a" * 16
     sanitized = _sanitize(f"cr.us-central1.nebius.cloud/{identifier}/image:tag", {})
     assert identifier not in sanitized
-    assert "<live-resource>" in sanitized
+    assert sanitized == "<task-registry>"
 
 
 def test_representative_context_uses_real_files_and_is_bounded() -> None:

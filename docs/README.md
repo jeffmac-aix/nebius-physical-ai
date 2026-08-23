@@ -27,6 +27,7 @@ Nebius Physical AI.
 | [cli/README.md](cli/README.md) | CLI command reference index |
 | [cli-errors.md](cli-errors.md) | End-user CLI error formatting, exit codes, and JSON error output |
 | [sdk/errors.md](sdk/errors.md) | Typed exceptions for programmatic SDK consumers and agents |
+| [sdk/task-registry-image.md](sdk/task-registry-image.md) | Ownership-gated task registries and digest-bound Rerun image build/inspect/push/verify SDK |
 | [testing/e2e-serverless.md](testing/e2e-serverless.md) | E2E test conventions for serverless workloads |
 | [testing/e2e.md](testing/e2e.md) | General E2E test conventions |
 | [testing/dev-vm-daily.md](testing/dev-vm-daily.md) | Daily tests run on the dev VM over SSH from GitHub Actions |

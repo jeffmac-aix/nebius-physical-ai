@@ -36,6 +36,9 @@ _OPAQUE_ID_RE = re.compile(
 _NEBIUS_ACCOUNT_ID_RE = re.compile(
     r"(?i)(?<![a-z0-9])(?:e|u)00[a-z0-9]{12,}(?![a-z0-9])"
 )
+_NEBIUS_REGISTRY_RE = re.compile(
+    r"(?i)cr\.[a-z0-9-]+\.nebius\.cloud/[a-z0-9._/@:-]+"
+)
 
 
 class OutputFormat(str, Enum):
@@ -63,6 +66,7 @@ def _redact_text(text: str, replacements: Mapping[str, str] | None = None) -> st
         lambda match: f"{match.group(1)}{match.group(2)}<redacted>", value
     )
     value = _OPAQUE_ID_RE.sub("<live-resource>", value)
+    value = _NEBIUS_REGISTRY_RE.sub("<task-registry>", value)
     return _NEBIUS_ACCOUNT_ID_RE.sub("<live-resource>", value)
 
 
@@ -372,11 +376,26 @@ class BenchmarkToolbox:
         "infra_provision",
         "skypilot_verify",
         "workflow_preflight_images",
+        "registry_plan",
+        "registry_provision",
+        "rerun_image_build",
+        "rerun_image_inspect",
+        "rerun_image_push",
+        "rerun_image_verify",
         "workflow_submit",
         "workflow_status",
         "workflow_artifacts",
     )
-    MUTATING = frozenset({"infra_provision", "skypilot_bootstrap", "workflow_submit"})
+    MUTATING = frozenset(
+        {
+            "infra_provision",
+            "skypilot_bootstrap",
+            "registry_provision",
+            "rerun_image_build",
+            "rerun_image_push",
+            "workflow_submit",
+        }
+    )
 
     def __init__(
         self,
@@ -401,11 +420,13 @@ class BenchmarkToolbox:
         self.accelerator = accelerator
         self.registry = registry
         self.rerun_image = rerun_image
+        self.operation_digest = str(state["operation_digest"])
+        self.registry_name = f"npa-deepseek-{self.operation_digest[:16]}"
+        self.rerun_tag = f"validation-{self.operation_digest}"
         self.command_env = {**os.environ, "NPA_REGISTRY": registry}
         self.spec = spec
         self.npa = str(repo / "npa" / ".venv" / "bin" / "npa")
         self.run_id = str(state["run_id"])
-        self.operation_digest = str(state["operation_digest"])
         self.replacements = {
             project: "<project-alias>",
             cluster: "<cluster-context>",
@@ -413,7 +434,21 @@ class BenchmarkToolbox:
             self.run_id: "<run-id>",
             registry: "<public-registry>",
             rerun_image: "<rerun-image>",
+            self.registry_name: "<task-registry-name>",
+            self.rerun_tag: "<validation-tag>",
         }
+
+    def _successful_observation(self, tool: str) -> Mapping[str, Any]:
+        for call in reversed(self.state.get("tool_calls") or []):
+            if call.get("tool") == tool and call.get("ok"):
+                observation = call.get("observation")
+                if isinstance(observation, Mapping):
+                    result = observation.get("result")
+                    return result if isinstance(result, Mapping) else observation
+        return {}
+
+    def _selected_rerun_image(self) -> str:
+        return str(self.state.get("rerun_image") or self.rerun_image or "").strip()
 
     def _command(self, argv: Sequence[str]) -> dict[str, Any]:
         return _command_json(argv, cwd=self.repo, env=self.command_env)
@@ -433,6 +468,12 @@ class BenchmarkToolbox:
             "skypilot_bootstrap": "Install/repair the pinned SkyPilot runtime locally.",
             "skypilot_verify": "Verify the exact Kubernetes context through NPA.",
             "workflow_preflight_images": "Prove every selected workflow image is pullable.",
+            "registry_plan": "Plan a unique registry inside the exact NPA-created task project.",
+            "registry_provision": "Create or select that exact task-owned registry and persist its identity.",
+            "rerun_image_build": "Build the checked-in Rerun viewer locally under a unique validation tag.",
+            "rerun_image_inspect": "Inspect and capability-probe the actual local image bytes.",
+            "rerun_image_push": "Push only the exact image ID bound to its prior inspection digest.",
+            "rerun_image_verify": "Pull and re-probe the exact pushed immutable digest.",
             "workflow_submit": "Submit the fixed seed-fixture runtime workflow and wait without a deadline.",
             "workflow_status": "Read durable/live workflow status for the fixed run id.",
             "workflow_artifacts": "List durable artifacts for the fixed run id.",
@@ -442,6 +483,10 @@ class BenchmarkToolbox:
             params: tuple[str, ...] = ()
             if name in cls.MUTATING:
                 params = ("operation_digest",)
+            if name == "rerun_image_push":
+                params = ("operation_digest", "image_id", "inspection_digest")
+            elif name == "rerun_image_verify":
+                params = ("digest",)
             elif name in {"workflow_status", "workflow_artifacts"}:
                 params = ("run_id",)
             specs[name] = ToolSpec(
@@ -473,14 +518,39 @@ class BenchmarkToolbox:
             and str(args.get("run_id") or "") != self.run_id
         ):
             return {"ok": False, "error": "run_id must match the fixed benchmark run"}
+        if name == "rerun_image_push":
+            inspection = self._successful_observation("rerun_image_inspect")
+            if (
+                str(args.get("image_id") or "") != str(inspection.get("image_id") or "")
+                or str(args.get("inspection_digest") or "")
+                != str(inspection.get("inspection_digest") or "")
+            ):
+                return {
+                    "ok": False,
+                    "error": "image_id and inspection_digest must match the prior exact inspection",
+                }
+        if name == "rerun_image_verify":
+            pushed = self._successful_observation("rerun_image_push")
+            if str(args.get("digest") or "") != str(pushed.get("digest") or ""):
+                return {
+                    "ok": False,
+                    "error": "digest must match the prior push observation",
+                }
         prerequisites = {
             "infra_provision": {"health_access", "infra_plan", "skypilot_bootstrap"},
             "skypilot_verify": {"infra_provision", "skypilot_bootstrap"},
             "workflow_preflight_images": {"workflow_plan", "skypilot_verify"},
+            "registry_plan": {"skypilot_verify"},
+            "registry_provision": {"registry_plan"},
+            "rerun_image_build": {"registry_provision"},
+            "rerun_image_inspect": {"rerun_image_build"},
+            "rerun_image_push": {"rerun_image_inspect"},
+            "rerun_image_verify": {"rerun_image_push"},
             "workflow_submit": {
                 "health_access",
                 "workflow_plan",
                 "workflow_preflight_images",
+                "rerun_image_verify",
             },
             "workflow_status": {"workflow_submit"},
             "workflow_artifacts": {"workflow_submit"},
@@ -492,9 +562,17 @@ class BenchmarkToolbox:
                 "ok": False,
                 "error": "missing prerequisite observations: " + ", ".join(missing),
             }
+        if name == "registry_plan" and not any(
+            call.get("tool") == "workflow_preflight_images" and not call.get("ok")
+            for call in self.state.get("tool_calls") or []
+        ):
+            return {
+                "ok": False,
+                "error": "observe the original workflow image preflight failure before planning remediation",
+            }
         started = time.monotonic()
         try:
-            result = self._execute(name)
+            result = self._execute(name, args)
         except Exception as exc:  # noqa: BLE001 - turn fixed tool failures into observations
             result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
         elapsed = time.monotonic() - started
@@ -510,10 +588,18 @@ class BenchmarkToolbox:
         self.state.setdefault("tool_calls", []).append(record)
         if record["ok"] and name not in completed:
             self.state.setdefault("completed_tools", []).append(name)
+        if record["ok"] and name == "rerun_image_verify":
+            immutable = str(result.get("result", {}).get("immutable_image") or "")
+            if immutable:
+                self.state["rerun_image"] = immutable
+                self.replacements[immutable] = "<rerun-image>"
         self.save()
         return sanitized
 
-    def _execute(self, name: str) -> dict[str, Any]:
+    def _execute(
+        self, name: str, args: Mapping[str, Any] | None = None
+    ) -> dict[str, Any]:
+        args = args or {}
         if name == "inspect_environment":
             version = subprocess.run(
                 [self.npa, "--version"],
@@ -641,6 +727,80 @@ class BenchmarkToolbox:
                     "json",
                 ]
             )
+        if name in {"registry_plan", "registry_provision"}:
+            argv = [
+                self.npa,
+                "registry",
+                "ensure",
+                "--project",
+                self.project,
+                "--name",
+                self.registry_name,
+                "--json",
+            ]
+            if name == "registry_provision":
+                argv.append("--yes")
+            return self._command(argv)
+        if name == "rerun_image_build":
+            return self._command(
+                [
+                    self.npa,
+                    "workbench",
+                    "image",
+                    "build-rerun-viewer",
+                    "--project",
+                    self.project,
+                    "--tag",
+                    self.rerun_tag,
+                    "--repo-root",
+                    str(self.repo),
+                ]
+            )
+        if name == "rerun_image_inspect":
+            return self._command(
+                [
+                    self.npa,
+                    "workbench",
+                    "image",
+                    "inspect-rerun-viewer",
+                    "--project",
+                    self.project,
+                    "--tag",
+                    self.rerun_tag,
+                ]
+            )
+        if name == "rerun_image_push":
+            return self._command(
+                [
+                    self.npa,
+                    "workbench",
+                    "image",
+                    "push-rerun-viewer",
+                    "--project",
+                    self.project,
+                    "--tag",
+                    self.rerun_tag,
+                    "--expected-image-id",
+                    str(args.get("image_id") or ""),
+                    "--inspection-digest",
+                    str(args.get("inspection_digest") or ""),
+                ]
+            )
+        if name == "rerun_image_verify":
+            return self._command(
+                [
+                    self.npa,
+                    "workbench",
+                    "image",
+                    "verify-rerun-viewer",
+                    "--project",
+                    self.project,
+                    "--tag",
+                    self.rerun_tag,
+                    "--expected-digest",
+                    str(args.get("digest") or ""),
+                ]
+            )
         if name == "workflow_preflight_images":
             argv = [
                 self.npa,
@@ -662,11 +822,12 @@ class BenchmarkToolbox:
                 f"k8s/{self.cluster}",
                 "--json",
             ]
-            if self.rerun_image:
+            selected_rerun = self._selected_rerun_image()
+            if selected_rerun:
                 argv.extend(
                     [
                         "--image-override",
-                        f"workbench.nurec.visualize={self.rerun_image}",
+                        f"workbench.nurec.visualize={selected_rerun}",
                     ]
                 )
             return self._command(argv)
@@ -712,11 +873,12 @@ class BenchmarkToolbox:
                 "--output-format",
                 "json",
             ]
-            if self.rerun_image:
+            selected_rerun = self._selected_rerun_image()
+            if selected_rerun:
                 argv.extend(
                     [
                         "--image-override",
-                        f"workbench.nurec.visualize={self.rerun_image}",
+                        f"workbench.nurec.visualize={selected_rerun}",
                     ]
                 )
             return self._command(argv)

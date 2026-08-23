@@ -5,11 +5,12 @@
 ```text
 Usage: npa registry [OPTIONS] COMMAND [ARGS]...
 
-Inspect and tear down exact registries in NPA-created projects.
+Ensure and tear down exact registries in NPA-created projects.
 
 Options
 --help  Show this message and exit.
 Commands
+ensure  Plan or ensure a registry only inside an NPA-created project.
 delete  Delete one exact registry only with durable NPA project-creation proof.
 ```
 
@@ -23,13 +24,14 @@ delete  Delete one exact registry only with durable NPA project-creation proof.
 
 | Command | Description |
 | --- | --- |
+| `ensure` | Plan or ensure a registry only inside an NPA-created project. |
 | `delete` | Delete one exact registry only with durable NPA project-creation proof. |
 
 ## Examples
 
 ```bash
 npa registry --help
-npa registry delete --help
+npa registry ensure --help
 ```
 
 Regenerate this page with `bash scripts/build_docs.sh` after changing `registry`.

@@ -6,8 +6,9 @@ shell agent: the model can call only a fixed catalog of NPA operations.
 
 The current scenario takes `paidf-cosmos3.yaml` from environment inspection
 through credential/access checks, offline validation and planning, additive
-infrastructure verification, image preflight, one repository-generated seed
-variant, durable status, and artifact inspection. The workflow continues to use
+infrastructure verification, an expected initial image-preflight refusal,
+model-planned task-registry and Rerun-image remediation, one repository-generated
+seed variant, durable status, and artifact inspection. The workflow continues to use
 real Cosmos 3, Cosmos Evaluator, Cosmos Curator, FiftyOne Brain, and Rerun
 components. The benchmark does not substitute mocks for workflow stages.
 
@@ -19,13 +20,20 @@ components. The benchmark does not substitute mocks for workflow stages.
 - There is no shell tool. Every executor uses a fixed argv template for a normal
   NPA command, and the workflow path is restricted to the repository's
   `paidf-cosmos3.yaml`.
-- `infra_provision`, `skypilot_bootstrap`, and `workflow_submit` are mutating.
+- `infra_provision`, `skypilot_bootstrap`, `registry_provision`,
+  `rerun_image_build`, `rerun_image_push`, and `workflow_submit` are mutating.
   Each requires an explicit repeatable `--confirm-action` scope. At execution,
   NPA records the normalized action digest and the benchmark operation digest;
   an omitted or mismatched digest fails closed.
 - Runtime submission passes secret *names* through `--secret-env`, never values.
-- Every bounded subprocess is pinned to the selected anonymous/public registry;
-  an ambient private `NPA_REGISTRY` cannot silently redirect image pulls.
+- Ordinary workflow images remain pinned to the selected anonymous/public
+  registry. The only private artifact is the exact task-owned
+  `npa-rerun-viewer` digest produced by the remediation tools; an ambient private
+  `NPA_REGISTRY` cannot silently redirect other pulls.
+- Registry creation requires durable proof that NPA created the disposable
+  project. Image build is fixed to the checked-in Rerun Dockerfile. Push requires
+  the exact local image ID and inspection digest returned by the prior capability
+  probe; the workflow receives only the verified immutable registry digest.
 - The seed fixture is repository-generated synthetic media. It contains no
   customer or private production data.
 - Runtime submission uses `--max-wait-seconds 0`; the benchmark does not add a
@@ -43,7 +51,6 @@ npa agent benchmark \
   --bucket <bucket> \
   --accelerator <requestable-accelerator>:1 \
   --registry ghcr.io/nebius/nebius-physical-ai \
-  --rerun-image <task-registry>/npa-rerun-viewer:<attested-tag> \
   --endpoint https://<provider>/v1 \
   --model <model> \
   --api-key-file /owner-only/provider-key.txt \
@@ -51,6 +58,9 @@ npa agent benchmark \
   --report-path /owner-only/run/benchmark-report.json \
   --confirm-action infra_provision \
   --confirm-action skypilot_bootstrap \
+  --confirm-action registry_provision \
+  --confirm-action rerun_image_build \
+  --confirm-action rerun_image_push \
   --confirm-action workflow_submit \
   --output-format json
 ```
@@ -69,9 +79,18 @@ resume from silently switching local project, credential, cluster-identity, or
 controller-ownership state. Durable NPA run identity remains fixed across
 resumes.
 
-`--rerun-image` is the only per-tool image escape hatch. It accepts an exact
+The normal benchmark omits `--rerun-image`: DeepSeek must first observe the
+canonical image failure and then plan the task-owned remediation. The option is
+retained only to resume/import prior exact evidence. It accepts an exact
 `npa-rerun-viewer` reference and applies only to the two
 `workbench.nurec.visualize` stages; all other images remain on `--registry`.
+
+The reusable operator surfaces behind the bounded tools are `npa registry
+ensure` and `npa workbench image build-rerun-viewer`,
+`inspect-rerun-viewer`, `push-rerun-viewer`, and `verify-rerun-viewer`. The
+inspect command checks the actual local bytes for the non-root/passwordless-sudo,
+SSH, rsync, service, writable-path, argument-forwarding entrypoint, and exact OCI
+attestation contract before push.
 
 ## Measurements
 

@@ -38,6 +38,58 @@ def _project(mocker) -> None:  # noqa: ANN001
     )
 
 
+def test_registry_ensure_plans_without_mutation(mocker) -> None:
+    ensure = mocker.patch(
+        "npa.registry.ensure_registry",
+        return_value={"outcome": "planned_create", "registry_name": "task-registry"},
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "registry",
+            "ensure",
+            "--project",
+            "demo",
+            "--name",
+            "task-registry",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["outcome"] == "planned_create"
+    ensure.assert_called_once_with(
+        project="demo", name="task-registry", profile="", apply=False
+    )
+
+
+def test_registry_ensure_requires_yes_to_apply(mocker) -> None:
+    ensure = mocker.patch(
+        "npa.registry.ensure_registry",
+        return_value={"outcome": "created", "registry_name": "task-registry"},
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "registry",
+            "ensure",
+            "--project",
+            "demo",
+            "--name",
+            "task-registry",
+            "--yes",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    ensure.assert_called_once_with(
+        project="demo", name="task-registry", profile="", apply=True
+    )
+
+
 def test_registry_delete_requires_npa_project_ownership(mocker) -> None:
     _project(mocker)
     mocker.patch("npa.project_destroy._project_ownership_operation", return_value=None)

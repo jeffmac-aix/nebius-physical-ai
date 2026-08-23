@@ -29,6 +29,7 @@ Generated from `npa --help`. Run `bash scripts/build_docs.sh` after CLI changes.
 - [npa workbench golden-eval](golden-eval.md)
 - [npa workbench groot](groot.md)
 - [npa workbench health](health.md)
+- [npa workbench image](image.md)
 - [npa init](init.md)
 - [npa workbench insights](insights.md)
 - [npa workbench isaac-lab](isaac-lab.md)
