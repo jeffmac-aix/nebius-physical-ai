@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -42,20 +43,38 @@ class IsolatedApiServer:
 
 
 def ensure_isolated_api_server(
-    *, sky_bin: str | os.PathLike[str], state_dir: Path, port: int
+    *,
+    sky_bin: str | os.PathLike[str],
+    state_dir: Path,
+    port: int,
+    kubeconfig: Path,
 ) -> IsolatedApiServer:
     """Start or reuse one exact loopback server without touching shared state."""
 
     root = _validate_state_dir(state_dir)
     endpoint = f"http://127.0.0.1:{_validate_port(port)}"
     queue_port = _validate_port(port + 1_000)
+    selected_kubeconfig = kubeconfig.expanduser().resolve()
+    if not selected_kubeconfig.is_file():
+        raise IsolatedApiServerError(
+            f"selected kubeconfig does not exist: {selected_kubeconfig}"
+        )
+    kubeconfig_digest = hashlib.sha256(selected_kubeconfig.read_bytes()).hexdigest()
     record_path = root / "server.json"
     existing = _load_record(record_path)
     if existing:
         pid = int(existing.get("pid") or 0)
-        if _owned_process(pid, port) and _healthy(endpoint):
+        matches_context = existing.get("kubeconfig_sha256") == kubeconfig_digest
+        if _owned_process(pid, port) and matches_context and _healthy(endpoint):
             return IsolatedApiServer(endpoint, pid, port, root, True)
-        if _process_exists(pid):
+        if _owned_process(pid, port) and not matches_context:
+            _terminate_owned_process(pid, port)
+            if _process_exists(pid):
+                raise IsolatedApiServerError(
+                    "isolated SkyPilot API server did not stop for context rebinding"
+                )
+            record_path.unlink(missing_ok=True)
+        elif _process_exists(pid):
             raise IsolatedApiServerError(
                 "isolated SkyPilot server record points at a non-matching live process"
             )
@@ -76,6 +95,13 @@ def ensure_isolated_api_server(
     os.fchmod(log_fd, 0o600)
     env = sky_environment(root)
     env.pop("SKYPILOT_API_SERVER_ENDPOINT", None)
+    env["KUBECONFIG"] = str(selected_kubeconfig)
+    # Refresh the isolated default symlink before SkyPilot imports Kubernetes.
+    isolated_kubeconfig = Path(env["HOME"]) / ".kube" / "config"
+    if isolated_kubeconfig.is_symlink():
+        isolated_kubeconfig.unlink()
+    isolated_kubeconfig.parent.mkdir(parents=True, exist_ok=True)
+    isolated_kubeconfig.symlink_to(selected_kubeconfig)
     # SkyPilot 0.12.2 exposes the HTTP port but hardcodes its multiprocessing
     # queue manager to 50011. Set that imported constant before loading the
     # server module so multiple owner-scoped servers can coexist safely.
@@ -121,6 +147,7 @@ def ensure_isolated_api_server(
                         "pid": process.pid,
                         "port": port,
                         "queue_port": queue_port,
+                        "kubeconfig_sha256": kubeconfig_digest,
                         "python": str(python_bin.resolve()),
                         "started_at": datetime.now(timezone.utc).isoformat(),
                     },

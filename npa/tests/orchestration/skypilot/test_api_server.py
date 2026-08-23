@@ -26,6 +26,8 @@ def test_ensure_starts_exact_loopback_server_and_writes_owner_record(
     sky.chmod(0o755)
     python.write_text("#!/bin/sh\n", encoding="utf-8")
     python.chmod(0o755)
+    kubeconfig = tmp_path / "kubeconfig"
+    kubeconfig.write_text("contexts: []\n", encoding="utf-8")
     seen: dict[str, object] = {}
 
     def popen(argv, **kwargs):
@@ -39,7 +41,7 @@ def test_ensure_starts_exact_loopback_server_and_writes_owner_record(
 
     state_dir = tmp_path / "task" / "sky-api"
     result = api_server.ensure_isolated_api_server(
-        sky_bin=sky, state_dir=state_dir, port=48123
+        sky_bin=sky, state_dir=state_dir, port=48123, kubeconfig=kubeconfig
     )
 
     assert result.endpoint == "http://127.0.0.1:48123"
@@ -69,12 +71,15 @@ def test_ensure_refuses_an_occupied_unowned_port(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(api_server, "_port_available", lambda _port: False)
+    kubeconfig = tmp_path / "kubeconfig"
+    kubeconfig.write_text("contexts: []\n", encoding="utf-8")
 
     with pytest.raises(api_server.IsolatedApiServerError, match="unowned process"):
         api_server.ensure_isolated_api_server(
             sky_bin=tmp_path / "sky",
             state_dir=tmp_path / "task" / "sky-api",
             port=48123,
+            kubeconfig=kubeconfig,
         )
 
 

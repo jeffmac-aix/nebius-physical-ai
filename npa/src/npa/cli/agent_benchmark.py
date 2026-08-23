@@ -438,6 +438,7 @@ class BenchmarkToolbox:
             or (Path.home() / ".npa")
         ).resolve()
         self.skypilot_api_state = config_root / "skypilot-api" / self.operation_digest
+        self.selected_kubeconfig = config_root / "clusters" / cluster / "kubeconfig"
         port_digest = hashlib.sha256(self.operation_digest.encode("utf-8")).hexdigest()
         self.skypilot_api_port = 48_000 + int(port_digest[:4], 16) % 1_000
         self.command_env = {
@@ -448,6 +449,7 @@ class BenchmarkToolbox:
             "SKYPILOT_API_SERVER_ENDPOINT": (
                 f"http://127.0.0.1:{self.skypilot_api_port}"
             ),
+            "KUBECONFIG": str(self.selected_kubeconfig),
             # The reference workflow keeps H100 as its portable default. Bind
             # every bounded validate/plan/preflight/submit subprocess to the
             # exact accelerator already included in the operation fingerprint.
@@ -813,6 +815,8 @@ class BenchmarkToolbox:
                     str(self.skypilot_api_port),
                     "--sky-bin",
                     self.command_env["NPA_SKYPILOT_BIN"],
+                    "--kubeconfig",
+                    str(self.selected_kubeconfig),
                 ]
             )
         if name == "skypilot_verify":
