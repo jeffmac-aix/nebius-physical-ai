@@ -930,10 +930,14 @@ def _relocate_staged_scripts(staging: Path, target: Path) -> None:
             body = entry.read_bytes()
         except OSError:
             continue
-        first_line, separator, remainder = body.partition(b"\n")
-        if not first_line.startswith(b"#!") or source not in first_line:
+        first_line = body.partition(b"\n")[0]
+        if not first_line.startswith(b"#!") or source not in body:
             continue
-        entry.write_bytes(first_line.replace(source, destination) + separator + remainder)
+        # distlib uses a one-line shebang for short venv paths, but emits a
+        # ``#!/bin/sh`` launcher with the real interpreter path on line two
+        # when the path is long.  Rewriting only the first line leaves that
+        # launcher pointing at the removed staging directory after activation.
+        entry.write_bytes(body.replace(source, destination))
 
 
 def _validate_staged_runtime(state: VenvState, *, expected_version: str) -> None:
