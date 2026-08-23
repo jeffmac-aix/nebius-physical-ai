@@ -470,6 +470,18 @@ class BenchmarkToolbox:
             str(self.skypilot_api_state): "<isolated-skypilot-state>",
         }
         self.replacements[self.bucket] = "<bucket>"
+        # Older resumable observations proved only endpoint health. Re-open the
+        # same bounded action once so DeepSeek can establish the newer exact
+        # kubeconfig binding before another submit.
+        if "skypilot_api_server" in set(self.state.get("completed_tools") or []):
+            observed = self._successful_observation("skypilot_api_server")
+            if observed.get("context_bound") is not True:
+                self.state["completed_tools"] = [
+                    item
+                    for item in self.state.get("completed_tools") or []
+                    if item != "skypilot_api_server"
+                ]
+                self.save()
 
     def _successful_observation(self, tool: str) -> Mapping[str, Any]:
         for call in reversed(self.state.get("tool_calls") or []):

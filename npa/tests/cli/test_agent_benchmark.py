@@ -231,7 +231,13 @@ def test_toolbox_normalizes_configured_s3_bucket_for_workflow_argv(
             "rerun_image_verify",
             "skypilot_api_server",
         ],
-        "tool_calls": [],
+        "tool_calls": [
+            {
+                "tool": "skypilot_api_server",
+                "ok": True,
+                "observation": {"result": {"context_bound": True}},
+            }
+        ],
         "rerun_image": "registry.example/npa-rerun-viewer@sha256:" + "1" * 64,
     }
     toolbox = BenchmarkToolbox(

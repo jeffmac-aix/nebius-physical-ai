@@ -46,6 +46,7 @@ def test_ensure_starts_exact_loopback_server_and_writes_owner_record(
 
     assert result.endpoint == "http://127.0.0.1:48123"
     assert result.reused is False
+    assert result.to_dict()["context_bound"] is True
     assert seen["argv"] == [
         str(python),
         "-c",

@@ -38,6 +38,7 @@ class IsolatedApiServer:
             "port": self.port,
             "state_dir": str(self.state_dir),
             "reused": self.reused,
+            "context_bound": True,
             "status": "healthy",
         }
 
