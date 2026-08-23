@@ -70,6 +70,7 @@ def test_live_sim_image_contains_only_protocol_dependencies() -> None:
     assert dockerfile.startswith("FROM antioch-engine/isaac-sim-6.0.1:0.3.63\n")
     assert '"msgpack==1.1.1"' in dockerfile
     assert '"websockets==15.0.1"' in dockerfile
+    assert "USER 1000:1000" in dockerfile
     assert "git clone" not in dockerfile
     assert "checkpoint" not in dockerfile.lower()
 

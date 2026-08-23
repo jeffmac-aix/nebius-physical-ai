@@ -5,3 +5,6 @@ FROM antioch-engine/isaac-sim-6.0.1:0.3.63
 RUN uv pip install --system --no-cache \
     "msgpack==1.1.1" \
     "websockets==15.0.1"
+
+# Match the non-root UID/GID enforced by the generated Kubernetes workload.
+USER 1000:1000
