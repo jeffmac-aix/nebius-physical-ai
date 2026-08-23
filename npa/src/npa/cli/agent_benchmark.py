@@ -372,6 +372,7 @@ class BenchmarkToolbox:
         "workflow_validate",
         "workflow_plan",
         "infra_plan",
+        "cluster_state_reconcile",
         "skypilot_bootstrap",
         "infra_provision",
         "skypilot_verify",
@@ -389,6 +390,7 @@ class BenchmarkToolbox:
     MUTATING = frozenset(
         {
             "infra_provision",
+            "cluster_state_reconcile",
             "skypilot_bootstrap",
             "registry_provision",
             "rerun_image_build",
@@ -464,6 +466,7 @@ class BenchmarkToolbox:
             "workflow_validate": "Validate the selected paidf-cosmos3 npa.workflow offline.",
             "workflow_plan": "Plan the accepted path with one synthetic variant.",
             "infra_plan": "Run additive provision-if-absent dry-run for the selected GPU.",
+            "cluster_state_reconcile": "Regenerate the exact selected cluster's isolated kubeconfig and local state through NPA.",
             "infra_provision": "Apply additive NPA provisioning/validation for the fixed target.",
             "skypilot_bootstrap": "Install/repair the pinned SkyPilot runtime locally.",
             "skypilot_verify": "Verify the exact Kubernetes context through NPA.",
@@ -537,7 +540,14 @@ class BenchmarkToolbox:
                     "error": "digest must match the prior push observation",
                 }
         prerequisites = {
-            "infra_provision": {"health_access", "infra_plan", "skypilot_bootstrap"},
+            "cluster_state_reconcile": {"infra_plan"},
+            "skypilot_bootstrap": {"cluster_state_reconcile"},
+            "infra_provision": {
+                "health_access",
+                "infra_plan",
+                "cluster_state_reconcile",
+                "skypilot_bootstrap",
+            },
             "skypilot_verify": {"infra_provision", "skypilot_bootstrap"},
             "workflow_preflight_images": {"workflow_plan", "skypilot_verify"},
             "registry_plan": {"skypilot_verify"},
@@ -705,16 +715,56 @@ class BenchmarkToolbox:
             if name == "infra_plan":
                 argv.append("--dry-run")
             return self._command(argv)
+        if name == "cluster_state_reconcile":
+            from npa.cluster.state import kubeconfig_file, load_cluster_state
+
+            cluster_state = load_cluster_state(self.cluster)
+            provider_name = str(
+                getattr(cluster_state, "provider_name", "")
+                or getattr(cluster_state, "name", "")
+                or ""
+            ).strip()
+            if not provider_name:
+                return {
+                    "ok": False,
+                    "error": "selected cluster has no fixed provider name in NPA state",
+                }
+            return self._command(
+                [
+                    self.npa,
+                    "cluster",
+                    "kubeconfig",
+                    "--cluster-name",
+                    provider_name,
+                    "--project",
+                    self.project,
+                    "--context",
+                    self.cluster,
+                    "--kubeconfig",
+                    str(kubeconfig_file(self.cluster)),
+                ]
+            )
         if name == "skypilot_bootstrap":
             result = self._command([self.npa, "skypilot", "bootstrap"])
             # bootstrap is a human-text command; retain only a bounded digest in
             # the model observation while its exit code remains authoritative.
-            return {
+            observation = {
                 "ok": bool(result.get("ok")),
                 "exit_code": result.get("exit_code"),
                 "elapsed_s": result.get("elapsed_s"),
                 "output_digest": _digest(result),
             }
+            if not observation["ok"]:
+                payload = result.get("result")
+                stdout = (
+                    str(payload.get("stdout") or "")
+                    if isinstance(payload, Mapping)
+                    else ""
+                )
+                diagnostic = str(result.get("stderr") or stdout).strip()
+                if diagnostic:
+                    observation["diagnostic"] = diagnostic[-2000:]
+            return observation
         if name == "skypilot_verify":
             return self._command(
                 [

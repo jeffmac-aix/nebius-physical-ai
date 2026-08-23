@@ -7,6 +7,7 @@ from pathlib import Path
 import httpx
 import pytest
 from jsonschema import Draft202012Validator
+from npa.cluster.state import ClusterState, save_cluster_state
 
 from npa.cli.agent_benchmark import (
     BenchmarkToolbox,
@@ -144,6 +145,75 @@ def test_benchmark_toolbox_fails_closed_on_prerequisites_and_operation_digest(
     assert missing["ok"] is False
     assert "health_access" in missing["error"]
     assert state["tool_calls"] == [], "rejected proposals are not executed tool calls"
+
+
+def test_cluster_state_reconcile_uses_fixed_selected_identity(
+    tmp_path: Path, monkeypatch, mocker
+) -> None:
+    config_dir = tmp_path / "config"
+    monkeypatch.setenv("NPA_CONFIG_DIR", str(config_dir))
+    # agent_benchmark imports cluster.state lazily so its path constants observe
+    # the benchmark's isolated config root in a fresh test process in production.
+    import npa.cluster.state as cluster_state_module
+
+    monkeypatch.setattr(cluster_state_module, "CLUSTERS_DIR", config_dir / "clusters")
+    save_cluster_state(
+        ClusterState(
+            name="selected-context",
+            provider_name="provider-cluster",
+            cluster_id="cluster-id",
+            project_id="project-id",
+            region="us-central1",
+            node_count=2,
+            node_platform="gpu-rtx6000",
+            node_preset="1gpu-24vcpu-218gb",
+            k8s_version="1.32",
+            subnet_id="subnet-id",
+            created_at="2026-01-01T00:00:00Z",
+            kubeconfig_path="/stale/global/kubeconfig",
+        )
+    )
+    spec = tmp_path / "paidf-cosmos3.yaml"
+    spec.write_text("apiVersion: npa.workflow/v0.0.1\n")
+    state = {
+        "run_id": "run-fixed",
+        "operation_digest": "op-fixed",
+        "completed_tools": ["infra_plan"],
+        "tool_calls": [],
+    }
+    toolbox = BenchmarkToolbox(
+        repo=tmp_path,
+        state=state,
+        save=lambda: None,
+        project="project-alias",
+        cluster="selected-context",
+        bucket="bucket-name",
+        accelerator="RTXPRO6000:1",
+        registry="ghcr.io/nebius/nebius-physical-ai",
+        rerun_image="",
+        spec=spec,
+    )
+    command = mocker.patch.object(toolbox, "_command", return_value={"ok": True})
+
+    result = toolbox.execute(
+        "cluster_state_reconcile", {"operation_digest": "op-fixed"}
+    )
+
+    assert result["ok"] is True
+    argv = command.call_args.args[0]
+    assert argv == [
+        str(tmp_path / "npa/.venv/bin/npa"),
+        "cluster",
+        "kubeconfig",
+        "--cluster-name",
+        "provider-cluster",
+        "--project",
+        "project-alias",
+        "--context",
+        "selected-context",
+        "--kubeconfig",
+        str(config_dir / "clusters" / "selected-context" / "kubeconfig"),
+    ]
 
 
 def test_remediation_requires_observed_preflight_failure_and_digest_binding(

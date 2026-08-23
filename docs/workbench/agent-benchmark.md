@@ -20,7 +20,7 @@ components. The benchmark does not substitute mocks for workflow stages.
 - There is no shell tool. Every executor uses a fixed argv template for a normal
   NPA command, and the workflow path is restricted to the repository's
   `paidf-cosmos3.yaml`.
-- `infra_provision`, `skypilot_bootstrap`, `registry_provision`,
+- `cluster_state_reconcile`, `infra_provision`, `skypilot_bootstrap`, `registry_provision`,
   `rerun_image_build`, `rerun_image_push`, and `workflow_submit` are mutating.
   Each requires an explicit repeatable `--confirm-action` scope. At execution,
   NPA records the normalized action digest and the benchmark operation digest;
@@ -56,6 +56,7 @@ npa agent benchmark \
   --api-key-file /owner-only/provider-key.txt \
   --state-path /owner-only/run/benchmark-state.json \
   --report-path /owner-only/run/benchmark-report.json \
+  --confirm-action cluster_state_reconcile \
   --confirm-action infra_provision \
   --confirm-action skypilot_bootstrap \
   --confirm-action registry_provision \
@@ -84,6 +85,12 @@ canonical image failure and then plan the task-owned remediation. The option is
 retained only to resume/import prior exact evidence. It accepts an exact
 `npa-rerun-viewer` reference and applies only to the two
 `workbench.nurec.visualize` stages; all other images remain on `--registry`.
+
+Before SkyPilot bootstrap, the bounded `cluster_state_reconcile` action invokes
+only `npa cluster kubeconfig` for the already selected configured project,
+provider cluster name, context, and NPA-owned kubeconfig path. This repairs an
+isolated config whose copied state still names a different kubeconfig location;
+the model cannot supply or redirect any of those identities.
 
 The reusable operator surfaces behind the bounded tools are `npa registry
 ensure` and `npa workbench image build-rerun-viewer`,

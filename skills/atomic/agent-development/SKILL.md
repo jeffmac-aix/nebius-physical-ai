@@ -81,6 +81,12 @@ normalized action digest and the fixed operation digest. The ordinary agent API
 does not pass an `action_authorizer`, so its single-use confirmation-token
 contract is unchanged.
 
+The allowlist includes a narrow `cluster_state_reconcile` recovery action before
+SkyPilot bootstrap. It wraps `npa cluster kubeconfig` with the selected project's
+provider name, context, and NPA-owned output path fixed from local state; the
+model supplies only the operation digest. Failed bootstrap observations expose
+a bounded, sanitized diagnostic instead of an opaque output digest alone.
+
 The report measures streaming TTFT/latency/tokens/throughput, tool timing,
 representative high context, concurrency, resume state, and a clearly labeled
 non-agentic deterministic baseline. Exact provider and infrastructure identity
