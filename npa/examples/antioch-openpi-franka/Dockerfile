@@ -16,4 +16,10 @@ COPY scenarios.py reverse_policy_relay.py /workspace/project/
 
 # The hosted engine grants the runtime account device and project access; the
 # scenario and relay need no root privileges after the build has installed them.
+# The parent image retains root's HOME, so give the runtime user an owned home
+# before dropping privileges; Kit otherwise attempts to create /root/.cache.
+ENV HOME=/workspace/npa-runtime-home \
+    XDG_CACHE_HOME=/workspace/npa-runtime-home/.cache
+RUN install -d -m 0755 -o 1000 -g 1000 \
+      /workspace/npa-runtime-home /workspace/npa-runtime-home/.cache
 USER 1000:1000
