@@ -34,8 +34,9 @@ components. The benchmark does not substitute mocks for workflow stages.
   project. Image build is fixed to the checked-in Rerun Dockerfile. Push requires
   the exact local image ID and inspection digest returned by the prior capability
   probe; the workflow receives only the verified immutable registry digest.
-- The seed fixture is repository-generated synthetic media. It contains no
-  customer or private production data.
+- The seed fixture is repository-generated geometric H.264 media. NPA stages
+  its source MP4, 93-frame conditioning clip, and immutable provenance before
+  submission; it contains no customer or private production data.
 - Runtime submission uses `--max-wait-seconds 0`; the benchmark does not add a
   workflow deadline or cancel a healthy long-running stage.
 
