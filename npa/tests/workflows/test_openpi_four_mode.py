@@ -392,6 +392,20 @@ def test_live_service_is_persistent_authenticated_and_cache_backed(
     assert '"name":"run-tls","namespace"' not in rendered
 
 
+def test_live_cache_uses_single_writer_block_storage_contract() -> None:
+    pvc = openpi_live._cache_pvc_manifest(
+        name="runtime-weight-cache",
+        namespace="openpi-live",
+        size="64Gi",
+        storage_class="compute-csi-default-sc",
+        labels={"app.kubernetes.io/managed-by": openpi_live.LIVE_MANAGED_BY},
+    )
+
+    assert pvc["spec"]["accessModes"] == ["ReadWriteOnce"]
+    assert pvc["spec"]["storageClassName"] == "compute-csi-default-sc"
+    assert pvc["spec"]["resources"]["requests"]["storage"] == "64Gi"
+
+
 def test_live_client_bundle_is_private_and_certificate_matches_endpoint(
     tmp_path: Path,
 ) -> None:

@@ -396,6 +396,25 @@ def _api_status(exc: Exception) -> int:
         return 0
 
 
+def _cache_pvc_manifest(
+    *, name: str, namespace: str, size: str, storage_class: str, labels: dict[str, str]
+) -> dict[str, Any]:
+    """Build the single-replica cache claim supported by block CSI classes."""
+
+    return {
+        "apiVersion": "v1",
+        "kind": "PersistentVolumeClaim",
+        "metadata": {"name": name, "namespace": namespace, "labels": labels},
+        "spec": {
+            # The Deployment is one replica with Recreate strategy, so RWX adds
+            # no availability and fails on standard Nebius block CSI classes.
+            "accessModes": ["ReadWriteOnce"],
+            "resources": {"requests": {"storage": size}},
+            **({"storageClassName": storage_class} if storage_class else {}),
+        },
+    }
+
+
 def _apply_owned(
     *,
     read: Callable[..., Any],
@@ -585,20 +604,13 @@ def deploy_live(args: argparse.Namespace) -> dict[str, Any]:
                 "refusing to use a namespace managed by another tool"
             )
 
-    pvc = {
-        "apiVersion": "v1",
-        "kind": "PersistentVolumeClaim",
-        "metadata": {
-            "name": args.cache_pvc,
-            "namespace": args.namespace,
-            "labels": labels,
-        },
-        "spec": {
-            "accessModes": ["ReadWriteMany"],
-            "resources": {"requests": {"storage": args.cache_size}},
-            **({"storageClassName": args.storage_class} if args.storage_class else {}),
-        },
-    }
+    pvc = _cache_pvc_manifest(
+        name=args.cache_pvc,
+        namespace=args.namespace,
+        size=args.cache_size,
+        storage_class=args.storage_class,
+        labels=labels,
+    )
     _apply_owned(
         read=core.read_namespaced_persistent_volume_claim,
         create=core.create_namespaced_persistent_volume_claim,
