@@ -42,6 +42,7 @@ def test_live_scenario_is_real_bounded_and_fail_closed() -> None:
         'logger.image("camera/wrist"',
         'logger.scalar("decision/observation_sequence"',
         'logger.scalar("decision/policy_requests"',
+        'logger.scalar("decision/policy_in_flight"',
         'logger.scalar("decision/round_trips"',
         'logger.scalar("decision/inference_latency_ms"',
         'logger.scalar("decision/safe_hold"',
@@ -56,6 +57,7 @@ def test_live_scenario_is_real_bounded_and_fail_closed() -> None:
         "NPA_OPENPI_REQUEST",
         "NPA_OPENPI_APPLIED",
         "waiting for camera frames",
+        'ThreadPoolExecutor(max_workers=1, thread_name_prefix="openpi-policy")',
     ):
         assert contract in source
     assert "WebsocketClientPolicy(" not in source

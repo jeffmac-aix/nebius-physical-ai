@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import ssl
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import antioch
@@ -235,13 +236,51 @@ def openpi_droid_live(
     chunk_index = 0
     last_apply = time.monotonic()
     first_frame = True
+    pending = None
+    pending_observation = 0
+    pending_joint_positions = None
+    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="openpi-policy")
 
     print("NPA_OPENPI_LOOP_READY", flush=True)
     try:
         while True:
             world.step(render=True)
             now = time.monotonic()
-            if chunk is None and now >= next_attempt:
+
+            if pending is not None and pending.done():
+                try:
+                    response, last_latency = pending.result()
+                    if last_latency > MAX_RESPONSE_AGE_SECONDS:
+                        raise TimeoutError("policy response was stale")
+                    chunk = _validated_actions(response, pending_joint_positions)
+                    chunk_index = 0
+                    round_trips += 1
+                    print(
+                        "NPA_OPENPI_ROUND_TRIP "
+                        f"observation={pending_observation} "
+                        f"round_trips={round_trips} "
+                        f"latency_ms={last_latency * 1000.0:.3f} "
+                        "action_shape=[15,8] finite=true",
+                        flush=True,
+                    )
+                except Exception as exc:
+                    client.close()
+                    safe_holds += 1
+                    delay = client.reconnect_delay()
+                    next_attempt = now + delay
+                    logger.value("policy/error", rr.TextLog(type(exc).__name__))
+                    print(
+                        "NPA_OPENPI_SAFE_HOLD "
+                        f"observation={pending_observation} "
+                        f"reason={type(exc).__name__} "
+                        f"reconnects={client.reconnects}",
+                        flush=True,
+                    )
+                finally:
+                    pending = None
+                    pending_joint_positions = None
+
+            if chunk is None and pending is None and now >= next_attempt:
                 joint_positions = np.asarray(
                     robot.get_joint_positions(), dtype=np.float32
                 )
@@ -251,56 +290,31 @@ def openpi_droid_live(
                     safe_holds += 1
                     next_attempt = now + 1.0 / CONTROL_HZ
                     overlay[2].text = "SAFE HOLD / waiting for camera frames"
-                    continue
-                if first_frame:
-                    print("NPA_OPENPI_FIRST_FRAME", flush=True)
-                    first_frame = False
-                observation_sequence += 1
-                observation = {
-                    "observation/exterior_image_1_left": exterior_rgb,
-                    "observation/wrist_image_left": wrist_rgb,
-                    "observation/joint_position": joint_positions[:7],
-                    "observation/gripper_position": np.asarray(
-                        [float(np.sum(joint_positions[7:9]))], dtype=np.float32
-                    ),
-                    "prompt": prompt,
-                }
-                requests += 1
-                print(
-                    "NPA_OPENPI_REQUEST "
-                    f"observation={observation_sequence} requests={requests}",
-                    flush=True,
-                )
-                try:
-                    response, last_latency = client.infer(observation)
-                    if last_latency > MAX_RESPONSE_AGE_SECONDS:
-                        raise TimeoutError("policy response was stale")
-                    chunk = _validated_actions(response, joint_positions)
-                    chunk_index = 0
-                    round_trips += 1
+                else:
+                    if first_frame:
+                        print("NPA_OPENPI_FIRST_FRAME", flush=True)
+                        first_frame = False
+                    observation_sequence += 1
+                    observation = {
+                        "observation/exterior_image_1_left": exterior_rgb,
+                        "observation/wrist_image_left": wrist_rgb,
+                        "observation/joint_position": joint_positions[:7],
+                        "observation/gripper_position": np.asarray(
+                            [float(np.sum(joint_positions[7:9]))], dtype=np.float32
+                        ),
+                        "prompt": prompt,
+                    }
+                    requests += 1
                     print(
-                        "NPA_OPENPI_ROUND_TRIP "
-                        f"observation={observation_sequence} "
-                        f"round_trips={round_trips} "
-                        f"latency_ms={last_latency * 1000.0:.3f} "
-                        "action_shape=[15,8] finite=true",
+                        "NPA_OPENPI_REQUEST "
+                        f"observation={observation_sequence} requests={requests}",
                         flush=True,
                     )
-                except Exception as exc:
-                    safe_holds += 1
-                    delay = client.reconnect_delay()
-                    next_attempt = now + delay
-                    logger.value("policy/error", rr.TextLog(type(exc).__name__))
-                    print(
-                        "NPA_OPENPI_SAFE_HOLD "
-                        f"observation={observation_sequence} "
-                        f"reason={type(exc).__name__} "
-                        f"reconnects={client.reconnects}",
-                        flush=True,
-                    )
-
-                logger.image("camera/exterior", exterior_rgb)
-                logger.image("camera/wrist", wrist_rgb)
+                    logger.image("camera/exterior", exterior_rgb)
+                    logger.image("camera/wrist", wrist_rgb)
+                    pending_observation = observation_sequence
+                    pending_joint_positions = joint_positions.copy()
+                    pending = executor.submit(client.infer, observation)
 
             if chunk is not None and now - last_apply >= 1.0 / CONTROL_HZ:
                 target = chunk[chunk_index]
@@ -329,6 +343,7 @@ def openpi_droid_live(
             logger.scalar("decision/observation_sequence", observation_sequence)
             logger.scalar("decision/observation_time_seconds", now - started)
             logger.scalar("decision/policy_requests", requests)
+            logger.scalar("decision/policy_in_flight", int(pending is not None))
             logger.scalar("decision/round_trips", round_trips)
             logger.scalar("decision/inference_latency_ms", last_latency * 1000.0)
             logger.scalar("decision/action_horizon", ACTION_SHAPE[0])
@@ -362,6 +377,7 @@ def openpi_droid_live(
             ].text = f"last inference {last_latency * 1000.0:.1f} ms | safe holds {safe_holds}"
     finally:
         client.close()
+        executor.shutdown(wait=False, cancel_futures=True)
         run.add_result("observation_sequence", observation_sequence)
         run.add_result("policy_requests", requests)
         run.add_result("policy_round_trips", round_trips)
