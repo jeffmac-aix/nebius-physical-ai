@@ -322,7 +322,7 @@ def public_release_manifest() -> dict[str, Any]:
     redistribution_eligible = {
         tool
         for tool in CONTAINER_IMAGE_NAMES
-        if tool not in RESTRICTED_PUBLICATION_TOOLS
+        if is_publicly_redistributable(tool)
     }
     if set(releases) | set(pending) != redistribution_eligible:
         raise RuntimeError(

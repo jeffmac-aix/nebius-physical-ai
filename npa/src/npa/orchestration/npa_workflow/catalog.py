@@ -1972,7 +1972,7 @@ TOOL_CATALOG: dict[str, ToolEntry] = {
             "--workflow-run",
             "{{run.id}}",
             "--state-id",
-            "antioch-simulate",
+            "{{config.antioch_state_id}}",
             "--robot-type",
             "{{config.antioch_robot_type}}",
             "--task",

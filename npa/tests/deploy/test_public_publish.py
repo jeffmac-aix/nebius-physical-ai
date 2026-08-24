@@ -828,6 +828,24 @@ def test_accepted_release_plan_partitions_published_and_pending_tools() -> None:
         assert item.source_ref.endswith(f"@{recorded}")
 
 
+def test_release_manifest_delegates_redistribution_classification(monkeypatch) -> None:
+    original = images.is_publicly_redistributable
+    classified: list[str] = []
+
+    def classify(tool: str) -> bool:
+        classified.append(tool)
+        return original(tool)
+
+    images.public_release_manifest.cache_clear()
+    monkeypatch.setattr(images, "is_publicly_redistributable", classify)
+    try:
+        images.public_release_manifest()
+    finally:
+        images.public_release_manifest.cache_clear()
+
+    assert set(classified) == set(CONTAINER_IMAGE_NAMES)
+
+
 def test_verify_accepted_releases_compares_anonymous_live_and_recorded_digests(
     monkeypatch,
 ) -> None:
