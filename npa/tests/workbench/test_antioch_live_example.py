@@ -74,13 +74,13 @@ def test_live_scenario_is_real_bounded_and_fail_closed() -> None:
     assert "verify_mode = ssl.CERT_NONE" not in source
     assert "while True:" in source
 
-    relay = (
-        ROOT / "npa/src/npa/workbench/antioch/relay.py"
-    ).read_text(encoding="utf-8")
+    relay = (ROOT / "npa/src/npa/workbench/antioch/relay.py").read_text(
+        encoding="utf-8"
+    )
     assert 'additional_headers={"Authorization": f"Api-Key {policy_token}"}' in relay
     assert 'additional_headers={"Authorization": f"Api-Key {relay_token}"}' in relay
-    assert 'proxy=None' in relay
-    assert 'port != 443' in relay
+    assert "proxy=None" in relay
+    assert "port != 443" in relay
     assert "ssl.create_default_context" in relay
     assert "CERT_NONE" not in relay
 
@@ -234,12 +234,12 @@ def test_runtime_bundle_adds_private_relay_identity(tmp_path: Path) -> None:
         (destination / name).stat().st_mode & 0o777 == 0o600
         for name in live.REQUIRED_BUNDLE_FILES
     )
-    assert "BEGIN PRIVATE KEY" in (
-        destination / "relay-server.key"
-    ).read_text(encoding="utf-8")
-    assert "example.invalid" not in (
-        destination / "relay-server.crt"
-    ).read_text(encoding="utf-8")
+    assert "BEGIN PRIVATE KEY" in (destination / "relay-server.key").read_text(
+        encoding="utf-8"
+    )
+    assert "example.invalid" not in (destination / "relay-server.crt").read_text(
+        encoding="utf-8"
+    )
 
 
 def test_initial_bundle_staging_recovers_from_service_recreation(
@@ -308,6 +308,39 @@ def test_runtime_source_is_staged_through_supported_service_copy(
     assert copies[1][1][1].startswith("sim:/tmp/npa-live-source-")
     assert copies[1][1][1].endswith("/openpi_protocol.py")
     assert calls[-1][0] == "exec"
+
+
+def test_runtime_source_staging_recovers_from_service_recreation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    source = tmp_path / "src"
+    source.mkdir()
+    for name in ("scenario.py", "openpi_protocol.py"):
+        (source / name).write_text("# reviewed public source\n", encoding="utf-8")
+    copies: list[str] = []
+
+    class Cli:
+        attempts = 0
+
+        def services_exec(self, _runtime, _service, command):  # noqa: ANN001, ANN202
+            if command[:2] == ["install", "-d"]:
+                self.attempts += 1
+            if command[0] == "sha256sum":
+                return hashlib.sha256(b"# reviewed public source\n").hexdigest()
+            return ""
+
+        def services_copy(self, _runtime, path, _destination):  # noqa: ANN001, ANN202
+            copies.append(path.name)
+            if self.attempts == 1 and path.name == "openpi_protocol.py":
+                raise AntiochCliError("container recreated")
+
+    monkeypatch.setattr(live.time, "sleep", lambda _seconds: None)
+    cli = Cli()
+    live._stage_runtime_source(cli, runtime=tmp_path, attempts=2)  # type: ignore[arg-type]
+
+    assert cli.attempts == 2
+    assert copies.count("scenario.py") == 2
+    assert copies.count("openpi_protocol.py") == 2
 
 
 def test_live_cleanup_cancels_only_exact_active_scenario(

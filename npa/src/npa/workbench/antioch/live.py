@@ -81,10 +81,7 @@ def _session_running(name: str) -> bool:
 
 
 def _window_running(session: str, window: str) -> bool:
-    return (
-        _tmux("list-panes", "-t", f"{session}:{window}", check=False).returncode
-        == 0
-    )
+    return _tmux("list-panes", "-t", f"{session}:{window}", check=False).returncode == 0
 
 
 def _state_path(project_id: str) -> Path:
@@ -246,8 +243,7 @@ def _stage_private_bundle(
                 [
                     "/bin/sh",
                     "-lc",
-                    "test "
-                    + " -a ".join(f"-r {path}" for path in remote_files),
+                    "test " + " -a ".join(f"-r {path}" for path in remote_files),
                 ],
             )
             return
@@ -260,8 +256,10 @@ def _stage_private_bundle(
     ) from last_error
 
 
-def _stage_runtime_source(cli: AntiochCli, *, runtime: Path) -> None:
-    """Copy the reviewed public scenario source through supported services cp."""
+def _stage_runtime_source(
+    cli: AntiochCli, *, runtime: Path, attempts: int = 12
+) -> None:
+    """Copy reviewed source, retrying across a service-container recreation."""
 
     source = runtime / "src"
     names = ("scenario.py", "openpi_protocol.py")
@@ -269,25 +267,41 @@ def _stage_runtime_source(cli: AntiochCli, *, runtime: Path) -> None:
         path = source / name
         if not path.is_file() or path.is_symlink():
             raise AntiochLiveError(f"live runtime source {name!r} is unavailable")
-    staging = f"/tmp/npa-live-source-{uuid.uuid4().hex}"
-    cli.services_exec(
-        runtime,
-        "sim",
-        ["install", "-d", "-m", "0700", staging, "/workspace/project/src"],
-    )
-    for name in names:
-        staged = f"{staging}/{name}"
-        destination = f"/workspace/project/src/{name}"
-        cli.services_copy(
-            runtime,
-            source / name,
-            f"sim:{staged}",
-        )
-        cli.services_exec(runtime, "sim", ["install", "-m", "0644", staged, destination])
-        observed = cli.services_exec(runtime, "sim", ["sha256sum", destination])
-        expected = hashlib.sha256((source / name).read_bytes()).hexdigest()
-        if observed.split(maxsplit=1)[0] != expected:
-            raise AntiochLiveError(f"live runtime source {name!r} failed verification")
+    last_error: Exception | None = None
+    for attempt in range(attempts):
+        staging = f"/tmp/npa-live-source-{uuid.uuid4().hex}"
+        try:
+            cli.services_exec(
+                runtime,
+                "sim",
+                ["install", "-d", "-m", "0700", staging, "/workspace/project/src"],
+            )
+            for name in names:
+                cli.services_copy(
+                    runtime,
+                    source / name,
+                    f"sim:{staging}/{name}",
+                )
+            for name in names:
+                staged = f"{staging}/{name}"
+                destination = f"/workspace/project/src/{name}"
+                cli.services_exec(
+                    runtime, "sim", ["install", "-m", "0644", staged, destination]
+                )
+                observed = cli.services_exec(runtime, "sim", ["sha256sum", destination])
+                expected = hashlib.sha256((source / name).read_bytes()).hexdigest()
+                if observed.split(maxsplit=1)[0] != expected:
+                    raise AntiochLiveError(
+                        f"live runtime source {name!r} failed verification"
+                    )
+            return
+        except (AntiochCliError, AntiochLiveError) as exc:
+            last_error = exc
+            if attempt + 1 < attempts:
+                time.sleep(5)
+    raise AntiochLiveError(
+        "the reviewed live source did not survive service startup"
+    ) from last_error
 
 
 def _cancel_remote_live_runs(
@@ -803,7 +817,9 @@ def status_live(*, project_id: str) -> dict[str, Any]:
             "last_error_type",
         }
         result["relay"] = {key: relay.get(key) for key in sorted(allowed)}
-    active_state_path = Path(str(state.get("active_state") or runtime / "active-run.json"))
+    active_state_path = Path(
+        str(state.get("active_state") or runtime / "active-run.json")
+    )
     if active_state_path.is_file() and not active_state_path.is_symlink():
         active = json.loads(active_state_path.read_text(encoding="utf-8"))
         result["active_run"] = {

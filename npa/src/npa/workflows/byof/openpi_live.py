@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import base64
 import datetime as dt
+import hashlib
 import ipaddress
 import json
 import os
@@ -494,6 +495,12 @@ def _certificate(endpoint: str) -> tuple[bytes, bytes, bytes]:
     )
 
 
+def _tls_rollout_digest(ca: bytes, certificate: bytes, private_key: bytes) -> str:
+    """Bind a gateway pod generation to the exact in-memory TLS material."""
+
+    return hashlib.sha256(ca + b"\0" + certificate + b"\0" + private_key).hexdigest()
+
+
 def _wait_load_balancer(
     core: Any,
     *,
@@ -724,6 +731,9 @@ def deploy_live(args: argparse.Namespace) -> dict[str, Any]:
         run_id=args.run_id,
     )
     deployment = manifests["deployment"]
+    deployment["spec"]["template"]["metadata"].setdefault("annotations", {})[
+        "npa.nebius.ai/tls-material-sha256"
+    ] = _tls_rollout_digest(ca, certificate, private_key)
     _apply_owned(
         read=apps.read_namespaced_deployment,
         create=apps.create_namespaced_deployment,

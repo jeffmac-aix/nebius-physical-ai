@@ -409,12 +409,23 @@ def test_live_cache_uses_single_writer_block_storage_contract() -> None:
 def test_live_client_bundle_is_private_and_certificate_matches_endpoint(
     tmp_path: Path,
 ) -> None:
-    from cryptography.hazmat.primitives import serialization
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import padding
 
     ca, certificate, private_key = openpi_live._certificate("192.0.2.22")
     assert b"BEGIN CERTIFICATE" in ca
     assert b"BEGIN CERTIFICATE" in certificate
     assert serialization.load_pem_private_key(private_key, password=None) is not None
+    issuer = x509.load_pem_x509_certificate(ca)
+    leaf = x509.load_pem_x509_certificate(certificate)
+    issuer.public_key().verify(
+        leaf.signature,
+        leaf.tbs_certificate_bytes,
+        padding.PKCS1v15(),
+        leaf.signature_hash_algorithm,
+    )
+    assert leaf.fingerprint(hashes.SHA256())
     bundle = tmp_path / "client"
     openpi_live._write_client_bundle(
         bundle,
@@ -427,6 +438,18 @@ def test_live_client_bundle_is_private_and_certificate_matches_endpoint(
     endpoint = json.loads((bundle / "endpoint.json").read_text(encoding="utf-8"))
     assert endpoint == {"scheme": "wss", "host": "192.0.2.22", "port": 443}
     assert (bundle / "api-key").read_text(encoding="utf-8").strip() == "x" * 48
+
+
+def test_live_tls_rollout_digest_changes_with_rotated_material() -> None:
+    first = openpi_live._certificate("192.0.2.22")
+    second = openpi_live._certificate("192.0.2.22")
+
+    assert openpi_live._tls_rollout_digest(*first) == openpi_live._tls_rollout_digest(
+        *first
+    )
+    assert openpi_live._tls_rollout_digest(*first) != openpi_live._tls_rollout_digest(
+        *second
+    )
 
 
 def test_live_apply_refuses_foreign_preexisting_object() -> None:
