@@ -162,6 +162,10 @@ def test_supervisor_has_finite_run_boundary_but_no_total_limit(tmp_path: Path) -
     assert "sha256sum /workspace/project/src/scenario.py" in source
     assert "sha256sum /workspace/project/src/openpi_protocol.py" in source
     assert "install -m 0644" in source
+    assert "services up --json" in source
+    assert "connect_ex" in source
+    assert "127.0.0.1" in source
+    assert "18444" in source
     assert "sleep 15" in source
     assert "timeout 14400s" not in source
     assert script.stat().st_mode & 0o777 == 0o700

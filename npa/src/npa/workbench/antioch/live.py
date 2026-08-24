@@ -461,6 +461,19 @@ def _write_supervisor(
         source_check,
     ]
     source_stage_block = " &&\n          ".join(source_stage_commands)
+    port_check = shlex.join(
+        [
+            str(python_path),
+            "-c",
+            (
+                "import socket,sys; "
+                "s=socket.socket(); s.settimeout(2); "
+                f"r=s.connect_ex(('127.0.0.1',{RELAY_PUBLISHED_PORT})); "
+                "s.close(); sys.exit(r != 0)"
+            ),
+        ]
+    )
+    service_rebind = shlex.join([str(cli_path), "services", "up", "--json"])
     remote_files = [f"{REMOTE_CLIENT_ROOT}/{name}" for name in REQUIRED_BUNDLE_FILES]
     bundle_check = shlex.join(
         [
@@ -536,6 +549,9 @@ while [ ! -f {shlex.quote(str(stop_file))} ]; do
   (
     sleep 5
     while [ ! -f {shlex.quote(str(stop_file))} ]; do
+      if ! {port_check} >/dev/null 2>&1; then
+        {service_rebind} >/dev/null 2>&1 || true
+      fi
       if ! {bundle_check} >/dev/null 2>&1; then
         {{
           {stage_block}
