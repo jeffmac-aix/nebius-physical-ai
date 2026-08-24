@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
+from urllib.parse import urlparse
 
 import httpx
 import typer
@@ -386,7 +387,11 @@ class BenchmarkToolbox:
         "workflow_status",
         "workflow_artifacts",
     )
-    OPTIONAL = ("workflow_recovery_run",)
+    OPTIONAL = (
+        "workflow_recovery_run",
+        "workflow_quality_report",
+        "workflow_quality_recovery_run",
+    )
     MUTATING = frozenset(
         {
             "infra_provision",
@@ -398,6 +403,7 @@ class BenchmarkToolbox:
             "rerun_image_push",
             "workflow_submit",
             "workflow_recovery_run",
+            "workflow_quality_recovery_run",
         }
     )
 
@@ -522,6 +528,8 @@ class BenchmarkToolbox:
             "rerun_image_verify": "Pull and re-probe the exact pushed immutable digest.",
             "workflow_submit": "Submit the fixed seed-fixture runtime workflow and wait without a deadline.",
             "workflow_recovery_run": "Reserve one fresh run after NPA proves the prior run cannot safely resume a changed plan.",
+            "workflow_quality_report": "Read only bounded evaluator metrics and synthetic attribute checks after a quality rejection.",
+            "workflow_quality_recovery_run": "Reserve one fresh run with the fixed synthetic-neutral profile after verified quality rejection.",
             "workflow_status": "Read durable/live workflow status for the fixed run id.",
             "workflow_artifacts": "List durable artifacts for the fixed run id.",
         }
@@ -641,6 +649,18 @@ class BenchmarkToolbox:
                 "ok": False,
                 "error": "recovery requires an observed NPA plan-fingerprint resume refusal",
             }
+        if name == "workflow_quality_report" and not self._quality_rejected():
+            return {
+                "ok": False,
+                "error": "quality report requires an observed reject-quality terminal wave",
+            }
+        if name == "workflow_quality_recovery_run":
+            report = self._successful_observation("workflow_quality_report")
+            if not self._quality_rejected() or report.get("passed") is not False:
+                return {
+                    "ok": False,
+                    "error": "quality recovery requires a completed rejected evaluator report",
+                }
         started = time.monotonic()
         try:
             result = self._execute(name, args)
@@ -1003,6 +1023,11 @@ class BenchmarkToolbox:
             ]
             if resume_submission:
                 argv.extend(["--resume", "--retries", "1"])
+            remediation = self.state.get("quality_remediation")
+            if isinstance(remediation, Mapping):
+                augmentation_seed = str(remediation.get("augmentation_seed") or "")
+                if augmentation_seed:
+                    argv.extend(["--var", f"augmentation_seed={augmentation_seed}"])
             selected_rerun = self._selected_rerun_image()
             if selected_rerun:
                 argv.extend(
@@ -1013,43 +1038,16 @@ class BenchmarkToolbox:
                 )
             return self._command(argv)
         if name == "workflow_recovery_run":
-            result = self._command(
-                [
-                    self.npa,
-                    "workbench",
-                    "workflow",
-                    "prepare-run",
-                    str(self.spec),
-                    "--project",
-                    self.project,
-                    "--json",
-                ]
-            )
-            if not result.get("ok"):
-                return result
-            payload = result.get("result")
-            new_run_id = (
-                str(payload.get("run_id") or "") if isinstance(payload, Mapping) else ""
-            )
-            if not new_run_id or new_run_id == self.run_id:
-                return {
-                    "ok": False,
-                    "error": "NPA did not reserve a distinct fresh recovery run",
+            return self._reserve_recovery_run()
+        if name == "workflow_quality_report":
+            return self._read_quality_report()
+        if name == "workflow_quality_recovery_run":
+            return self._reserve_recovery_run(
+                quality_remediation={
+                    "augmentation_seed": "synthetic-neutral-v1",
+                    "fixture_profile": "off-white-neutral-cool-side-lit-matte",
                 }
-            old_run_id = self.run_id
-            self.state.setdefault("superseded_runs", []).append(old_run_id)
-            self.state["run_id"] = new_run_id
-            self.state.pop("submission_intent", None)
-            self.state["completed_tools"] = [
-                item
-                for item in self.state.get("completed_tools") or []
-                if item not in {"workflow_status", "workflow_artifacts"}
-            ]
-            self.run_id = new_run_id
-            self.replacements[old_run_id] = "<superseded-run-id>"
-            self.replacements[new_run_id] = "<run-id>"
-            self.save()
-            return result
+            )
         if name == "workflow_status":
             return self._command(
                 [
@@ -1078,6 +1076,122 @@ class BenchmarkToolbox:
             )
         raise ValueError(f"unsupported benchmark tool: {name}")
 
+    def _reserve_recovery_run(
+        self, *, quality_remediation: Mapping[str, str] | None = None
+    ) -> dict[str, Any]:
+        """Reserve a successor through NPA while preserving the prior run."""
+
+        result = self._command(
+            [
+                self.npa,
+                "workbench",
+                "workflow",
+                "prepare-run",
+                str(self.spec),
+                "--project",
+                self.project,
+                "--json",
+            ]
+        )
+        if not result.get("ok"):
+            return result
+        payload = result.get("result")
+        new_run_id = (
+            str(payload.get("run_id") or "") if isinstance(payload, Mapping) else ""
+        )
+        if not new_run_id or new_run_id == self.run_id:
+            return {
+                "ok": False,
+                "error": "NPA did not reserve a distinct fresh recovery run",
+            }
+        old_run_id = self.run_id
+        self.state.setdefault("superseded_runs", []).append(old_run_id)
+        self.state["run_id"] = new_run_id
+        self.state.pop("submission_intent", None)
+        self.state["completed_tools"] = [
+            item
+            for item in self.state.get("completed_tools") or []
+            if item not in {"workflow_status", "workflow_artifacts"}
+        ]
+        if quality_remediation:
+            self.state["quality_remediation"] = dict(quality_remediation)
+        self.run_id = new_run_id
+        self.replacements[old_run_id] = "<superseded-run-id>"
+        self.replacements[new_run_id] = "<run-id>"
+        self.save()
+        return result
+
+    def _read_quality_report(self) -> dict[str, Any]:
+        """Read the fixed evaluator object and return only non-sensitive metrics."""
+
+        from npa.clients.config import resolve_project_storage
+        from npa.clients.storage import StorageClient
+
+        config = resolve_project_storage(self.project)
+        parsed = urlparse(config.checkpoint_bucket)
+        bucket = parsed.netloc if parsed.scheme else config.checkpoint_bucket.strip("/")
+        base = parsed.path.strip("/")
+        key = "/".join(
+            item
+            for item in (
+                base,
+                f"paidf-cosmos3/{self.run_id}/grade/cosmos_evaluator.json",
+            )
+            if item
+        )
+        client = StorageClient(
+            endpoint_url=config.endpoint_url,
+            aws_access_key_id=config.aws_access_key_id,
+            aws_secret_access_key=config.aws_secret_access_key,
+        )
+        response = client.s3.get_object(Bucket=bucket, Key=key)
+        body = response["Body"]
+        try:
+            encoded = body.read(2_000_001)
+        finally:
+            body.close()
+        if len(encoded) > 2_000_000:
+            return {"ok": False, "error": "evaluator report exceeds the bounded size"}
+        payload = json.loads(encoded.decode("utf-8"))
+        clips = payload.get("clips") if isinstance(payload, Mapping) else None
+        clip = clips[0] if isinstance(clips, list) and clips else {}
+        if not isinstance(clip, Mapping):
+            clip = {}
+        attributes = clip.get("attribute_verification")
+        checks = attributes.get("checks") if isinstance(attributes, Mapping) else []
+
+        def metric(name: str) -> dict[str, Any]:
+            value = clip.get(name)
+            source = value if isinstance(value, Mapping) else {}
+            return {key: source.get(key) for key in ("passed", "score", "threshold")}
+
+        return {
+            "ok": True,
+            "result": {
+                "status": str(payload.get("status") or ""),
+                "passed": payload.get("passed"),
+                "score": payload.get("score"),
+                "threshold": payload.get("threshold"),
+                "appearance": metric("appearance_fidelity"),
+                "temporal": metric("temporal_consistency"),
+                "hallucination": metric("hallucination"),
+                "attribute_checks": [
+                    {
+                        key: item.get(key)
+                        for key in (
+                            "variable",
+                            "value",
+                            "expected_answer",
+                            "vlm_answer",
+                            "passed",
+                        )
+                    }
+                    for item in (checks or [])
+                    if isinstance(item, Mapping)
+                ],
+            },
+        }
+
     def _needs_plan_recovery(self) -> bool:
         for call in reversed(self.state.get("tool_calls") or []):
             if call.get("tool") != "workflow_submit":
@@ -1086,6 +1200,21 @@ class BenchmarkToolbox:
                 return False
             observation = json.dumps(call.get("observation") or {}, sort_keys=True)
             return "recorded ledger describes a different plan" in observation
+        return False
+
+    def _quality_rejected(self) -> bool:
+        for call in reversed(self.state.get("tool_calls") or []):
+            if call.get("tool") != "workflow_submit":
+                continue
+            if call.get("ok"):
+                return False
+            result = (call.get("observation") or {}).get("result") or {}
+            return any(
+                "reject-quality" in (wave.get("states") or [])
+                and wave.get("status") == "failed"
+                for wave in result.get("waves") or []
+                if isinstance(wave, Mapping)
+            )
         return False
 
 
@@ -1525,6 +1654,12 @@ def benchmark_cmd(
             state["completed_tools"]
         ):
             remaining.insert(0, "workflow_recovery_run")
+        if toolbox._quality_rejected():
+            completed = set(state["completed_tools"])
+            if "workflow_quality_report" not in completed:
+                remaining.insert(0, "workflow_quality_report")
+            elif "workflow_quality_recovery_run" not in completed:
+                remaining.insert(0, "workflow_quality_recovery_run")
         if not remaining:
             state["status"] = "complete"
             break

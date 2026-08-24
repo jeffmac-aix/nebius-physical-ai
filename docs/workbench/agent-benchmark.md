@@ -22,7 +22,8 @@ components. The benchmark does not substitute mocks for workflow stages.
   `paidf-cosmos3.yaml`.
 - `cluster_state_reconcile`, `infra_provision`, `skypilot_bootstrap`,
   `skypilot_api_server`, `registry_provision`, `rerun_image_build`,
-  `rerun_image_push`, `workflow_submit`, and `workflow_recovery_run` are mutating.
+  `rerun_image_push`, `workflow_submit`, `workflow_recovery_run`, and
+  `workflow_quality_recovery_run` are mutating.
   Each requires an explicit repeatable `--confirm-action` scope. At execution,
   NPA records the normalized action digest and the benchmark operation digest;
   an omitted or mismatched digest fails closed.
@@ -67,6 +68,7 @@ npa agent benchmark \
   --confirm-action rerun_image_push \
   --confirm-action workflow_submit \
   --confirm-action workflow_recovery_run \
+  --confirm-action workflow_quality_recovery_run \
   --output-format json
 ```
 
@@ -87,6 +89,12 @@ produce a different plan fingerprint, the optional confirmation-bound recovery
 tool may call `npa workbench workflow prepare-run` once. It preserves the failed
 run as evidence, reserves a distinct successor, and clears prior status/artifact
 completion so DeepSeek must submit and inspect the successor independently.
+If the real evaluator rejects the bounded refinement, DeepSeek may first call
+the read-only `workflow_quality_report`. Only that exact rejected report unlocks
+the confirmation-bound quality recovery: it preserves the rejected run, reserves
+a new run through NPA, and binds the repository fixture to the fixed
+`synthetic-neutral-v1` off-white, neutral-cool, side-lit matte profile. The
+threshold, hard checks, evaluator, and Cosmos stages remain unchanged.
 
 The normal benchmark omits `--rerun-image`: DeepSeek must first observe the
 canonical image failure and then plan the task-owned remediation. The option is

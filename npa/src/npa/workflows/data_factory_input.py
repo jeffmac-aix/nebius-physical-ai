@@ -1537,15 +1537,18 @@ def _prepare_synthetic_fixture(
         frames = tmp / "frames"
         frames.mkdir()
         for index in range(CONDITIONING_FRAMES):
-            image = Image.new("RGB", (1280, 720), (18 + (index * 5) % 60, 24, 40))
+            # The benchmark pins the matching ``synthetic-neutral-v1`` PAIDF
+            # appearance profile. Flat off-white, cool-gray geometry and a soft
+            # right-side shadow make every requested attribute visible without
+            # embedding text or pretending that this is captured media.
+            image = Image.new("RGB", (1280, 720), (238, 240, 238))
             draw = ImageDraw.Draw(image)
             block_x = 200 + (index * 90) % 700
-            color_seed = hashlib.sha256(
-                f"{run_id}:fixture:{index}".encode("utf-8")
-            ).digest()
-            color = tuple(60 + value % 171 for value in color_seed[:3])
-            draw.rectangle([block_x, 300, block_x + 260, 520], fill=color)
-            draw.rectangle([600, 120, 680, 320], fill=(200, 200, 200))
+            draw.ellipse([block_x + 35, 475, block_x + 295, 555], fill=(205, 210, 212))
+            draw.rectangle([block_x, 300, block_x + 260, 520], fill=(112, 142, 158))
+            draw.rectangle([600, 120, 680, 340], fill=(174, 184, 189))
+            draw.ellipse([570, 285, 710, 425], fill=(151, 165, 172))
+            draw.rectangle([625, 390, 655, 590], fill=(165, 176, 181))
             image.save(frames / f"frame_{index:04d}.png")
 
         source = tmp / "source.mp4"

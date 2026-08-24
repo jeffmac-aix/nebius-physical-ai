@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import concurrent.futures
+from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -409,6 +411,140 @@ def test_toolbox_recovery_rejects_without_exact_plan_mismatch(tmp_path: Path) ->
 
     assert result["ok"] is False
     assert "plan-fingerprint" in result["error"]
+
+
+def test_toolbox_quality_report_binds_fixed_profile_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker
+) -> None:
+    from npa.clients import config as config_module
+    from npa.clients import storage as storage_module
+
+    report = {
+        "status": "completed",
+        "passed": False,
+        "score": 0.31,
+        "threshold": 0.75,
+        "clips": [
+            {
+                "appearance_fidelity": {
+                    "passed": True,
+                    "score": 1.0,
+                    "threshold": 0.8,
+                },
+                "temporal_consistency": {
+                    "passed": False,
+                    "score": 0.04,
+                    "threshold": 0.8,
+                },
+                "hallucination": {
+                    "passed": False,
+                    "score": 0.63,
+                    "threshold": 0.75,
+                },
+                "attribute_verification": {
+                    "checks": [
+                        {
+                            "variable": "background",
+                            "value": "solid off-white backdrop",
+                            "expected_answer": "B",
+                            "vlm_answer": "D",
+                            "passed": False,
+                            "question": "not returned to the model",
+                        }
+                    ]
+                },
+            }
+        ],
+    }
+
+    class FakeStorageClient:
+        def __init__(self, **_kwargs) -> None:
+            self.s3 = self
+
+        def get_object(self, **_kwargs):
+            return {"Body": BytesIO(json.dumps(report).encode())}
+
+    monkeypatch.setattr(
+        config_module,
+        "resolve_project_storage",
+        lambda _project: SimpleNamespace(
+            checkpoint_bucket="s3://bucket-name/",
+            endpoint_url="https://s3.example.test",
+            aws_access_key_id="access",
+            aws_secret_access_key="secret",
+        ),
+    )
+    monkeypatch.setattr(storage_module, "StorageClient", FakeStorageClient)
+    spec = tmp_path / "paidf-cosmos3.yaml"
+    spec.write_text("apiVersion: npa.workflow/v0.0.1\n")
+    state = {
+        "run_id": "run-rejected",
+        "operation_digest": "op-fixed",
+        "completed_tools": [],
+        "tool_calls": [
+            {
+                "tool": "workflow_submit",
+                "ok": False,
+                "observation": {
+                    "result": {
+                        "waves": [
+                            {
+                                "states": ["reject-quality"],
+                                "status": "failed",
+                            }
+                        ]
+                    }
+                },
+            }
+        ],
+        "submission_intent": {"run_id": "run-rejected"},
+    }
+    toolbox = BenchmarkToolbox(
+        repo=tmp_path,
+        state=state,
+        save=lambda: None,
+        project="project-alias",
+        cluster="cluster-context",
+        bucket="bucket-name",
+        accelerator="RTXPRO6000:1",
+        registry="ghcr.io/nebius/nebius-physical-ai",
+        rerun_image="registry.example/npa-rerun-viewer@sha256:" + "1" * 64,
+        spec=spec,
+    )
+
+    observed = toolbox.execute("workflow_quality_report", {})
+    assert observed["ok"] is True
+    assert observed["result"]["passed"] is False
+    assert observed["result"]["attribute_checks"] == [
+        {
+            "variable": "background",
+            "value": "solid off-white backdrop",
+            "expected_answer": "B",
+            "vlm_answer": "D",
+            "passed": False,
+        }
+    ]
+    command = mocker.patch.object(
+        toolbox,
+        "_command",
+        side_effect=[
+            {"ok": True, "result": {"run_id": "run-recovery"}},
+            {"ok": True, "result": {"status": "succeeded"}},
+        ],
+    )
+    recovered = toolbox.execute(
+        "workflow_quality_recovery_run", {"operation_digest": "op-fixed"}
+    )
+    assert recovered["ok"] is True
+    assert state["quality_remediation"] == {
+        "augmentation_seed": "synthetic-neutral-v1",
+        "fixture_profile": "off-white-neutral-cool-side-lit-matte",
+    }
+
+    toolbox._execute("workflow_submit")
+    submit_argv = command.call_args_list[1].args[0]
+    assert "augmentation_seed=synthetic-neutral-v1" in submit_argv
+    assert "--resume-run" not in submit_argv
 
 
 def test_toolbox_rejects_bucket_prefix(tmp_path: Path) -> None:
