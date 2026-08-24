@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import re
 import subprocess
 from pathlib import Path
@@ -10,6 +11,10 @@ import pytest
 import yaml
 
 from npa.workbench.antioch import live
+from npa.workbench.antioch import relay as live_relay
+from npa.workbench.antioch import live_reconcile
+from npa.workbench.antioch.vendor_cli import AntiochCliError
+from npa.workflows.byof.openpi_live import _certificate
 
 ROOT = Path(__file__).resolve().parents[3]
 EXAMPLE = ROOT / "npa/examples/antioch-openpi-live"
@@ -21,7 +26,10 @@ def test_live_example_uses_only_runtime_project_identity() -> None:
     sim = manifest["services"]["sim"]
     assert "image" not in sim
     assert sim["build"] == {"context": ".", "dockerfile": "Dockerfile"}
-    assert sim["watch"] == [{"action": "rebuild", "path": "."}]
+    assert sim["ports"] == [
+        {"name": "policy-relay", "target": 8444, "published": 18444}
+    ]
+    assert sim["watch"] == [{"action": "rebuild", "path": "Dockerfile"}]
     rendered = (EXAMPLE / "antioch.yaml").read_text(encoding="utf-8")
     assert not re.search(r"(?:project|tenant|cluster)-[a-z0-9]+", rendered)
 
@@ -35,9 +43,11 @@ def test_live_scenario_is_real_bounded_and_fail_closed() -> None:
         "MAX_JOINT_STEP",
         "GRIPPER_JOINT_MAX = 0.04",
         'raise ValueError("normalized gripper target is outside [0, 1]")',
-        "ssl.create_default_context",
+        "ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)",
         'CLIENT_ROOT = Path("/tmp/npa-live-client")',
-        'additional_headers={"Authorization": f"Api-Key {token}"}',
+        'authorization != "Api-Key " + token',
+        '"0.0.0.0",\n                8444,',
+        "policy relay already connected",
         'logger.image("camera/exterior"',
         'logger.image("camera/wrist"',
         'logger.scalar("decision/observation_sequence"',
@@ -64,6 +74,16 @@ def test_live_scenario_is_real_bounded_and_fail_closed() -> None:
     assert "verify_mode = ssl.CERT_NONE" not in source
     assert "while True:" in source
 
+    relay = (
+        ROOT / "npa/src/npa/workbench/antioch/relay.py"
+    ).read_text(encoding="utf-8")
+    assert 'additional_headers={"Authorization": f"Api-Key {policy_token}"}' in relay
+    assert 'additional_headers={"Authorization": f"Api-Key {relay_token}"}' in relay
+    assert 'proxy=None' in relay
+    assert 'port != 443' in relay
+    assert "ssl.create_default_context" in relay
+    assert "CERT_NONE" not in relay
+
 
 def test_live_protocol_codec_round_trips_arrays_and_rejects_objects() -> None:
     pytest.importorskip("msgpack")
@@ -83,6 +103,7 @@ def test_live_protocol_codec_round_trips_arrays_and_rejects_objects() -> None:
 def test_live_sim_image_contains_only_protocol_dependencies() -> None:
     dockerfile = (EXAMPLE / "Dockerfile").read_text(encoding="utf-8")
     assert dockerfile.startswith("FROM antioch-engine/isaac-sim-6.0.1:0.3.63\n")
+    assert 'npa.antioch.live-transport="declared-port-double-wss-v1"' in dockerfile
     assert '"msgpack==1.1.1"' in dockerfile
     assert '"websockets==15.0.1"' in dockerfile
     assert "/workspace/project" in dockerfile
@@ -118,8 +139,10 @@ def test_supervisor_has_finite_run_boundary_but_no_total_limit(tmp_path: Path) -
     live._write_supervisor(
         script,
         cli_path=Path("/opt/antioch/bin/antioch"),
+        python_path=Path("/opt/npa/bin/python"),
         client_bundle=tmp_path / "bundle",
         stop_file=tmp_path / ".stop",
+        active_state_path=tmp_path / "active-run.json",
         scenario_timeout_seconds=14_400,
     )
     source = script.read_text(encoding="utf-8")
@@ -127,11 +150,31 @@ def test_supervisor_has_finite_run_boundary_but_no_total_limit(tmp_path: Path) -
     assert "scenario run --scenario openpi_droid_live" in source
     assert "--timeout 14400 --stream --verbose" in source
     assert "NPA_ANTIOCH_RENEWAL" in source
+    assert "npa.workbench.antioch.live_reconcile" in source
+    assert "NPA_ANTIOCH_RECONCILED_TERMINAL" in source
     assert "services cp" in source
     assert "services exec sim /bin/sh -lc" in source
     assert "sleep 15" in source
     assert "timeout 14400s" not in source
     assert script.stat().st_mode & 0o777 == 0o700
+    subprocess.run(["sh", "-n", str(script)], check=True)
+
+
+def test_relay_supervisor_has_no_credential_values_in_arguments(tmp_path: Path) -> None:
+    script = tmp_path / "relay-supervise.sh"
+    live._write_relay_supervisor(
+        script,
+        python_path=Path("/opt/npa/bin/python"),
+        client_bundle=tmp_path / "private-bundle",
+        stop_file=tmp_path / ".stop",
+        state_path=tmp_path / "relay-state.json",
+    )
+    source = script.read_text(encoding="utf-8")
+    assert "npa.workbench.antioch.relay" in source
+    assert "--local-port 18444" in source
+    assert "api-key" not in source
+    assert "Authorization" not in source
+    assert "while [ ! -f" in source
     subprocess.run(["sh", "-n", str(script)], check=True)
 
 
@@ -146,21 +189,320 @@ def test_client_bundle_requires_private_files(tmp_path: Path) -> None:
         path = bundle / name
         path.write_text(content, encoding="utf-8")
         path.chmod(0o600)
-    live._validate_bundle(bundle)
+    live._validate_upstream_bundle(bundle)
     (bundle / "api-key").chmod(0o644)
     try:
-        live._validate_bundle(bundle)
+        live._validate_upstream_bundle(bundle)
     except live.AntiochLiveError as exc:
         assert "group/world" in str(exc)
     else:
         raise AssertionError("a public client credential was accepted")
 
 
+def test_runtime_bundle_adds_private_relay_identity(tmp_path: Path) -> None:
+    upstream = tmp_path / "upstream"
+    upstream.mkdir()
+    for name, content in {
+        "ca.crt": "certificate",
+        "api-key": "x" * 48,
+        "endpoint.json": '{"scheme":"wss","host":"example.invalid","port":443}',
+    }.items():
+        path = upstream / name
+        path.write_text(content, encoding="utf-8")
+        path.chmod(0o600)
+
+    destination = tmp_path / "runtime-bundle"
+    live._prepare_runtime_bundle(upstream, destination)
+
+    assert set(path.name for path in destination.iterdir()) == set(
+        live.REQUIRED_BUNDLE_FILES
+    )
+    assert destination.stat().st_mode & 0o777 == 0o700
+    assert all(
+        (destination / name).stat().st_mode & 0o777 == 0o600
+        for name in live.REQUIRED_BUNDLE_FILES
+    )
+    assert "BEGIN PRIVATE KEY" in (
+        destination / "relay-server.key"
+    ).read_text(encoding="utf-8")
+    assert "example.invalid" not in (
+        destination / "relay-server.crt"
+    ).read_text(encoding="utf-8")
+
+
+def test_initial_bundle_staging_recovers_from_service_recreation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    for name in live.REQUIRED_BUNDLE_FILES:
+        (bundle / name).write_text("private", encoding="utf-8")
+    calls: list[str] = []
+
+    class Cli:
+        installs = 0
+
+        def services_exec(self, _runtime, _service, command):  # noqa: ANN001, ANN202
+            calls.append("exec:" + str(command[0]))
+            if command[0] == "install":
+                self.installs += 1
+
+        def services_copy(self, _runtime, source, _destination):  # noqa: ANN001, ANN202
+            calls.append("copy:" + source.name)
+            if self.installs == 1:
+                raise AntiochCliError("container recreated")
+
+    monkeypatch.setattr(live.time, "sleep", lambda _seconds: None)
+    cli = Cli()
+    live._stage_private_bundle(
+        cli,  # type: ignore[arg-type]
+        runtime=tmp_path / "runtime",
+        client_bundle=bundle,
+        attempts=2,
+    )
+
+    assert cli.installs == 2
+    assert calls.count("copy:ca.crt") == 2
+    assert calls[-1] == "exec:/bin/sh"
+
+
+def test_runtime_source_is_staged_through_supported_service_copy(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "src"
+    source.mkdir()
+    for name in ("scenario.py", "openpi_protocol.py"):
+        (source / name).write_text("# reviewed public source\n", encoding="utf-8")
+    calls: list[tuple[str, object]] = []
+
+    class Cli:
+        def services_exec(self, _runtime, _service, command):  # noqa: ANN001, ANN202
+            calls.append(("exec", command))
+            if command[0] == "sha256sum":
+                return hashlib.sha256(b"# reviewed public source\n").hexdigest()
+            return ""
+
+        def services_copy(self, _runtime, path, destination):  # noqa: ANN001, ANN202
+            calls.append(("copy", (path.name, destination)))
+
+    live._stage_runtime_source(Cli(), runtime=tmp_path)  # type: ignore[arg-type]
+
+    assert calls[0][0] == "exec"
+    copies = [call for call in calls if call[0] == "copy"]
+    assert copies[0][1][0] == "scenario.py"
+    assert copies[0][1][1].startswith("sim:/tmp/npa-live-source-")
+    assert copies[0][1][1].endswith("/scenario.py")
+    assert copies[1][1][0] == "openpi_protocol.py"
+    assert copies[1][1][1].startswith("sim:/tmp/npa-live-source-")
+    assert copies[1][1][1].endswith("/openpi_protocol.py")
+    assert calls[-1][0] == "exec"
+
+
+def test_live_cleanup_cancels_only_exact_active_scenario(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    pages = iter(
+        (
+            [
+                {
+                    "scenario": "openpi_droid_live",
+                    "phase": "running",
+                    "scenario_run_id": "exact-live-run",
+                },
+                {
+                    "scenario": "other_scenario",
+                    "phase": "running",
+                    "scenario_run_id": "unrelated-run",
+                },
+                {
+                    "scenario": "openpi_droid_live",
+                    "phase": "completed",
+                    "scenario_run_id": "terminal-run",
+                },
+            ],
+            [],
+            [],
+            [],
+        )
+    )
+    cancelled: list[str] = []
+
+    class Cli:
+        def list_for_project(self, *_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+            return next(pages)
+
+        def machine_status(self, *_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+            return {"stream": {}}
+
+        def show(self, *_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+            return {
+                "scenario": "openpi_droid_live",
+                "project_id": "assigned-project-for-test",
+                "phase": "running",
+            }
+
+        def cancel(self, _runtime, *, kind, remote_id):  # noqa: ANN001, ANN202
+            assert kind == "scenario"
+            cancelled.append(remote_id)
+            return {}
+
+    monkeypatch.setattr(live.time, "sleep", lambda _seconds: None)
+    count = live._cancel_remote_live_runs(
+        Cli(),  # type: ignore[arg-type]
+        runtime=tmp_path,
+        project_id="assigned-project-for-test",
+    )
+
+    assert count == 1
+    assert cancelled == ["exact-live-run"]
+
+
+def test_live_cleanup_accepts_terminal_failed_stream_record(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    class Cli:
+        def list_for_project(self, *_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+            return []
+
+        def machine_status(self, *_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+            return {"stream": {"state": "failed", "scenario_run_id": "terminal"}}
+
+        def show(self, *_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+            return {
+                "scenario": "openpi_droid_live",
+                "project_id": "assigned-project-for-test",
+                "phase": "completed",
+                "outcome": "cancelled",
+            }
+
+    monkeypatch.setattr(live.time, "sleep", lambda _seconds: None)
+    assert (
+        live._cancel_remote_live_runs(
+            Cli(),  # type: ignore[arg-type]
+            runtime=tmp_path,
+            project_id="assigned-project-for-test",
+        )
+        == 0
+    )
+
+
+def test_live_reconcile_adopts_only_machine_stream_owner(tmp_path: Path) -> None:
+    class Cli:
+        def list_for_project(self, *_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+            return [
+                {
+                    "scenario": "openpi_droid_live",
+                    "phase": "running",
+                    "scenario_run_id": "exact-active",
+                }
+            ]
+
+        def machine_status(self, *_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+            return {
+                "stream": {
+                    "state": "ready",
+                    "scenario_run_id": "exact-active",
+                }
+            }
+
+    active = live_reconcile._active_run(
+        Cli(),  # type: ignore[arg-type]
+        runtime=tmp_path,
+        project_id="assigned-project-for-test",
+    )
+    assert active is not None
+    assert active["scenario_run_id"] == "exact-active"
+
+
+def test_live_reconcile_rejects_unlisted_stream_owner(tmp_path: Path) -> None:
+    class Cli:
+        def list_for_project(self, *_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+            return []
+
+        def machine_status(self, *_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+            return {"stream": {"state": "ready", "scenario_run_id": "other"}}
+
+    with pytest.raises(
+        live_reconcile.AntiochLiveReconcileError,
+        match="absent from the exact project",
+    ):
+        live_reconcile._active_run(
+            Cli(),  # type: ignore[arg-type]
+            runtime=tmp_path,
+            project_id="assigned-project-for-test",
+        )
+
+
+def test_double_wss_relay_forwards_bounded_request_reply(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    upstream = tmp_path / "upstream"
+    upstream.mkdir()
+    ca, _certificate_bytes, _key = _certificate("127.0.0.1")
+    for name, content in {
+        "ca.crt": ca,
+        "api-key": b"p" * 48,
+        "endpoint.json": b'{"scheme":"wss","host":"127.0.0.1","port":443}',
+    }.items():
+        path = upstream / name
+        path.write_bytes(content)
+        path.chmod(0o600)
+    bundle = tmp_path / "bundle"
+    live._prepare_runtime_bundle(upstream, bundle)
+    stop_file = tmp_path / ".stop"
+
+    class Connection:
+        def __init__(self, kind: str) -> None:
+            self.kind = kind
+            self.received = 0
+            self.sent: list[bytes] = []
+
+        def __enter__(self):  # noqa: ANN204
+            return self
+
+        def __exit__(self, *_args):  # noqa: ANN002, ANN204
+            return None
+
+        def recv(self, **_kwargs):  # noqa: ANN202
+            self.received += 1
+            if self.kind == "policy":
+                return b"greeting" if self.received == 1 else b"response"
+            if self.received == 1:
+                return b"request"
+            raise RuntimeError("test stream complete")
+
+        def send(self, payload: bytes) -> None:
+            self.sent.append(payload)
+            if self.kind == "simulation" and payload == b"response":
+                stop_file.touch()
+
+    policy = Connection("policy")
+    simulation = Connection("simulation")
+
+    def connect(uri: str, **kwargs):  # noqa: ANN003, ANN202
+        assert kwargs["proxy"] is None
+        assert kwargs["additional_headers"]["Authorization"].startswith("Api-Key ")
+        return policy if uri.endswith(":443") else simulation
+
+    monkeypatch.setattr(live_relay, "connect", connect)
+    state = live_relay.run_relay(
+        bundle=bundle,
+        local_port=18_444,
+        stop_file=stop_file,
+        state_path=tmp_path / "relay-state.json",
+    )
+
+    assert policy.sent == [b"request"]
+    assert simulation.sent == [b"greeting", b"response"]
+    assert state["forwarded_requests"] == 1
+    assert state["status"] == "stopped"
+
+
 def test_live_stop_cancels_scenario_before_service(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     calls: list[str] = []
-    states = iter((True, False, False))
+    windows = {"scenario": iter((True, False, False)), "relay": iter((False,))}
     runtime = tmp_path / "runtime"
     runtime.mkdir()
     monkeypatch.setattr(
@@ -173,7 +515,12 @@ def test_live_stop_cancels_scenario_before_service(
             "cli": "/opt/antioch/bin/antioch",
         },
     )
-    monkeypatch.setattr(live, "_session_running", lambda _session: next(states))
+    monkeypatch.setattr(live, "_session_running", lambda _session: False)
+    monkeypatch.setattr(
+        live,
+        "_window_running",
+        lambda _session, window: next(windows[window]),
+    )
     monkeypatch.setattr(
         live,
         "_tmux",
@@ -184,12 +531,30 @@ def test_live_stop_cancels_scenario_before_service(
         def __init__(self, _path: Path) -> None:
             pass
 
+        def list_for_project(self, *_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+            calls.append("list-live-runs")
+            return []
+
+        def machine_status(self, *_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+            calls.append("machine-status")
+            return {"stream": {}}
+
         def services_down(self, _runtime: Path) -> None:
             calls.append("services-down")
 
     monkeypatch.setattr(live, "AntiochCli", FakeCli)
     result = live.stop_live(project_id="assigned-project-for-test")
 
-    assert calls == ["tmux:send-keys -t exact-session:0.0 C-c", "services-down"]
+    assert calls == [
+        "tmux:send-keys -t exact-session:scenario.0 C-c",
+        "list-live-runs",
+        "machine-status",
+        "list-live-runs",
+        "machine-status",
+        "list-live-runs",
+        "machine-status",
+        "services-down",
+    ]
     assert result["service_stopped_after_scenario"] is True
+    assert result["cancelled_remote_runs"] == 0
     assert (runtime / ".stop").stat().st_mode & 0o777 == 0o600

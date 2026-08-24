@@ -218,6 +218,7 @@ def test_supported_live_service_commands_never_inline_credentials(
 
     monkeypatch.setattr(subprocess, "run", run)
     cli = AntiochCli("antioch")
+    cli.services_build(tmp_path, service="sim")
     cli.services_up(tmp_path)
     cli.services_exec(
         tmp_path, "sim", ["install", "-d", "-m", "0700", "/workspace/client"]
@@ -226,6 +227,7 @@ def test_supported_live_service_commands_never_inline_credentials(
     cli.services_down(tmp_path)
 
     assert calls == [
+        ["antioch", "services", "build", "--service", "sim", "--json"],
         ["antioch", "services", "up", "--json"],
         [
             "antioch",

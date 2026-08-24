@@ -39,9 +39,22 @@ endpoints, print identity/config/environment data, or inspect unrelated runs.
 - Supervise the foreground streamed run in a named tmux session and capture its
   ordinary output with `pipe-pane`. The tmux supervisor may renew after the CLI's
   finite per-scenario timeout, but must have no total run limit unless requested.
+- An accepted interactive run can outlive a detached foreground CLI. Before a
+  renewal, reconcile the exact project-scoped scenario through supported
+  `scenario list` and `machine status` JSON. Adopt only the matching stream owner,
+  wait for terminal state, and fail closed on absent or ambiguous ownership;
+  never dispatch another run merely because the local CLI reported the occupied
+  lease.
 - A scenario dispatch or renewal may recreate the sim container. While the
-  foreground run lives, verify the three bundle files through `services exec` and
+  foreground run lives, verify every required bundle file through `services exec` and
   re-stage missing files with `services cp`; never bake them into the sim image.
+- When direct policy egress is unavailable, use a declared Antioch service port
+  published only on operator localhost. Terminate authenticated WSS in the sim and
+  supervise a second tmux window that bridges it to the policy's independently
+  authenticated, CA-verified WSS port 443. Bound messages, queues, connections,
+  requests, timeouts, and reconnect backoff; never substitute an unauthenticated
+  public proxy, disabled TLS verification, a token in a URL, or an undocumented
+  Antioch endpoint.
 - Treat livestream state `ready` as published but awaiting an authenticated Mission
   Control viewer. Do not claim an actively viewed frame until a supported viewer
   connection advances the first render, and never inspect browser auth storage.

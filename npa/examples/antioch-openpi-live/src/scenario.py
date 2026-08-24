@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import json
+import queue
 import ssl
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -27,41 +28,98 @@ GRIPPER_JOINT_MAX = 0.04
 
 
 class SafePolicyClient:
-    """Bounded TLS client with explicit reconnect and no ambient credentials."""
+    """Authenticated TLS listener for the supervised declared-port relay."""
 
     def __init__(self) -> None:
         self._connection = None
+        self._connection_done = None
         self.reconnects = 0
         self._backoff = 1.0
+        self._pending = queue.Queue(maxsize=1)
+        self._connection_slot = threading.Lock()
+        self._accept_ready = threading.Event()
+        self._ready = threading.Event()
+        self._server = None
+        self._server_error = None
+        self._thread = threading.Thread(
+            target=self._serve,
+            name="openpi-policy-relay-listener",
+            daemon=True,
+        )
+        self._thread.start()
+        if not self._ready.wait(timeout=10):
+            raise RuntimeError("policy relay listener did not start")
+        if self._server_error is not None:
+            raise RuntimeError("policy relay listener failed to start") from self._server_error
 
-    def _settings(self) -> tuple[str, str, ssl.SSLContext]:
-        endpoint = json.loads((CLIENT_ROOT / "endpoint.json").read_text())
-        if set(endpoint) != {"scheme", "host", "port"} or endpoint["scheme"] != "wss":
-            raise RuntimeError("policy endpoint contract is malformed")
-        token = (CLIENT_ROOT / "api-key").read_text().strip()
+    def _settings(self) -> tuple[str, ssl.SSLContext]:
+        token = (CLIENT_ROOT / "relay-api-key").read_text().strip()
         if len(token) < 32:
-            raise RuntimeError("policy API key is missing or malformed")
-        context = ssl.create_default_context(cafile=str(CLIENT_ROOT / "ca.crt"))
+            raise RuntimeError("policy relay API key is missing or malformed")
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.minimum_version = ssl.TLSVersion.TLSv1_2
-        uri = f"wss://{endpoint['host']}:{int(endpoint['port'])}"
-        return uri, token, context
+        context.load_cert_chain(
+            str(CLIENT_ROOT / "relay-server.crt"),
+            str(CLIENT_ROOT / "relay-server.key"),
+        )
+        return token, context
+
+    def _serve(self) -> None:
+        from websockets.sync.server import serve
+
+        try:
+            token, context = self._settings()
+
+            def handle(connection) -> None:
+                authorization = connection.request.headers.get("Authorization", "")
+                if authorization != "Api-Key " + token:
+                    connection.close(code=1008, reason="authentication required")
+                    return
+                if not self._accept_ready.is_set():
+                    connection.close(code=1013, reason="policy client is not ready")
+                    return
+                if not self._connection_slot.acquire(blocking=False):
+                    connection.close(code=1013, reason="policy relay already connected")
+                    return
+                done = threading.Event()
+                try:
+                    self._pending.put_nowait((connection, done))
+                    done.wait()
+                except queue.Full:
+                    connection.close(code=1013, reason="policy relay queue is full")
+                finally:
+                    done.set()
+                    self._connection_slot.release()
+
+            with serve(
+                handle,
+                "0.0.0.0",
+                8444,
+                ssl=context,
+                compression=None,
+                max_size=32 * 1024 * 1024,
+                max_queue=2,
+                open_timeout=10,
+                close_timeout=5,
+            ) as server:
+                self._server = server
+                self._ready.set()
+                server.serve_forever()
+        except Exception as exc:
+            self._server_error = exc
+            self._ready.set()
 
     def connect(self) -> None:
         import openpi_protocol
-        from websockets.sync.client import connect
 
-        uri, token, context = self._settings()
         self.close()
-        self._connection = connect(
-            uri,
-            ssl=context,
-            compression=None,
-            max_size=32 * 1024 * 1024,
-            max_queue=2,
-            open_timeout=10,
-            close_timeout=5,
-            additional_headers={"Authorization": f"Api-Key {token}"},
-        )
+        self._accept_ready.set()
+        try:
+            self._connection, self._connection_done = self._pending.get(timeout=40)
+        except queue.Empty as exc:
+            self._accept_ready.clear()
+            raise TimeoutError("policy relay is not connected") from exc
+        self._accept_ready.clear()
         greeting = self._connection.recv(timeout=30)
         metadata = openpi_protocol.unpackb(greeting)
         if not isinstance(metadata, dict):
@@ -95,11 +153,20 @@ class SafePolicyClient:
 
     def close(self) -> None:
         connection, self._connection = self._connection, None
+        done, self._connection_done = self._connection_done, None
         if connection is not None:
             try:
                 connection.close()
             except Exception:
                 pass
+        if done is not None:
+            done.set()
+
+    def shutdown(self) -> None:
+        self.close()
+        if self._server is not None:
+            self._server.shutdown()
+        self._thread.join(timeout=5)
 
 
 def _look_at(stage, path: str, eye, target) -> None:
@@ -376,7 +443,7 @@ def openpi_droid_live(
                 4
             ].text = f"last inference {last_latency * 1000.0:.1f} ms | safe holds {safe_holds}"
     finally:
-        client.close()
+        client.shutdown()
         executor.shutdown(wait=False, cancel_futures=True)
         run.add_result("observation_sequence", observation_sequence)
         run.add_result("policy_requests", requests)

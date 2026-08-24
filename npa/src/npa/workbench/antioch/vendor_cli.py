@@ -253,6 +253,22 @@ class AntiochCli:
             )
         return payload
 
+    def services_build(self, cwd: Path, *, service: str = "sim") -> Any:
+        if not service:
+            raise AntiochCliError(
+                "Antioch service build requires an exact service",
+                error_type="invalid_request",
+            )
+        payload = self._run(
+            ["services", "build", "--service", service, "--json"], cwd=cwd
+        ).payload
+        if not isinstance(payload, (dict, list)):
+            raise AntiochCliError(
+                "Antioch service build response was malformed",
+                error_type="malformed_cli_output",
+            )
+        return payload
+
     def services_exec(self, cwd: Path, service: str, command: Sequence[str]) -> str:
         if not service or not command:
             raise AntiochCliError(
@@ -285,6 +301,17 @@ class AntiochCli:
         if not isinstance(payload, dict):
             raise AntiochCliError(
                 "Antioch service teardown response was malformed",
+                error_type="malformed_cli_output",
+            )
+        return payload
+
+    def machine_status(self, cwd: Path, *, project_id: str) -> dict[str, Any]:
+        payload = self._run(
+            ["machine", "status", "--project", project_id, "--json"], cwd=cwd
+        ).payload
+        if not isinstance(payload, dict):
+            raise AntiochCliError(
+                "Antioch machine status response was malformed",
                 error_type="malformed_cli_output",
             )
         return payload

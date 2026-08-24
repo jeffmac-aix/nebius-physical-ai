@@ -139,7 +139,13 @@ payload never enter the public image or project source.
 
 The controller uses supported `antioch services up|exec|cp` commands to place the
 0600 client bundle in the sim service, then runs `antioch scenario run --stream
---verbose` under a named tmux session with `pipe-pane`. Scenario timeout is a
+--verbose` under a named tmux session with `pipe-pane`. The sim terminates an
+authenticated WSS listener on a declared Antioch service port, published only on
+the operator's localhost. A second tmux window bridges that verified WSS stream to
+the B200 gateway's authenticated WSS port 443. This preserves encryption and
+authentication when Antioch egress cannot route directly to the managed
+load-balancer range; it does not expose a public relay or put either API key in a
+URL, environment dump, project, or process argument. Scenario timeout is a
 finite platform boundary, so the supervisor renews indefinitely until explicitly
 stopped. Renewal resets the simulated episode and briefly interrupts the viewport;
 it is continuous service supervision, not one immortal scenario process.
@@ -147,6 +153,11 @@ The supervisor rechecks and re-stages the private client bundle after container
 recreation at a renewal boundary. A Mission Control stream in `ready` state is
 published but waiting for an authenticated viewer; do not describe it as actively
 viewed until the viewer connects and the first rendered frame advances.
+If an interactive dispatch is accepted but its foreground CLI detaches and reports
+the now-occupied lease, the supervisor reconciles only the matching project-scoped
+scenario from supported `scenario list` plus `machine status` JSON. It waits on
+that exact run instead of issuing duplicate renewals, and records the adopted run
+ID only in owner-private local state.
 
 ## Policy data contract
 

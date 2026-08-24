@@ -60,6 +60,9 @@ dependencies = [
     "rerun-sdk==0.31.4",
     # Formerly the `server` extra: FastAPI policy/eval + agent backend server.
     "fastapi~=0.136.1",
+    # Antioch's supported declared-port bridge uses bounded, authenticated WSS
+    # on both legs. Keep the operator transport matched to the sim dependency.
+    "websockets==15.0.1",
 ]
 
 [project.optional-dependencies]

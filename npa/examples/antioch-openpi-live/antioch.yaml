@@ -9,9 +9,16 @@ services:
     build:
       context: "."
       dockerfile: "Dockerfile"
+    ports:
+      # Antioch publishes this only on the operator's localhost while services
+      # are up. The scenario terminates authenticated TLS here; the supervised
+      # operator relay carries the other verified WSS leg to the B200 gateway.
+      - name: policy-relay
+        target: 8444
+        published: 18444
     watch:
       - action: rebuild
-        path: .
+        path: Dockerfile
 
 suites:
   live:
