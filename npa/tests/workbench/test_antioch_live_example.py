@@ -135,6 +135,10 @@ def test_runtime_staging_keeps_private_project_id_out_of_source(tmp_path: Path) 
 
 
 def test_supervisor_has_finite_run_boundary_but_no_total_limit(tmp_path: Path) -> None:
+    source_dir = tmp_path / "src"
+    source_dir.mkdir()
+    for name in ("scenario.py", "openpi_protocol.py"):
+        (source_dir / name).write_text("# reviewed source\n", encoding="utf-8")
     script = tmp_path / "supervise.sh"
     live._write_supervisor(
         script,
@@ -154,6 +158,10 @@ def test_supervisor_has_finite_run_boundary_but_no_total_limit(tmp_path: Path) -
     assert "NPA_ANTIOCH_RECONCILED_TERMINAL" in source
     assert "services cp" in source
     assert "services exec sim /bin/sh -lc" in source
+    assert "npa-live-supervisor-source-" in source
+    assert "sha256sum /workspace/project/src/scenario.py" in source
+    assert "sha256sum /workspace/project/src/openpi_protocol.py" in source
+    assert "install -m 0644" in source
     assert "sleep 15" in source
     assert "timeout 14400s" not in source
     assert script.stat().st_mode & 0o777 == 0o700

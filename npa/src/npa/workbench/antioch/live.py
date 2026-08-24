@@ -388,6 +388,79 @@ def _write_supervisor(
             "--verbose",
         ]
     )
+    source_names = ("scenario.py", "openpi_protocol.py")
+    source_paths = {name: path.parent / "src" / name for name in source_names}
+    for name, source_path in source_paths.items():
+        if not source_path.is_file() or source_path.is_symlink():
+            raise AntiochLiveError(f"live runtime source {name!r} is unavailable")
+    source_hashes = {
+        name: hashlib.sha256(source_path.read_bytes()).hexdigest()
+        for name, source_path in source_paths.items()
+    }
+    source_check_expression = " -a ".join(
+        f'"$(sha256sum /workspace/project/src/{name} 2>/dev/null | cut -d" " -f1)" '
+        f"= {digest}"
+        for name, digest in source_hashes.items()
+    )
+    source_check = shlex.join(
+        [
+            str(cli_path),
+            "services",
+            "exec",
+            "sim",
+            "/bin/sh",
+            "-lc",
+            f"test {source_check_expression}",
+        ]
+    )
+    source_staging = f"/tmp/npa-live-supervisor-source-{uuid.uuid4().hex}"
+    source_stage_commands = [
+        shlex.join(
+            [
+                str(cli_path),
+                "services",
+                "exec",
+                "sim",
+                "install",
+                "-d",
+                "-m",
+                "0700",
+                source_staging,
+                "/workspace/project/src",
+            ]
+        ),
+        *[
+            shlex.join(
+                [
+                    str(cli_path),
+                    "services",
+                    "cp",
+                    str(source_paths[name]),
+                    f"sim:{source_staging}/{name}",
+                    "--json",
+                ]
+            )
+            for name in source_names
+        ],
+        *[
+            shlex.join(
+                [
+                    str(cli_path),
+                    "services",
+                    "exec",
+                    "sim",
+                    "install",
+                    "-m",
+                    "0644",
+                    f"{source_staging}/{name}",
+                    f"/workspace/project/src/{name}",
+                ]
+            )
+            for name in source_names
+        ],
+        source_check,
+    ]
+    source_stage_block = " &&\n          ".join(source_stage_commands)
     remote_files = [f"{REMOTE_CLIENT_ROOT}/{name}" for name in REQUIRED_BUNDLE_FILES]
     bundle_check = shlex.join(
         [
@@ -466,6 +539,11 @@ while [ ! -f {shlex.quote(str(stop_file))} ]; do
       if ! {bundle_check} >/dev/null 2>&1; then
         {{
           {stage_block}
+        }} >/dev/null 2>&1 || true
+      fi
+      if ! {source_check} >/dev/null 2>&1; then
+        {{
+          {source_stage_block}
         }} >/dev/null 2>&1 || true
       fi
       sleep 15
