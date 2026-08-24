@@ -95,38 +95,44 @@ def run_relay(
         "failures": 0,
         "last_round_trip_ms": None,
         "last_error_type": None,
+        "last_failed_phase": None,
     }
     _write_state(state_path, state)
     backoff = 1.0
     while not stop_file.exists():
         try:
+            state["status"] = "connecting_simulation"
+            _write_state(state_path, state)
             with connect(
-                remote_uri,
-                ssl=remote_context,
+                local_uri,
+                ssl=local_context,
                 compression=None,
                 max_size=MAX_MESSAGE_BYTES,
                 max_queue=2,
                 open_timeout=10,
                 close_timeout=5,
-                additional_headers={"Authorization": f"Api-Key {policy_token}"},
+                additional_headers={"Authorization": f"Api-Key {relay_token}"},
                 proxy=None,
-            ) as policy:
-                greeting = policy.recv(timeout=30)
+            ) as simulation:
+                state["status"] = "connecting_policy"
+                _write_state(state_path, state)
                 with connect(
-                    local_uri,
-                    ssl=local_context,
+                    remote_uri,
+                    ssl=remote_context,
                     compression=None,
                     max_size=MAX_MESSAGE_BYTES,
                     max_queue=2,
                     open_timeout=10,
                     close_timeout=5,
-                    additional_headers={"Authorization": f"Api-Key {relay_token}"},
+                    additional_headers={"Authorization": f"Api-Key {policy_token}"},
                     proxy=None,
-                ) as simulation:
+                ) as policy:
+                    greeting = policy.recv(timeout=30)
                     simulation.send(greeting)
                     state["connections"] += 1
                     state["status"] = "connected"
                     state["last_error_type"] = None
+                    state["last_failed_phase"] = None
                     _write_state(state_path, state)
                     print(
                         "NPA_ANTIOCH_RELAY_CONNECTED "
@@ -153,10 +159,12 @@ def run_relay(
         except Exception as exc:
             if stop_file.exists():
                 break
+            failed_phase = state.get("status")
             state["status"] = "reconnecting"
             state["reconnects"] += 1
             state["failures"] += 1
             state["last_error_type"] = type(exc).__name__
+            state["last_failed_phase"] = failed_phase
             _write_state(state_path, state)
             print(
                 "NPA_ANTIOCH_RELAY_RECONNECT "

@@ -490,11 +490,14 @@ def test_double_wss_relay_forwards_bounded_request_reply(
 
     policy = Connection("policy")
     simulation = Connection("simulation")
+    connection_order: list[str] = []
 
     def connect(uri: str, **kwargs):  # noqa: ANN003, ANN202
         assert kwargs["proxy"] is None
         assert kwargs["additional_headers"]["Authorization"].startswith("Api-Key ")
-        return policy if uri.endswith(":443") else simulation
+        kind = "policy" if uri.endswith(":443") else "simulation"
+        connection_order.append(kind)
+        return policy if kind == "policy" else simulation
 
     monkeypatch.setattr(live_relay, "connect", connect)
     state = live_relay.run_relay(
@@ -506,6 +509,7 @@ def test_double_wss_relay_forwards_bounded_request_reply(
 
     assert policy.sent == [b"request"]
     assert simulation.sent == [b"greeting", b"response"]
+    assert connection_order == ["simulation", "policy"]
     assert state["forwarded_requests"] == 1
     assert state["status"] == "stopped"
 
