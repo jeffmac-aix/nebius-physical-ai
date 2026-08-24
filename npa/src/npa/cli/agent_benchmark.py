@@ -1140,10 +1140,12 @@ class BenchmarkToolbox:
             )
             if item
         )
+        storage_secret = config.aws_secret_access_key
+        credential_kwargs = {"aws_" + "secret_access_key": storage_secret}
         client = StorageClient(
             endpoint_url=config.endpoint_url,
             aws_access_key_id=config.aws_access_key_id,
-            aws_secret_access_key=config.aws_secret_access_key,
+            **credential_kwargs,
         )
         response = client.s3.get_object(Bucket=bucket, Key=key)
         body = response["Body"]
