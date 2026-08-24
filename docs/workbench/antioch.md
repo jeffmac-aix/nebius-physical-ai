@@ -187,6 +187,10 @@ no cartpole fallback and a later collector cannot silently relabel a dataset.
 The executable example
 `npa/workflows/workbench/npa-workflows/antioch-offline-policy-train.yaml` follows
 collection with real LeRobot ACT training and publishes a genuine checkpoint.
+The `workbench.antioch.run` toolRef reads its idempotency state identity from
+`config.antioch_state_id`. When a workflow contains multiple Antioch stages, set
+a distinct `antioch_state_id` in each state's `params`; retries of the same stage
+must reuse that value together with the workflow run id.
 
 ## Security and cleanup
 
