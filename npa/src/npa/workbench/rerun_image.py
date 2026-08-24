@@ -12,7 +12,7 @@ from typing import Any, Mapping, Sequence
 
 from npa.clients.config import list_projects
 from npa.clients.nebius import get_registry_identity
-from npa.clients.nebius_auth import mint_nebius_iam_token
+from npa.clients.nebius_auth import strip_ambient_token_env
 from npa.orchestration.skypilot.image_bootstrap_contract import (
     ATTESTATION_LABEL,
     CONTRACT_VERSION,
@@ -61,6 +61,31 @@ def _require_success(
         detail = (result.stderr or result.stdout or "").strip()[-1200:]
         raise RerunImageError(f"{operation} failed (exit {result.returncode}): {detail}")
     return (result.stdout or "").strip()
+
+
+def _registry_token(profile: str) -> str:
+    """Mint a fresh task-registry token without trusting ambient credentials."""
+
+    argv = ["nebius"]
+    if profile:
+        argv.extend(["--profile", profile])
+    argv.extend(["iam", "get-access-token"])
+    try:
+        result = subprocess.run(
+            argv,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            env=strip_ambient_token_env(),
+        )
+    except OSError as exc:
+        raise RerunImageError("Nebius CLI could not mint a task registry token") from exc
+    token = (result.stdout or "").strip()
+    if result.returncode != 0 or not token:
+        detail = (result.stderr or result.stdout or "no token returned").strip()[-1200:]
+        raise RerunImageError(f"task registry token mint failed: {detail}")
+    return token
 
 
 def _project_registry(project: str) -> tuple[str, str]:
@@ -230,7 +255,7 @@ def push_rerun_viewer(
     if evidence["inspection_digest"] != str(inspection_digest or "").strip():
         raise RerunImageError("inspection digest does not match the current image")
     registry_host = image.split("/", 1)[0]
-    token = mint_nebius_iam_token(profile=profile or None, allow_env_token=False)
+    token = _registry_token(profile)
     login = _run(
         [
             "docker",

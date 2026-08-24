@@ -44,6 +44,7 @@ def _full_app() -> typer.Typer:
     from npa.cli.workbench.lichtblick import app as lichtblick_app
     from npa.cli.workbench.ltx2 import app as ltx2_app
     from npa.cli.workbench.mjlab import app as mjlab_app
+    from npa.cli.workbench.registry import app as registry_app
     from npa.cli.workbench.scenario_gen import app as scenario_gen_app
     from npa.cli.workbench.sim2real import app as sim2real_app
     from npa.cli.workbench.sim2real_envgen import app as sim2real_envgen_app
@@ -90,6 +91,7 @@ def _full_app() -> typer.Typer:
     full.add_typer(dataset_app, name="dataset")
     full.add_typer(insights_app, name="insights")
     full.add_typer(image_app, name="image")
+    full.add_typer(registry_app, name="registry")
     full.add_typer(vlm_eval_app, name="vlm-eval")
     full.add_typer(token_factory_app, name="token-factory")
     full.add_typer(byof_app, name="byof")

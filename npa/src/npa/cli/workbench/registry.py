@@ -1,4 +1,4 @@
-"""Guarded teardown for registries in NPA-created disposable projects."""
+"""Guarded lifecycle commands for task-owned container registries."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import json
 
 import typer
 
-from npa.lifecycle_intent import OperationIntent, intent_boundary
+from npa.lifecycle_intent import OperationIntent, intent_boundary, json_stdout_contract
 
 app = typer.Typer(
     name="registry",
@@ -17,6 +17,7 @@ app = typer.Typer(
 
 @app.command("ensure")
 @intent_boundary(OperationIntent.ENSURE_PRESENT)
+@json_stdout_contract
 def ensure_registry_cmd(
     project: str = typer.Option(..., "--project", help="Exact NPA project alias."),
     name: str = typer.Option(..., "--name", help="Unique task registry name."),
@@ -43,6 +44,8 @@ def ensure_registry_cmd(
 
 
 @app.command("delete")
+@intent_boundary(OperationIntent.DESTROY)
+@json_stdout_contract
 def delete_registry_cmd(
     project: str = typer.Option(..., "--project", help="Exact NPA project alias."),
     project_id: str = typer.Option(..., "--project-id", help="Exact project ID."),

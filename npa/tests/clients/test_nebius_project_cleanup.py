@@ -301,8 +301,6 @@ def test_registry_artifact_inventory_fails_closed_without_immutable_id(
 
     with pytest.raises(nebius.NebiusError, match="without immutable identity"):
         nebius.list_registry_image_ids("registry-a")
-
-
 def test_project_dependency_inventory_keeps_projects_isolated(monkeypatch) -> None:
     monkeypatch.setattr(nebius, "_iam_profile_args", lambda _profile: ([], "test"))
     calls: list[list[str]] = []

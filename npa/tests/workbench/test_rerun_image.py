@@ -43,6 +43,26 @@ def _config(image_id: str = "sha256:" + "1" * 64) -> dict:
     }
 
 
+def test_registry_token_uses_profile_and_scrubs_ambient_credentials(
+    mocker, monkeypatch
+) -> None:
+    monkeypatch.setenv("NEBIUS_IAM_TOKEN", "stale-token")
+    run = mocker.patch(
+        "npa.workbench.rerun_image.subprocess.run",
+        return_value=subprocess.CompletedProcess([], 0, "fresh-token\n", ""),
+    )
+
+    assert rerun_image._registry_token("task-profile") == "fresh-token"
+    assert run.call_args.args[0] == [
+        "nebius",
+        "--profile",
+        "task-profile",
+        "iam",
+        "get-access-token",
+    ]
+    assert "NEBIUS_IAM_TOKEN" not in run.call_args.kwargs["env"]
+
+
 def test_build_uses_only_checked_in_dockerfile_and_task_registry(mocker, tmp_path) -> None:
     _registry(mocker)
     dockerfile = tmp_path / "npa/docker/workbench/rerun-viewer/Dockerfile"
@@ -111,9 +131,7 @@ def test_push_is_bound_to_inspected_bytes_and_uses_token_only_on_stdin(mocker) -
         "cr.example/a/npa-rerun-viewer@sha256:" + "3" * 64
     ]
     mocker.patch("npa.workbench.rerun_image._inspect_config", return_value=config)
-    mocker.patch(
-        "npa.workbench.rerun_image.mint_nebius_iam_token", return_value="secret-token"
-    )
+    mocker.patch("npa.workbench.rerun_image._registry_token", return_value="secret-token")
     calls: list[tuple[list[str], str | None]] = []
 
     def run(argv, *, cwd=None, input_text=None):  # noqa: ANN001, ANN202, ARG001
@@ -146,7 +164,7 @@ def test_push_refuses_changed_image_before_login(mocker) -> None:
             "inspection_digest": "2" * 64,
         },
     )
-    mint = mocker.patch("npa.workbench.rerun_image.mint_nebius_iam_token")
+    mint = mocker.patch("npa.workbench.rerun_image._registry_token")
 
     with pytest.raises(rerun_image.RerunImageError, match="changed"):
         rerun_image.push_rerun_viewer(

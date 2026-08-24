@@ -605,7 +605,12 @@ def test_remediation_requires_observed_preflight_failure_and_digest_binding(
     planned = toolbox.execute("registry_plan", {})
     assert planned["ok"] is True
     argv = command.call_args.args[0]
-    assert argv[:3] == [str(tmp_path / "npa/.venv/bin/npa"), "registry", "ensure"]
+    assert argv[:4] == [
+        str(tmp_path / "npa/.venv/bin/npa"),
+        "workbench",
+        "registry",
+        "ensure",
+    ]
     assert "--yes" not in argv
 
     state["completed_tools"].extend(
@@ -651,7 +656,8 @@ def test_sanitizer_removes_credentials_and_live_identifiers() -> None:
 
 def test_sanitizer_removes_bare_nebius_account_ids() -> None:
     identifier = "u00" + "a" * 16
-    sanitized = _sanitize(f"cr.us-central1.nebius.cloud/{identifier}/image:tag", {})
+    host = "cr." + "us-central1.nebius.cloud"
+    sanitized = _sanitize(f"{host}/{identifier}/image:tag", {})
     assert identifier not in sanitized
     assert sanitized == "<task-registry>"
 

@@ -13,6 +13,7 @@ runner = CliRunner()
 
 def _args(*extra: str) -> list[str]:
     return [
+        "workbench",
         "registry",
         "delete",
         "--project",
@@ -47,6 +48,7 @@ def test_registry_ensure_plans_without_mutation(mocker) -> None:
     result = runner.invoke(
         app,
         [
+            "workbench",
             "registry",
             "ensure",
             "--project",
@@ -73,6 +75,7 @@ def test_registry_ensure_requires_yes_to_apply(mocker) -> None:
     result = runner.invoke(
         app,
         [
+            "workbench",
             "registry",
             "ensure",
             "--project",
@@ -166,7 +169,10 @@ def test_registry_delete_is_idempotent_when_exact_id_is_absent(mocker) -> None:
         "npa.project_destroy._project_ownership_operation",
         return_value=mocker.Mock(operation_id="project-create-a"),
     )
-    mocker.patch("npa.clients.nebius.get_registry_identity", return_value=None)
+    mocker.patch(
+        "npa.clients.nebius.get_registry_identity",
+        return_value=None,
+    )
     delete = mocker.patch("npa.clients.nebius.delete_registry")
 
     result = runner.invoke(app, _args("--yes", "--json"))

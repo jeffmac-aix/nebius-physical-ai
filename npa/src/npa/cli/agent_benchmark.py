@@ -877,6 +877,7 @@ class BenchmarkToolbox:
         if name in {"registry_plan", "registry_provision"}:
             argv = [
                 self.npa,
+                "workbench",
                 "registry",
                 "ensure",
                 "--project",
