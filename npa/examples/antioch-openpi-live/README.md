@@ -7,10 +7,13 @@ chunks, enters safe hold on stale/malformed/unsafe responses, and reconnects wit
 bounded exponential backoff. Antioch telemetry and a viewport overlay report the
 live counters; neither is reconstructed from a recording.
 
-The client uses a 90-second response-age safety deadline because this large VLA's
-measured B200 latency is in the tens of seconds. The five returned targets are
-applied at a nominal 15 Hz only after validation; the observation-to-action loop
-is therefore intentionally described as best-effort and not hard real time.
+The client uses a 90-second response-age safety deadline because a cold request
+can take tens of seconds even though warmed B200 requests are normally tens of
+milliseconds. The reviewed `pi05_droid_jointpos_polaris` output contract is seven
+absolute arm joints plus one normalized gripper position; the client maps the
+gripper value into the Franka finger range only after validating the complete
+`[15, 8]` chunk. Five returned targets are applied at a nominal 15 Hz. The
+observation-to-action loop is best-effort and not hard real time.
 
 The checked-in project ID is deliberately unusable. The live controller creates a
 private runtime copy with an assigned Antioch project ID, starts the supported sim

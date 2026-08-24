@@ -21,6 +21,7 @@ def test_live_example_uses_only_runtime_project_identity() -> None:
     sim = manifest["services"]["sim"]
     assert "image" not in sim
     assert sim["build"] == {"context": ".", "dockerfile": "Dockerfile"}
+    assert sim["watch"] == [{"action": "rebuild", "path": "."}]
     rendered = (EXAMPLE / "antioch.yaml").read_text(encoding="utf-8")
     assert not re.search(r"(?:project|tenant|cluster)-[a-z0-9]+", rendered)
 
@@ -32,6 +33,8 @@ def test_live_scenario_is_real_bounded_and_fail_closed() -> None:
         "ACTION_SHAPE = (15, 8)",
         "MAX_RESPONSE_AGE_SECONDS",
         "MAX_JOINT_STEP",
+        "GRIPPER_JOINT_MAX = 0.04",
+        'raise ValueError("normalized gripper target is outside [0, 1]")',
         "ssl.create_default_context",
         'CLIENT_ROOT = Path("/tmp/npa-live-client")',
         'additional_headers={"Authorization": f"Api-Key {token}"}',
@@ -51,6 +54,8 @@ def test_live_scenario_is_real_bounded_and_fail_closed() -> None:
         "NPA_OPENPI_LOOP_READY",
         "NPA_OPENPI_FIRST_FRAME",
         "NPA_OPENPI_REQUEST",
+        "NPA_OPENPI_APPLIED",
+        "waiting for camera frames",
     ):
         assert contract in source
     assert "WebsocketClientPolicy(" not in source
@@ -78,6 +83,11 @@ def test_live_sim_image_contains_only_protocol_dependencies() -> None:
     assert dockerfile.startswith("FROM antioch-engine/isaac-sim-6.0.1:0.3.63\n")
     assert '"msgpack==1.1.1"' in dockerfile
     assert '"websockets==15.0.1"' in dockerfile
+    assert "/workspace/project" in dockerfile
+    assert "/tmp/npa-home/.cache \\" in dockerfile
+    assert "/tmp/npa-home/.cache/ov" in dockerfile
+    assert "ENV HOME=/tmp/npa-home" in dockerfile
+    assert "COPY --chown=1000:1000 src/ /workspace/project/src/" in dockerfile
     assert "USER 1000:1000" in dockerfile
     assert "git clone" not in dockerfile
     assert "checkpoint" not in dockerfile.lower()

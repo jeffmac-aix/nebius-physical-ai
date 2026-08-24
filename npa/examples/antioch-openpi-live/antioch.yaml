@@ -10,9 +10,8 @@ services:
       context: "."
       dockerfile: "Dockerfile"
     watch:
-      - action: sync
+      - action: rebuild
         path: .
-        target: /workspace/project
 
 suites:
   live:

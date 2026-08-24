@@ -15,12 +15,14 @@ CLIENT_ROOT = Path("/tmp/npa-live-client")
 ACTION_SHAPE = (15, 8)
 CONTROL_HZ = 15.0
 TARGETS_PER_QUERY = 5
-# The measured B200 round trip is tens of seconds for this large VLA. This is a
-# stale-response safety deadline, not a real-time claim or a total run limit.
+# A cold B200 model request can take tens of seconds even though warmed requests
+# are normally tens of milliseconds. This is a stale-response safety deadline,
+# not a real-time claim or a total run limit.
 MAX_RESPONSE_AGE_SECONDS = 90.0
 JOINT_LOW = (-2.8973, -1.7628, -2.8973, -3.0718, -2.8973, -0.0175, -2.8973)
 JOINT_HIGH = (2.8973, 1.7628, 2.8973, -0.0698, 2.8973, 3.7525, 2.8973)
 MAX_JOINT_STEP = 0.35
+GRIPPER_JOINT_MAX = 0.04
 
 
 class SafePolicyClient:
@@ -130,8 +132,10 @@ def _validated_actions(response: dict, current) -> object:
     low, high = np.asarray(JOINT_LOW), np.asarray(JOINT_HIGH)
     if np.any(targets[:, :7] < low) or np.any(targets[:, :7] > high):
         raise ValueError("joint target exceeds Franka limits")
-    if np.any(targets[:, 7] < 0.0) or np.any(targets[:, 7] > 0.085):
-        raise ValueError("gripper target exceeds physical limits")
+    # The reviewed pi05_droid_jointpos_polaris output contract is seven
+    # absolute arm joints plus one normalized gripper position.
+    if np.any(targets[:, 7] < 0.0) or np.any(targets[:, 7] > 1.0):
+        raise ValueError("normalized gripper target is outside [0, 1]")
     prior = np.asarray(current[:7], dtype=np.float64)
     deltas = np.diff(np.vstack([prior, targets[:, :7]]), axis=0)
     if np.max(np.abs(deltas)) > MAX_JOINT_STEP:
@@ -150,6 +154,22 @@ def _install_overlay():
             counters = ui.Label("", word_wrap=True)
             latency = ui.Label("", word_wrap=True)
     return window, title, state, counters, latency
+
+
+def _camera_rgb(camera):
+    """Return a validated RGB frame, or None while the annotator warms up."""
+
+    import numpy as np
+
+    rgba = camera.get_rgba()
+    if rgba is None:
+        return None
+    frame = np.asarray(rgba)
+    if frame.ndim != 3 or frame.shape[2] < 3 or frame.size == 0:
+        return None
+    if not np.issubdtype(frame.dtype, np.number) or not np.isfinite(frame).all():
+        return None
+    return frame[:, :, :3].astype(np.uint8, copy=False)
 
 
 @antioch.scenario(tags=["openpi-live"])
@@ -220,17 +240,22 @@ def openpi_droid_live(
     try:
         while True:
             world.step(render=True)
-            if first_frame:
-                print("NPA_OPENPI_FIRST_FRAME", flush=True)
-                first_frame = False
             now = time.monotonic()
             if chunk is None and now >= next_attempt:
-                observation_sequence += 1
                 joint_positions = np.asarray(
                     robot.get_joint_positions(), dtype=np.float32
                 )
-                exterior_rgb = np.asarray(exterior.get_rgba(), dtype=np.uint8)[:, :, :3]
-                wrist_rgb = np.asarray(wrist.get_rgba(), dtype=np.uint8)[:, :, :3]
+                exterior_rgb = _camera_rgb(exterior)
+                wrist_rgb = _camera_rgb(wrist)
+                if exterior_rgb is None or wrist_rgb is None:
+                    safe_holds += 1
+                    next_attempt = now + 1.0 / CONTROL_HZ
+                    overlay[2].text = "SAFE HOLD / waiting for camera frames"
+                    continue
+                if first_frame:
+                    print("NPA_OPENPI_FIRST_FRAME", flush=True)
+                    first_frame = False
+                observation_sequence += 1
                 observation = {
                     "observation/exterior_image_1_left": exterior_rgb,
                     "observation/wrist_image_left": wrist_rgb,
@@ -282,13 +307,21 @@ def openpi_droid_live(
                 robot.apply_action(
                     ArticulationAction(
                         joint_positions=np.concatenate(
-                            [target[:7], np.repeat(target[7] / 2.0, 2)]
+                            [
+                                target[:7],
+                                np.repeat(target[7] * GRIPPER_JOINT_MAX, 2),
+                            ]
                         )
                     )
                 )
                 applied += 1
                 chunk_index += 1
                 last_apply = now
+                print(
+                    "NPA_OPENPI_APPLIED "
+                    f"applied={applied} chunk_index={chunk_index}",
+                    flush=True,
+                )
                 if chunk_index >= TARGETS_PER_QUERY:
                     chunk = None
 

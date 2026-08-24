@@ -6,5 +6,15 @@ RUN uv pip install --system --no-cache \
     "msgpack==1.1.1" \
     "websockets==15.0.1"
 
-# Match the non-root UID/GID enforced by the generated Kubernetes workload.
+# Antioch syncs and bakes queued project files at this canonical path.
+RUN install -d -o 1000 -g 1000 \
+    /workspace/project \
+    /tmp/npa-home \
+    /tmp/npa-home/.cache \
+    /tmp/npa-home/.cache/ov
+COPY --chown=1000:1000 src/ /workspace/project/src/
+
+ENV HOME=/tmp/npa-home \
+    XDG_CACHE_HOME=/tmp/npa-home/.cache
+
 USER 1000:1000
