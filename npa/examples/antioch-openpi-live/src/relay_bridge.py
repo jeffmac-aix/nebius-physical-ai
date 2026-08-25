@@ -65,10 +65,10 @@ class RelayBridge:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bundle", required=True)
-    parser.add_argument("--lifetime-seconds", type=float, required=True)
+    parser.add_argument("--lifetime-seconds", type=float, default=0)
     args = parser.parse_args()
-    if not 1 <= args.lifetime_seconds < 120:
-        raise RuntimeError("bridge lifetime must remain below the service exec ceiling")
+    if args.lifetime_seconds and not 1 <= args.lifetime_seconds < 120:
+        raise RuntimeError("finite bridge lifetime must be below the exec ceiling")
     bundle = Path(args.bundle)
     token = (bundle / "relay-api-key").read_text(encoding="utf-8").strip()
     if len(token) < 32:
@@ -90,14 +90,17 @@ def main() -> int:
         open_timeout=10,
         close_timeout=5,
     ) as server:
-        renewal = threading.Timer(args.lifetime_seconds, server.shutdown)
-        renewal.daemon = True
-        renewal.start()
+        renewal = None
+        if args.lifetime_seconds:
+            renewal = threading.Timer(args.lifetime_seconds, server.shutdown)
+            renewal.daemon = True
+            renewal.start()
         print("NPA_ANTIOCH_BRIDGE_READY", flush=True)
         try:
             server.serve_forever()
         finally:
-            renewal.cancel()
+            if renewal is not None:
+                renewal.cancel()
     return 0
 
 

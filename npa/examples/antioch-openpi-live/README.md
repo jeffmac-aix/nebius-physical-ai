@@ -53,9 +53,10 @@ the sim container. A machine recycle can also discard its machine-local built
 service image; in that case the supervisor runs the supported service build before
 bringing the exact service back, re-staging source and credentials, or dispatching
 another scenario. Separate bridge and relay tmux windows remain supervised across
-that boundary and reconnect after the service returns. The bridge renews below
-Antioch's finite service-exec boundary; this causes a bounded reconnect, not one
-infinitely lived process. If Antioch accepts an interactive scenario but the
+that boundary and reconnect after the service returns. The bridge supervisor uses
+only short supported service-exec health/start calls; the bridge itself remains
+bound to the replaceable service container instead of the CLI exec lifetime. If
+Antioch accepts an interactive scenario but the
 foreground CLI loses attachment while reporting the occupied stream lease, the
 supervisor reconciles the exact run through supported project-scoped
 `scenario list` and `machine status` JSON. It adopts only the matching stream

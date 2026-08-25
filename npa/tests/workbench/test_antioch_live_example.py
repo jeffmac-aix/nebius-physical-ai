@@ -202,7 +202,7 @@ def test_relay_supervisor_has_no_credential_values_in_arguments(tmp_path: Path) 
     subprocess.run(["sh", "-n", str(script)], check=True)
 
 
-def test_bridge_supervisor_renews_below_service_exec_ceiling(tmp_path: Path) -> None:
+def test_bridge_supervisor_uses_short_service_exec_calls(tmp_path: Path) -> None:
     script = tmp_path / "bridge-supervise.sh"
     live._write_bridge_supervisor(
         script,
@@ -210,9 +210,12 @@ def test_bridge_supervisor_renews_below_service_exec_ceiling(tmp_path: Path) -> 
         stop_file=tmp_path / ".stop",
     )
     source = script.read_text(encoding="utf-8")
-    assert "services exec sim /usr/local/bin/python" in source
+    assert "services exec sim /bin/sh -lc" in source
     assert "/workspace/project/src/relay_bridge.py" in source
-    assert "--lifetime-seconds 105" in source
+    assert "nohup /usr/local/bin/python" in source
+    assert "kill -0" in source
+    assert "NPA_ANTIOCH_BRIDGE_STARTED" in source
+    assert "--lifetime-seconds" not in source
     assert "api-key" not in source
     assert "while [ ! -f" in source
     subprocess.run(["sh", "-n", str(script)], check=True)

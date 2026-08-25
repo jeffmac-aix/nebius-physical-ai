@@ -705,20 +705,32 @@ done
 
 
 def _write_bridge_supervisor(path: Path, *, cli_path: Path, stop_file: Path) -> None:
-    """Renew the bridge below Antioch's finite service-exec ceiling."""
+    """Supervise a service-bound bridge with finite supported exec calls."""
 
+    remote_script = f"""
+pid_file=/tmp/npa-live-bridge.pid
+if test -r "$pid_file" && kill -0 "$(cat "$pid_file")" 2>/dev/null; then
+  printf 'NPA_ANTIOCH_BRIDGE_HEALTHY\\n'
+  exit 0
+fi
+rm -f "$pid_file"
+nohup /usr/local/bin/python /workspace/project/src/relay_bridge.py \\
+  --bundle {REMOTE_CLIENT_ROOT} >>/tmp/npa-live-bridge.log 2>&1 </dev/null &
+pid=$!
+printf '%s\\n' "$pid" >"$pid_file"
+sleep 1
+kill -0 "$pid" 2>/dev/null
+printf 'NPA_ANTIOCH_BRIDGE_STARTED\\n'
+""".strip()
     command = shlex.join(
         [
             str(cli_path),
             "services",
             "exec",
             "sim",
-            "/usr/local/bin/python",
-            "/workspace/project/src/relay_bridge.py",
-            "--bundle",
-            REMOTE_CLIENT_ROOT,
-            "--lifetime-seconds",
-            "105",
+            "/bin/sh",
+            "-lc",
+            remote_script,
         ]
     )
     content = f"""#!/bin/sh
@@ -729,8 +741,10 @@ while [ ! -f {shlex.quote(str(stop_file))} ]; do
   if [ -f {shlex.quote(str(stop_file))} ]; then
     break
   fi
-  printf 'NPA_ANTIOCH_BRIDGE_RENEWAL exit_code=%s\n' "$status"
-  sleep 2
+  if [ "$status" -ne 0 ]; then
+    printf 'NPA_ANTIOCH_BRIDGE_RESTART exit_code=%s\n' "$status"
+  fi
+  sleep 10
 done
 """
     path.write_text(content, encoding="utf-8")
