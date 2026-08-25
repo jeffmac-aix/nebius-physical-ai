@@ -48,7 +48,7 @@ def test_live_scenario_is_real_bounded_and_fail_closed() -> None:
         'raise ValueError("normalized gripper target is outside [0, 1]")',
         "ssl.create_default_context",
         'CLIENT_ROOT = Path("/tmp/npa-live-client-current")',
-        'return "wss://sim:8444", token, context',
+        'return "wss://127.0.0.1:8444", token, context',
         '"X-NPA-Relay-Role": "simulation"',
         'logger.image("camera/exterior"',
         'logger.image("camera/wrist"',
@@ -246,7 +246,7 @@ def test_bridge_supervisor_uses_short_health_exec_calls(tmp_path: Path) -> None:
     subprocess.run(["sh", "-n", str(script)], check=True)
 
 
-def test_relay_certificate_covers_operator_and_service_names() -> None:
+def test_relay_certificate_covers_verified_localhost_endpoint() -> None:
     from cryptography import x509
 
     _ca, certificate, _key = live._relay_certificate()
@@ -257,7 +257,7 @@ def test_relay_certificate_covers_operator_and_service_names() -> None:
     )
 
     assert names.get_values_for_type(x509.IPAddress)[0].compressed == "127.0.0.1"
-    assert names.get_values_for_type(x509.DNSName) == ["sim"]
+    assert names.get_values_for_type(x509.DNSName) == []
 
 
 def test_client_bundle_requires_private_files(tmp_path: Path) -> None:

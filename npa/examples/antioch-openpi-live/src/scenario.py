@@ -39,7 +39,7 @@ class SafePolicyClient:
             raise RuntimeError("policy relay API key is missing or malformed")
         context = ssl.create_default_context(cafile=str(CLIENT_ROOT / "relay-ca.crt"))
         context.minimum_version = ssl.TLSVersion.TLSv1_2
-        return "wss://sim:8444", token, context
+        return "wss://127.0.0.1:8444", token, context
 
     def connect(self) -> None:
         import openpi_protocol

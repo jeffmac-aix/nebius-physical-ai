@@ -162,10 +162,7 @@ def _relay_certificate() -> tuple[bytes, bytes, bytes]:
         .not_valid_after(now + dt.timedelta(days=30))
         .add_extension(
             x509.SubjectAlternativeName(
-                [
-                    x509.IPAddress(ipaddress.ip_address("127.0.0.1")),
-                    x509.DNSName("sim"),
-                ]
+                [x509.IPAddress(ipaddress.ip_address("127.0.0.1"))]
             ),
             critical=False,
         )
