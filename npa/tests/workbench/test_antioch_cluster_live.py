@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import io
 import json
 import os
+import tarfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -73,6 +75,49 @@ def test_cluster_live_terms_acceptance_is_process_scoped(
     assert "antioch_terms_file" not in type(config).model_fields
 
 
+def test_config_archive_preserves_owner_only_nested_assignment_state(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    root = Path(config.antioch_config_dir)
+    ssh = root / "ssh"
+    ssh.mkdir(mode=0o700)
+    private_key = ssh / "assigned-machine"
+    private_key.write_bytes(b"private-runtime-state")
+    os.chmod(private_key, 0o600)
+    lock = root / "session.lock"
+    lock.touch(mode=0o600)
+    os.chmod(lock, 0o600)
+
+    first = cluster_deploy._config_archive(root)["config.tar"]
+    second = cluster_deploy._config_archive(root)["config.tar"]
+    assert first == second
+    with tarfile.open(fileobj=io.BytesIO(first), mode="r") as archive:
+        members = {member.name: member for member in archive.getmembers()}
+        assert set(members) == {
+            "config.json",
+            "session.lock",
+            "ssh",
+            "ssh/assigned-machine",
+        }
+        assert members["ssh"].isdir()
+        assert members["ssh"].mode == 0o700
+        assert members["ssh/assigned-machine"].isfile()
+        assert members["ssh/assigned-machine"].mode == 0o600
+        extracted = archive.extractfile(members["ssh/assigned-machine"])
+        assert extracted is not None
+        assert extracted.read() == b"private-runtime-state"
+
+
+def test_config_archive_rejects_non_owner_only_nested_state(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    nested = Path(config.antioch_config_dir) / "ssh"
+    nested.mkdir(mode=0o755)
+    os.chmod(nested, 0o755)
+    with pytest.raises(cluster_deploy.ClusterLiveError, match="owner-only"):
+        cluster_deploy._config_archive(Path(config.antioch_config_dir))
+
+
 def test_public_manifests_keep_vm_out_and_policy_cluster_local(tmp_path: Path) -> None:
     config = _config(tmp_path)
     manifests = cluster_deploy.build_public_manifests(config)
@@ -92,7 +137,7 @@ def test_public_manifests_keep_vm_out_and_policy_cluster_local(tmp_path: Path) -
     assert len(volume_names) == len(set(volume_names))
     init_mount_names = [mount["name"] for mount in init["volumeMounts"]]
     assert len(init_mount_names) == len(set(init_mount_names))
-    assert "cp -L /sources/config/*" in init_command
+    assert "tar --extract --file /sources/config/config.tar" in init_command
     assert "cp -L /sources/bundle/*" in init_command
     assert init["securityContext"]["capabilities"] == {
         "drop": ["ALL"],

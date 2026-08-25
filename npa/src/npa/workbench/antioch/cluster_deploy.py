@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import io
 import json
 import os
 import re
 import stat
+import tarfile
 import time
 from pathlib import Path
 from typing import Any, Literal
@@ -167,7 +169,8 @@ def build_public_manifests(config: ClusterLiveConfig) -> dict[str, dict[str, Any
         # Kubernetes Secret volumes are symlink farms backed by read-only
         # projections. Dereference their regular files into the writable tmpfs;
         # preserving those symlinks makes the later ownership change fail.
-        "cp -L /sources/config/* /private/antioch-config/; "
+        "tar --extract --file /sources/config/config.tar "
+        "--directory /private/antioch-config --no-same-owner --no-same-permissions; "
         "cp -L /sources/bundle/* /private/live-bundle/; "
         "install -m 0600 /sources/terms/accepted /private/antioch-terms; "
         "install -m 0600 /sources/project/project-id /private/project-id; "
@@ -521,27 +524,54 @@ def _terms_acceptance() -> bytes:
     return accepted
 
 
-def _config_files(directory: Path) -> dict[str, bytes]:
+def _config_archive(directory: Path) -> dict[str, bytes]:
     if (
         not directory.is_dir()
         or directory.is_symlink()
         or stat.S_IMODE(directory.stat().st_mode) & 0o077
     ):
         raise ClusterLiveError("private Antioch config directory must be mode 0700")
-    result: dict[str, bytes] = {}
-    for path in sorted(directory.iterdir()):
-        if (
-            not path.is_file()
-            or path.is_symlink()
-            or not _SECRET_KEY.fullmatch(path.name)
+    members: list[tuple[Path, Path]] = []
+    nonempty_files = 0
+    for path in sorted(directory.rglob("*")):
+        relative = path.relative_to(directory)
+        if path.is_symlink() or any(
+            not _SECRET_KEY.fullmatch(component) for component in relative.parts
         ):
+            raise ClusterLiveError("Antioch config contains an unsafe path")
+        mode = stat.S_IMODE(path.stat().st_mode)
+        if mode & 0o077:
+            raise ClusterLiveError("Antioch config entries must be owner-only")
+        if path.is_dir():
+            members.append((path, relative))
+            continue
+        if not path.is_file():
             raise ClusterLiveError(
-                "Antioch config must contain only safe regular files"
+                "Antioch config must contain only regular files and directories"
             )
-        result[path.name] = _private_file(path, label="Antioch config file")
-    if not result:
+        nonempty_files += int(path.stat().st_size > 0)
+        members.append((path, relative))
+    if not nonempty_files:
         raise ClusterLiveError("private Antioch config directory is empty")
-    return result
+    archive = io.BytesIO()
+    with tarfile.open(fileobj=archive, mode="w") as output:
+        for path, relative in members:
+            info = tarfile.TarInfo(relative.as_posix())
+            info.mtime = 0
+            info.uid = 10001
+            info.gid = 10001
+            info.uname = ""
+            info.gname = ""
+            if path.is_dir():
+                info.type = tarfile.DIRTYPE
+                info.mode = 0o700
+                output.addfile(info)
+            else:
+                value = path.read_bytes()
+                info.size = len(value)
+                info.mode = 0o600
+                output.addfile(info, io.BytesIO(value))
+    return {"config.tar": archive.getvalue()}
 
 
 def _secret(
@@ -759,7 +789,7 @@ def apply_cluster(config: ClusterLiveConfig) -> dict[str, Any]:
             config.config_secret_name,
             config.namespace,
             labels,
-            _config_files(Path(config.antioch_config_dir)),
+            _config_archive(Path(config.antioch_config_dir)),
         ),
         _secret(
             config.terms_secret_name,
