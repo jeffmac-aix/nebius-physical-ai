@@ -25,6 +25,12 @@ MAX_JOINT_STEP = 0.35
 GRIPPER_JOINT_MAX = 0.04
 
 
+class ActionValidationError(ValueError):
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
 class SafePolicyClient:
     """Authenticated WSS client for the persistent service-side bridge."""
 
@@ -128,21 +134,21 @@ def _validated_actions(response: dict, current) -> object:
 
     actions = np.asarray(response.get("actions"))
     if actions.shape != ACTION_SHAPE:
-        raise ValueError(f"expected action shape {ACTION_SHAPE}, got {actions.shape}")
+        raise ActionValidationError("wrong_shape")
     if not np.issubdtype(actions.dtype, np.number) or not np.isfinite(actions).all():
-        raise ValueError("actions must be numeric and finite")
+        raise ActionValidationError("non_finite")
     targets = actions.astype(np.float64, copy=True)
     low, high = np.asarray(JOINT_LOW), np.asarray(JOINT_HIGH)
     if np.any(targets[:, :7] < low) or np.any(targets[:, :7] > high):
-        raise ValueError("joint target exceeds Franka limits")
+        raise ActionValidationError("joint_limit")
     # The reviewed pi05_droid_jointpos_polaris output contract is seven
     # absolute arm joints plus one normalized gripper position.
     if np.any(targets[:, 7] < 0.0) or np.any(targets[:, 7] > 1.0):
-        raise ValueError("normalized gripper target is outside [0, 1]")
+        raise ActionValidationError("gripper_range")
     prior = np.asarray(current[:7], dtype=np.float64)
     deltas = np.diff(np.vstack([prior, targets[:, :7]]), axis=0)
     if np.max(np.abs(deltas)) > MAX_JOINT_STEP:
-        raise ValueError("joint target step exceeds the safe per-target bound")
+        raise ActionValidationError("joint_step")
     return targets
 
 
@@ -270,11 +276,16 @@ def openpi_droid_live(
                     safe_holds += 1
                     delay = client.reconnect_delay()
                     next_attempt = now + delay
-                    logger.value("policy/error", rr.TextLog(type(exc).__name__))
+                    reason = (
+                        exc.reason
+                        if isinstance(exc, ActionValidationError)
+                        else type(exc).__name__
+                    )
+                    logger.value("policy/error", rr.TextLog(reason))
                     print(
                         "NPA_OPENPI_SAFE_HOLD "
                         f"observation={pending_observation} "
-                        f"reason={type(exc).__name__} "
+                        f"reason={reason} "
                         f"reconnects={client.reconnects}",
                         flush=True,
                     )
