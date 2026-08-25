@@ -451,6 +451,7 @@ class BenchmarkToolbox:
         "rerun_image_verify",
         "workflow_submit",
         "workflow_status",
+        "workflow_logs",
         "workflow_artifacts",
     )
     OPTIONAL = (
@@ -591,6 +592,7 @@ class BenchmarkToolbox:
             "workflow_quality_report": "Read only bounded evaluator metrics and synthetic attribute checks after a quality rejection.",
             "workflow_quality_recovery_run": "Reserve one fresh run with the fixed synthetic-neutral profile after verified quality rejection.",
             "workflow_status": "Read durable/live workflow status for the fixed run id.",
+            "workflow_logs": "Read bounded persisted diagnostic logs for the fixed run id.",
             "workflow_artifacts": "List durable artifacts for the fixed run id.",
         }
         specs: dict[str, ToolSpec] = {}
@@ -602,7 +604,7 @@ class BenchmarkToolbox:
                 params = ("operation_digest", "image_id", "inspection_digest")
             elif name == "rerun_image_verify":
                 params = ("digest",)
-            elif name in {"workflow_status", "workflow_artifacts"}:
+            elif name in {"workflow_status", "workflow_logs", "workflow_artifacts"}:
                 params = ("run_id",)
             specs[name] = ToolSpec(
                 name,
@@ -629,7 +631,7 @@ class BenchmarkToolbox:
                 "error": "operation_digest must match the fixed benchmark operation",
             }
         if (
-            name in {"workflow_status", "workflow_artifacts"}
+            name in {"workflow_status", "workflow_logs", "workflow_artifacts"}
             and str(args.get("run_id") or "") != self.run_id
         ):
             return {"ok": False, "error": "run_id must match the fixed benchmark run"}
@@ -673,12 +675,13 @@ class BenchmarkToolbox:
                 "workflow_runtime_status",
             },
             "workflow_status": {"workflow_submit"},
+            "workflow_logs": {"workflow_submit"},
             "workflow_artifacts": {"workflow_submit"},
         }
         completed = set(self.state.get("completed_tools") or [])
         missing = sorted(prerequisites.get(name, set()) - completed)
         if (
-            name in {"workflow_status", "workflow_artifacts"}
+            name in {"workflow_status", "workflow_logs", "workflow_artifacts"}
             and "workflow_submit" in missing
             and self.state.get("submission_intent")
         ):
@@ -1067,6 +1070,20 @@ class BenchmarkToolbox:
                     "--json",
                 ]
             )
+        if name == "workflow_logs":
+            return self._command(
+                [
+                    self.npa,
+                    "workbench",
+                    "workflow",
+                    "logs",
+                    self.run_id,
+                    "--project",
+                    self.project,
+                    "--cached",
+                    "--json",
+                ]
+            )
         if name == "workflow_artifacts":
             return self._command(
                 [
@@ -1117,7 +1134,7 @@ class BenchmarkToolbox:
         self.state["completed_tools"] = [
             item
             for item in self.state.get("completed_tools") or []
-            if item not in {"workflow_status", "workflow_artifacts"}
+            if item not in {"workflow_status", "workflow_logs", "workflow_artifacts"}
         ]
         if quality_remediation:
             self.state["quality_remediation"] = dict(quality_remediation)
@@ -1417,7 +1434,7 @@ def _execution_evidence(state: Mapping[str, Any]) -> dict[str, Any]:
         call
         for call in state.get("tool_calls") or []
         if call.get("tool")
-        in {"workflow_submit", "workflow_status", "workflow_artifacts"}
+        in {"workflow_submit", "workflow_status", "workflow_logs", "workflow_artifacts"}
     ]
     for call in relevant:
         visit(call.get("observation"), path=str(call.get("tool") or "workflow"))
@@ -1685,7 +1702,7 @@ def benchmark_cmd(
             + ", ".join(remaining)
             + ". For each mutating tool pass operation_digest="
             + operation_digest
-            + "; for workflow_status and workflow_artifacts pass run_id="
+            + "; for workflow_status, workflow_logs, and workflow_artifacts pass run_id="
             + str(state["run_id"])
             + "."
         )

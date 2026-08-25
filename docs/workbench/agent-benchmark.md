@@ -8,7 +8,7 @@ The current scenario takes `paidf-cosmos3.yaml` from environment inspection
 through credential/access checks, offline validation and planning, additive
 infrastructure verification, an expected initial image-preflight refusal,
 model-planned task-registry and Rerun-image remediation, one repository-generated
-seed variant, durable status, and artifact inspection. The workflow continues to use
+seed variant, durable status, persisted diagnostic logs, and artifact inspection. The workflow continues to use
 real Cosmos 3, Cosmos Evaluator, Cosmos Curator, FiftyOne Brain, and Rerun
 components. The benchmark does not substitute mocks for workflow stages.
 
@@ -135,7 +135,7 @@ The `npa.agent.benchmark.v1` report includes:
   loop;
 - a deterministic read-only baseline using the same NPA executors, clearly
   marked `agentic: false`;
-- sanitized workflow observations from status and artifacts, plus explicit
+- sanitized workflow observations from status, cached diagnostic logs, and artifacts, plus explicit
   stage-duration and GPU/resource-second measurements whenever those NPA
   responses expose them (otherwise marked `not_reported`).
 

@@ -213,16 +213,9 @@ def prepare_workflow_runtime(
         runtime = bootstrap_skypilot()
     except Exception as exc:  # noqa: BLE001 - expose only a stable diagnostic
         raise _generic_failure("runtime_install_failed") from exc
-    try:
-        service = ensure_isolated_api_server(
-            sky_bin=runtime.sky_bin,
-            state_dir=state_dir,
-            port=port,
-            kubeconfig=selected_access,
-        )
-    except (IsolatedApiServerError, OSError, RuntimeError) as exc:
-        raise _generic_failure("runtime_service_failed") from exc
-
+    # Persist exact ownership before starting the internal service. This lets
+    # the matching NPA stop operation clean up safely after any interruption
+    # between service creation and target verification.
     try:
         _write_runtime_record(
             state_dir,
@@ -233,6 +226,16 @@ def prepare_workflow_runtime(
         )
     except OSError as exc:
         raise _generic_failure("runtime_owner_record_failed") from exc
+
+    try:
+        service = ensure_isolated_api_server(
+            sky_bin=runtime.sky_bin,
+            state_dir=state_dir,
+            port=port,
+            kubeconfig=selected_access,
+        )
+    except (IsolatedApiServerError, OSError, RuntimeError) as exc:
+        raise _generic_failure("runtime_service_failed") from exc
 
     env = {**os.environ, **workflow_runtime_environment(scope=scope, cluster=cluster)}
     try:

@@ -177,7 +177,49 @@ def test_benchmark_model_tool_contract_has_no_shell_or_backend_parameters() -> N
         "workflow_runtime_status",
         "workflow_submit",
         "workflow_status",
+        "workflow_logs",
     }
+
+
+def test_workflow_logs_uses_fixed_cached_npa_diagnostic_argv(
+    tmp_path: Path, mocker
+) -> None:
+    spec = tmp_path / "paidf-cosmos3.yaml"
+    spec.write_text("apiVersion: npa.workflow/v0.0.1\n")
+    state = {
+        "run_id": "run-fixed",
+        "operation_digest": "op-fixed",
+        "completed_tools": ["workflow_submit"],
+        "tool_calls": [],
+    }
+    toolbox = BenchmarkToolbox(
+        repo=tmp_path,
+        state=state,
+        save=lambda: None,
+        project="project-alias",
+        cluster="selected-context",
+        bucket="bucket-name",
+        accelerator="RTXPRO6000:1",
+        registry="ghcr.io/nebius/nebius-physical-ai",
+        rerun_image="",
+        spec=spec,
+    )
+    command = mocker.patch.object(toolbox, "_command", return_value={"ok": True})
+
+    result = toolbox.execute("workflow_logs", {"run_id": "run-fixed"})
+
+    assert result["ok"] is True
+    assert command.call_args.args[0] == [
+        str(tmp_path / "npa/.venv/bin/npa"),
+        "workbench",
+        "workflow",
+        "logs",
+        "run-fixed",
+        "--project",
+        "project-alias",
+        "--cached",
+        "--json",
+    ]
 
 
 def test_workflow_runtime_prepare_uses_fixed_npa_lifecycle_argv(
