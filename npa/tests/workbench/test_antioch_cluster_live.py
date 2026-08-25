@@ -101,6 +101,10 @@ def test_public_manifests_keep_vm_out_and_policy_cluster_local(tmp_path: Path) -
     assert "chown -R 10001:10001 /private /state /runtime /runtime-cache" in init_command
     assert "cp -a" not in init_command
     controller, relay = pod["containers"]
+    controller_mounts = {mount["name"]: mount for mount in controller["volumeMounts"]}
+    relay_mounts = {mount["name"]: mount for mount in relay["volumeMounts"]}
+    assert controller_mounts["private"]["readOnly"] is False
+    assert relay_mounts["private"]["readOnly"] is True
     assert "cluster_runtime" in " ".join(controller["command"])
     assert "14400" in controller["command"]
     assert "antioch.relay" in " ".join(relay["command"])
