@@ -19,6 +19,7 @@ from npa.workflows.byof.openpi_live import LIVE_MANAGED_BY, _certificate
 from .live import _relay_certificate
 
 CONFIG_SCHEMA = "npa.antioch.mk8s-live-config.v1"
+ANTIOCH_TLS_EGRESS_PORTS = (443, 8443)
 MANAGED_BY = "npa-antioch-mk8s-live"
 SCENARIO = "openpi_franka_mk8s_live"
 _DNS_LABEL = re.compile(r"^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$")
@@ -481,7 +482,10 @@ def build_public_manifests(config: ClusterLiveConfig) -> dict[str, dict[str, Any
                 },
                 {
                     "to": [{"ipBlock": {"cidr": "0.0.0.0/0"}}],
-                    "ports": [{"protocol": "TCP", "port": 443}],
+                    "ports": [
+                        {"protocol": "TCP", "port": port}
+                        for port in ANTIOCH_TLS_EGRESS_PORTS
+                    ],
                 },
             ],
         },

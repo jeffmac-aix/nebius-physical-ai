@@ -130,6 +130,13 @@ def test_public_manifests_keep_vm_out_and_policy_cluster_local(tmp_path: Path) -
     adapter_policy = manifests["adapter_network_policy"]["spec"]
     assert adapter_policy["ingress"] == []
     assert adapter_policy["policyTypes"] == ["Ingress", "Egress"]
+    assert adapter_policy["egress"][-1] == {
+        "to": [{"ipBlock": {"cidr": "0.0.0.0/0"}}],
+        "ports": [
+            {"protocol": "TCP", "port": 443},
+            {"protocol": "TCP", "port": 8443},
+        ],
+    }
 
 
 def test_cluster_runtime_probe_is_fail_closed(tmp_path: Path) -> None:
