@@ -103,18 +103,14 @@ def test_public_manifests_keep_vm_out_and_policy_cluster_local(tmp_path: Path) -
     )
     assert "cp -a" not in init_command
     controller, relay = pod["containers"]
+    controller_mounts = {mount["name"]: mount for mount in controller["volumeMounts"]}
+    relay_mounts = {mount["name"]: mount for mount in relay["volumeMounts"]}
+    assert controller_mounts["private"]["readOnly"] is False
+    assert relay_mounts["private"]["readOnly"] is True
     assert "cluster_runtime" in " ".join(controller["command"])
     assert "14400" in controller["command"]
     assert "antioch.relay" in " ".join(relay["command"])
     assert "18444" in relay["command"]
-    controller_private = next(
-        item for item in controller["volumeMounts"] if item["name"] == "private"
-    )
-    relay_private = next(
-        item for item in relay["volumeMounts"] if item["name"] == "private"
-    )
-    assert controller_private.get("readOnly") is not True
-    assert relay_private["readOnly"] is True
     rendered = json.dumps(manifests, sort_keys=True)
     assert "LoadBalancer" not in rendered
     assert "hostNetwork" not in rendered
