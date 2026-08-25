@@ -134,6 +134,24 @@ NPA_OPENPI_METRICS frames=12 round_trips=11 latency_p95_ms=125.25
     }
 
 
+def test_retained_openpi_cleanup_owner_is_a_narrow_adoption_proof() -> None:
+    metadata = SimpleNamespace(
+        labels={"npa.nebius.ai/cleanup-owner": "owned-retained-run"}
+    )
+    assert cluster_deploy._owned(
+        metadata,
+        "new-live-identity",
+        allow_openpi=True,
+        openpi_cleanup_owner="owned-retained-run",
+    )
+    assert not cluster_deploy._owned(
+        metadata,
+        "new-live-identity",
+        allow_openpi=True,
+        openpi_cleanup_owner="different-run",
+    )
+
+
 def test_apply_refuses_ambiguous_policy_selector(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

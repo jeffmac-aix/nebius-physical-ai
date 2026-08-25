@@ -551,12 +551,23 @@ def _parse_live_metrics(logs: str) -> dict[str, int | float]:
     return latest
 
 
-def _owned(metadata: Any, identity: str, *, allow_openpi: bool = False) -> bool:
+def _owned(
+    metadata: Any,
+    identity: str,
+    *,
+    allow_openpi: bool = False,
+    openpi_cleanup_owner: str = "",
+) -> bool:
     labels = getattr(metadata, "labels", None) or {}
     if labels.get("npa.nebius.ai/live-identity") == identity:
         return labels.get("app.kubernetes.io/managed-by") == MANAGED_BY
-    return (
-        allow_openpi and labels.get("app.kubernetes.io/managed-by") == LIVE_MANAGED_BY
+    if not allow_openpi:
+        return False
+    if labels.get("app.kubernetes.io/managed-by") == LIVE_MANAGED_BY:
+        return True
+    return bool(
+        openpi_cleanup_owner
+        and labels.get("npa.nebius.ai/cleanup-owner") == openpi_cleanup_owner
     )
 
 
@@ -570,6 +581,7 @@ def _apply_owned(
     body: dict[str, Any],
     identity: str,
     allow_openpi: bool = False,
+    openpi_cleanup_owner: str = "",
 ) -> str:
     try:
         current = read(name=name, namespace=namespace)
@@ -578,7 +590,12 @@ def _apply_owned(
             raise
         create(namespace=namespace, body=body)
         return "created"
-    if not _owned(current.metadata, identity, allow_openpi=allow_openpi):
+    if not _owned(
+        current.metadata,
+        identity,
+        allow_openpi=allow_openpi,
+        openpi_cleanup_owner=openpi_cleanup_owner,
+    ):
         raise ClusterLiveError("refusing to replace an unowned Kubernetes object")
     patch(name=name, namespace=namespace, body=body)
     return "reconciled"
@@ -777,6 +794,9 @@ def apply_cluster(config: ClusterLiveConfig) -> dict[str, Any]:
         body=policy_np,
         identity=config.identity,
         allow_openpi=True,
+        openpi_cleanup_owner=config.policy_selector.get(
+            "npa.nebius.ai/cleanup-owner", ""
+        ),
     )
     annotations = {
         "npa.nebius.ai/cluster-live-tls-sha256": hashlib.sha256(
