@@ -418,6 +418,17 @@ class AntiochManager:
         record = self._record_for(request)
         if record.completion_uri:
             return record
+        if (
+            record.status == "completed"
+            and record.collection_phase
+            and record.error_type
+            and not record.retryable
+        ):
+            raise AntiochOperationError(
+                "Antioch collection previously failed terminally",
+                retryable=False,
+                error_type=record.error_type,
+            )
         if record.status not in {"completed", "collecting"}:
             record = self.reconcile(request)
         if record.status not in {"completed", "collecting"}:
@@ -457,6 +468,7 @@ class AntiochManager:
             for scenario_id in _scenario_ids(
                 record.remote_kind, remote, record.remote_id
             ):
+                self.states.refresh_collection(record, owner, phase="upload")
                 downloaded = temp / "downloads" / scenario_id
                 downloaded.mkdir(parents=True)
                 transfer = cli.download(
@@ -530,6 +542,7 @@ class AntiochManager:
                     source_sha256=source_manifest.source_sha256,
                     asset_hashes=source_manifest.asset_hashes,
                 )
+                self.states.refresh_collection(record, owner, phase="upload")
                 for path in sorted(
                     item for item in dataset.rglob("*") if item.is_file()
                 ):
@@ -603,7 +616,12 @@ class AntiochManager:
             return result
         except Exception as exc:
             self.states.fail_collection(
-                record, owner, error_type=getattr(exc, "error_type", type(exc).__name__)
+                record,
+                owner,
+                error_type=getattr(exc, "error_type", type(exc).__name__),
+                retryable=(
+                    exc.retryable if isinstance(exc, AntiochOperationError) else True
+                ),
             )
             if "temporary" in locals():
                 temporary.__exit__(type(exc), exc, exc.__traceback__)

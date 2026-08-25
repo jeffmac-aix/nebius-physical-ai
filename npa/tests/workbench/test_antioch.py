@@ -837,6 +837,63 @@ def test_collection_lease_excludes_active_owner_and_recovers_expired_owner() -> 
     assert recovered.collection_phase == "claimed"
 
 
+def test_collect_excludes_active_owner_and_executes_after_expiry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    memory = MemoryStorage()
+    manager = AntiochManager.__new__(AntiochManager)
+    manager.storage = memory
+    manager.states = StateStore(memory)
+    submitted = _submit()
+    completed = manager.states.claim(
+        OperationRecord(
+            idempotency_key=operation_key(submitted.workflow_run, submitted.state_id),
+            request_sha256="a" * 64,
+            workflow_run=submitted.workflow_run,
+            state_id=submitted.state_id,
+            robot_type=submitted.robot_type,
+            task=submitted.task,
+            input_path=submitted.input_path,
+            output_path=submitted.output_path,
+            derived_project_id="npa-collect-expiry",
+            remote_kind="suite",
+            selection=submitted.suite,
+            remote_id="suite-safe",
+            status="completed",
+        )
+    )
+    request = CollectRequest(
+        output_path=completed.output_path,
+        workflow_run=completed.workflow_run,
+        state_id=completed.state_id,
+    )
+    active, acquired = manager.states.acquire_collection(completed, "active-owner")
+    assert acquired is True
+    monkeypatch.setattr(
+        "npa.workbench.antioch.manager.stage_project",
+        lambda *_args, **_kwargs: pytest.fail("active collector was duplicated"),
+    )
+    with pytest.raises(AntiochOperationError) as excluded:
+        manager.collect(request)
+    assert excluded.value.error_type == "collection_in_progress"
+    assert excluded.value.retryable is True
+
+    manager.states.update(active, collection_lease_expires_at="2000-01-01T00:00:00Z")
+
+    def recovered_body(*_args, **_kwargs):  # noqa: ANN202
+        raise RuntimeError("entered recovered collection body")
+
+    monkeypatch.setattr(
+        "npa.workbench.antioch.manager.stage_project", recovered_body
+    )
+    with pytest.raises(RuntimeError, match="entered recovered collection body"):
+        manager.collect(request)
+    durable = manager._record_for(request)
+    assert durable.status == "completed"
+    assert durable.collection_owner == ""
+    assert durable.retryable is True
+
+
 def test_late_submit_after_cancel_never_calls_vendor(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -955,6 +1012,66 @@ def test_collect_marks_state_before_conversion_and_blocks_duplicate(
     assert recovered.retryable is True
     with pytest.raises(RuntimeError, match="observing marker"):
         manager.collect(collect)
+
+
+def test_collect_preserves_terminal_failure_and_rejects_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    memory = MemoryStorage()
+    manager = AntiochManager.__new__(AntiochManager)
+    manager.storage = memory
+    manager.states = StateStore(memory)
+    submitted = _submit()
+    record = manager.states.claim(
+        OperationRecord(
+            idempotency_key=operation_key(submitted.workflow_run, submitted.state_id),
+            request_sha256="a" * 64,
+            workflow_run=submitted.workflow_run,
+            state_id=submitted.state_id,
+            robot_type=submitted.robot_type,
+            task=submitted.task,
+            input_path=submitted.input_path,
+            output_path=submitted.output_path,
+            derived_project_id="npa-terminal-collection",
+            remote_kind="suite",
+            selection=submitted.suite,
+            remote_id="suite-safe",
+            status="completed",
+        )
+    )
+    request = CollectRequest(
+        output_path=record.output_path,
+        workflow_run=record.workflow_run,
+        state_id=record.state_id,
+    )
+
+    def terminal_download(*_args, **_kwargs):  # noqa: ANN202
+        raise AntiochOperationError(
+            "source artifact is invalid",
+            retryable=False,
+            error_type="checksum_mismatch",
+        )
+
+    monkeypatch.setattr(
+        "npa.workbench.antioch.manager.stage_project", terminal_download
+    )
+    with pytest.raises(AntiochOperationError) as first:
+        manager.collect(request)
+    assert first.value.error_type == "checksum_mismatch"
+    durable = manager._record_for(request)
+    assert durable.status == "completed"
+    assert durable.collection_owner == ""
+    assert durable.collection_phase == "download"
+    assert durable.retryable is False
+
+    monkeypatch.setattr(
+        "npa.workbench.antioch.manager.stage_project",
+        lambda *_args, **_kwargs: pytest.fail("terminal collection was retried"),
+    )
+    with pytest.raises(AntiochOperationError) as repeated:
+        manager.collect(request)
+    assert repeated.value.error_type == "checksum_mismatch"
+    assert repeated.value.retryable is False
 
 
 @pytest.mark.parametrize(

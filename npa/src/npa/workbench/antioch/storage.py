@@ -233,7 +233,12 @@ class StateStore:
         return self.update(current[0], **changes)
 
     def fail_collection(
-        self, record: OperationRecord, owner: str, *, error_type: str
+        self,
+        record: OperationRecord,
+        owner: str,
+        *,
+        error_type: str,
+        retryable: bool,
     ) -> OperationRecord:
         current = self.read(record.output_path, record.idempotency_key)
         if current is None or current[0].collection_owner != owner:
@@ -243,9 +248,13 @@ class StateStore:
             status="completed",
             collection_owner="",
             collection_lease_expires_at="",
-            retryable=True,
+            retryable=retryable,
             error_type=error_type,
-            error_message="collection failed; retry with the same workflow_run/state_id",
+            error_message=(
+                "collection failed; retry with the same workflow_run/state_id"
+                if retryable
+                else "collection failed terminally; repair the source or use a new state_id"
+            ),
         )
 
     def acquire_submission(
