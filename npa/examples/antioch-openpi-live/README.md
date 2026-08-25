@@ -19,24 +19,26 @@ The checked-in project ID is deliberately unusable. The live controller creates 
 private runtime copy with an assigned Antioch project ID, starts the supported sim
 service, and copies a 0600 run bundle into the running sim service with
 `antioch services cp`. The bundle contains the B200 gateway CA/API key/endpoint plus a
-separate short-lived CA, certificate, key, and API key for the sim listener.
+separate short-lived CA, certificate, key, and API key for the service-side bridge.
 Credentials are never passed through scenario parameters, tmux commands, Git, or
 images.
 
 The sim declares an Antioch-managed port that is reachable only at the operator's
-localhost while services are up. The scenario terminates authenticated WSS on that
-port. A second process in the same named tmux session connects to it, then connects
-to the persistent B200 gateway by verified WSS on port 443 and forwards only the
-bounded request/reply stream. This double-WSS route is the supported fallback when
-the simulation network cannot route directly to a managed load-balancer address;
-it is not a public unauthenticated proxy. The relay reconnects independently and
-writes only fixed counters and error classes to its private state file.
+localhost while services are up. A bounded authenticated WSS rendezvous runs in
+the persistent `sim` service. The streamed scenario connects to its `simulation`
+role first; a second process in the same named tmux session connects to its
+`operator` role and only then connects to the persistent B200 gateway by verified
+WSS on port 443. This double-WSS route is the supported fallback when the
+simulation network cannot route directly to a managed load-balancer address; it
+is not a public unauthenticated proxy. Both legs reconnect independently and the
+operator relay writes only fixed counters and error classes to its private state
+file.
 
 The project Dockerfile adds only pinned `msgpack` and `websockets` wire-protocol
 dependencies to Antioch's version-matched Isaac Sim base. The small local codec
 is adapted from the pinned Apache-2.0 OpenPI client and rejects object arrays;
 neither OpenPI model code nor weights are included in the sim image.
-The controller copies the reviewed scenario and codec through supported
+The controller copies the reviewed scenario, codec, and bounded WSS bridge through supported
 `services cp` and verifies their readability before dispatch, avoiding dependence
 on a retained remote build or source-sync cache. Dockerfile changes retain a
 separate rebuild rule.
@@ -45,10 +47,15 @@ The scenario is continuous within one Antioch run. Since scenario runs have a
 finite supported timeout, the controller renews them in tmux until explicitly
 stopped. A renewal resets the simulated episode and briefly interrupts the
 viewport; it is service continuity, not one infinitely lived simulator process.
-The supervisor also verifies and re-stages every private bundle file after a
-renewal because Antioch may legitimately recreate the sim container. The relay
-window remains supervised across that boundary and reconnects after the new
-scenario listener starts. If Antioch accepts an interactive scenario but the
+The supervisor also verifies every private bundle file and swaps a complete
+staged generation into place atomically because Antioch may legitimately recreate
+the sim container. A machine recycle can also discard its machine-local built
+service image; in that case the supervisor runs the supported service build before
+bringing the exact service back, re-staging source and credentials, or dispatching
+another scenario. Separate bridge and relay tmux windows remain supervised across
+that boundary and reconnect after the service returns. The bridge renews below
+Antioch's finite service-exec boundary; this causes a bounded reconnect, not one
+infinitely lived process. If Antioch accepts an interactive scenario but the
 foreground CLI loses attachment while reporting the occupied stream lease, the
 supervisor reconciles the exact run through supported project-scoped
 `scenario list` and `machine status` JSON. It adopts only the matching stream

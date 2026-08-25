@@ -31,7 +31,7 @@ endpoints, print identity/config/environment data, or inspect unrelated runs.
 
 ### Continuing live viewport + external policy
 
-- Use only `antioch services up|exec|cp|down` and `antioch scenario run
+- Use only `antioch services build|up|exec|cp|down` and `antioch scenario run
   --stream --verbose`. Do not call Rome or infer a console URL.
 - Start the sim service before copying a run-scoped CA/API-key/endpoint bundle into
   a 0700 service directory. Never use `--set`, environment dumps, tmux command
@@ -48,9 +48,17 @@ endpoints, print identity/config/environment data, or inspect unrelated runs.
 - A scenario dispatch or renewal may recreate the sim container. While the
   foreground run lives, verify every required bundle file through `services exec` and
   re-stage missing files with `services cp`; never bake them into the sim image.
+- Treat the built service image as machine-local too. If a recycled assignment
+  makes `services up` report that its image is absent, run the supported
+  `services build --service sim` before `services up`. Do not submit a scenario
+  until the service, reviewed source hashes, and every private bundle file verify.
+  Stage a full bundle generation and atomically switch one symlink so a renewing
+  bridge cannot observe a certificate/key or token generation mix.
 - When direct policy egress is unavailable, use a declared Antioch service port
-  published only on operator localhost. Terminate authenticated WSS in the sim and
-  supervise a second tmux window that bridges it to the policy's independently
+  published only on operator localhost. When the streamed scenario is not the
+  declared-port owner, terminate authenticated WSS in the persistent sim service,
+  let the scenario connect outbound with a distinct authenticated role, and
+  supervise another tmux window that bridges the operator role to the policy's independently
   authenticated, CA-verified WSS port 443. Bound messages, queues, connections,
   requests, timeouts, and reconnect backoff; never substitute an unauthenticated
   public proxy, disabled TLS verification, a token in a URL, or an undocumented

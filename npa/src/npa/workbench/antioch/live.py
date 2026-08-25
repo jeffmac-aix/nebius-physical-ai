@@ -28,7 +28,8 @@ from cryptography.x509.oid import NameOID
 from .runtime import ensure_runtime
 from .vendor_cli import AntiochCli, AntiochCliError
 
-REMOTE_CLIENT_ROOT = "/tmp/npa-live-client"
+REMOTE_CLIENT_ROOT = "/tmp/npa-live-client-current"
+REMOTE_CLIENT_STAGING_PREFIX = "/tmp/npa-live-client-generation-"
 UPSTREAM_BUNDLE_FILES = ("ca.crt", "api-key", "endpoint.json")
 RELAY_BUNDLE_FILES = (
     "relay-ca.crt",
@@ -161,7 +162,10 @@ def _relay_certificate() -> tuple[bytes, bytes, bytes]:
         .not_valid_after(now + dt.timedelta(days=30))
         .add_extension(
             x509.SubjectAlternativeName(
-                [x509.IPAddress(ipaddress.ip_address("127.0.0.1"))]
+                [
+                    x509.IPAddress(ipaddress.ip_address("127.0.0.1")),
+                    x509.DNSName("sim"),
+                ]
             ),
             critical=False,
         )
@@ -217,20 +221,21 @@ def _stage_private_bundle(
 ) -> None:
     """Stage through supported service commands across container recreation."""
 
-    remote_files = [f"{REMOTE_CLIENT_ROOT}/{name}" for name in REQUIRED_BUNDLE_FILES]
     last_error: Exception | None = None
     for attempt in range(attempts):
+        staging = f"{REMOTE_CLIENT_STAGING_PREFIX}{uuid.uuid4().hex}"
+        remote_files = [f"{staging}/{name}" for name in REQUIRED_BUNDLE_FILES]
         try:
             cli.services_exec(
                 runtime,
                 "sim",
-                ["install", "-d", "-m", "0700", REMOTE_CLIENT_ROOT],
+                ["install", "-d", "-m", "0700", staging],
             )
             for name in REQUIRED_BUNDLE_FILES:
                 cli.services_copy(
                     runtime,
                     client_bundle / name,
-                    f"sim:{REMOTE_CLIENT_ROOT}/{name}",
+                    f"sim:{staging}/{name}",
                 )
             cli.services_exec(
                 runtime,
@@ -244,6 +249,16 @@ def _stage_private_bundle(
                     "/bin/sh",
                     "-lc",
                     "test " + " -a ".join(f"-r {path}" for path in remote_files),
+                ],
+            )
+            cli.services_exec(
+                runtime,
+                "sim",
+                [
+                    "/bin/sh",
+                    "-lc",
+                    f"ln -s {shlex.quote(staging)} {REMOTE_CLIENT_ROOT}.new && "
+                    f"mv -Tf {REMOTE_CLIENT_ROOT}.new {REMOTE_CLIENT_ROOT}",
                 ],
             )
             return
@@ -262,7 +277,7 @@ def _stage_runtime_source(
     """Copy reviewed source, retrying across a service-container recreation."""
 
     source = runtime / "src"
-    names = ("scenario.py", "openpi_protocol.py")
+    names = ("scenario.py", "openpi_protocol.py", "relay_bridge.py")
     for name in names:
         path = source / name
         if not path.is_file() or path.is_symlink():
@@ -347,7 +362,17 @@ def _cancel_remote_live_runs(
         else:
             stable_absence = 0
         for remote_id in candidates:
-            result = cli.cancel(runtime, kind="scenario", remote_id=remote_id)
+            try:
+                result = cli.cancel(runtime, kind="scenario", remote_id=remote_id)
+            except AntiochCliError as exc:
+                # A booting run can terminalize between the supported list and
+                # cancel calls. Treat only the vendor's exact absence response
+                # as terminal; every other cancellation failure still blocks
+                # service teardown.
+                if "was not found" not in str(exc):
+                    raise
+                terminal.add(remote_id)
+                continue
             cancelled.add(remote_id)
             if result.get("phase") == "completed" or result.get("outcome"):
                 terminal.add(remote_id)
@@ -402,7 +427,7 @@ def _write_supervisor(
             "--verbose",
         ]
     )
-    source_names = ("scenario.py", "openpi_protocol.py")
+    source_names = ("scenario.py", "openpi_protocol.py", "relay_bridge.py")
     source_paths = {name: path.parent / "src" / name for name in source_names}
     for name, source_path in source_paths.items():
         if not source_path.is_file() or source_path.is_symlink():
@@ -475,20 +500,28 @@ def _write_supervisor(
         source_check,
     ]
     source_stage_block = " &&\n          ".join(source_stage_commands)
-    port_check = shlex.join(
+    service_check = shlex.join(
         [
-            str(python_path),
-            "-c",
-            (
-                "import socket,sys; "
-                "s=socket.socket(); s.settimeout(2); "
-                f"r=s.connect_ex(('127.0.0.1',{RELAY_PUBLISHED_PORT})); "
-                "s.close(); sys.exit(r != 0)"
-            ),
+            str(cli_path),
+            "services",
+            "exec",
+            "sim",
+            "/bin/true",
         ]
     )
     service_rebind = shlex.join([str(cli_path), "services", "up", "--json"])
-    remote_files = [f"{REMOTE_CLIENT_ROOT}/{name}" for name in REQUIRED_BUNDLE_FILES]
+    service_rebuild = shlex.join(
+        [str(cli_path), "services", "build", "--service", "sim", "--json"]
+    )
+    bundle_hashes = {
+        name: hashlib.sha256((client_bundle / name).read_bytes()).hexdigest()
+        for name in REQUIRED_BUNDLE_FILES
+    }
+    bundle_check_expression = " -a ".join(
+        f'"$(sha256sum {REMOTE_CLIENT_ROOT}/{name} 2>/dev/null | cut -d" " -f1)" '
+        f"= {digest}"
+        for name, digest in bundle_hashes.items()
+    )
     bundle_check = shlex.join(
         [
             str(cli_path),
@@ -497,11 +530,11 @@ def _write_supervisor(
             "sim",
             "/bin/sh",
             "-lc",
-            f"test -r {REMOTE_CLIENT_ROOT}/ca.crt "
-            f"-a -r {REMOTE_CLIENT_ROOT}/api-key "
-            f"-a -r {REMOTE_CLIENT_ROOT}/endpoint.json",
+            f"test {bundle_check_expression}",
         ]
     )
+    bundle_staging = f"{REMOTE_CLIENT_STAGING_PREFIX}{uuid.uuid4().hex}"
+    remote_files = [f"{bundle_staging}/{name}" for name in REQUIRED_BUNDLE_FILES]
     stage_commands = [
         shlex.join(
             [
@@ -513,7 +546,7 @@ def _write_supervisor(
                 "-d",
                 "-m",
                 "0700",
-                REMOTE_CLIENT_ROOT,
+                bundle_staging,
             ]
         ),
         *[
@@ -523,7 +556,7 @@ def _write_supervisor(
                     "services",
                     "cp",
                     str(client_bundle / name),
-                    f"sim:{REMOTE_CLIENT_ROOT}/{name}",
+                    f"sim:{bundle_staging}/{name}",
                     "--json",
                 ]
             )
@@ -540,6 +573,19 @@ def _write_supervisor(
                 *remote_files,
             ]
         ),
+        shlex.join(
+            [
+                str(cli_path),
+                "services",
+                "exec",
+                "sim",
+                "/bin/sh",
+                "-lc",
+                f"ln -s {shlex.quote(bundle_staging)} {REMOTE_CLIENT_ROOT}.new && "
+                f"mv -Tf {REMOTE_CLIENT_ROOT}.new {REMOTE_CLIENT_ROOT}",
+            ]
+        ),
+        bundle_check,
     ]
     stage_block = " &&\n      ".join(stage_commands)
     reconcile = shlex.join(
@@ -559,32 +605,32 @@ def _write_supervisor(
     )
     content = f"""#!/bin/sh
 set -u
+(
+  while [ ! -f {shlex.quote(str(stop_file))} ]; do
+    if ! {service_check} >/dev/null 2>&1; then
+      if ! {service_rebind} >/dev/null 2>&1; then
+        {service_rebuild} >/dev/null 2>&1 && \
+          {service_rebind} >/dev/null 2>&1 || true
+      fi
+    fi
+    if ! {bundle_check} >/dev/null 2>&1; then
+      {{
+        {stage_block}
+      }} >/dev/null 2>&1 || true
+    fi
+    if ! {source_check} >/dev/null 2>&1; then
+      {{
+        {source_stage_block}
+      }} >/dev/null 2>&1 || true
+    fi
+    sleep 15
+  done
+) &
+restager=$!
 while [ ! -f {shlex.quote(str(stop_file))} ]; do
-  (
-    sleep 5
-    while [ ! -f {shlex.quote(str(stop_file))} ]; do
-      if ! {port_check} >/dev/null 2>&1; then
-        {service_rebind} >/dev/null 2>&1 || true
-      fi
-      if ! {bundle_check} >/dev/null 2>&1; then
-        {{
-          {stage_block}
-        }} >/dev/null 2>&1 || true
-      fi
-      if ! {source_check} >/dev/null 2>&1; then
-        {{
-          {source_stage_block}
-        }} >/dev/null 2>&1 || true
-      fi
-      sleep 15
-    done
-  ) &
-  restager=$!
   {reconcile}
   reconcile_status=$?
   if [ "$reconcile_status" -eq 0 ]; then
-    kill "$restager" >/dev/null 2>&1 || true
-    wait "$restager" >/dev/null 2>&1 || true
     if [ -f {shlex.quote(str(stop_file))} ]; then
       break
     fi
@@ -593,22 +639,27 @@ while [ ! -f {shlex.quote(str(stop_file))} ]; do
     continue
   fi
   if [ "$reconcile_status" -ne 3 ]; then
-    kill "$restager" >/dev/null 2>&1 || true
-    wait "$restager" >/dev/null 2>&1 || true
     printf 'NPA_ANTIOCH_RECONCILE_FAILED exit_code=%s\n' "$reconcile_status"
+    sleep 5
+    continue
+  fi
+  if ! {service_check} >/dev/null 2>&1 || \
+     ! {source_check} >/dev/null 2>&1 || \
+     ! {bundle_check} >/dev/null 2>&1; then
+    printf 'NPA_ANTIOCH_SERVICE_NOT_READY\n'
     sleep 5
     continue
   fi
   {command}
   status=$?
-  kill "$restager" >/dev/null 2>&1 || true
-  wait "$restager" >/dev/null 2>&1 || true
   if [ -f {shlex.quote(str(stop_file))} ]; then
     break
   fi
   printf 'NPA_ANTIOCH_RENEWAL exit_code=%s\n' "$status"
   sleep 5
 done
+kill "$restager" >/dev/null 2>&1 || true
+wait "$restager" >/dev/null 2>&1 || true
 """
     path.write_text(content, encoding="utf-8")
     os.chmod(path, 0o700)
@@ -653,6 +704,39 @@ done
     os.chmod(path, 0o700)
 
 
+def _write_bridge_supervisor(path: Path, *, cli_path: Path, stop_file: Path) -> None:
+    """Renew the bridge below Antioch's finite service-exec ceiling."""
+
+    command = shlex.join(
+        [
+            str(cli_path),
+            "services",
+            "exec",
+            "sim",
+            "/usr/local/bin/python",
+            "/workspace/project/src/relay_bridge.py",
+            "--bundle",
+            REMOTE_CLIENT_ROOT,
+            "--lifetime-seconds",
+            "105",
+        ]
+    )
+    content = f"""#!/bin/sh
+set -u
+while [ ! -f {shlex.quote(str(stop_file))} ]; do
+  {command}
+  status=$?
+  if [ -f {shlex.quote(str(stop_file))} ]; then
+    break
+  fi
+  printf 'NPA_ANTIOCH_BRIDGE_RENEWAL exit_code=%s\n' "$status"
+  sleep 2
+done
+"""
+    path.write_text(content, encoding="utf-8")
+    os.chmod(path, 0o700)
+
+
 def start_live(
     *,
     source: Path,
@@ -681,10 +765,12 @@ def start_live(
     stop_file = runtime / ".stop"
     supervisor = runtime / ".supervise.sh"
     relay_supervisor = runtime / ".relay-supervise.sh"
+    bridge_supervisor = runtime / ".bridge-supervise.sh"
     relay_state = runtime / "relay-state.json"
     active_state = runtime / "active-run.json"
     log = runtime / "live.log"
     relay_log = runtime / "relay.log"
+    bridge_log = runtime / "bridge.log"
     _write_supervisor(
         supervisor,
         cli_path=cli_path,
@@ -700,6 +786,11 @@ def start_live(
         client_bundle=runtime_bundle,
         stop_file=stop_file,
         state_path=relay_state,
+    )
+    _write_bridge_supervisor(
+        bridge_supervisor,
+        cli_path=cli_path,
+        stop_file=stop_file,
     )
 
     service_started = False
@@ -730,6 +821,24 @@ def start_live(
             "-t",
             f"{session}:scenario.0",
             f"exec >> {shlex.quote(str(log))} 2>&1",
+        )
+        _tmux(
+            "new-window",
+            "-d",
+            "-t",
+            session,
+            "-n",
+            "bridge",
+            "-c",
+            str(runtime),
+            str(bridge_supervisor),
+        )
+        _tmux(
+            "pipe-pane",
+            "-o",
+            "-t",
+            f"{session}:bridge.0",
+            f"exec >> {shlex.quote(str(bridge_log))} 2>&1",
         )
         _tmux(
             "new-window",
@@ -772,6 +881,7 @@ def start_live(
         "service": "sim",
         "cli": str(cli_path),
         "relay_transport": "antioch-declared-port-double-wss",
+        "bridge": "sim",
         "relay_state": str(relay_state),
         "active_state": str(active_state),
     }
@@ -857,11 +967,20 @@ def stop_live(*, project_id: str, timeout_seconds: float = 120.0) -> dict[str, A
     if _window_running(session, "relay"):
         _tmux("send-keys", "-t", f"{session}:relay.0", "C-c")
         deadline = time.monotonic() + timeout_seconds
-        while _session_running(session) and time.monotonic() < deadline:
+        while _window_running(session, "relay") and time.monotonic() < deadline:
             time.sleep(1)
-        if _session_running(session):
+        if _window_running(session, "relay"):
             raise AntiochLiveError(
                 "relay cancellation did not finish; refusing to tear down its service"
+            )
+    if _window_running(session, "bridge"):
+        _tmux("send-keys", "-t", f"{session}:bridge.0", "C-c")
+        deadline = time.monotonic() + timeout_seconds
+        while _window_running(session, "bridge") and time.monotonic() < deadline:
+            time.sleep(1)
+        if _window_running(session, "bridge"):
+            raise AntiochLiveError(
+                "bridge cancellation did not finish; refusing to tear down its service"
             )
     cli.services_down(runtime)
     return {

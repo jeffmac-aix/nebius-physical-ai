@@ -111,7 +111,10 @@ def run_relay(
                 max_queue=2,
                 open_timeout=10,
                 close_timeout=5,
-                additional_headers={"Authorization": f"Api-Key {relay_token}"},
+                additional_headers={
+                    "Authorization": f"Api-Key {relay_token}",
+                    "X-NPA-Relay-Role": "operator",
+                },
                 proxy=None,
             ) as simulation:
                 state["status"] = "connecting_policy"

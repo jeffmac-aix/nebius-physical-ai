@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import queue
 import ssl
-import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -13,7 +11,7 @@ import antioch
 
 logger = antioch.Logger("openpi-live")
 
-CLIENT_ROOT = Path("/tmp/npa-live-client")
+CLIENT_ROOT = Path("/tmp/npa-live-client-current")
 ACTION_SHAPE = (15, 8)
 CONTROL_HZ = 15.0
 TARGETS_PER_QUERY = 5
@@ -28,98 +26,41 @@ GRIPPER_JOINT_MAX = 0.04
 
 
 class SafePolicyClient:
-    """Authenticated TLS listener for the supervised declared-port relay."""
+    """Authenticated WSS client for the persistent service-side bridge."""
 
     def __init__(self) -> None:
         self._connection = None
-        self._connection_done = None
         self.reconnects = 0
         self._backoff = 1.0
-        self._pending = queue.Queue(maxsize=1)
-        self._connection_slot = threading.Lock()
-        self._accept_ready = threading.Event()
-        self._ready = threading.Event()
-        self._server = None
-        self._server_error = None
-        self._thread = threading.Thread(
-            target=self._serve,
-            name="openpi-policy-relay-listener",
-            daemon=True,
-        )
-        self._thread.start()
-        if not self._ready.wait(timeout=10):
-            raise RuntimeError("policy relay listener did not start")
-        if self._server_error is not None:
-            raise RuntimeError("policy relay listener failed to start") from self._server_error
 
-    def _settings(self) -> tuple[str, ssl.SSLContext]:
+    def _settings(self) -> tuple[str, str, ssl.SSLContext]:
         token = (CLIENT_ROOT / "relay-api-key").read_text().strip()
         if len(token) < 32:
             raise RuntimeError("policy relay API key is missing or malformed")
-        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context = ssl.create_default_context(cafile=str(CLIENT_ROOT / "relay-ca.crt"))
         context.minimum_version = ssl.TLSVersion.TLSv1_2
-        context.load_cert_chain(
-            str(CLIENT_ROOT / "relay-server.crt"),
-            str(CLIENT_ROOT / "relay-server.key"),
-        )
-        return token, context
-
-    def _serve(self) -> None:
-        from websockets.sync.server import serve
-
-        try:
-            token, context = self._settings()
-
-            def handle(connection) -> None:
-                authorization = connection.request.headers.get("Authorization", "")
-                if authorization != "Api-Key " + token:
-                    connection.close(code=1008, reason="authentication required")
-                    return
-                if not self._accept_ready.is_set():
-                    connection.close(code=1013, reason="policy client is not ready")
-                    return
-                if not self._connection_slot.acquire(blocking=False):
-                    connection.close(code=1013, reason="policy relay already connected")
-                    return
-                done = threading.Event()
-                try:
-                    self._pending.put_nowait((connection, done))
-                    done.wait()
-                except queue.Full:
-                    connection.close(code=1013, reason="policy relay queue is full")
-                finally:
-                    done.set()
-                    self._connection_slot.release()
-
-            with serve(
-                handle,
-                "0.0.0.0",
-                8444,
-                ssl=context,
-                compression=None,
-                max_size=32 * 1024 * 1024,
-                max_queue=2,
-                open_timeout=10,
-                close_timeout=5,
-            ) as server:
-                self._server = server
-                self._ready.set()
-                server.serve_forever()
-        except Exception as exc:
-            self._server_error = exc
-            self._ready.set()
+        return "wss://sim:8444", token, context
 
     def connect(self) -> None:
         import openpi_protocol
+        from websockets.sync.client import connect
 
         self.close()
-        self._accept_ready.set()
-        try:
-            self._connection, self._connection_done = self._pending.get(timeout=40)
-        except queue.Empty as exc:
-            self._accept_ready.clear()
-            raise TimeoutError("policy relay is not connected") from exc
-        self._accept_ready.clear()
+        uri, token, context = self._settings()
+        self._connection = connect(
+            uri,
+            ssl=context,
+            compression=None,
+            max_size=32 * 1024 * 1024,
+            max_queue=2,
+            open_timeout=10,
+            close_timeout=5,
+            additional_headers={
+                "Authorization": f"Api-Key {token}",
+                "X-NPA-Relay-Role": "simulation",
+            },
+            proxy=None,
+        )
         greeting = self._connection.recv(timeout=30)
         metadata = openpi_protocol.unpackb(greeting)
         if not isinstance(metadata, dict):
@@ -153,20 +94,14 @@ class SafePolicyClient:
 
     def close(self) -> None:
         connection, self._connection = self._connection, None
-        done, self._connection_done = self._connection_done, None
         if connection is not None:
             try:
                 connection.close()
             except Exception:
                 pass
-        if done is not None:
-            done.set()
 
     def shutdown(self) -> None:
         self.close()
-        if self._server is not None:
-            self._server.shutdown()
-        self._thread.join(timeout=5)
 
 
 def _look_at(stage, path: str, eye, target) -> None:
@@ -399,8 +334,7 @@ def openpi_droid_live(
                 chunk_index += 1
                 last_apply = now
                 print(
-                    "NPA_OPENPI_APPLIED "
-                    f"applied={applied} chunk_index={chunk_index}",
+                    f"NPA_OPENPI_APPLIED applied={applied} chunk_index={chunk_index}",
                     flush=True,
                 )
                 if chunk_index >= TARGETS_PER_QUERY:

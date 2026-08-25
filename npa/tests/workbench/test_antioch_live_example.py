@@ -43,11 +43,10 @@ def test_live_scenario_is_real_bounded_and_fail_closed() -> None:
         "MAX_JOINT_STEP",
         "GRIPPER_JOINT_MAX = 0.04",
         'raise ValueError("normalized gripper target is outside [0, 1]")',
-        "ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)",
-        'CLIENT_ROOT = Path("/tmp/npa-live-client")',
-        'authorization != "Api-Key " + token',
-        '"0.0.0.0",\n                8444,',
-        "policy relay already connected",
+        "ssl.create_default_context",
+        'CLIENT_ROOT = Path("/tmp/npa-live-client-current")',
+        'return "wss://sim:8444", token, context',
+        '"X-NPA-Relay-Role": "simulation"',
         'logger.image("camera/exterior"',
         'logger.image("camera/wrist"',
         'logger.scalar("decision/observation_sequence"',
@@ -78,11 +77,18 @@ def test_live_scenario_is_real_bounded_and_fail_closed() -> None:
         encoding="utf-8"
     )
     assert 'additional_headers={"Authorization": f"Api-Key {policy_token}"}' in relay
-    assert 'additional_headers={"Authorization": f"Api-Key {relay_token}"}' in relay
+    assert '"X-NPA-Relay-Role": "operator"' in relay
     assert "proxy=None" in relay
     assert "port != 443" in relay
     assert "ssl.create_default_context" in relay
     assert "CERT_NONE" not in relay
+
+    bridge = (EXAMPLE / "src/relay_bridge.py").read_text(encoding="utf-8")
+    compile(bridge, "antioch-openpi-live-relay-bridge", "exec")
+    assert "ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)" in bridge
+    assert '"0.0.0.0",\n        8444,' in bridge
+    assert "hmac.compare_digest" in bridge
+    assert 'ROLES = frozenset({"operator", "simulation"})' in bridge
 
 
 def test_live_protocol_codec_round_trips_arrays_and_rejects_objects() -> None:
@@ -137,14 +143,18 @@ def test_runtime_staging_keeps_private_project_id_out_of_source(tmp_path: Path) 
 def test_supervisor_has_finite_run_boundary_but_no_total_limit(tmp_path: Path) -> None:
     source_dir = tmp_path / "src"
     source_dir.mkdir()
-    for name in ("scenario.py", "openpi_protocol.py"):
+    for name in ("scenario.py", "openpi_protocol.py", "relay_bridge.py"):
         (source_dir / name).write_text("# reviewed source\n", encoding="utf-8")
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    for name in live.REQUIRED_BUNDLE_FILES:
+        (bundle / name).write_text(f"private-{name}\n", encoding="utf-8")
     script = tmp_path / "supervise.sh"
     live._write_supervisor(
         script,
         cli_path=Path("/opt/antioch/bin/antioch"),
         python_path=Path("/opt/npa/bin/python"),
-        client_bundle=tmp_path / "bundle",
+        client_bundle=bundle,
         stop_file=tmp_path / ".stop",
         active_state_path=tmp_path / "active-run.json",
         scenario_timeout_seconds=14_400,
@@ -163,9 +173,11 @@ def test_supervisor_has_finite_run_boundary_but_no_total_limit(tmp_path: Path) -
     assert "sha256sum /workspace/project/src/openpi_protocol.py" in source
     assert "install -m 0644" in source
     assert "services up --json" in source
-    assert "connect_ex" in source
-    assert "127.0.0.1" in source
-    assert "18444" in source
+    assert "services build --service sim --json" in source
+    assert "services exec sim /bin/true" in source
+    assert "NPA_ANTIOCH_SERVICE_NOT_READY" in source
+    assert "npa-live-client-generation-" in source
+    assert "mv -Tf" in source
     assert "sleep 15" in source
     assert "timeout 14400s" not in source
     assert script.stat().st_mode & 0o777 == 0o700
@@ -188,6 +200,36 @@ def test_relay_supervisor_has_no_credential_values_in_arguments(tmp_path: Path) 
     assert "Authorization" not in source
     assert "while [ ! -f" in source
     subprocess.run(["sh", "-n", str(script)], check=True)
+
+
+def test_bridge_supervisor_renews_below_service_exec_ceiling(tmp_path: Path) -> None:
+    script = tmp_path / "bridge-supervise.sh"
+    live._write_bridge_supervisor(
+        script,
+        cli_path=Path("/opt/antioch/bin/antioch"),
+        stop_file=tmp_path / ".stop",
+    )
+    source = script.read_text(encoding="utf-8")
+    assert "services exec sim /usr/local/bin/python" in source
+    assert "/workspace/project/src/relay_bridge.py" in source
+    assert "--lifetime-seconds 105" in source
+    assert "api-key" not in source
+    assert "while [ ! -f" in source
+    subprocess.run(["sh", "-n", str(script)], check=True)
+
+
+def test_relay_certificate_covers_operator_and_service_names() -> None:
+    from cryptography import x509
+
+    _ca, certificate, _key = live._relay_certificate()
+    names = (
+        x509.load_pem_x509_certificate(certificate)
+        .extensions.get_extension_for_class(x509.SubjectAlternativeName)
+        .value
+    )
+
+    assert names.get_values_for_type(x509.IPAddress)[0].compressed == "127.0.0.1"
+    assert names.get_values_for_type(x509.DNSName) == ["sim"]
 
 
 def test_client_bundle_requires_private_files(tmp_path: Path) -> None:
@@ -283,7 +325,7 @@ def test_runtime_source_is_staged_through_supported_service_copy(
 ) -> None:
     source = tmp_path / "src"
     source.mkdir()
-    for name in ("scenario.py", "openpi_protocol.py"):
+    for name in ("scenario.py", "openpi_protocol.py", "relay_bridge.py"):
         (source / name).write_text("# reviewed public source\n", encoding="utf-8")
     calls: list[tuple[str, object]] = []
 
@@ -307,6 +349,8 @@ def test_runtime_source_is_staged_through_supported_service_copy(
     assert copies[1][1][0] == "openpi_protocol.py"
     assert copies[1][1][1].startswith("sim:/tmp/npa-live-source-")
     assert copies[1][1][1].endswith("/openpi_protocol.py")
+    assert copies[2][1][0] == "relay_bridge.py"
+    assert copies[2][1][1].endswith("/relay_bridge.py")
     assert calls[-1][0] == "exec"
 
 
@@ -315,7 +359,7 @@ def test_runtime_source_staging_recovers_from_service_recreation(
 ) -> None:
     source = tmp_path / "src"
     source.mkdir()
-    for name in ("scenario.py", "openpi_protocol.py"):
+    for name in ("scenario.py", "openpi_protocol.py", "relay_bridge.py"):
         (source / name).write_text("# reviewed public source\n", encoding="utf-8")
     copies: list[str] = []
 
@@ -341,6 +385,7 @@ def test_runtime_source_staging_recovers_from_service_recreation(
     assert cli.attempts == 2
     assert copies.count("scenario.py") == 2
     assert copies.count("openpi_protocol.py") == 2
+    assert copies.count("relay_bridge.py") == 1
 
 
 def test_live_cleanup_cancels_only_exact_active_scenario(
@@ -400,6 +445,45 @@ def test_live_cleanup_cancels_only_exact_active_scenario(
 
     assert count == 1
     assert cancelled == ["exact-live-run"]
+
+
+def test_live_cleanup_accepts_exact_list_cancel_terminalization_race(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    pages = iter(
+        (
+            [
+                {
+                    "scenario": "openpi_droid_live",
+                    "phase": "booting",
+                    "scenario_run_id": "just-terminalized",
+                }
+            ],
+            [],
+            [],
+            [],
+        )
+    )
+
+    class Cli:
+        def list_for_project(self, *_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+            return next(pages)
+
+        def machine_status(self, *_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+            return {"stream": {"state": "idle"}}
+
+        def cancel(self, *_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+            raise AntiochCliError("scenario run 'just-terminalized' was not found")
+
+    monkeypatch.setattr(live.time, "sleep", lambda _seconds: None)
+    count = live._cancel_remote_live_runs(
+        Cli(),  # type: ignore[arg-type]
+        runtime=tmp_path,
+        project_id="assigned-project-for-test",
+        attempts=4,
+    )
+
+    assert count == 0
 
 
 def test_live_cleanup_accepts_terminal_failed_stream_record(
@@ -551,7 +635,11 @@ def test_live_stop_cancels_scenario_before_service(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     calls: list[str] = []
-    windows = {"scenario": iter((True, False, False)), "relay": iter((False,))}
+    windows = {
+        "scenario": iter((True, False, False)),
+        "relay": iter((False,)),
+        "bridge": iter((False,)),
+    }
     runtime = tmp_path / "runtime"
     runtime.mkdir()
     monkeypatch.setattr(
