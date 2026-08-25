@@ -390,6 +390,16 @@ def _stage_project(source: Path, destination: Path, project_id: str) -> None:
     if not (source / "antioch.yaml").is_file():
         raise AntiochLiveError("live source is not an Antioch project")
     shutil.copytree(source, destination)
+    # ``antioch services cp`` preserves the local source mode while transferring
+    # through the assignment's SSH user.  The service itself runs as uid 1000,
+    # so owner-only files become unreadable after that supported copy boundary.
+    # These three files are reviewed public source (never the private bundle),
+    # and must be readable by the unprivileged service container.
+    for name in ("scenario.py", "openpi_protocol.py", "relay_bridge.py"):
+        staged_source = destination / "src" / name
+        if not staged_source.is_file() or staged_source.is_symlink():
+            raise AntiochLiveError(f"live runtime source {name!r} is unavailable")
+        os.chmod(staged_source, 0o644)
     manifest_path = destination / "antioch.yaml"
     manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
     if not isinstance(manifest, dict) or manifest.get("id") != "replace-at-runtime":

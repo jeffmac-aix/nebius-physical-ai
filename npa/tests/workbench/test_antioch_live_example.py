@@ -171,6 +171,8 @@ def test_runtime_staging_keeps_private_project_id_out_of_source(tmp_path: Path) 
     assert staged["id"] == "assigned-project-for-test"
     assert source["id"] == "replace-at-runtime"
     assert (destination / "antioch.yaml").stat().st_mode & 0o777 == 0o600
+    for name in ("scenario.py", "openpi_protocol.py", "relay_bridge.py"):
+        assert (destination / "src" / name).stat().st_mode & 0o777 == 0o644
 
 
 def test_supervisor_has_finite_run_boundary_but_no_total_limit(tmp_path: Path) -> None:
