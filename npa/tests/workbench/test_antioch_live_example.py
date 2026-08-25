@@ -118,6 +118,20 @@ def test_live_sim_image_contains_only_protocol_dependencies() -> None:
     assert "/workspace/project" in dockerfile
     assert "/tmp/npa-home/.cache \\" in dockerfile
     assert "/tmp/npa-home/.cache/ov" in dockerfile
+    assert (
+        "/usr/local/lib/python3.12/dist-packages/isaacsim/kit/cache/DerivedDataCache"
+        in dockerfile
+    )
+    assert (
+        "/usr/local/lib/python3.12/dist-packages/isaacsim/kit/data/documents/Kit/"
+        "apps/Isaac-Sim Python/scripts"
+        in dockerfile
+    )
+    assert (
+        "/usr/local/lib/python3.12/dist-packages/isaacsim/kit/data/documents/Kit/"
+        "shared"
+        in dockerfile
+    )
     assert "ENV HOME=/tmp/npa-home" in dockerfile
     assert "COPY --chown=1000:1000 src/ /workspace/project/src/" in dockerfile
     assert "USER 1000:1000" in dockerfile
@@ -517,6 +531,49 @@ def test_live_cleanup_accepts_terminal_failed_stream_record(
                 "phase": "completed",
                 "outcome": "cancelled",
             }
+
+    monkeypatch.setattr(live.time, "sleep", lambda _seconds: None)
+    assert (
+        live._cancel_remote_live_runs(
+            Cli(),  # type: ignore[arg-type]
+            runtime=tmp_path,
+            project_id="assigned-project-for-test",
+        )
+        == 0
+    )
+
+
+def test_live_cleanup_tolerates_typed_missing_run_during_cancel(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    pages = iter(
+        (
+            [
+                {
+                    "scenario": "openpi_droid_live",
+                    "phase": "running",
+                    "scenario_run_id": "exact-live-run",
+                }
+            ],
+            [],
+            [],
+            [],
+        )
+    )
+
+    class Cli:
+        def list_for_project(self, *_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+            return next(pages)
+
+        def machine_status(self, *_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+            return {"stream": {}}
+
+        def cancel(self, *_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+            raise AntiochCliError(
+                "remote run is gone",
+                error_type="scenario_not_found",
+                http_status=404,
+            )
 
     monkeypatch.setattr(live.time, "sleep", lambda _seconds: None)
     assert (

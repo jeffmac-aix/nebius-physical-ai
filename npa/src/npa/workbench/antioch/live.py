@@ -366,10 +366,15 @@ def _cancel_remote_live_runs(
                 result = cli.cancel(runtime, kind="scenario", remote_id=remote_id)
             except AntiochCliError as exc:
                 # A booting run can terminalize between the supported list and
-                # cancel calls. Treat only the vendor's exact absence response
-                # as terminal; every other cancellation failure still blocks
-                # service teardown.
-                if "was not found" not in str(exc):
+                # cancel calls. Treat only typed absence or the vendor's exact
+                # unstructured absence response as terminal; every other
+                # cancellation failure still blocks service teardown.
+                missing = (
+                    exc.http_status == 404
+                    or exc.error_type in {"not_found", "scenario_not_found"}
+                    or "was not found" in str(exc).lower()
+                )
+                if not missing:
                     raise
                 terminal.add(remote_id)
                 continue

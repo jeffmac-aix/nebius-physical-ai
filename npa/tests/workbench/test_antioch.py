@@ -172,6 +172,12 @@ def test_redaction_covers_nested_credentials_and_signed_urls() -> None:
     assert "eyJhbGciOiJIUzI1NiJ9.e30.signature" not in redact_text(
         "eyJhbGciOiJIUzI1NiJ9.e30.signature"
     )
+    assert "a" * 32 not in redact_text(f"scenario run {'a' * 32} was not found")
+    assert "b" * 64 not in redact_text(f"container {'b' * 64} is stopping")
+    assert (
+        "01234567-89ab-cdef-0123-456789abcdef"
+        not in redact_text("run 01234567-89ab-cdef-0123-456789abcdef")
+    )
 
 
 @pytest.mark.parametrize(

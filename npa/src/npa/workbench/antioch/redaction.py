@@ -22,6 +22,14 @@ _TOKEN_PATTERNS = (
         r"(?i)(\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret|credential)\s*[=:]\s*)[^\s,;]+"
     ),
     re.compile(r"\b(?:hf|ghp|github_pat)_[A-Za-z0-9_=-]{16,}\b"),
+    # Antioch run/container identities are opaque hexadecimal values. They are
+    # operationally sensitive even when the vendor emits them in plain text
+    # instead of structured identifier fields.
+    re.compile(r"\b[0-9a-fA-F]{32,64}\b"),
+    re.compile(
+        r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+        r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
+    ),
 )
 
 

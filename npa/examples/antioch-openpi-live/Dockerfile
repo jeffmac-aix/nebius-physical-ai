@@ -8,12 +8,16 @@ RUN uv pip install --system --no-cache \
     "msgpack==1.1.1" \
     "websockets==15.0.1"
 
-# Antioch syncs and bakes queued project files at this canonical path.
+# Antioch syncs and bakes queued project files at this canonical path. Isaac's
+# runtime cache/document parents must also remain writable after dropping uid.
 RUN install -d -o 1000 -g 1000 \
     /workspace/project \
     /tmp/npa-home \
     /tmp/npa-home/.cache \
-    /tmp/npa-home/.cache/ov
+    /tmp/npa-home/.cache/ov \
+    /usr/local/lib/python3.12/dist-packages/isaacsim/kit/cache/DerivedDataCache \
+    "/usr/local/lib/python3.12/dist-packages/isaacsim/kit/data/documents/Kit/apps/Isaac-Sim Python/scripts" \
+    /usr/local/lib/python3.12/dist-packages/isaacsim/kit/data/documents/Kit/shared
 COPY --chown=1000:1000 src/ /workspace/project/src/
 
 ENV HOME=/tmp/npa-home \
