@@ -422,6 +422,7 @@ def _stage_project(source: Path, destination: Path, project_id: str) -> None:
     if not (source / "antioch.yaml").is_file():
         raise AntiochLiveError("live source is not an Antioch project")
     shutil.copytree(source, destination)
+    os.chmod(destination, 0o700)
     # ``antioch services cp`` preserves the local source mode while transferring
     # through the assignment's SSH user.  The service itself runs as uid 1000,
     # so owner-only files become unreadable after that supported copy boundary.
