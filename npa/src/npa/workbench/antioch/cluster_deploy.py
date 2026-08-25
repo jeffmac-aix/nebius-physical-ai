@@ -22,6 +22,7 @@ from .live import _relay_certificate
 
 CONFIG_SCHEMA = "npa.antioch.mk8s-live-config.v1"
 ANTIOCH_TLS_EGRESS_PORTS = (22, 443, 8443)
+UNRESTRICTED_VENDOR_EGRESS_CIDR = "0.0.0.0/0"
 MANAGED_BY = "npa-antioch-mk8s-live"
 SCENARIO = "openpi_franka_mk8s_live"
 _DNS_LABEL = re.compile(r"^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$")
@@ -326,7 +327,9 @@ def build_public_manifests(config: ClusterLiveConfig) -> dict[str, dict[str, Any
                 "metadata": {"labels": labels},
                 "spec": {
                     "automountServiceAccountToken": False,
-                    "terminationGracePeriodSeconds": 300,
+                    # Cleanup can spend 118s proving three stable absences after
+                    # cancellation, plus 40s on the supervisor and service teardown.
+                    "terminationGracePeriodSeconds": 180,
                     "securityContext": {
                         "runAsNonRoot": True,
                         "runAsUser": 10001,
@@ -484,7 +487,7 @@ def build_public_manifests(config: ClusterLiveConfig) -> dict[str, dict[str, Any
                     ],
                 },
                 {
-                    "to": [{"ipBlock": {"cidr": "0.0.0.0/0"}}],
+                    "to": [{"ipBlock": {"cidr": UNRESTRICTED_VENDOR_EGRESS_CIDR}}],
                     "ports": [
                         {"protocol": "TCP", "port": port}
                         for port in ANTIOCH_TLS_EGRESS_PORTS
@@ -945,6 +948,7 @@ def cluster_status(config: ClusterLiveConfig) -> dict[str, Any]:
         raise ClusterLiveError("policy Deployment ownership is not proven")
     policy_ready = int(policy[0].status.ready_replicas or 0) == 1
     relay_state: dict[str, Any] = {}
+    probe_diagnostics: dict[str, dict[str, str]] = {}
     live_metrics: dict[str, int | float] = {}
     cluster_local_policy_resolved = False
     if len(pods) == 1:
@@ -973,8 +977,12 @@ def cluster_status(config: ClusterLiveConfig) -> dict[str, Any]:
                 "last_failed_phase",
             }
             relay_state = {key: parsed.get(key) for key in sorted(allowed)}
-        except Exception:
+        except Exception as exc:
             relay_state = {"status": "unavailable"}
+            probe_diagnostics["relay_state"] = {
+                "status": "failed",
+                "exception_class": type(exc).__name__,
+            }
         try:
             logs = core.read_namespaced_pod_log(
                 pod_name,
@@ -1009,8 +1017,12 @@ def cluster_status(config: ClusterLiveConfig) -> dict[str, Any]:
                 tty=False,
             )
             cluster_local_policy_resolved = str(resolution).strip() == "ok"
-        except Exception:
+        except Exception as exc:
             cluster_local_policy_resolved = False
+            probe_diagnostics["policy_dns"] = {
+                "status": "failed",
+                "exception_class": type(exc).__name__,
+            }
     return {
         "status": "ready" if ready and policy_ready else "not_ready",
         "identity": config.identity,
@@ -1022,6 +1034,7 @@ def cluster_status(config: ClusterLiveConfig) -> dict[str, Any]:
         "cluster_local_policy_resolved": cluster_local_policy_resolved,
         "relay": relay_state,
         "live_metrics": live_metrics,
+        "probe_diagnostics": probe_diagnostics,
         "dev_vm_in_data_path": False,
     }
 

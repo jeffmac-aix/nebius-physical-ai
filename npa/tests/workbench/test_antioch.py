@@ -887,10 +887,12 @@ def test_collect_marks_state_before_conversion_and_blocks_duplicate(
     monkeypatch.setattr("npa.workbench.antioch.manager.stage_project", observe_marker)
     with pytest.raises(RuntimeError, match="observing marker"):
         manager.collect(collect)
-    with pytest.raises(AntiochOperationError) as raised:
+    recovered = manager._record_for(collect)
+    assert recovered.status == "completed"
+    assert recovered.collection_owner == ""
+    assert recovered.retryable is True
+    with pytest.raises(RuntimeError, match="observing marker"):
         manager.collect(collect)
-    assert raised.value.error_type == "collection_in_progress"
-    assert raised.value.retryable is True
 
 
 @pytest.mark.parametrize(

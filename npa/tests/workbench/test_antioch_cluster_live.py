@@ -130,7 +130,7 @@ def test_public_manifests_keep_vm_out_and_policy_cluster_local(tmp_path: Path) -
         "policy-relay",
     }
     assert pod["automountServiceAccountToken"] is False
-    assert pod["terminationGracePeriodSeconds"] >= 300
+    assert pod["terminationGracePeriodSeconds"] >= 180
     init = pod["initContainers"][0]
     init_command = init["command"][-1]
     volume_names = [volume["name"] for volume in pod["volumes"]]
@@ -176,7 +176,13 @@ def test_public_manifests_keep_vm_out_and_policy_cluster_local(tmp_path: Path) -
     assert adapter_policy["ingress"] == []
     assert adapter_policy["policyTypes"] == ["Ingress", "Egress"]
     assert adapter_policy["egress"][-1] == {
-        "to": [{"ipBlock": {"cidr": "0.0.0.0/0"}}],
+        "to": [
+            {
+                "ipBlock": {
+                    "cidr": cluster_deploy.UNRESTRICTED_VENDOR_EGRESS_CIDR
+                }
+            }
+        ],
         "ports": [
             {"protocol": "TCP", "port": 22},
             {"protocol": "TCP", "port": 443},

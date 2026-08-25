@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import mimetypes
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -149,8 +150,10 @@ class StateStore:
             except StoragePreconditionFailed:
                 continue
 
-    def begin_collection(self, record: OperationRecord) -> tuple[OperationRecord, bool]:
-        """Atomically claim the one allowed completed-to-collecting transition."""
+    def acquire_collection(
+        self, record: OperationRecord, owner: str, *, lease_seconds: int = 60
+    ) -> tuple[OperationRecord, bool]:
+        """Acquire or recover the renewable, S3-fenced collection lease."""
 
         while True:
             current = self.read(record.output_path, record.idempotency_key)
@@ -159,11 +162,36 @@ class StateStore:
                     "cannot collect missing Antioch operation state"
                 )
             latest, etag = current
-            if latest.completion_uri or latest.status != "completed":
+            if latest.completion_uri or latest.status not in {"completed", "collecting"}:
+                return latest, False
+            now = datetime.now(timezone.utc)
+            expires = None
+            if latest.collection_lease_expires_at:
+                try:
+                    expires = datetime.fromisoformat(
+                        latest.collection_lease_expires_at.replace("Z", "+00:00")
+                    )
+                except ValueError as exc:
+                    raise AntiochStorageError(
+                        "collection lease timestamp is malformed"
+                    ) from exc
+            if (
+                latest.collection_owner not in {"", owner}
+                and expires is not None
+                and expires > now
+            ):
                 return latest, False
             updated = latest.model_copy(
                 update={
                     "status": "collecting",
+                    "collection_owner": owner,
+                    "collection_lease_expires_at": (
+                        now + timedelta(seconds=lease_seconds)
+                    ).isoformat().replace("+00:00", "Z"),
+                    "collection_phase": "claimed",
+                    "retryable": False,
+                    "error_type": "",
+                    "error_message": "",
                     "updated_at": utc_now(),
                     "revision": latest.revision + 1,
                 }
@@ -178,6 +206,47 @@ class StateStore:
                 return updated, True
             except StoragePreconditionFailed:
                 continue
+
+    def begin_collection(self, record: OperationRecord) -> tuple[OperationRecord, bool]:
+        """Compatibility wrapper for callers that do not need lease ownership."""
+
+        return self.acquire_collection(record, str(uuid.uuid4()))
+
+    def refresh_collection(
+        self,
+        record: OperationRecord,
+        owner: str,
+        *,
+        phase: str | None = None,
+        lease_seconds: int = 60,
+    ) -> OperationRecord:
+        current = self.read(record.output_path, record.idempotency_key)
+        if current is None or current[0].collection_owner != owner:
+            raise AntiochStorageError("collection lease ownership was lost")
+        changes: dict[str, Any] = {
+            "collection_lease_expires_at": (
+                datetime.now(timezone.utc) + timedelta(seconds=lease_seconds)
+            ).isoformat().replace("+00:00", "Z")
+        }
+        if phase is not None:
+            changes["collection_phase"] = phase
+        return self.update(current[0], **changes)
+
+    def fail_collection(
+        self, record: OperationRecord, owner: str, *, error_type: str
+    ) -> OperationRecord:
+        current = self.read(record.output_path, record.idempotency_key)
+        if current is None or current[0].collection_owner != owner:
+            return current[0] if current else record
+        return self.update(
+            current[0],
+            status="completed",
+            collection_owner="",
+            collection_lease_expires_at="",
+            retryable=True,
+            error_type=error_type,
+            error_message="collection failed; retry with the same workflow_run/state_id",
+        )
 
     def acquire_submission(
         self, record: OperationRecord, owner: str, *, lease_seconds: int = 60

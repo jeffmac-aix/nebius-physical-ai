@@ -25,7 +25,6 @@ from .schemas import (
     OperationRecord,
     ResumeRequest,
     SubmitRequest,
-    utc_now,
 )
 from .storage import StateStore, canonical_json, join_uri, sha256_bytes, sha256_file
 from .storage_config import resolve_storage_client
@@ -156,6 +155,34 @@ def _submission_heartbeat(states: StateStore, record: OperationRecord, owner: st
             "durable submission lease renewal failed",
             retryable=True,
             error_type="lease_lost",
+        ) from errors[0]
+
+
+@contextmanager
+def _collection_heartbeat(states: StateStore, record: OperationRecord, owner: str):
+    stop = threading.Event()
+    errors: list[Exception] = []
+
+    def renew() -> None:
+        while not stop.wait(20):
+            try:
+                states.refresh_collection(record, owner)
+            except Exception as exc:
+                errors.append(exc)
+                stop.set()
+
+    worker = threading.Thread(target=renew, name="antioch-collection-lease", daemon=True)
+    worker.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        worker.join()
+    if errors:
+        raise AntiochOperationError(
+            "durable collection lease renewal failed",
+            retryable=True,
+            error_type="collection_lease_lost",
         ) from errors[0]
 
 
@@ -391,21 +418,16 @@ class AntiochManager:
         record = self._record_for(request)
         if record.completion_uri:
             return record
-        if record.status == "collecting":
-            raise AntiochOperationError(
-                "Antioch collection is already in progress",
-                retryable=True,
-                error_type="collection_in_progress",
-            )
-        if record.status != "completed":
+        if record.status not in {"completed", "collecting"}:
             record = self.reconcile(request)
-        if record.status != "completed":
+        if record.status not in {"completed", "collecting"}:
             raise AntiochOperationError(
                 f"remote operation is not collectable: {record.status}"
             )
         if record.completion_uri:
             return record
-        record, acquired = self.states.begin_collection(record)
+        owner = str(uuid.uuid4())
+        record, acquired = self.states.acquire_collection(record, owner)
         if not acquired:
             if record.completion_uri:
                 return record
@@ -414,8 +436,12 @@ class AntiochManager:
                 retryable=True,
                 error_type="collection_in_progress",
             )
-        with tempfile.TemporaryDirectory(prefix="npa-antioch-collect-") as temp_name:
-            temp = Path(temp_name)
+        try:
+            heartbeat = _collection_heartbeat(self.states, record, owner)
+            heartbeat.__enter__()
+            temporary = tempfile.TemporaryDirectory(prefix="npa-antioch-collect-")
+            temp = Path(temporary.__enter__())
+            self.states.refresh_collection(record, owner, phase="download")
             project, source_manifest, _digest = stage_project(
                 self.storage,
                 record.input_path,
@@ -493,6 +519,7 @@ class AntiochManager:
             dataset_uri = ""
             dataset_files = []
             if request.require_policy_dataset:
+                self.states.refresh_collection(record, owner, phase="convert")
                 robot_type, task = _dataset_metadata(record)
                 dataset = temp / "lerobot-dataset"
                 provenance = convert_episodes(
@@ -518,10 +545,24 @@ class AntiochManager:
             else:
                 provenance = None
             manifest_uri = join_uri(record.output_path, "manifests", "v1.json")
+            self.states.refresh_collection(record, owner, phase="manifest")
+            manifest_record = record.model_copy(
+                update={
+                    "status": "completed",
+                    "collection_owner": "",
+                    "collection_lease_expires_at": "",
+                    "collection_phase": "",
+                    "retryable": False,
+                    "error_type": "",
+                    "error_message": "",
+                    "updated_at": record.created_at,
+                    "revision": 1,
+                }
+            )
             manifest = {
                 "schema_name": ARTIFACT_MANIFEST_SCHEMA,
-                "created_at": utc_now(),
-                "operation": record.model_dump(mode="json"),
+                "created_at": record.created_at,
+                "operation": manifest_record.model_dump(mode="json"),
                 "remote": public_snapshot(remote),
                 "source": source_manifest.model_dump(mode="json"),
                 "artifacts": [item.model_dump(mode="json") for item in artifacts],
@@ -536,20 +577,41 @@ class AntiochManager:
                 completion_uri,
                 {
                     "schema_name": COMPLETION_SCHEMA,
-                    "created_at": utc_now(),
+                    "created_at": record.created_at,
                     "manifest_uri": manifest_uri,
                     "manifest_sha256": sha256_bytes(canonical_json(manifest)),
                     "dataset_uri": dataset_uri,
                     "remote_id": record.remote_id,
                 },
             )
-        return self.states.update(
-            record,
-            status="completed",
-            artifact_manifest_uri=manifest_uri,
-            dataset_uri=dataset_uri,
-            completion_uri=completion_uri,
-        )
+            self.states.refresh_collection(record, owner, phase="state")
+            result = self.states.update(
+                record,
+                status="completed",
+                artifact_manifest_uri=manifest_uri,
+                dataset_uri=dataset_uri,
+                completion_uri=completion_uri,
+                collection_owner="",
+                collection_lease_expires_at="",
+                collection_phase="",
+                retryable=False,
+                error_type="",
+                error_message="",
+            )
+            heartbeat.__exit__(None, None, None)
+            temporary.__exit__(None, None, None)
+            return result
+        except Exception as exc:
+            self.states.fail_collection(
+                record, owner, error_type=getattr(exc, "error_type", type(exc).__name__)
+            )
+            if "temporary" in locals():
+                temporary.__exit__(type(exc), exc, exc.__traceback__)
+            if "heartbeat" in locals():
+                heartbeat.__exit__(type(exc), exc, exc.__traceback__)
+            if isinstance(exc, AntiochOperationError):
+                raise
+            raise
 
     def run(
         self, request: SubmitRequest, *, poll_seconds: float = 10.0
