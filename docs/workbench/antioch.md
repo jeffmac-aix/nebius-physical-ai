@@ -154,14 +154,16 @@ ClusterIP OpenPI Service. The operator VM launches and observes this Deployment
 but carries no camera frames, policy messages, or actions.
 
 The private runtime file contains Kubernetes coordinates and paths to the
-existing Antioch config, exact terms-acceptance file, assigned project-id file,
+existing Antioch config, assigned project-id file,
 and retained OpenPI objects. Those values do not appear in CLI arguments or
 ordinary output. The deployer stages them as owner-labelled Kubernetes Secrets,
 rotates the policy gateway certificate for its `.svc` DNS name, and copies Secret
 files through a root-only init container into a memory-backed 0600 volume owned
 by the non-root runtime uid. Terms values, API keys, certificates, OAuth state,
 and project identity never enter a ConfigMap, image, manifest output, annotation,
-or log.
+or log. Terms acceptance is read only from the exact
+`NPA_ANTIOCH_ACCEPT_TERMS=YES` value in the deploy process environment; it has no
+runtime-config file field and is never persisted by NPA on the operator VM.
 
 The policy Service is `ClusterIP` by default. Its NetworkPolicy permits the WSS
 gateway only from the exact adapter identity and permits health ports only from

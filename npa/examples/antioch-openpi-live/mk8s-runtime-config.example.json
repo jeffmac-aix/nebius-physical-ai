@@ -18,7 +18,6 @@
   "public_rollback_service_name": "",
   "image_pull_secret": "",
   "antioch_config_dir": "/path/to/mode-0700-antioch-config",
-  "antioch_terms_file": "/path/to/mode-0600-exact-terms-acceptance",
   "antioch_project_id_file": "/path/to/mode-0600-project-id",
   "adapter_replicas": 1,
   "scenario_timeout_seconds": 14400,

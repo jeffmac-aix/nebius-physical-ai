@@ -24,6 +24,7 @@ SCENARIO = "openpi_franka_mk8s_live"
 _DNS_LABEL = re.compile(r"^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$")
 _SECRET_KEY = re.compile(r"^[A-Za-z0-9._-]+$")
 _METRIC_KEY = re.compile(r"^[a-z][a-z0-9_]*$")
+_ANTIOCH_TERMS_ENV = "NPA_ANTIOCH_ACCEPT_TERMS"
 
 
 class ClusterLiveError(RuntimeError):
@@ -52,7 +53,6 @@ class ClusterLiveConfig(BaseModel):
     public_rollback_service_name: str = ""
     image_pull_secret: str = ""
     antioch_config_dir: str
-    antioch_terms_file: str
     antioch_project_id_file: str
     adapter_replicas: int = Field(default=1, ge=0, le=1)
     scenario_timeout_seconds: int = Field(default=14_400, ge=60)
@@ -333,10 +333,26 @@ def build_public_manifests(config: ClusterLiveConfig) -> dict[str, dict[str, Any
                             },
                             "volumeMounts": [
                                 {"name": "private", "mountPath": "/private"},
-                                {"name": "source-config", "mountPath": "/sources/config", "readOnly": True},
-                                {"name": "source-bundle", "mountPath": "/sources/bundle", "readOnly": True},
-                                {"name": "source-terms", "mountPath": "/sources/terms", "readOnly": True},
-                                {"name": "source-project", "mountPath": "/sources/project", "readOnly": True},
+                                {
+                                    "name": "source-config",
+                                    "mountPath": "/sources/config",
+                                    "readOnly": True,
+                                },
+                                {
+                                    "name": "source-bundle",
+                                    "mountPath": "/sources/bundle",
+                                    "readOnly": True,
+                                },
+                                {
+                                    "name": "source-terms",
+                                    "mountPath": "/sources/terms",
+                                    "readOnly": True,
+                                },
+                                {
+                                    "name": "source-project",
+                                    "mountPath": "/sources/project",
+                                    "readOnly": True,
+                                },
                                 {"name": "tmp", "mountPath": "/tmp"},
                             ],
                         }
@@ -424,7 +440,9 @@ def build_public_manifests(config: ClusterLiveConfig) -> dict[str, dict[str, Any
                     "to": [
                         {
                             "namespaceSelector": {
-                                "matchLabels": {"kubernetes.io/metadata.name": "kube-system"}
+                                "matchLabels": {
+                                    "kubernetes.io/metadata.name": "kube-system"
+                                }
                             }
                         }
                     ],
@@ -449,7 +467,11 @@ def build_public_manifests(config: ClusterLiveConfig) -> dict[str, dict[str, Any
 
 
 def _private_file(path: Path, *, label: str) -> bytes:
-    if not path.is_file() or path.is_symlink() or stat.S_IMODE(path.stat().st_mode) & 0o077:
+    if (
+        not path.is_file()
+        or path.is_symlink()
+        or stat.S_IMODE(path.stat().st_mode) & 0o077
+    ):
         raise ClusterLiveError(f"private {label} must be a mode-0600 regular file")
     value = path.read_bytes()
     if not value:
@@ -457,20 +479,42 @@ def _private_file(path: Path, *, label: str) -> bytes:
     return value
 
 
+def _terms_acceptance() -> bytes:
+    """Return an explicit process-scoped attestation; never read it from disk."""
+    accepted = os.environ.get(_ANTIOCH_TERMS_ENV, "").encode()
+    if accepted != b"YES":
+        raise ClusterLiveError(
+            "Antioch terms acceptance is not the exact required value"
+        )
+    return accepted
+
+
 def _config_files(directory: Path) -> dict[str, bytes]:
-    if not directory.is_dir() or directory.is_symlink() or stat.S_IMODE(directory.stat().st_mode) & 0o077:
+    if (
+        not directory.is_dir()
+        or directory.is_symlink()
+        or stat.S_IMODE(directory.stat().st_mode) & 0o077
+    ):
         raise ClusterLiveError("private Antioch config directory must be mode 0700")
     result: dict[str, bytes] = {}
     for path in sorted(directory.iterdir()):
-        if not path.is_file() or path.is_symlink() or not _SECRET_KEY.fullmatch(path.name):
-            raise ClusterLiveError("Antioch config must contain only safe regular files")
+        if (
+            not path.is_file()
+            or path.is_symlink()
+            or not _SECRET_KEY.fullmatch(path.name)
+        ):
+            raise ClusterLiveError(
+                "Antioch config must contain only safe regular files"
+            )
         result[path.name] = _private_file(path, label="Antioch config file")
     if not result:
         raise ClusterLiveError("private Antioch config directory is empty")
     return result
 
 
-def _secret(name: str, namespace: str, labels: dict[str, str], data: dict[str, bytes]) -> dict[str, Any]:
+def _secret(
+    name: str, namespace: str, labels: dict[str, str], data: dict[str, bytes]
+) -> dict[str, Any]:
     return {
         "apiVersion": "v1",
         "kind": "Secret",
@@ -509,10 +553,22 @@ def _owned(metadata: Any, identity: str, *, allow_openpi: bool = False) -> bool:
     labels = getattr(metadata, "labels", None) or {}
     if labels.get("npa.nebius.ai/live-identity") == identity:
         return labels.get("app.kubernetes.io/managed-by") == MANAGED_BY
-    return allow_openpi and labels.get("app.kubernetes.io/managed-by") == LIVE_MANAGED_BY
+    return (
+        allow_openpi and labels.get("app.kubernetes.io/managed-by") == LIVE_MANAGED_BY
+    )
 
 
-def _apply_owned(read: Any, create: Any, patch: Any, *, name: str, namespace: str, body: dict[str, Any], identity: str, allow_openpi: bool = False) -> str:
+def _apply_owned(
+    read: Any,
+    create: Any,
+    patch: Any,
+    *,
+    name: str,
+    namespace: str,
+    body: dict[str, Any],
+    identity: str,
+    allow_openpi: bool = False,
+) -> str:
     try:
         current = read(name=name, namespace=namespace)
     except Exception as exc:
@@ -538,7 +594,9 @@ def apply_cluster(config: ClusterLiveConfig) -> dict[str, Any]:
     apps = client.AppsV1Api()
     networking = client.NetworkingV1Api()
     core.read_namespace(name=config.namespace)
-    selector = ",".join(f"{key}={value}" for key, value in sorted(config.policy_selector.items()))
+    selector = ",".join(
+        f"{key}={value}" for key, value in sorted(config.policy_selector.items())
+    )
     deployments = apps.list_namespaced_deployment(
         namespace=config.namespace, label_selector=selector
     ).items
@@ -599,9 +657,13 @@ def apply_cluster(config: ClusterLiveConfig) -> dict[str, Any]:
         except (ValueError, TypeError, json.JSONDecodeError) as exc:
             raise ClusterLiveError("existing live bundle Secret is malformed") from exc
         if endpoint != {"host": host, "port": 443, "scheme": "wss"}:
-            raise ClusterLiveError("existing live bundle targets a different policy Service")
+            raise ClusterLiveError(
+                "existing live bundle targets a different policy Service"
+            )
         if bundle["api-key"].strip() != api_key.strip():
-            raise ClusterLiveError("existing live bundle does not match policy authentication")
+            raise ClusterLiveError(
+                "existing live bundle does not match policy authentication"
+            )
         existing_tls = core.read_namespaced_secret(
             name=config.policy_tls_secret_name, namespace=config.namespace
         )
@@ -630,14 +692,29 @@ def apply_cluster(config: ClusterLiveConfig) -> dict[str, Any]:
             "relay-server.key": relay_key,
             "relay-api-key": relay_token + b"\n",
         }
-    terms = _private_file(Path(config.antioch_terms_file), label="Antioch terms acceptance")
-    if terms.strip() != b"YES":
-        raise ClusterLiveError("Antioch terms acceptance is not the exact required value")
-    project_id = _private_file(Path(config.antioch_project_id_file), label="Antioch project identity")
+    terms = _terms_acceptance()
+    project_id = _private_file(
+        Path(config.antioch_project_id_file), label="Antioch project identity"
+    )
     secrets = [
-        _secret(config.config_secret_name, config.namespace, labels, _config_files(Path(config.antioch_config_dir))),
-        _secret(config.terms_secret_name, config.namespace, labels, {"accepted": terms.strip() + b"\n"}),
-        _secret(config.project_secret_name, config.namespace, labels, {"project-id": project_id.strip() + b"\n"}),
+        _secret(
+            config.config_secret_name,
+            config.namespace,
+            labels,
+            _config_files(Path(config.antioch_config_dir)),
+        ),
+        _secret(
+            config.terms_secret_name,
+            config.namespace,
+            labels,
+            {"accepted": terms.strip() + b"\n"},
+        ),
+        _secret(
+            config.project_secret_name,
+            config.namespace,
+            labels,
+            {"project-id": project_id.strip() + b"\n"},
+        ),
         _secret(config.live_bundle_secret_name, config.namespace, labels, bundle),
     ]
     actions: dict[str, str] = {}
@@ -745,7 +822,9 @@ def cluster_status(config: ClusterLiveConfig) -> dict[str, Any]:
     from kubernetes.client.exceptions import ApiException
     from kubernetes.stream import stream
 
-    kube_config.load_kube_config(config_file=config.kubeconfig, context=config.context or None)
+    kube_config.load_kube_config(
+        config_file=config.kubeconfig, context=config.context or None
+    )
     apps = client.AppsV1Api()
     core = client.CoreV1Api()
     deployment = apps.read_namespaced_deployment(config.adapter_name, config.namespace)
@@ -858,10 +937,14 @@ def cluster_status(config: ClusterLiveConfig) -> dict[str, Any]:
     }
 
 
-def stop_cluster(config: ClusterLiveConfig, *, timeout_seconds: float = 360.0) -> dict[str, Any]:
+def stop_cluster(
+    config: ClusterLiveConfig, *, timeout_seconds: float = 360.0
+) -> dict[str, Any]:
     from kubernetes import client, config as kube_config
 
-    kube_config.load_kube_config(config_file=config.kubeconfig, context=config.context or None)
+    kube_config.load_kube_config(
+        config_file=config.kubeconfig, context=config.context or None
+    )
     apps = client.AppsV1Api()
     deployment = apps.read_namespaced_deployment(config.adapter_name, config.namespace)
     if not _owned(deployment.metadata, config.identity):
@@ -873,7 +956,11 @@ def stop_cluster(config: ClusterLiveConfig, *, timeout_seconds: float = 360.0) -
     while time.monotonic() < deadline:
         current = apps.read_namespaced_deployment(config.adapter_name, config.namespace)
         if int(current.status.replicas or 0) == 0:
-            return {"status": "stopped", "identity": config.identity, "cleanup_order": "scenario_then_service"}
+            return {
+                "status": "stopped",
+                "identity": config.identity,
+                "cleanup_order": "scenario_then_service",
+            }
         time.sleep(2)
     raise ClusterLiveError("adapter did not finish supported scenario/service cleanup")
 
@@ -883,12 +970,18 @@ def disable_public_rollback_service(config: ClusterLiveConfig) -> dict[str, Any]
 
     if not config.public_rollback_service_name:
         return {"status": "not_configured"}
-    kube_config.load_kube_config(config_file=config.kubeconfig, context=config.context or None)
+    kube_config.load_kube_config(
+        config_file=config.kubeconfig, context=config.context or None
+    )
     core = client.CoreV1Api()
-    service = core.read_namespaced_service(config.public_rollback_service_name, config.namespace)
+    service = core.read_namespaced_service(
+        config.public_rollback_service_name, config.namespace
+    )
     if not _owned(service.metadata, config.identity, allow_openpi=True):
         raise ClusterLiveError("refusing to alter an unowned rollback Service")
     if str(service.spec.type) != "LoadBalancer":
         return {"status": "already_private"}
-    core.delete_namespaced_service(config.public_rollback_service_name, config.namespace)
+    core.delete_namespaced_service(
+        config.public_rollback_service_name, config.namespace
+    )
     return {"status": "disabled", "former_type": "LoadBalancer"}

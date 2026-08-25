@@ -16,9 +16,6 @@ def _config(tmp_path: Path, **updates: object) -> cluster_deploy.ClusterLiveConf
     config_dir.mkdir(mode=0o700)
     (config_dir / "config.json").write_text("{}", encoding="utf-8")
     os.chmod(config_dir / "config.json", 0o600)
-    terms = tmp_path / "terms"
-    terms.write_text("YES\n", encoding="utf-8")
-    os.chmod(terms, 0o600)
     project = tmp_path / "project-id"
     project.write_text("private-project-id\n", encoding="utf-8")
     os.chmod(project, 0o600)
@@ -34,7 +31,6 @@ def _config(tmp_path: Path, **updates: object) -> cluster_deploy.ClusterLiveConf
         "policy_tls_secret_name": "openpi-tls",
         "policy_cache_pvc_name": "openpi-cache",
         "antioch_config_dir": str(config_dir),
-        "antioch_terms_file": str(terms),
         "antioch_project_id_file": str(project),
         "kubelet_source_cidrs": ["192.0.2.10/32"],
     }
@@ -42,7 +38,9 @@ def _config(tmp_path: Path, **updates: object) -> cluster_deploy.ClusterLiveConf
     return cluster_deploy.ClusterLiveConfig.model_validate(values)
 
 
-def test_private_config_requires_mode_0600_and_per_state_identity(tmp_path: Path) -> None:
+def test_private_config_requires_mode_0600_and_per_state_identity(
+    tmp_path: Path,
+) -> None:
     first = _config(tmp_path)
     second = first.model_copy(update={"state_id": "antioch-live-b"})
     assert first.identity != second.identity
@@ -58,6 +56,21 @@ def test_private_config_requires_mode_0600_and_per_state_identity(tmp_path: Path
 def test_cluster_live_requires_digest_pinned_adapter(tmp_path: Path) -> None:
     with pytest.raises(ValidationError, match="sha256"):
         _config(tmp_path, adapter_image="registry.invalid/npa-antioch:latest")
+
+
+def test_cluster_live_terms_acceptance_is_process_scoped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.delenv("NPA_ANTIOCH_ACCEPT_TERMS", raising=False)
+    with pytest.raises(cluster_deploy.ClusterLiveError, match="exact required value"):
+        cluster_deploy._terms_acceptance()
+    monkeypatch.setenv("NPA_ANTIOCH_ACCEPT_TERMS", "yes")
+    with pytest.raises(cluster_deploy.ClusterLiveError, match="exact required value"):
+        cluster_deploy._terms_acceptance()
+    monkeypatch.setenv("NPA_ANTIOCH_ACCEPT_TERMS", "YES")
+    assert cluster_deploy._terms_acceptance() == b"YES"
+    assert "antioch_terms_file" not in type(config).model_fields
 
 
 def test_public_manifests_keep_vm_out_and_policy_cluster_local(tmp_path: Path) -> None:
@@ -140,8 +153,8 @@ def test_apply_refuses_ambiguous_policy_selector(
 
 def test_source_uses_only_supported_antioch_live_commands() -> None:
     live = Path(cluster_runtime.__file__).read_text(encoding="utf-8")
-    helper = Path(cluster_runtime.__file__).with_name("live.py").read_text(
-        encoding="utf-8"
+    helper = (
+        Path(cluster_runtime.__file__).with_name("live.py").read_text(encoding="utf-8")
     )
     assert "Rome" not in live
     assert "requests." not in live
