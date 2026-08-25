@@ -2676,6 +2676,9 @@ def _preflight_image_bootstrap_contracts(
                         digest=digest,
                         context=context,
                         kubeconfig=str(os.environ.get("KUBECONFIG") or ""),
+                        image_pull_secrets=tuple(
+                            (pull_secrets_by_image or {}).get(image, ())
+                        ),
                     )
                 elif attested.ok:
                     evidence = attested
@@ -6551,6 +6554,14 @@ def preflight_images_cmd(
     infra: str = typer.Option(
         "", "--infra", help="Exact k8s/<context> used for unattested image probes."
     ),
+    image_pull_secret: list[str] = typer.Option(
+        [],
+        "--image-pull-secret",
+        help=(
+            "Existing operator-managed Kubernetes dockerconfigjson Secret used by "
+            "bootstrap capability probes. Repeat for multiple Secrets."
+        ),
+    ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON report."),
 ) -> None:
     """Prove every image this spec pulls is pullable, with the run's own credentials.
@@ -6599,6 +6610,12 @@ def preflight_images_cmd(
     pull_secrets_by_image = plan_image_pull_secrets(
         spec, plan.steps, run_id=run_id, options=options
     )
+    if image_pull_secret:
+        explicit = tuple(dict.fromkeys(item.strip() for item in image_pull_secret if item.strip()))
+        pull_secrets_by_image = {
+            selected: tuple(dict.fromkeys((*pull_secrets_by_image.get(selected, ()), *explicit)))
+            for selected in images
+        }
     if not images:
         typer.echo("images: none pinned by this spec")
         return
