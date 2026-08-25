@@ -372,6 +372,12 @@ def build_public_manifests(config: ClusterLiveConfig) -> dict[str, dict[str, Any
                                     "mountPath": "/sources/project",
                                     "readOnly": True,
                                 },
+                                {"name": "state", "mountPath": "/state"},
+                                {"name": "runtime", "mountPath": "/runtime"},
+                                {
+                                    "name": "runtime-cache",
+                                    "mountPath": "/runtime-cache",
+                                },
                                 {"name": "tmp", "mountPath": "/tmp"},
                             ],
                         }

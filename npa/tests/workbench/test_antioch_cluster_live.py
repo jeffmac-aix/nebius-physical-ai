@@ -94,14 +94,17 @@ def test_public_manifests_keep_vm_out_and_policy_cluster_local(tmp_path: Path) -
         "drop": ["ALL"],
         "add": ["CHOWN"],
     }
+    init_mounts = {mount["name"]: mount["mountPath"] for mount in init["volumeMounts"]}
+    assert init_mounts["state"] == "/state"
+    assert init_mounts["runtime"] == "/runtime"
+    assert init_mounts["runtime-cache"] == "/runtime-cache"
+    assert "chown -R 10001:10001 /private /state /runtime /runtime-cache" in init_command
     assert "cp -a" not in init_command
     controller, relay = pod["containers"]
     assert "cluster_runtime" in " ".join(controller["command"])
     assert "14400" in controller["command"]
     assert "antioch.relay" in " ".join(relay["command"])
     assert "18444" in relay["command"]
-    init_mounts = {item["name"] for item in pod["initContainers"][0]["volumeMounts"]}
-    assert {"private", "state", "runtime", "runtime-cache"} <= init_mounts
     rendered = json.dumps(manifests, sort_keys=True)
     assert "LoadBalancer" not in rendered
     assert "hostNetwork" not in rendered
