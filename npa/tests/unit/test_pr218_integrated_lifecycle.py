@@ -1269,6 +1269,7 @@ def test_destroy_retry_replays_completed_phase_without_current_state_verifier(
     from types import SimpleNamespace
 
     from npa import project_destroy, teardown_receipts
+    from npa.clients import nebius
 
     monkeypatch.setenv("NPA_TEARDOWN_RECEIPT_DIR", str(tmp_path / "receipts"))
     monkeypatch.setattr(
@@ -1277,6 +1278,11 @@ def test_destroy_retry_replays_completed_phase_without_current_state_verifier(
             project_id="project-a", tenant_id="tenant-a", region="us-central1"
         ),
     )
+
+    def unavailable_verifier(*_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+        raise nebius.NebiusError("provider verifier unavailable")
+
+    monkeypatch.setattr(nebius, "get_project_identity", unavailable_verifier)
     teardown_receipts.record_teardown_event(
         phase="project_destroy_workflows",
         resource="demo",
@@ -1385,6 +1391,7 @@ def test_destroy_resume_replays_recreated_resources_before_project_delete(
     from types import SimpleNamespace
 
     from npa import project_destroy, teardown_receipts
+    from npa.clients import nebius
 
     monkeypatch.setenv("NPA_TEARDOWN_RECEIPT_DIR", str(tmp_path / "receipts"))
     monkeypatch.setattr(
@@ -1392,6 +1399,12 @@ def test_destroy_resume_replays_recreated_resources_before_project_delete(
         lambda _project: SimpleNamespace(
             project_id="project-a", tenant_id="tenant-a", region="us-central1"
         ),
+    )
+    monkeypatch.setattr(nebius, "get_project_identity", lambda *_a, **_k: object())
+    monkeypatch.setattr(
+        nebius,
+        "list_project_dependencies",
+        lambda *_a, **_k: {"mk8s_clusters": ("cluster-a",)},
     )
     for name in ("workflows", "agents", "controller", "clusters"):
         teardown_receipts.record_teardown_event(
