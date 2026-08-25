@@ -67,7 +67,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bundle", required=True)
     parser.add_argument("--wait-for-bundle", action="store_true")
+    parser.add_argument("service_command", nargs="*")
     args = parser.parse_args()
+    if args.service_command not in ([], ["sleep", "infinity"]):
+        raise RuntimeError("unexpected service command arguments")
     bundle = Path(args.bundle)
     required = ("relay-api-key", "relay-server.crt", "relay-server.key")
     while args.wait_for_bundle and not all(

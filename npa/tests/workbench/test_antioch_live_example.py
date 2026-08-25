@@ -123,6 +123,9 @@ def test_live_sim_image_contains_only_protocol_dependencies() -> None:
         in dockerfile
     )
     assert '"--wait-for-bundle"]' in dockerfile
+    assert 'args.service_command not in ([], ["sleep", "infinity"])' in (
+        EXAMPLE / "src/relay_bridge.py"
+    ).read_text(encoding="utf-8")
     assert "git clone" not in dockerfile
     assert "checkpoint" not in dockerfile.lower()
 
