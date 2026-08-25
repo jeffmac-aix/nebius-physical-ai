@@ -77,6 +77,24 @@ def create_app(
                     "retryable": exc.retryable,
                 },
             ) from exc
+        except AntiochRuntimeError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "type": "runtime_error",
+                    "message": str(exc),
+                    "retryable": False,
+                },
+            ) from exc
+        except AntiochCliError as exc:
+            raise HTTPException(
+                status_code=503 if exc.retryable else 502,
+                detail={
+                    "type": exc.error_type,
+                    "message": str(exc),
+                    "retryable": exc.retryable,
+                },
+            ) from exc
 
     @app.get("/health", response_model=HealthResponse)
     async def health(

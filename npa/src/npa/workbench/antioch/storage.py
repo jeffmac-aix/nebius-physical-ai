@@ -105,16 +105,30 @@ class StateStore:
                 )
             latest, etag = current
             requested_status = changes.get("status")
-            terminal = {"completed", "failed", "cancelled"}
-            if latest.status == "completed" and requested_status not in {
-                None,
-                "completed",
-            }:
-                return latest
+            allowed_transitions = {
+                "claimed": {
+                    "submitted",
+                    "queued",
+                    "running",
+                    "completed",
+                    "failed",
+                    "cancelled",
+                },
+                "submitted": {"queued", "running", "completed", "failed", "cancelled"},
+                "queued": {"running", "completed", "failed", "cancelled"},
+                "running": {"completed", "failed", "cancelled"},
+                # Collection is the sole legitimate reopening of completed work.
+                "completed": {"collecting"},
+                # Publishing the immutable completion marker returns collection
+                # to completed. No remote reconciliation may otherwise reopen it.
+                "collecting": {"completed"},
+                "failed": set(),
+                "cancelled": set(),
+            }
             if (
-                latest.status in terminal
-                and requested_status in terminal
+                requested_status is not None
                 and requested_status != latest.status
+                and requested_status not in allowed_transitions[latest.status]
             ):
                 return latest
             updated = latest.model_copy(
@@ -135,6 +149,36 @@ class StateStore:
             except StoragePreconditionFailed:
                 continue
 
+    def begin_collection(self, record: OperationRecord) -> tuple[OperationRecord, bool]:
+        """Atomically claim the one allowed completed-to-collecting transition."""
+
+        while True:
+            current = self.read(record.output_path, record.idempotency_key)
+            if current is None:
+                raise AntiochStorageError(
+                    "cannot collect missing Antioch operation state"
+                )
+            latest, etag = current
+            if latest.completion_uri or latest.status != "completed":
+                return latest, False
+            updated = latest.model_copy(
+                update={
+                    "status": "collecting",
+                    "updated_at": utc_now(),
+                    "revision": latest.revision + 1,
+                }
+            )
+            try:
+                self.client.put_bytes_conditional(
+                    canonical_json(updated.model_dump(mode="json")),
+                    self.state_uri(updated.output_path, updated.idempotency_key),
+                    if_match=etag,
+                    content_type="application/json",
+                )
+                return updated, True
+            except StoragePreconditionFailed:
+                continue
+
     def acquire_submission(
         self, record: OperationRecord, owner: str, *, lease_seconds: int = 60
     ) -> tuple[OperationRecord, bool]:
@@ -147,7 +191,7 @@ class StateStore:
                     "cannot lease missing Antioch operation state"
                 )
             latest, etag = current
-            if latest.remote_id:
+            if latest.remote_id or latest.status != "claimed":
                 return latest, False
             now = datetime.now(timezone.utc)
             expires = None

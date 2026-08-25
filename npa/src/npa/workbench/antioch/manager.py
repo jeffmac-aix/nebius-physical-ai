@@ -110,6 +110,23 @@ def _dataset_metadata(record: OperationRecord) -> tuple[str, str]:
     return robot_type, task
 
 
+def _manifest_artifact_size(item: dict[str, Any]) -> Any:
+    """Prefer the current field even when its explicit value is zero."""
+
+    if "size_bytes" in item:
+        return item["size_bytes"]
+    return item.get("size")
+
+
+def _validate_downloaded_artifact(path: Path, item: dict[str, Any]) -> None:
+    expected_size = _manifest_artifact_size(item)
+    if expected_size is not None and int(expected_size) != path.stat().st_size:
+        raise AntiochOperationError("downloaded artifact failed size verification")
+    expected_sha = str(item.get("sha256") or "")
+    if expected_sha and expected_sha != sha256_file(path):
+        raise AntiochOperationError("downloaded artifact failed checksum verification")
+
+
 @contextmanager
 def _submission_heartbeat(states: StateStore, record: OperationRecord, owner: str):
     """Renew the S3 fencing lease while a vendor queue command is staging."""
@@ -257,6 +274,8 @@ class AntiochManager:
 
     def reconcile(self, request: ResumeRequest) -> OperationRecord:
         record = self._record_for(request)
+        if record.status in {"completed", "collecting", "failed", "cancelled"}:
+            return record
         if not record.remote_id:
             replay = SubmitRequest(
                 input_path=record.input_path,
@@ -311,9 +330,7 @@ class AntiochManager:
         if not record.remote_id:
             return self.states.update(record, status="cancelled")
         try:
-            with tempfile.TemporaryDirectory(
-                prefix="npa-antioch-cancel-"
-            ) as temp_name:
+            with tempfile.TemporaryDirectory(prefix="npa-antioch-cancel-") as temp_name:
                 project, _manifest, _digest = stage_project(
                     self.storage,
                     record.input_path,
@@ -365,50 +382,38 @@ class AntiochManager:
         record = self.reconcile(request)
         if not request.rerun_terminal or record.status not in {"failed", "cancelled"}:
             return record
-        try:
-            with tempfile.TemporaryDirectory(prefix="npa-antioch-rerun-") as temp_name:
-                project, _manifest, _digest = stage_project(
-                    self.storage,
-                    record.input_path,
-                    Path(temp_name),
-                    project_id=record.derived_project_id,
-                )
-                payload = self._cli().rerun(
-                    project, kind=record.remote_kind, remote_id=record.remote_id
-                )
-            rerun_id = remote_id(payload, kind=record.remote_kind)
-            rerun_invocation_id = invocation_id(payload)
-        except AntiochCliError as exc:
-            self.states.update(
-                record,
-                retryable=exc.retryable,
-                error_type=exc.error_type,
-                error_message=str(exc),
-            )
-            raise AntiochOperationError(
-                str(exc), retryable=exc.retryable, error_type=exc.error_type
-            ) from exc
-        return self.states.update(
-            record,
-            remote_id=rerun_id,
-            invocation_id=rerun_invocation_id,
-            status="submitted",
-            remote_phase="",
-            remote_outcome="",
-            retryable=False,
-            error_type="",
-            error_message="",
+        raise AntiochOperationError(
+            "terminal Antioch state cannot be rerun in place; use a new state_id",
+            error_type="invalid_transition",
         )
 
     def collect(self, request: CollectRequest) -> OperationRecord:
-        record = self.reconcile(request)
+        record = self._record_for(request)
+        if record.completion_uri:
+            return record
+        if record.status == "collecting":
+            raise AntiochOperationError(
+                "Antioch collection is already in progress",
+                retryable=True,
+                error_type="collection_in_progress",
+            )
+        if record.status != "completed":
+            record = self.reconcile(request)
         if record.status != "completed":
             raise AntiochOperationError(
                 f"remote operation is not collectable: {record.status}"
             )
         if record.completion_uri:
             return record
-        record = self.states.update(record, status="collecting")
+        record, acquired = self.states.begin_collection(record)
+        if not acquired:
+            if record.completion_uri:
+                return record
+            raise AntiochOperationError(
+                "Antioch collection is already in progress",
+                retryable=True,
+                error_type="collection_in_progress",
+            )
         with tempfile.TemporaryDirectory(prefix="npa-antioch-collect-") as temp_name:
             temp = Path(temp_name)
             project, source_manifest, _digest = stage_project(
@@ -455,19 +460,7 @@ class AntiochManager:
                         raise AntiochOperationError(
                             "transfer manifest referenced a missing artifact"
                         )
-                    expected_size = item.get("size_bytes") or item.get("size")
-                    expected_sha = str(item.get("sha256") or "")
-                    if (
-                        expected_size is not None
-                        and int(expected_size) != path.stat().st_size
-                    ):
-                        raise AntiochOperationError(
-                            "downloaded artifact failed size verification"
-                        )
-                    if expected_sha and expected_sha != sha256_file(path):
-                        raise AntiochOperationError(
-                            "downloaded artifact failed checksum verification"
-                        )
+                    _validate_downloaded_artifact(path, item)
                     relative_name = path.relative_to(downloaded).as_posix()
                     artifact = self.states.upload_artifact(
                         path,

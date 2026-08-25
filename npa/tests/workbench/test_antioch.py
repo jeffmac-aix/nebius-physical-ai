@@ -19,6 +19,8 @@ from npa.workbench.antioch.manager import (
     AntiochManager,
     AntiochOperationError,
     _dataset_metadata,
+    _manifest_artifact_size,
+    _validate_downloaded_artifact,
     operation_key,
 )
 from npa.workbench.antioch.project import (
@@ -49,6 +51,7 @@ from npa.workbench.antioch.storage_config import (
     resolve_storage_client,
 )
 from npa.workbench.antioch.vendor_cli import AntiochCli, AntiochCliError
+from npa.workbench.antioch.runtime import AntiochRuntimeError
 
 
 class MemoryStorage:
@@ -475,12 +478,10 @@ def test_idempotent_retry_restart_reconcile_and_cancel(
     assert cli.cancellations == 1
 
 
-@pytest.mark.parametrize("operation", ["cancel", "resume"])
 @pytest.mark.parametrize("retryable", [False, True])
-def test_cancel_and_rerun_persist_typed_cli_failures(
+def test_cancel_persists_typed_cli_failures(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
-    operation: str,
     retryable: bool,
 ) -> None:
     memory = MemoryStorage()
@@ -494,12 +495,6 @@ def test_cancel_and_rerun_persist_typed_cli_failures(
     cli = FakeCli()
     manager._cli = lambda *a, **k: cli  # type: ignore[method-assign]
     record = manager.submit(_submit())
-    if operation == "resume":
-        record = manager.states.update(record, status="failed")
-        cli.show = lambda *a, **k: {  # type: ignore[method-assign]
-            "suite_run_id": "suite-safe",
-            "phase": "failed",
-        }
 
     def fail(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
         raise AntiochCliError(
@@ -508,20 +503,19 @@ def test_cancel_and_rerun_persist_typed_cli_failures(
             retryable=retryable,
         )
 
-    setattr(cli, "cancel" if operation == "cancel" else "rerun", fail)
+    cli.cancel = fail  # type: ignore[method-assign]
     request = ResumeRequest(
         output_path=record.output_path,
         workflow_run=record.workflow_run,
         state_id=record.state_id,
-        rerun_terminal=operation == "resume",
     )
     with pytest.raises(AntiochOperationError) as raised:
-        getattr(manager, operation)(request)
+        manager.cancel(request)
     assert raised.value.retryable is retryable
     durable = manager._record_for(request)
     assert durable.retryable is retryable
     assert durable.error_type == ("capacity" if retryable else "authentication")
-    assert durable.status == ("failed" if operation == "resume" else "running")
+    assert durable.status == "running"
 
 
 @pytest.mark.parametrize("terminal", ["completed", "failed", "cancelled"])
@@ -560,9 +554,7 @@ def test_cli_failure_envelope_exposes_retry_classification(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def fail(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
-        raise AntiochOperationError(
-            "try later", retryable=True, error_type="capacity"
-        )
+        raise AntiochOperationError("try later", retryable=True, error_type="capacity")
 
     monkeypatch.setattr("npa.sdk.workbench.antioch.cancel", fail)
     result = CliRunner().invoke(
@@ -683,40 +675,286 @@ def test_stale_cancel_update_cannot_overwrite_concurrent_completion() -> None:
     assert {key: getattr(result, key) for key in immutable} == immutable
 
 
+@pytest.mark.parametrize("terminal", ["failed", "cancelled"])
+@pytest.mark.parametrize("requested", ["submitted", "queued", "running", "completed"])
+def test_failed_or_cancelled_state_rejects_nonterminal_and_terminal_revival(
+    terminal: str, requested: str
+) -> None:
+    memory = MemoryStorage()
+    states = StateStore(memory)
+    request = _submit()
+    record = states.claim(
+        OperationRecord(
+            idempotency_key=operation_key(request.workflow_run, request.state_id),
+            request_sha256="a" * 64,
+            workflow_run=request.workflow_run,
+            state_id=request.state_id,
+            robot_type=request.robot_type,
+            task=request.task,
+            input_path=request.input_path,
+            output_path=request.output_path,
+            derived_project_id="npa-terminal-test",
+            remote_kind="suite",
+            selection=request.suite,
+            status=terminal,
+        )
+    )
+
+    result = states.update(record, status=requested, remote_phase=requested)
+
+    assert result.status == terminal
+    assert result.remote_phase == ""
+
+
+@pytest.mark.parametrize(
+    "terminal,other_terminal", [("failed", "cancelled"), ("cancelled", "failed")]
+)
+def test_distinct_failed_and_cancelled_terminal_transition_is_rejected(
+    terminal: str, other_terminal: str
+) -> None:
+    memory = MemoryStorage()
+    states = StateStore(memory)
+    request = _submit()
+    record = states.claim(
+        OperationRecord(
+            idempotency_key=operation_key(request.workflow_run, request.state_id),
+            request_sha256="a" * 64,
+            workflow_run=request.workflow_run,
+            state_id=request.state_id,
+            robot_type=request.robot_type,
+            task=request.task,
+            input_path=request.input_path,
+            output_path=request.output_path,
+            derived_project_id="npa-distinct-terminal-test",
+            remote_kind="suite",
+            selection=request.suite,
+            status=terminal,
+        )
+    )
+    assert states.update(record, status=other_terminal).status == terminal
+
+
+def test_completed_state_allows_only_atomic_collection_round_trip() -> None:
+    memory = MemoryStorage()
+    states = StateStore(memory)
+    request = _submit()
+    completed = states.claim(
+        OperationRecord(
+            idempotency_key=operation_key(request.workflow_run, request.state_id),
+            request_sha256="a" * 64,
+            workflow_run=request.workflow_run,
+            state_id=request.state_id,
+            robot_type=request.robot_type,
+            task=request.task,
+            input_path=request.input_path,
+            output_path=request.output_path,
+            derived_project_id="npa-collection-test",
+            remote_kind="suite",
+            selection=request.suite,
+            status="completed",
+        )
+    )
+    assert states.update(completed, status="running").status == "completed"
+    collecting, acquired = states.begin_collection(completed)
+    assert acquired is True
+    assert collecting.status == "collecting"
+    duplicate, acquired = states.begin_collection(completed)
+    assert acquired is False
+    assert duplicate.status == "collecting"
+    returned = states.update(collecting, status="completed")
+    assert returned.status == "completed"
+    same = states.update(returned, status="completed", remote_phase="complete")
+    assert same.status == "completed"
+    assert same.remote_phase == "complete"
+    assert states.update(same, status="cancelled").status == "completed"
+
+
+def test_late_submit_after_cancel_never_calls_vendor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    memory = MemoryStorage()
+    manager = AntiochManager.__new__(AntiochManager)
+    manager.storage = memory
+    manager.states = StateStore(memory)
+    request = _submit()
+    key = operation_key(request.workflow_run, request.state_id)
+    record = manager.states.claim(
+        OperationRecord(
+            idempotency_key=key,
+            request_sha256=sha256_bytes(
+                canonical_json(request.model_dump(mode="json"))
+            ),
+            workflow_run=request.workflow_run,
+            state_id=request.state_id,
+            robot_type=request.robot_type,
+            task=request.task,
+            input_path=request.input_path,
+            output_path=request.output_path,
+            derived_project_id="npa-late-submit",
+            remote_kind="suite",
+            selection=request.suite,
+        )
+    )
+    manager.states.update(record, status="cancelled")
+    manager._cli = lambda *a, **k: pytest.fail("late submit invoked vendor CLI")  # type: ignore[method-assign]
+
+    result = manager.submit(request)
+
+    assert result.status == "cancelled"
+    assert result.remote_id == ""
+
+
+def test_terminal_resume_rejects_in_place_rerun_without_vendor_call() -> None:
+    memory = MemoryStorage()
+    manager = AntiochManager.__new__(AntiochManager)
+    manager.storage = memory
+    manager.states = StateStore(memory)
+    request = _submit()
+    record = manager.states.claim(
+        OperationRecord(
+            idempotency_key=operation_key(request.workflow_run, request.state_id),
+            request_sha256="a" * 64,
+            workflow_run=request.workflow_run,
+            state_id=request.state_id,
+            robot_type=request.robot_type,
+            task=request.task,
+            input_path=request.input_path,
+            output_path=request.output_path,
+            derived_project_id="npa-terminal-resume",
+            remote_kind="suite",
+            selection=request.suite,
+            remote_id="remote-safe",
+            status="failed",
+        )
+    )
+    manager._cli = lambda *a, **k: pytest.fail("terminal resume invoked vendor CLI")  # type: ignore[method-assign]
+    resume = ResumeRequest(
+        output_path=record.output_path,
+        workflow_run=record.workflow_run,
+        state_id=record.state_id,
+        rerun_terminal=True,
+    )
+
+    with pytest.raises(AntiochOperationError) as raised:
+        manager.resume(resume)
+
+    assert raised.value.error_type == "invalid_transition"
+    assert manager._record_for(resume).status == "failed"
+
+
+def test_collect_marks_state_before_conversion_and_blocks_duplicate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    memory = MemoryStorage()
+    manager = AntiochManager.__new__(AntiochManager)
+    manager.storage = memory
+    manager.states = StateStore(memory)
+    request = _submit()
+    completed = manager.states.claim(
+        OperationRecord(
+            idempotency_key=operation_key(request.workflow_run, request.state_id),
+            request_sha256="a" * 64,
+            workflow_run=request.workflow_run,
+            state_id=request.state_id,
+            robot_type=request.robot_type,
+            task=request.task,
+            input_path=request.input_path,
+            output_path=request.output_path,
+            derived_project_id="npa-manager-collection",
+            remote_kind="suite",
+            selection=request.suite,
+            remote_id="remote-safe",
+            status="completed",
+        )
+    )
+    collect = ResumeRequest(
+        output_path=completed.output_path,
+        workflow_run=completed.workflow_run,
+        state_id=completed.state_id,
+    )
+
+    def observe_marker(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        del args, kwargs
+        assert manager._record_for(collect).status == "collecting"
+        raise RuntimeError("stop after observing marker")
+
+    monkeypatch.setattr("npa.workbench.antioch.manager.stage_project", observe_marker)
+    with pytest.raises(RuntimeError, match="observing marker"):
+        manager.collect(collect)
+    with pytest.raises(AntiochOperationError) as raised:
+        manager.collect(collect)
+    assert raised.value.error_type == "collection_in_progress"
+    assert raised.value.retryable is True
+
+
+@pytest.mark.parametrize(
+    "manifest,expected",
+    [
+        ({"size_bytes": 0}, 0),
+        ({"size": 7}, 7),
+        ({"size_bytes": 0, "size": 7}, 0),
+    ],
+)
+def test_manifest_artifact_size_zero_and_legacy_precedence(
+    manifest: dict[str, int], expected: int
+) -> None:
+    assert _manifest_artifact_size(manifest) == expected
+
+
+def test_manifest_zero_size_validation_detects_mismatch(tmp_path: Path) -> None:
+    artifact = tmp_path / "artifact.bin"
+    artifact.write_bytes(b"not-empty")
+    with pytest.raises(AntiochOperationError, match="size verification"):
+        _validate_downloaded_artifact(
+            artifact, {"size_bytes": 0, "size": len(b"not-empty")}
+        )
+
+
+def test_manifest_zero_size_validation_accepts_empty_file(tmp_path: Path) -> None:
+    artifact = tmp_path / "empty.bin"
+    artifact.write_bytes(b"")
+    _validate_downloaded_artifact(
+        artifact,
+        {"size_bytes": 0, "size": 7, "sha256": sha256_bytes(b"")},
+    )
+    with pytest.raises(AntiochOperationError, match="checksum verification"):
+        _validate_downloaded_artifact(artifact, {"size_bytes": 0, "sha256": "f" * 64})
+
+
 def test_run_poll_loop_does_not_read_state_before_resubmitting(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     manager = AntiochManager.__new__(AntiochManager)
     request = _submit()
     claimed_record = OperationRecord(
-            idempotency_key="a" * 64,
-            request_sha256="b" * 64,
-            workflow_run=request.workflow_run,
-            state_id=request.state_id,
-            robot_type=request.robot_type,
-            task=request.task,
-            input_path=request.input_path,
-            output_path=request.output_path,
-            derived_project_id="npa-poll-test",
-            remote_kind="suite",
-            selection=request.suite,
-            status="claimed",
-        )
+        idempotency_key="a" * 64,
+        request_sha256="b" * 64,
+        workflow_run=request.workflow_run,
+        state_id=request.state_id,
+        robot_type=request.robot_type,
+        task=request.task,
+        input_path=request.input_path,
+        output_path=request.output_path,
+        derived_project_id="npa-poll-test",
+        remote_kind="suite",
+        selection=request.suite,
+        status="claimed",
+    )
     completed_record = OperationRecord(
-            idempotency_key="a" * 64,
-            request_sha256="b" * 64,
-            workflow_run=request.workflow_run,
-            state_id=request.state_id,
-            robot_type=request.robot_type,
-            task=request.task,
-            input_path=request.input_path,
-            output_path=request.output_path,
-            derived_project_id="npa-poll-test",
-            remote_kind="suite",
-            selection=request.suite,
-            remote_id="suite-safe",
-            status="completed",
-        )
+        idempotency_key="a" * 64,
+        request_sha256="b" * 64,
+        workflow_run=request.workflow_run,
+        state_id=request.state_id,
+        robot_type=request.robot_type,
+        task=request.task,
+        input_path=request.input_path,
+        output_path=request.output_path,
+        derived_project_id="npa-poll-test",
+        remote_kind="suite",
+        selection=request.suite,
+        remote_id="suite-safe",
+        status="completed",
+    )
     records = [claimed_record, completed_record]
     manager.submit = lambda _request: records.pop(0)  # type: ignore[method-assign]
     manager.collect = lambda _request: completed_record  # type: ignore[method-assign]
@@ -802,3 +1040,116 @@ def test_service_preserves_submit_dataset_metadata() -> None:
     assert response.status_code == 200
     assert captured["body"].robot_type == "inspection-arm"
     assert captured["body"].task == "Inspect the valve seal"
+
+
+@pytest.mark.parametrize("endpoint", ["submit", "reconcile", "cancel", "resume"])
+@pytest.mark.parametrize(
+    "failure,status,envelope",
+    [
+        (
+            AntiochOperationError(
+                "operation conflict", error_type="invalid_transition"
+            ),
+            409,
+            {
+                "type": "invalid_transition",
+                "message": "operation conflict",
+                "retryable": False,
+            },
+        ),
+        (
+            AntiochRuntimeError("scoped terms are missing"),
+            503,
+            {
+                "type": "runtime_error",
+                "message": "scoped terms are missing",
+                "retryable": False,
+            },
+        ),
+        (
+            AntiochRuntimeError("runtime cache is cold in offline mode"),
+            503,
+            {
+                "type": "runtime_error",
+                "message": "runtime cache is cold in offline mode",
+                "retryable": False,
+            },
+        ),
+        (
+            AntiochRuntimeError("Antioch CLI version mismatch"),
+            503,
+            {
+                "type": "runtime_error",
+                "message": "Antioch CLI version mismatch",
+                "retryable": False,
+            },
+        ),
+        (
+            AntiochCliError("vendor capacity", error_type="capacity", retryable=True),
+            503,
+            {
+                "type": "capacity",
+                "message": "vendor capacity",
+                "retryable": True,
+            },
+        ),
+        (
+            AntiochCliError("bad output", error_type="malformed_cli_output"),
+            502,
+            {
+                "type": "malformed_cli_output",
+                "message": "bad output",
+                "retryable": False,
+            },
+        ),
+    ],
+)
+def test_service_endpoints_return_typed_error_envelopes(
+    endpoint: str,
+    failure: Exception,
+    status: int,
+    envelope: dict[str, object],
+) -> None:
+    class Manager:
+        def __getattr__(self, name: str):  # noqa: ANN204
+            del name
+
+            def fail(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+                del args, kwargs
+                raise failure
+
+            return fail
+
+    body = (
+        _submit().model_dump(mode="json")
+        if endpoint == "submit"
+        else {
+            "output_path": "s3://safe/run",
+            "workflow_run": "run-1",
+            "state_id": "simulate",
+        }
+    )
+    response = TestClient(create_app(manager=Manager(), auth_mode="none")).post(
+        f"/{endpoint}", json=body
+    )
+    assert response.status_code == status
+    assert response.json() == {"detail": envelope}
+
+
+def test_health_reports_runtime_failure_as_degraded_typed_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail() -> None:
+        raise AntiochRuntimeError("runtime cache is unavailable")
+
+    monkeypatch.setattr("npa.workbench.antioch.service.ensure_runtime", fail)
+    response = TestClient(create_app(manager=object(), auth_mode="none")).get("/health")
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "degraded",
+        "cli_installed": False,
+        "authenticated": False,
+        "cli_version": "",
+        "environment": "",
+        "detail": "runtime cache is unavailable",
+    }

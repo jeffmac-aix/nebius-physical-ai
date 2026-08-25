@@ -328,6 +328,7 @@ def test_live_service_is_persistent_authenticated_and_cache_backed(
         cache_pvc="runtime-weight-cache",
         auth_secret="run-auth",
         tls_secret="run-tls",
+        kubelet_source_cidrs=("192.0.2.20/32", "2001:db8::20/128"),
         source_ranges=("192.0.2.10/32",),
     )
 
@@ -384,12 +385,55 @@ def test_live_service_is_persistent_authenticated_and_cache_backed(
     ]
     assert exposed["loadBalancerSourceRanges"] == ["192.0.2.10/32"]
     ingress = manifests["network_policy"]["spec"]["ingress"]
-    assert ingress == [{"ports": [{"protocol": "TCP", "port": 8443}]}]
+    assert ingress[0] == {"ports": [{"protocol": "TCP", "port": 8443}]}
+    assert ingress[1]["from"] == [
+        {"ipBlock": {"cidr": "192.0.2.20/32"}},
+        {"ipBlock": {"cidr": "2001:db8::20/128"}},
+    ]
+    probe_ports = {
+        int(container[probe]["httpGet"]["port"])
+        for container in pod["containers"]
+        for probe in ("readinessProbe", "livenessProbe")
+    }
+    assert probe_ports == {8000, 8002}
+    assert {entry["port"] for entry in ingress[1]["ports"]} == probe_ports
+    assert all(entry["protocol"] == "TCP" for entry in ingress[1]["ports"])
+    assert manifests["network_policy"]["metadata"]["annotations"] == {
+        "npa.nebius.ai/kubelet-probe-source-contract": "cilium-node-ip-ipblock",
+        "npa.nebius.ai/kubelet-probe-host-network-tradeoff": "documented",
+    }
+    assert all("from" not in rule for rule in ingress[:1])
+    assert all(
+        rule.get("from")
+        for rule in ingress
+        if any(port["port"] in probe_ports for port in rule["ports"])
+        and rule is not ingress[0]
+    )
     rendered = openpi_live.public_contract(manifests)
     assert "api-key" in rendered  # mounted key name, never the key value
     assert '"stringData"' not in rendered
     assert '"name":"run-auth","namespace"' not in rendered
     assert '"name":"run-tls","namespace"' not in rendered
+
+
+def test_live_kubelet_sources_are_exact_internal_node_addresses() -> None:
+    nodes = [
+        SimpleNamespace(
+            status=SimpleNamespace(
+                addresses=[
+                    SimpleNamespace(type="Hostname", address="worker-a"),
+                    SimpleNamespace(type="InternalIP", address="192.0.2.30"),
+                    SimpleNamespace(type="InternalIP", address="2001:db8::30"),
+                ]
+            )
+        )
+    ]
+    assert openpi_live._kubelet_source_cidrs(nodes) == (
+        "192.0.2.30/32",
+        "2001:db8::30/128",
+    )
+    with pytest.raises(openpi_live.OpenPIServiceError, match="empty"):
+        openpi_live._kubelet_source_cidrs([])
 
 
 def test_live_cache_uses_single_writer_block_storage_contract() -> None:

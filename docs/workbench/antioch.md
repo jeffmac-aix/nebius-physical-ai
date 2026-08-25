@@ -97,13 +97,14 @@ npa workbench antioch cancel --output-path s3://BUCKET/runs/RUN/simulation \
 
 `run` is submit, monitor, and collect. A conditional S3 claim and deterministic
 Antioch project id ensure a pod retry reconnects rather than creating another
-billable suite. `reconcile` repairs the submission-to-state crash window. `resume`
-does not rerun terminal work unless `--rerun-terminal` is explicit. HTTP 429 and
+billable suite. `reconcile` repairs the submission-to-state crash window. Terminal
+state is immutable; `resume --rerun-terminal` rejects an in-place rerun and directs
+the caller to use a new state identity. HTTP 429 and
 5xx failures are retryable; authentication failures, malformed JSON, conflicting
 identity, invalid artifacts, and schema failures are terminal. Cancel is
 idempotent. Cancelling a completed, failed, or already-cancelled operation is a
 no-op that preserves its status and immutable completion/dataset records. Cancel
-and rerun failures retain the CLI's retryable/terminal classification in both the
+Operation failures retain the CLI's retryable/terminal classification in both the
 returned error envelope and durable operation state. Cancel test work before
 releasing any machine it used.
 
@@ -134,7 +135,12 @@ Deployment with readiness/liveness, `Recreate` rollout semantics, and a PVC-back
 runtime checkpoint cache. Only a bounded TLS WebSocket gateway is exposed; an
 API-key Secret and TLS Secret are generated per live deployment, while the raw
 policy and diagnostic ports remain outside the Service and blocked by ingress
-policy. The checkpoint, keys, CA private material, credentials, and simulator
+policy. Kubelet probes reach those health ports only from exact discovered node
+InternalIP host routes. The target Cilium enforcement preserves those node sources,
+but standard Kubernetes NetworkPolicy cannot distinguish kubelet from another
+host-network process on the same enumerated node; this is the narrow remaining
+traffic tradeoff and does not admit ordinary workload-pod sources. The checkpoint,
+keys, CA private material, credentials, and simulator
 payload never enter the public image or project source.
 
 The controller uses supported `antioch services up|exec|cp` commands to place the

@@ -173,6 +173,7 @@ def build_live_manifests(
     cache_pvc: str,
     auth_secret: str,
     tls_secret: str,
+    kubelet_source_cidrs: Sequence[str],
     pull_secret: str = "",
     gpu_node_selector_key: str = "nebius.com/gpu-name",
     gpu_node_selector_value: str = "B200",
@@ -189,6 +190,22 @@ def build_live_manifests(
     }.items():
         if not value.strip():
             raise OpenPIServiceError(f"{label} must not be empty")
+    probe_sources: list[str] = []
+    for value in kubelet_source_cidrs:
+        try:
+            network = ipaddress.ip_network(value, strict=True)
+        except ValueError as exc:
+            raise OpenPIServiceError(
+                "kubelet probe sources must be exact node-address CIDRs"
+            ) from exc
+        if network.prefixlen != network.max_prefixlen:
+            raise OpenPIServiceError(
+                "kubelet probe sources must be exact node-address CIDRs"
+            )
+        probe_sources.append(str(network))
+    probe_sources = sorted(set(probe_sources))
+    if not probe_sources:
+        raise OpenPIServiceError("at least one kubelet probe source is required")
 
     finite = build_manifests(
         run_id=run_id,
@@ -340,6 +357,14 @@ def build_live_manifests(
     if source_ranges:
         service["spec"]["loadBalancerSourceRanges"] = list(source_ranges)
 
+    probe_ports = sorted(
+        {
+            int(container[probe]["httpGet"]["port"])
+            for container in pod["containers"]
+            for probe in ("readinessProbe", "livenessProbe")
+        }
+    )
+
     network_policy = {
         "apiVersion": "networking.k8s.io/v1",
         "kind": "NetworkPolicy",
@@ -347,6 +372,15 @@ def build_live_manifests(
             "name": deployment["metadata"]["name"],
             "namespace": namespace,
             "labels": labels,
+            "annotations": {
+                # Standard NetworkPolicy has no kubelet identity selector. On the
+                # target Cilium CNI, exact node-IP ipBlocks preserve probe access
+                # without admitting ordinary pod sources. A host-network process
+                # on an enumerated node can still reach these health-only ports;
+                # that is the irreducible standard-NetworkPolicy tradeoff.
+                "npa.nebius.ai/kubelet-probe-source-contract": "cilium-node-ip-ipblock",
+                "npa.nebius.ai/kubelet-probe-host-network-tradeoff": "documented",
+            },
         },
         "spec": {
             "podSelector": {"matchLabels": selector},
@@ -356,7 +390,13 @@ def build_live_manifests(
                     "ports": [
                         {"protocol": "TCP", "port": GATEWAY_PORT},
                     ]
-                }
+                },
+                {
+                    "from": [{"ipBlock": {"cidr": cidr}} for cidr in probe_sources],
+                    "ports": [
+                        {"protocol": "TCP", "port": port} for port in probe_ports
+                    ],
+                },
             ],
         },
     }
@@ -395,6 +435,28 @@ def _api_status(exc: Exception) -> int:
         return int(getattr(exc, "status", 0) or 0)
     except (TypeError, ValueError):
         return 0
+
+
+def _kubelet_source_cidrs(nodes: Sequence[Any]) -> tuple[str, ...]:
+    """Return exact InternalIP host routes used by kubelet probe traffic."""
+
+    sources: set[str] = set()
+    for node in nodes:
+        for address in getattr(getattr(node, "status", None), "addresses", None) or []:
+            if getattr(address, "type", "") != "InternalIP":
+                continue
+            try:
+                parsed = ipaddress.ip_address(str(address.address))
+            except ValueError as exc:
+                raise OpenPIServiceError(
+                    "node InternalIP inventory is malformed"
+                ) from exc
+            sources.add(f"{parsed}/{parsed.max_prefixlen}")
+    if not sources:
+        raise OpenPIServiceError(
+            "node InternalIP inventory is empty; refusing to open probe ports"
+        )
+    return tuple(sorted(sources))
 
 
 def _cache_pvc_manifest(
@@ -588,6 +650,7 @@ def deploy_live(args: argparse.Namespace) -> dict[str, Any]:
     apps = client.AppsV1Api()
     networking = client.NetworkingV1Api()
     labels = _live_labels(args.run_id)
+    kubelet_source_cidrs = _kubelet_source_cidrs(core.list_node().items)
 
     try:
         namespace_object = core.read_namespace(name=args.namespace)
@@ -640,6 +703,7 @@ def deploy_live(args: argparse.Namespace) -> dict[str, Any]:
         cache_pvc=args.cache_pvc,
         auth_secret=auth_name,
         tls_secret=tls_name,
+        kubelet_source_cidrs=kubelet_source_cidrs,
         pull_secret=args.pull_secret,
         source_ranges=tuple(args.source_range),
     )
