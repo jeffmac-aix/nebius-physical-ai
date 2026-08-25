@@ -130,7 +130,7 @@ def test_public_manifests_keep_vm_out_and_policy_cluster_local(tmp_path: Path) -
         "policy-relay",
     }
     assert pod["automountServiceAccountToken"] is False
-    assert pod["terminationGracePeriodSeconds"] >= 180
+    assert pod["terminationGracePeriodSeconds"] >= 1_100
     init = pod["initContainers"][0]
     init_command = init["command"][-1]
     volume_names = [volume["name"] for volume in pod["volumes"]]

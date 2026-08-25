@@ -41,6 +41,7 @@ def gateway_program() -> str:
 
     return r"""
 import collections
+import hmac
 import http.server
 import json
 import os
@@ -65,7 +66,7 @@ slots = threading.BoundedSemaphore(MAX_CONNECTIONS)
 
 lock = threading.Lock()
 state = {
-    "connections": 0,
+    "total_connections": 0,
     "rejected_connections": 0,
     "requests": 0,
     "failures": 0,
@@ -103,7 +104,7 @@ threading.Thread(
 
 def handle(client):
     authorization = client.request.headers.get("Authorization", "")
-    if authorization != "Api-Key " + TOKEN:
+    if not hmac.compare_digest(authorization, "Api-Key " + TOKEN):
         with lock:
             state["rejected_connections"] += 1
         client.close(code=1008, reason="authentication required")
@@ -114,7 +115,7 @@ def handle(client):
         client.close(code=1013, reason="gateway at bounded connection capacity")
         return
     with lock:
-        state["connections"] += 1
+        state["total_connections"] += 1
     try:
         with connect(
             "ws://127.0.0.1:8000",

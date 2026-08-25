@@ -75,7 +75,7 @@ def run_cluster(args: argparse.Namespace) -> int:
     os.chmod(root, 0o700)
     runtime = root / f"runtime-{uuid.uuid4().hex}"
     _stage_project(Path(args.source).resolve(), runtime, project_id)
-    stop_file = runtime / ".stop"
+    stop_file = Path(args.stop_file)
     supervisor = runtime / ".supervise.sh"
     active_state = runtime / "active-run.json"
     cli_path = ensure_runtime()
@@ -122,6 +122,8 @@ def run_cluster(args: argparse.Namespace) -> int:
             dev_vm_in_data_path=False,
         )
         while process.poll() is None:
+            if stop_file.exists() and not stopping:
+                request_stop(signal.SIGTERM, None)
             time.sleep(1)
         if not stopping:
             raise AntiochLiveError("cluster live supervisor exited unexpectedly")
@@ -145,7 +147,11 @@ def run_cluster(args: argparse.Namespace) -> int:
         if service_started:
             try:
                 _cancel_remote_live_runs(
-                    cli, runtime=runtime, project_id=project_id, scenario=args.scenario
+                    cli,
+                    runtime=runtime,
+                    project_id=project_id,
+                    scenario=args.scenario,
+                    attempts=5,
                 )
                 cli.services_down(runtime)
             except (AntiochCliError, AntiochLiveError) as exc:
@@ -178,6 +184,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--private-root", default="/run/npa-antioch-private")
     run.add_argument("--runtime-root", default="/var/lib/npa-antioch-live")
     run.add_argument("--state-path", default="/var/run/npa-antioch/controller.json")
+    run.add_argument("--stop-file", default="/var/run/npa-antioch/stop")
     run.add_argument("--scenario", default="openpi_franka_mk8s_live")
     run.add_argument("--scenario-timeout-seconds", type=int, default=14_400)
     check = subparsers.add_parser("probe")

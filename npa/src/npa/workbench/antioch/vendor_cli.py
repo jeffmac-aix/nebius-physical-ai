@@ -88,7 +88,14 @@ class AntiochCli:
                 text=True,
                 capture_output=True,
                 check=False,
+                timeout=60,
             )
+        except subprocess.TimeoutExpired as exc:
+            raise AntiochCliError(
+                "Antioch CLI command timed out",
+                error_type="cli_timeout",
+                retryable=True,
+            ) from exc
         except FileNotFoundError as exc:
             raise AntiochCliError(
                 "Antioch CLI is not installed in the configured runtime cache",

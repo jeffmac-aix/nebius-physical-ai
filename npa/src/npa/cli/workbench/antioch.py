@@ -523,6 +523,7 @@ def deploy(
             text=True,
             capture_output=True,
             check=False,
+            timeout=120,
         )
         if result.returncode:
             _fail(RuntimeError("kubectl failed to apply the Antioch deployment"))

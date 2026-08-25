@@ -230,6 +230,8 @@ def build_public_manifests(config: ClusterLiveConfig) -> dict[str, dict[str, Any
             "run",
             "--scenario-timeout-seconds",
             str(config.scenario_timeout_seconds),
+            "--stop-file",
+            f"{state_root}/stop",
         ],
         "env": [
             {"name": "ANTIOCH_CONFIG_DIR", "value": f"{private_root}/antioch-config"},
@@ -327,9 +329,10 @@ def build_public_manifests(config: ClusterLiveConfig) -> dict[str, dict[str, Any
                 "metadata": {"labels": labels},
                 "spec": {
                     "automountServiceAccountToken": False,
-                    # Cleanup can spend 118s proving three stable absences after
-                    # cancellation, plus 40s on the supervisor and service teardown.
-                    "terminationGracePeriodSeconds": 180,
+                    # Five supported cancellation rounds can each make bounded
+                    # list/machine/cancel calls (3 * 60s), followed by the bounded
+                    # supervisor and service teardown. Keep SIGKILL outside that path.
+                    "terminationGracePeriodSeconds": 1_100,
                     "securityContext": {
                         "runAsNonRoot": True,
                         "runAsUser": 10001,
@@ -1040,28 +1043,69 @@ def cluster_status(config: ClusterLiveConfig) -> dict[str, Any]:
 
 
 def stop_cluster(
-    config: ClusterLiveConfig, *, timeout_seconds: float = 360.0
+    config: ClusterLiveConfig, *, timeout_seconds: float = 1_200.0
 ) -> dict[str, Any]:
     from kubernetes import client, config as kube_config
+    from kubernetes.stream import stream
 
     kube_config.load_kube_config(
         config_file=config.kubeconfig, context=config.context or None
     )
     apps = client.AppsV1Api()
+    core = client.CoreV1Api()
     deployment = apps.read_namespaced_deployment(config.adapter_name, config.namespace)
     if not _owned(deployment.metadata, config.identity):
         raise ClusterLiveError("refusing to stop an unowned adapter Deployment")
-    apps.patch_namespaced_deployment_scale(
-        config.adapter_name, config.namespace, {"spec": {"replicas": 0}}
+    pods = core.list_namespaced_pod(
+        config.namespace,
+        label_selector=f"npa.nebius.ai/live-identity={config.identity}",
+    ).items
+    if len(pods) != 1:
+        raise ClusterLiveError(
+            "exact adapter pod is absent or ambiguous; remote cleanup is unproven"
+        )
+    pod_name = pods[0].metadata.name
+    stream(
+        core.connect_get_namespaced_pod_exec,
+        pod_name,
+        config.namespace,
+        container="antioch-controller",
+        command=["/usr/bin/touch", "/var/run/npa-antioch/stop"],
+        stderr=False,
+        stdin=False,
+        stdout=True,
+        tty=False,
     )
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
-        current = apps.read_namespaced_deployment(config.adapter_name, config.namespace)
-        if int(current.status.replicas or 0) == 0:
+        raw = stream(
+            core.connect_get_namespaced_pod_exec,
+            pod_name,
+            config.namespace,
+            container="antioch-controller",
+            command=["/bin/cat", "/var/run/npa-antioch/controller.json"],
+            stderr=False,
+            stdin=False,
+            stdout=True,
+            tty=False,
+        )
+        try:
+            cleanup_status = str(json.loads(raw).get("status") or "")
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise ClusterLiveError("adapter cleanup evidence is malformed") from exc
+        if cleanup_status == "cleanup_failed":
+            raise ClusterLiveError(
+                "supported remote scenario/service cleanup failed; Deployment retained"
+            )
+        if cleanup_status == "stopped":
+            apps.patch_namespaced_deployment_scale(
+                config.adapter_name, config.namespace, {"spec": {"replicas": 0}}
+            )
             return {
                 "status": "stopped",
                 "identity": config.identity,
                 "cleanup_order": "scenario_then_service",
+                "remote_terminal_evidence": "supported-controller-cleanup",
             }
         time.sleep(2)
     raise ClusterLiveError("adapter did not finish supported scenario/service cleanup")

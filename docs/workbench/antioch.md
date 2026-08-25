@@ -108,6 +108,13 @@ Operation failures retain the CLI's retryable/terminal classification in both th
 returned error envelope and durable operation state. Cancel test work before
 releasing any machine it used.
 
+Collection uses a durable S3 compare-and-swap lease refreshed across download,
+checksum verification, conversion, upload, manifest, and final-state publication.
+Concurrent collectors are excluded while an owner is active. Exceptions clear
+ownership and record a retryable error; after a crash, an expired owner can be
+adopted with the same identities. Deterministic immutable manifests and completion
+markers make retry and resume safe.
+
 The sanitized operation record contains the vendor run id. Open that run in the
 Antioch Mission Control console using the authenticated account; never paste a
 signed console URL into logs, manifests, issues, or pull requests. If a supported
@@ -168,11 +175,20 @@ runtime-config file field and is never persisted by NPA on the operator VM.
 The policy Service is `ClusterIP` by default. Its NetworkPolicy permits the WSS
 gateway only from the exact adapter identity and permits health ports only from
 the enumerated kubelet node addresses. The adapter denies all ingress and limits
-egress to cluster DNS, the selected policy pods, and TLS service egress. A former
+egress to cluster DNS, the selected policy pods, and vendor service ports only.
+Antioch SaaS has no stable destination CIDRs, so TCP 443 and 8443 (plus supported
+service SSH on TCP 22) necessarily use `0.0.0.0/0`. "Restricted traffic" here
+means port- and direction-restricted, not destination-restricted; a manifest
+assertion pins that limitation. A former
 owned LoadBalancer may remain temporarily for rollback; run
 `live-k8s-finalize-cutover` only after sustained acceptance to remove that exact
 public Service. The retained B200 Deployment and checkpoint PVC are reused, not
 duplicated.
+
+`live-k8s-stop` waits for sanitized controller evidence written only after the
+exact scenario is terminal or stably absent and the service is down, then scales
+the Deployment to zero. Missing/malformed evidence, `cleanup_failed`, timeout,
+or forced/SIGKILL termination remains unproven and is never reported as stopped.
 
 ```bash
 npa workbench antioch live-k8s-deploy \
@@ -230,6 +246,12 @@ Validated episodes are converted by the real NPA LeRobot v3 adapter, with
 `meta/antioch-provenance.json` retaining provenance. This supports static offline
 imitation training. It does **not** turn the export into an online PPO/RSL-RL
 environment.
+
+Public publication runs `scan_image_antioch_payload.py` before push and against
+the exact pushed bytes. It inspects OCI config, full history, and every layer for
+renamed vendor distributions, native proprietary signatures, vendor auth/config
+state, checkpoints, credentials/private keys, and Antioch/Isaac/Omniverse payload.
+Positive and negative fixtures and CI path registration guard this enforcement.
 
 `--robot-type` and `--task` are required at submit/run time and are bound into
 the idempotent operation record before the remote run starts. Collection always
