@@ -823,15 +823,18 @@ def test_workflow_status_maps_distillation_error(mocker) -> None:
 
 
 def test_workflow_logs_prints_stage_logs(mocker) -> None:
+    synthetic_secret = "legacy-secret-value"
     mocker.patch(
         "npa.workflows.distill.get_stage_logs",
-        return_value="stage log text",
+        return_value=f"stage log text AWS_SECRET_ACCESS_KEY={synthetic_secret}",
     )
 
     result = runner.invoke(app, ["workbench", "workflow", "logs", "run-1", "convert"])
 
     assert result.exit_code == 0
     assert "stage log text" in result.output
+    assert synthetic_secret not in result.output
+    assert "AWS_SECRET_ACCESS_KEY=<redacted>" in result.output
 
 
 def test_durable_workflow_status_logs_and_artifacts_read_s3(monkeypatch) -> None:
@@ -899,7 +902,9 @@ def test_durable_workflow_status_logs_and_artifacts_read_s3(monkeypatch) -> None
         Body=json.dumps(status).encode("utf-8"),
     )
     fake_s3.put_object(
-        Bucket="bucket", Key="run-1/logs/train/run.log", Body=b"training complete\n"
+        Bucket="bucket",
+        Key="run-1/logs/train/run.log",
+        Body=b"training complete AWS_SECRET_ACCESS_KEY=durable-secret-value\n",
     )
     fake_s3.put_object(
         Bucket="bucket", Key="run-1/artifacts/train/model.bin", Body=b"model"
@@ -924,6 +929,8 @@ def test_durable_workflow_status_logs_and_artifacts_read_s3(monkeypatch) -> None
     assert payload["stages"]["train"]["tier"] == "WORKS"
     assert logs_result.exit_code == 0
     assert "training complete" in logs_result.output
+    assert "durable-secret-value" not in logs_result.output
+    assert "AWS_SECRET_ACCESS_KEY=<redacted>" in logs_result.output
     assert artifacts_result.exit_code == 0
     assert "s3://bucket/run-1/artifacts/train/model.bin" in artifacts_result.output
 
@@ -1077,6 +1084,14 @@ def test_workflow_dns_failure_is_unavailable_and_eight_ledger_stages_remain_visi
         Key=f"{prefix}/runtime.json",
         Body=json.dumps(runtime).encode(),
     )
+    fake_s3.put_object(
+        Bucket="bucket",
+        Key=f"{prefix}/logs/stage-0/run.log",
+        Body=(
+            "cached progress "
+            f"AWS_SECRET_ACCESS_KEY={synthetic_secret}\n"
+        ).encode(),
+    )
     uri = f"s3://bucket/{prefix}/manifest.json"
 
     status_result = runner.invoke(
@@ -1107,6 +1122,26 @@ def test_workflow_dns_failure_is_unavailable_and_eight_ledger_stages_remain_visi
     assert "last-known state:" in human.output
     assert "npa workbench workflow status" in human.output
     assert synthetic_secret not in human.output
+
+    cached_logs = runner.invoke(
+        app,
+        [
+            "workbench",
+            "workflow",
+            "logs",
+            uri,
+            "--stage",
+            "stage-0",
+            "--cached",
+            "--json",
+        ],
+    )
+    assert cached_logs.exit_code == 0, cached_logs.output
+    cached_payload = json.loads(cached_logs.output)
+    assert cached_payload["cached_log_state"] == "available"
+    assert cached_payload["log_truncated"] is False
+    assert "AWS_SECRET_ACCESS_KEY=<redacted>" in cached_payload["log"]
+    assert synthetic_secret not in cached_logs.output
 
     log_task_ids: list[str] = []
 

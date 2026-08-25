@@ -5280,7 +5280,7 @@ def logs_cmd(
                 if cached:
                     cached_text = ""
                     try:
-                        cached_text = read_stage_log(state, selected_stage)
+                        cached_text = redact_text(read_stage_log(state, selected_stage))
                     except Exception:  # noqa: BLE001 - reported through the source contract
                         cached_text = ""
                     cached_text, log_metadata = _bounded_log_text(
@@ -5454,7 +5454,7 @@ def logs_cmd(
                 if live.returncode == 0:
                     return
             cached_text, log_metadata = _bounded_log_text(
-                read_stage_log(state, selected_stage), max_output_chars
+                redact_text(read_stage_log(state, selected_stage)), max_output_chars
             )
             typer.echo(cached_text, nl=False)
             _emit_log_truncation(log_metadata)
@@ -5477,7 +5477,11 @@ def logs_cmd(
         _fail(str(exc))
         return
 
-    bounded_logs, log_metadata = _bounded_log_text(logs, max_output_chars)
+    from npa.orchestration.skypilot.workflow_state import redact_text
+
+    bounded_logs, log_metadata = _bounded_log_text(
+        redact_text(logs), max_output_chars
+    )
     typer.echo(bounded_logs)
     _emit_log_truncation(log_metadata)
 
