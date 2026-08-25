@@ -210,6 +210,8 @@ def build_public_manifests(config: ClusterLiveConfig) -> dict[str, dict[str, Any
             "-m",
             "npa.workbench.antioch.cluster_runtime",
             "run",
+            "--scenario-timeout-seconds",
+            str(config.scenario_timeout_seconds),
         ],
         "env": [
             {"name": "ANTIOCH_CONFIG_DIR", "value": f"{private_root}/antioch-config"},

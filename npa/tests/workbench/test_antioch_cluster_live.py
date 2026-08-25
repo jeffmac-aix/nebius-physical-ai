@@ -88,6 +88,7 @@ def test_public_manifests_keep_vm_out_and_policy_cluster_local(tmp_path: Path) -
     assert pod["terminationGracePeriodSeconds"] >= 300
     controller, relay = pod["containers"]
     assert "cluster_runtime" in " ".join(controller["command"])
+    assert "14400" in controller["command"]
     assert "antioch.relay" in " ".join(relay["command"])
     assert "18444" in relay["command"]
     rendered = json.dumps(manifests, sort_keys=True)
