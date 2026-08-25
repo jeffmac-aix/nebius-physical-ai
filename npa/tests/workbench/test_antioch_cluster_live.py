@@ -86,9 +86,14 @@ def test_public_manifests_keep_vm_out_and_policy_cluster_local(tmp_path: Path) -
     }
     assert pod["automountServiceAccountToken"] is False
     assert pod["terminationGracePeriodSeconds"] >= 300
-    init_command = pod["initContainers"][0]["command"][-1]
+    init = pod["initContainers"][0]
+    init_command = init["command"][-1]
     assert "cp -L /sources/config/*" in init_command
     assert "cp -L /sources/bundle/*" in init_command
+    assert init["securityContext"]["capabilities"] == {
+        "drop": ["ALL"],
+        "add": ["CHOWN"],
+    }
     assert "cp -a" not in init_command
     controller, relay = pod["containers"]
     assert "cluster_runtime" in " ".join(controller["command"])

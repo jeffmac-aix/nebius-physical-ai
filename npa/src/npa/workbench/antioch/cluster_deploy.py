@@ -330,7 +330,14 @@ def build_public_manifests(config: ClusterLiveConfig) -> dict[str, dict[str, Any
                                 "runAsNonRoot": False,
                                 "allowPrivilegeEscalation": False,
                                 "readOnlyRootFilesystem": True,
-                                "capabilities": {"drop": ["ALL"]},
+                                # The init container copies root-owned Secret
+                                # projections into tmpfs, then hands that copy
+                                # to the non-root runtime containers. Retain
+                                # only the capability needed for that handoff.
+                                "capabilities": {
+                                    "drop": ["ALL"],
+                                    "add": ["CHOWN"],
+                                },
                             },
                             "resources": {
                                 "requests": {"cpu": "25m", "memory": "32Mi"},
