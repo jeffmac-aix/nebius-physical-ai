@@ -30,6 +30,7 @@ from .vendor_cli import AntiochCli, AntiochCliError
 
 REMOTE_CLIENT_ROOT = "/tmp/npa-live-client-current"
 REMOTE_CLIENT_STAGING_PREFIX = "/tmp/npa-live-client-generation-"
+REMOTE_CLIENT_UPLOAD_PREFIX = "/tmp/npa-live-client-upload-"
 UPSTREAM_BUNDLE_FILES = ("ca.crt", "api-key", "endpoint.json")
 RELAY_BUNDLE_FILES = (
     "relay-ca.crt",
@@ -209,6 +210,26 @@ def _prepare_runtime_bundle(source: Path, destination: Path) -> None:
     _validate_bundle(destination)
 
 
+def _prepare_copyable_bundle(source: Path, destination: Path) -> None:
+    """Make transport-readable copies protected by an owner-only parent.
+
+    Antioch's supported service copy preserves file modes but assigns files to
+    the machine-side copy user.  A 0644 transport copy is therefore required
+    for the uid-1000 service to read it.  The enclosing directory remains 0700,
+    and the service immediately installs a separate uid-owned 0600 generation.
+    """
+
+    parent = destination.parent
+    if parent.stat().st_mode & 0o077:
+        raise AntiochLiveError("bundle transport parent must be owner-only")
+    destination.mkdir(mode=0o700)
+    os.chmod(destination, 0o700)
+    for name in REQUIRED_BUNDLE_FILES:
+        target = destination / name
+        target.write_bytes((source / name).read_bytes())
+        os.chmod(target, 0o644)
+
+
 def _stage_private_bundle(
     cli: AntiochCli,
     *,
@@ -219,50 +240,61 @@ def _stage_private_bundle(
     """Stage through supported service commands across container recreation."""
 
     last_error: Exception | None = None
-    for attempt in range(attempts):
-        staging = f"{REMOTE_CLIENT_STAGING_PREFIX}{uuid.uuid4().hex}"
-        remote_files = [f"{staging}/{name}" for name in REQUIRED_BUNDLE_FILES]
-        try:
-            cli.services_exec(
-                runtime,
-                "sim",
-                ["install", "-d", "-m", "0700", staging],
-            )
-            for name in REQUIRED_BUNDLE_FILES:
-                cli.services_copy(
+    local_upload = runtime / f".bundle-upload-{uuid.uuid4().hex}"
+    _prepare_copyable_bundle(client_bundle, local_upload)
+    try:
+        for attempt in range(attempts):
+            upload = f"{REMOTE_CLIENT_UPLOAD_PREFIX}{uuid.uuid4().hex}"
+            staging = f"{REMOTE_CLIENT_STAGING_PREFIX}{uuid.uuid4().hex}"
+            upload_files = [f"{upload}/{name}" for name in REQUIRED_BUNDLE_FILES]
+            remote_files = [f"{staging}/{name}" for name in REQUIRED_BUNDLE_FILES]
+            try:
+                cli.services_exec(
                     runtime,
-                    client_bundle / name,
-                    f"sim:{staging}/{name}",
+                    "sim",
+                    ["install", "-d", "-m", "0700", upload, staging],
                 )
-            cli.services_exec(
-                runtime,
-                "sim",
-                ["chmod", "0600", *remote_files],
-            )
-            cli.services_exec(
-                runtime,
-                "sim",
-                [
-                    "/bin/sh",
-                    "-lc",
-                    "test " + " -a ".join(f"-r {path}" for path in remote_files),
-                ],
-            )
-            cli.services_exec(
-                runtime,
-                "sim",
-                [
-                    "/bin/sh",
-                    "-lc",
-                    f"ln -s {shlex.quote(staging)} {REMOTE_CLIENT_ROOT}.new && "
-                    f"mv -Tf {REMOTE_CLIENT_ROOT}.new {REMOTE_CLIENT_ROOT}",
-                ],
-            )
-            return
-        except AntiochCliError as exc:
-            last_error = exc
-            if attempt + 1 < attempts:
-                time.sleep(5)
+                for name in REQUIRED_BUNDLE_FILES:
+                    cli.services_copy(
+                        runtime,
+                        local_upload / name,
+                        f"sim:{upload}/{name}",
+                    )
+                for source, destination in zip(
+                    upload_files, remote_files, strict=True
+                ):
+                    cli.services_exec(
+                        runtime,
+                        "sim",
+                        ["install", "-m", "0600", source, destination],
+                    )
+                cli.services_exec(
+                    runtime,
+                    "sim",
+                    [
+                        "/bin/sh",
+                        "-lc",
+                        "test " + " -a ".join(f"-r {path}" for path in remote_files),
+                    ],
+                )
+                cli.services_exec(runtime, "sim", ["rm", "-rf", upload])
+                cli.services_exec(
+                    runtime,
+                    "sim",
+                    [
+                        "/bin/sh",
+                        "-lc",
+                        f"ln -s {shlex.quote(staging)} {REMOTE_CLIENT_ROOT}.new && "
+                        f"mv -Tf {REMOTE_CLIENT_ROOT}.new {REMOTE_CLIENT_ROOT}",
+                    ],
+                )
+                return
+            except AntiochCliError as exc:
+                last_error = exc
+                if attempt + 1 < attempts:
+                    time.sleep(5)
+    finally:
+        shutil.rmtree(local_upload, ignore_errors=True)
     raise AntiochLiveError(
         "the private live bundle did not survive service startup"
     ) from last_error
@@ -547,7 +579,11 @@ def _write_supervisor(
             f"test {bundle_check_expression}",
         ]
     )
+    local_bundle_upload = path.parent / f".bundle-upload-{uuid.uuid4().hex}"
+    _prepare_copyable_bundle(client_bundle, local_bundle_upload)
+    bundle_upload = f"{REMOTE_CLIENT_UPLOAD_PREFIX}{uuid.uuid4().hex}"
     bundle_staging = f"{REMOTE_CLIENT_STAGING_PREFIX}{uuid.uuid4().hex}"
+    upload_files = [f"{bundle_upload}/{name}" for name in REQUIRED_BUNDLE_FILES]
     remote_files = [f"{bundle_staging}/{name}" for name in REQUIRED_BUNDLE_FILES]
     stage_commands = [
         shlex.join(
@@ -560,6 +596,7 @@ def _write_supervisor(
                 "-d",
                 "-m",
                 "0700",
+                bundle_upload,
                 bundle_staging,
             ]
         ),
@@ -569,12 +606,28 @@ def _write_supervisor(
                     str(cli_path),
                     "services",
                     "cp",
-                    str(client_bundle / name),
-                    f"sim:{bundle_staging}/{name}",
+                    str(local_bundle_upload / name),
+                    f"sim:{bundle_upload}/{name}",
                     "--json",
                 ]
             )
             for name in REQUIRED_BUNDLE_FILES
+        ],
+        *[
+            shlex.join(
+                [
+                    str(cli_path),
+                    "services",
+                    "exec",
+                    "sim",
+                    "install",
+                    "-m",
+                    "0600",
+                    source,
+                    destination,
+                ]
+            )
+            for source, destination in zip(upload_files, remote_files, strict=True)
         ],
         shlex.join(
             [
@@ -582,9 +635,9 @@ def _write_supervisor(
                 "services",
                 "exec",
                 "sim",
-                "chmod",
-                "0600",
-                *remote_files,
+                "rm",
+                "-rf",
+                bundle_upload,
             ]
         ),
         shlex.join(

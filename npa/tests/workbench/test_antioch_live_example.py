@@ -212,6 +212,12 @@ def test_supervisor_has_finite_run_boundary_but_no_total_limit(tmp_path: Path) -
     assert "services exec sim /bin/true" in source
     assert "NPA_ANTIOCH_SERVICE_NOT_READY" in source
     assert "npa-live-client-generation-" in source
+    assert "npa-live-client-upload-" in source
+    assert "install -m 0600" in source
+    upload_dirs = list(tmp_path.glob(".bundle-upload-*"))
+    assert len(upload_dirs) == 1
+    assert upload_dirs[0].stat().st_mode & 0o777 == 0o700
+    assert all(path.stat().st_mode & 0o777 == 0o644 for path in upload_dirs[0].iterdir())
     assert "mv -Tf" in source
     assert "sleep 15" in source
     assert "timeout 14400s" not in source
@@ -325,6 +331,8 @@ def test_runtime_bundle_adds_private_relay_identity(tmp_path: Path) -> None:
 def test_initial_bundle_staging_recovers_from_service_recreation(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    runtime = tmp_path / "runtime"
+    runtime.mkdir(mode=0o700)
     bundle = tmp_path / "bundle"
     bundle.mkdir()
     for name in live.REQUIRED_BUNDLE_FILES:
@@ -332,30 +340,33 @@ def test_initial_bundle_staging_recovers_from_service_recreation(
     calls: list[str] = []
 
     class Cli:
-        installs = 0
+        directory_attempts = 0
 
         def services_exec(self, _runtime, _service, command):  # noqa: ANN001, ANN202
             calls.append("exec:" + str(command[0]))
-            if command[0] == "install":
-                self.installs += 1
+            if command[:2] == ["install", "-d"]:
+                self.directory_attempts += 1
 
         def services_copy(self, _runtime, source, _destination):  # noqa: ANN001, ANN202
             calls.append("copy:" + source.name)
-            if self.installs == 1:
+            assert source.stat().st_mode & 0o777 == 0o644
+            assert source.parent.stat().st_mode & 0o777 == 0o700
+            if self.directory_attempts == 1:
                 raise AntiochCliError("container recreated")
 
     monkeypatch.setattr(live.time, "sleep", lambda _seconds: None)
     cli = Cli()
     live._stage_private_bundle(
         cli,  # type: ignore[arg-type]
-        runtime=tmp_path / "runtime",
+        runtime=runtime,
         client_bundle=bundle,
         attempts=2,
     )
 
-    assert cli.installs == 2
+    assert cli.directory_attempts == 2
     assert calls.count("copy:ca.crt") == 2
     assert calls[-1] == "exec:/bin/sh"
+    assert not list(runtime.glob(".bundle-upload-*"))
 
 
 def test_runtime_source_is_staged_through_supported_service_copy(
