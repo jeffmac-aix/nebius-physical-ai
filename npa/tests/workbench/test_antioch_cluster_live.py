@@ -88,6 +88,10 @@ def test_public_manifests_keep_vm_out_and_policy_cluster_local(tmp_path: Path) -
     assert pod["terminationGracePeriodSeconds"] >= 300
     init = pod["initContainers"][0]
     init_command = init["command"][-1]
+    volume_names = [volume["name"] for volume in pod["volumes"]]
+    assert len(volume_names) == len(set(volume_names))
+    init_mount_names = [mount["name"] for mount in init["volumeMounts"]]
+    assert len(init_mount_names) == len(set(init_mount_names))
     assert "cp -L /sources/config/*" in init_command
     assert "cp -L /sources/bundle/*" in init_command
     assert init["securityContext"]["capabilities"] == {
