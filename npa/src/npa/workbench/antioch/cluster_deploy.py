@@ -21,7 +21,7 @@ from npa.workflows.byof.openpi_live import LIVE_MANAGED_BY, _certificate
 from .live import _relay_certificate
 
 CONFIG_SCHEMA = "npa.antioch.mk8s-live-config.v1"
-ANTIOCH_TLS_EGRESS_PORTS = (443, 8443)
+ANTIOCH_TLS_EGRESS_PORTS = (22, 443, 8443)
 MANAGED_BY = "npa-antioch-mk8s-live"
 SCENARIO = "openpi_franka_mk8s_live"
 _DNS_LABEL = re.compile(r"^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$")

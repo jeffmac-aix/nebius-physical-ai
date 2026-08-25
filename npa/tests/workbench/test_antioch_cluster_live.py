@@ -178,6 +178,7 @@ def test_public_manifests_keep_vm_out_and_policy_cluster_local(tmp_path: Path) -
     assert adapter_policy["egress"][-1] == {
         "to": [{"ipBlock": {"cidr": "0.0.0.0/0"}}],
         "ports": [
+            {"protocol": "TCP", "port": 22},
             {"protocol": "TCP", "port": 443},
             {"protocol": "TCP", "port": 8443},
         ],
