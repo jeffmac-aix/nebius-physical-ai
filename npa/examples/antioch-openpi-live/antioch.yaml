@@ -20,6 +20,8 @@ services:
     watch:
       - action: rebuild
         path: Dockerfile
+      - action: rebuild
+        path: src/relay_bridge.py
 
 suites:
   live:

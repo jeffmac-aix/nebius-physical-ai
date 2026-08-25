@@ -29,7 +29,10 @@ def test_live_example_uses_only_runtime_project_identity() -> None:
     assert sim["ports"] == [
         {"name": "policy-relay", "target": 8444, "published": 18444}
     ]
-    assert sim["watch"] == [{"action": "rebuild", "path": "Dockerfile"}]
+    assert sim["watch"] == [
+        {"action": "rebuild", "path": "Dockerfile"},
+        {"action": "rebuild", "path": "src/relay_bridge.py"},
+    ]
     rendered = (EXAMPLE / "antioch.yaml").read_text(encoding="utf-8")
     assert not re.search(r"(?:project|tenant|cluster)-[a-z0-9]+", rendered)
 

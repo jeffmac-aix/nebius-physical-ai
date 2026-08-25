@@ -41,7 +41,8 @@ neither OpenPI model code nor weights are included in the sim image.
 The controller copies the reviewed scenario, codec, and bounded WSS bridge through supported
 `services cp` and verifies their readability before dispatch, avoiding dependence
 on a retained remote build or source-sync cache. Dockerfile changes retain a
-separate rebuild rule.
+separate rebuild rule, and the baked bridge entrypoint has its own explicit
+rebuild rule.
 
 The scenario is continuous within one Antioch run. Since scenario runs have a
 finite supported timeout, the controller renews them in tmux until explicitly
