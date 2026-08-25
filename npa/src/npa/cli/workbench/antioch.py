@@ -249,7 +249,7 @@ def live_k8s_stop_cmd(
     runtime_config: Path = typer.Option(
         ..., "--runtime-config", exists=True, dir_okay=False
     ),
-    timeout_seconds: float = typer.Option(360.0, "--timeout-seconds", min=1.0),
+    timeout_seconds: float = typer.Option(1_200.0, "--timeout-seconds", min=1.0),
     output: OutputFormat = typer.Option(OutputFormat.text, "--output"),
 ) -> None:
     """Stop the exact scenario before its supported service tunnel."""

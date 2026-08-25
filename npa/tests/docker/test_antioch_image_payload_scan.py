@@ -16,7 +16,13 @@ sys.modules[SPEC.name] = scanner
 SPEC.loader.exec_module(scanner)
 
 
-def _image(tmp_path: Path, files: dict[str, bytes], *, history: str = "") -> Path:
+def _image(
+    tmp_path: Path,
+    files: dict[str, bytes],
+    *,
+    history: str = "",
+    config_env: list[str] | None = None,
+) -> Path:
     layer = io.BytesIO()
     with tarfile.open(fileobj=layer, mode="w") as archive:
         for name, payload in files.items():
@@ -24,7 +30,10 @@ def _image(tmp_path: Path, files: dict[str, bytes], *, history: str = "") -> Pat
             member.size = len(payload)
             archive.addfile(member, io.BytesIO(payload))
     config = json.dumps(
-        {"config": {"Env": ["PATH=/usr/bin"]}, "history": [{"created_by": history}]}
+        {
+            "config": {"Env": config_env or ["PATH=/usr/bin"]},
+            "history": [{"created_by": history}],
+        }
     ).encode()
     manifest = json.dumps(
         [{"Config": "config.json", "RepoTags": ["fixture:latest"], "Layers": ["layer.tar"]}]
@@ -61,7 +70,11 @@ def test_binary_weight_vendor_state_and_private_key_are_rejected(tmp_path: Path)
             "usr/lib/librenamed.so": b"\x7fELF\0antioch-sim proprietary runtime",
             "opt/data/model.safetensors": b"weights",
             "root/.antioch/session": b"state",
-            "tmp/innocent": b"-----BEGIN PRIVATE KEY-----\nprivate\n",
+            "tmp/innocent": (
+                b"-----BEGIN PRIVATE KEY-----\n"
+                + b"A" * 96
+                + b"\n-----END PRIVATE KEY-----\n"
+            ),
         },
     )
     kinds = {item["kind"] for item in scanner.scan_tarball(image)["findings"]}
@@ -69,6 +82,12 @@ def test_binary_weight_vendor_state_and_private_key_are_rejected(tmp_path: Path)
 
 
 def test_config_and_history_leakage_are_rejected(tmp_path: Path) -> None:
-    image = _image(tmp_path, {}, history="RUN pip install renamed-antioch_sim")
+    image = _image(
+        tmp_path,
+        {},
+        history="RUN pip install antioch_sim==0.3.63",
+        config_env=["ANTIOCH_API_KEY=not-a-real-test-token"],
+    )
     findings = scanner.scan_tarball(image)["findings"]
     assert any(item["kind"] == "vendor_install" for item in findings)
+    assert any(item["kind"] == "credential_material" for item in findings)

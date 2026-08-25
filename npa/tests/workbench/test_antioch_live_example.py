@@ -789,3 +789,60 @@ def test_live_stop_cancels_scenario_before_service(
     assert result["service_stopped_after_scenario"] is True
     assert result["cancelled_remote_runs"] == 0
     assert (runtime / ".stop").stat().st_mode & 0o777 == 0o600
+
+
+def test_start_live_failure_cleans_owned_session_and_service(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls: list[str] = []
+    source = tmp_path / "source"
+    source.mkdir()
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    monkeypatch.setattr(live, "_validate_upstream_bundle", lambda _path: None)
+    monkeypatch.setattr(live, "ensure_runtime", lambda: Path("/opt/antioch"))
+    monkeypatch.setattr(live, "live_state_root", lambda: tmp_path / "state")
+    running = iter((False, True))
+    monkeypatch.setattr(live, "_session_running", lambda _session: next(running))
+    for name in (
+        "_stage_project",
+        "_prepare_runtime_bundle",
+        "_write_supervisor",
+        "_write_relay_supervisor",
+        "_write_bridge_supervisor",
+        "_stage_runtime_source",
+        "_stage_private_bundle",
+    ):
+        monkeypatch.setattr(live, name, lambda *_args, **_kwargs: None)
+
+    def tmux(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        calls.append("tmux:" + " ".join(args))
+        if args[0] == "new-session":
+            raise live.AntiochLiveError("injected startup failure")
+
+    monkeypatch.setattr(live, "_tmux", tmux)
+
+    class Cli:
+        def __init__(self, _path: Path) -> None:
+            pass
+
+        def services_build(self, *_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+            calls.append("services-build")
+
+        def services_up(self, *_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+            calls.append("services-up")
+
+        def services_down(self, *_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+            calls.append("services-down")
+
+    monkeypatch.setattr(live, "AntiochCli", Cli)
+    with pytest.raises(live.AntiochLiveError, match="injected startup failure"):
+        live.start_live(
+            source=source,
+            project_id="assigned-project-for-test",
+            client_bundle=bundle,
+        )
+    assert calls[-2:] == [
+        "tmux:kill-session -t " + live._session_name("assigned-project-for-test"),
+        "services-down",
+    ]

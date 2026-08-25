@@ -28,14 +28,25 @@ FORBIDDEN_PATHS = (
     ("vendor_distribution", re.compile(r"(?:^|/)(?:antioch[-_]?sim|antioch_sim-.*\.(?:dist-info|egg-info))(?:/|$)", re.I)),
 )
 FORBIDDEN_HISTORY = (
-    ("vendor_install", re.compile(r"pip[^\n]*(?:install|download)[^\n]*antioch[-_]?sim", re.I)),
+    (
+        "vendor_install",
+        re.compile(
+            r"(?:^|[;&|]\s*)[^;&|\n]*\bpip(?:3)?\s+(?:install|download)"
+            r"(?:\s+--?[a-z0-9_-]+(?:[= ]\S+)?)?\s+antioch[-_]?sim(?:[=<>!~]|\s|$)",
+            re.I,
+        ),
+    ),
     ("vendor_payload", re.compile(r"(?:COPY|ADD)[^\n]*(?:antioch[-_]?sim|omniverse|isaac[-_ ]?sim)", re.I)),
     ("cached_acceptance", re.compile(r"NPA_ANTIOCH_ACCEPT_TERMS\s*=\s*YES", re.I)),
 )
 SECRET_CONTENT = (
-    re.compile(rb"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
-    re.compile(rb"AKIA[0-9A-Z]{16}"),
-    re.compile(rb"(?i)(?:aws_secret_access_key|hf_token|antioch[_-]?(?:token|api[_-]?key))\s*[=:]\s*[^$<\s][^\s]{7,}"),
+    re.compile(
+        rb"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----\r?\n"
+        rb"[A-Za-z0-9+/=\r\n]{64,}-----END (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"
+    ),
+)
+SECRET_CONFIG = re.compile(
+    r'(?i)(?:AWS_SECRET_ACCESS_KEY|ANTIOCH_(?:TOKEN|API_KEY)|HF_TOKEN)=[^$<"\s][^"\s]{7,}'
 )
 VENDOR_METADATA = re.compile(rb"(?im)^Name:\s*antioch[-_]?sim\s*$")
 PROPRIETARY_BINARY = re.compile(rb"(?i)(?:antioch[-_]?sim|NVIDIA Omniverse|Isaac Sim)")
@@ -51,7 +62,9 @@ def _inspect_file(path: str, payload: bytes) -> list[Finding]:
     for kind, pattern in FORBIDDEN_PATHS:
         if pattern.search(normalized):
             findings.append(Finding(kind, normalized, "forbidden shipped path"))
-    if any(pattern.search(payload) for pattern in SECRET_CONTENT):
+    if payload.lstrip().startswith(b"-----BEGIN") and any(
+        pattern.search(payload) for pattern in SECRET_CONTENT
+    ):
         findings.append(Finding("credential_material", normalized, "secret or private-key signature"))
     if normalized.endswith(("METADATA", "PKG-INFO")) and VENDOR_METADATA.search(payload):
         findings.append(Finding("renamed_vendor_distribution", normalized, "distribution metadata identifies antioch-sim"))
@@ -80,6 +93,14 @@ def scan_tarball(path: Path) -> dict[str, object]:
             raise ValueError("OCI config is unreadable")
         config = json.load(config_file)
         serialized_config = json.dumps(config.get("config") or {}, sort_keys=True)
+        if SECRET_CONFIG.search(serialized_config):
+            findings.append(
+                Finding(
+                    "credential_material",
+                    config_name,
+                    "secret-shaped value in OCI config",
+                )
+            )
         for kind, pattern in FORBIDDEN_HISTORY:
             if pattern.search(serialized_config):
                 findings.append(Finding(kind, config_name, "forbidden OCI config value"))

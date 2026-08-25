@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import io
 import json
 import os
@@ -251,6 +252,160 @@ def test_apply_refuses_ambiguous_policy_selector(
     monkeypatch.setattr(client, "NetworkingV1Api", lambda: object())
     with pytest.raises(cluster_deploy.ClusterLiveError, match="exactly one"):
         cluster_deploy.apply_cluster(config)
+
+
+@pytest.mark.parametrize(
+    "case,match",
+    [
+        ("unowned_policy", "policy Deployment ownership"),
+        ("unbound_pvc", "PVC is not Bound"),
+        ("unowned_auth", "authentication Secret ownership"),
+    ],
+)
+def test_apply_cluster_guards_ownership_and_dependencies_beyond_selector(
+    case: str,
+    match: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    from kubernetes import client
+
+    policy_labels = (
+        {}
+        if case == "unowned_policy"
+        else {"app.kubernetes.io/managed-by": cluster_deploy.LIVE_MANAGED_BY}
+    )
+    deployment = SimpleNamespace(
+        metadata=SimpleNamespace(labels=policy_labels),
+        spec=SimpleNamespace(
+            selector=SimpleNamespace(match_labels=config.policy_selector)
+        ),
+    )
+    pvc = SimpleNamespace(
+        status=SimpleNamespace(phase="Pending" if case == "unbound_pvc" else "Bound")
+    )
+    auth = SimpleNamespace(
+        metadata=SimpleNamespace(
+            labels=(
+                {}
+                if case == "unowned_auth"
+                else {"app.kubernetes.io/managed-by": cluster_deploy.LIVE_MANAGED_BY}
+            )
+        ),
+        data={"api-key": base64.b64encode(b"a" * 48).decode()},
+    )
+    core = SimpleNamespace(
+        read_namespace=lambda **_kwargs: object(),
+        read_namespaced_persistent_volume_claim=lambda **_kwargs: pvc,
+        read_namespaced_secret=lambda **_kwargs: auth,
+    )
+    apps = SimpleNamespace(
+        list_namespaced_deployment=lambda **_kwargs: SimpleNamespace(
+            items=[deployment]
+        )
+    )
+    monkeypatch.setattr("kubernetes.config.load_kube_config", lambda **_kwargs: None)
+    monkeypatch.setattr(client, "CoreV1Api", lambda: core)
+    monkeypatch.setattr(client, "AppsV1Api", lambda: apps)
+    monkeypatch.setattr(client, "NetworkingV1Api", lambda: object())
+    with pytest.raises(cluster_deploy.ClusterLiveError, match=match):
+        cluster_deploy.apply_cluster(config)
+
+
+def test_cluster_status_reports_sanitized_probe_exception_classes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path)
+    from kubernetes import client
+
+    owned = SimpleNamespace(labels=cluster_deploy._labels(config))
+    deployment = SimpleNamespace(
+        metadata=owned, status=SimpleNamespace(ready_replicas=1)
+    )
+    policy = SimpleNamespace(
+        metadata=SimpleNamespace(
+            labels={"app.kubernetes.io/managed-by": cluster_deploy.LIVE_MANAGED_BY}
+        ),
+        status=SimpleNamespace(ready_replicas=1),
+        spec=SimpleNamespace(
+            selector=SimpleNamespace(match_labels=config.policy_selector)
+        ),
+    )
+    pod = SimpleNamespace(
+        metadata=SimpleNamespace(name="adapter-pod"),
+        status=SimpleNamespace(container_statuses=[]),
+    )
+    apps = SimpleNamespace(
+        read_namespaced_deployment=lambda *_args, **_kwargs: deployment,
+        list_namespaced_deployment=lambda *_args, **_kwargs: SimpleNamespace(
+            items=[policy]
+        ),
+    )
+    core = SimpleNamespace(
+        list_namespaced_pod=lambda *_args, **_kwargs: SimpleNamespace(items=[pod]),
+        connect_get_namespaced_pod_exec=object(),
+        read_namespaced_pod_log=lambda *_args, **_kwargs: "",
+    )
+    monkeypatch.setattr("kubernetes.config.load_kube_config", lambda **_kwargs: None)
+    monkeypatch.setattr(client, "AppsV1Api", lambda: apps)
+    monkeypatch.setattr(client, "CoreV1Api", lambda: core)
+    calls = 0
+
+    def failing_stream(*_args, **_kwargs):  # noqa: ANN202
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise ValueError("private relay endpoint must not leak")
+        raise RuntimeError("private DNS target must not leak")
+
+    monkeypatch.setattr("kubernetes.stream.stream", failing_stream)
+    result = cluster_deploy.cluster_status(config)
+    assert result["probe_diagnostics"] == {
+        "relay_state": {"status": "failed", "exception_class": "ValueError"},
+        "policy_dns": {"status": "failed", "exception_class": "RuntimeError"},
+    }
+    rendered = json.dumps(result)
+    assert "private relay" not in rendered
+    assert "private DNS" not in rendered
+
+
+@pytest.mark.parametrize("cleanup_status,stops", [("stopped", True), ("cleanup_failed", False)])
+def test_stop_cluster_requires_supported_remote_cleanup_evidence(
+    cleanup_status: str,
+    stops: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    from kubernetes import client
+
+    deployment = SimpleNamespace(
+        metadata=SimpleNamespace(labels=cluster_deploy._labels(config))
+    )
+    scales: list[dict[str, object]] = []
+    apps = SimpleNamespace(
+        read_namespaced_deployment=lambda *_args, **_kwargs: deployment,
+        patch_namespaced_deployment_scale=lambda *_args, **kwargs: scales.append(kwargs),
+    )
+    pod = SimpleNamespace(metadata=SimpleNamespace(name="adapter-pod"))
+    core = SimpleNamespace(
+        list_namespaced_pod=lambda *_args, **_kwargs: SimpleNamespace(items=[pod]),
+        connect_get_namespaced_pod_exec=object(),
+    )
+    monkeypatch.setattr("kubernetes.config.load_kube_config", lambda **_kwargs: None)
+    monkeypatch.setattr(client, "AppsV1Api", lambda: apps)
+    monkeypatch.setattr(client, "CoreV1Api", lambda: core)
+    replies = iter(("", json.dumps({"status": cleanup_status})))
+    monkeypatch.setattr("kubernetes.stream.stream", lambda *_args, **_kwargs: next(replies))
+    if stops:
+        result = cluster_deploy.stop_cluster(config, timeout_seconds=1)
+        assert result["remote_terminal_evidence"] == "supported-controller-cleanup"
+        assert len(scales) == 1
+    else:
+        with pytest.raises(cluster_deploy.ClusterLiveError, match="cleanup failed"):
+            cluster_deploy.stop_cluster(config, timeout_seconds=1)
+        assert scales == []
 
 
 def test_policy_lookup_uses_pod_selector_not_deployment_metadata() -> None:

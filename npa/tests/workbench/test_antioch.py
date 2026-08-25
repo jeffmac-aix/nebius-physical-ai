@@ -31,6 +31,8 @@ from npa.workbench.antioch.project import (
 )
 from npa.workbench.antioch.redaction import REDACTED, redact_payload, redact_text
 from npa.workbench.antioch.schemas import (
+    ArtifactRecord,
+    CollectRequest,
     EpisodeProvenance,
     OperationRecord,
     ProjectArchive,
@@ -213,6 +215,34 @@ def test_cli_rejects_malformed_success(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     with pytest.raises(AntiochCliError, match="malformed"):
         AntiochCli("antioch").show(Path("."), kind="scenario", remote_id="r")
+
+
+@pytest.mark.parametrize(
+    "invoke,payload",
+    [
+        (lambda cli: cli.submit_suite(Path("."), "suite"), []),
+        (lambda cli: cli.submit_scenario(Path("."), "scenario"), {}),
+        (lambda cli: cli.list_for_project(Path("."), kind="suite", project_id="p"), {"items": {}}),
+        (lambda cli: cli.download(Path("."), scenario_run_id="r", output=Path(".")), {"files": {}}),
+        (lambda cli: cli.logs(Path("."), scenario_run_id="r"), []),
+        (lambda cli: cli.services_up(Path(".")), []),
+        (lambda cli: cli.services_down(Path(".")), []),
+        (lambda cli: cli.machine_status(Path("."), project_id="p"), []),
+    ],
+)
+def test_vendor_cli_rejects_malformed_response_shapes_directly(
+    invoke, payload: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **_kwargs: subprocess.CompletedProcess(
+            args, 0, json.dumps(payload), ""
+        ),
+    )
+    with pytest.raises(AntiochCliError) as raised:
+        invoke(AntiochCli("antioch"))
+    assert raised.value.error_type == "malformed_cli_output"
 
 
 def test_supported_live_service_commands_never_inline_credentials(
@@ -775,6 +805,38 @@ def test_completed_state_allows_only_atomic_collection_round_trip() -> None:
     assert states.update(same, status="cancelled").status == "completed"
 
 
+def test_collection_lease_excludes_active_owner_and_recovers_expired_owner() -> None:
+    memory = MemoryStorage()
+    states = StateStore(memory)
+    request = _submit()
+    record = states.claim(
+        OperationRecord(
+            idempotency_key=operation_key(request.workflow_run, request.state_id),
+            request_sha256="a" * 64,
+            workflow_run=request.workflow_run,
+            state_id=request.state_id,
+            robot_type=request.robot_type,
+            task=request.task,
+            input_path=request.input_path,
+            output_path=request.output_path,
+            derived_project_id="npa-collection-lease",
+            remote_kind="suite",
+            selection=request.suite,
+            status="completed",
+        )
+    )
+    active, acquired = states.acquire_collection(record, "owner-a")
+    assert acquired is True
+    excluded, acquired = states.acquire_collection(active, "owner-b")
+    assert acquired is False
+    assert excluded.collection_owner == "owner-a"
+    expired = states.update(active, collection_lease_expires_at="2000-01-01T00:00:00Z")
+    recovered, acquired = states.acquire_collection(expired, "owner-b")
+    assert acquired is True
+    assert recovered.collection_owner == "owner-b"
+    assert recovered.collection_phase == "claimed"
+
+
 def test_late_submit_after_cancel_never_calls_vendor(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -893,6 +955,153 @@ def test_collect_marks_state_before_conversion_and_blocks_duplicate(
     assert recovered.retryable is True
     with pytest.raises(RuntimeError, match="observing marker"):
         manager.collect(collect)
+
+
+@pytest.mark.parametrize(
+    "boundary",
+    ["checksum", "conversion", "upload", "manifest", "state_persistence"],
+)
+def test_collect_real_body_recovers_every_persistence_boundary(
+    boundary: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    memory = MemoryStorage()
+    manager = AntiochManager.__new__(AntiochManager)
+    manager.storage = memory
+    manager.states = StateStore(memory)
+    submitted = _submit()
+    record = manager.states.claim(
+        OperationRecord(
+            idempotency_key=operation_key(submitted.workflow_run, submitted.state_id),
+            request_sha256="a" * 64,
+            workflow_run=submitted.workflow_run,
+            state_id=submitted.state_id,
+            robot_type=submitted.robot_type,
+            task=submitted.task,
+            input_path=submitted.input_path,
+            output_path=submitted.output_path,
+            derived_project_id="npa-collect-boundaries",
+            remote_kind="suite",
+            selection=submitted.suite,
+            remote_id="suite-safe",
+            status="completed",
+        )
+    )
+    request = CollectRequest(
+        output_path=record.output_path,
+        workflow_run=record.workflow_run,
+        state_id=record.state_id,
+    )
+    manifest = ProjectManifest(
+        archive=ProjectArchive(name="project.tar.gz", size_bytes=1, sha256="b" * 64),
+        source_name="fixture",
+        source_revision="v1",
+        source_license="Apache-2.0",
+        source_sha256="c" * 64,
+    )
+    monkeypatch.setattr(
+        "npa.workbench.antioch.manager.stage_project",
+        lambda *_args, **_kwargs: (tmp_path, manifest, "c" * 64),
+    )
+
+    class CollectCli:
+        def show(self, *_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+            return {
+                "suite_run_id": "suite-safe",
+                "phase": "completed",
+                "scenario_runs": [{"scenario_run_id": "scenario-safe"}],
+            }
+
+        def download(self, *_args, output: Path, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+            episode = output / "episode.npz"
+            episode.write_bytes(b"episode")
+            return {"files": [{"path": "episode.npz"}]}
+
+        def logs(self, *_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+            return {"events": []}
+
+    manager._cli = lambda *_args, **_kwargs: CollectCli()  # type: ignore[method-assign]
+
+    def convert(_trajectories, output: Path, **_kwargs):  # noqa: ANN001, ANN202
+        output.mkdir()
+        (output / "data.json").write_text("{}", encoding="utf-8")
+        return {"status": "converted"}
+
+    monkeypatch.setattr("npa.workbench.antioch.manager.convert_episodes", convert)
+
+    def upload(
+        path: Path, uri: str, *, name: str, scenario_run_id: str = ""
+    ) -> ArtifactRecord:
+        return ArtifactRecord(
+            name=name,
+            uri=uri,
+            size_bytes=path.stat().st_size,
+            sha256=sha256_bytes(path.read_bytes()),
+            scenario_run_id=scenario_run_id,
+        )
+
+    monkeypatch.setattr(manager.states, "upload_artifact", upload)
+    original_put = manager.states.put_immutable_json
+    original_update = manager.states.update
+    failed = False
+
+    def fail_once(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        nonlocal failed
+        if not failed:
+            failed = True
+            raise RuntimeError(f"injected {boundary} failure")
+        return args[0] if args else None
+
+    if boundary == "checksum":
+        original = _validate_downloaded_artifact
+
+        def checksum(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+            if not failed:
+                return fail_once(*args, **kwargs)
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr("npa.workbench.antioch.manager._validate_downloaded_artifact", checksum)
+    elif boundary == "conversion":
+        original = convert
+
+        def conversion(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+            if not failed:
+                return fail_once(*args, **kwargs)
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr("npa.workbench.antioch.manager.convert_episodes", conversion)
+    elif boundary == "upload":
+        def upload_boundary(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+            if not failed:
+                return fail_once(*args, **kwargs)
+            return upload(*args, **kwargs)
+
+        monkeypatch.setattr(manager.states, "upload_artifact", upload_boundary)
+    elif boundary == "manifest":
+
+        def put(uri, payload):  # noqa: ANN001, ANN202
+            if not failed:
+                return fail_once(uri, payload)
+            return original_put(uri, payload)
+
+        monkeypatch.setattr(manager.states, "put_immutable_json", put)
+    else:
+
+        def update(current, **changes):  # noqa: ANN001, ANN202
+            if changes.get("completion_uri") and not failed:
+                return fail_once(current, **changes)
+            return original_update(current, **changes)
+
+        monkeypatch.setattr(manager.states, "update", update)
+
+    with pytest.raises(RuntimeError, match=f"injected {boundary}"):
+        manager.collect(request)
+    after_failure = manager._record_for(request)
+    assert after_failure.status == "completed"
+    assert after_failure.collection_owner == ""
+    assert after_failure.retryable is True
+    completed = manager.collect(request)
+    assert completed.completion_uri.endswith("/_SUCCESS.json")
+    assert manager.collect(request) == completed
 
 
 @pytest.mark.parametrize(
