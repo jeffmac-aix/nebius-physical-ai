@@ -100,6 +100,8 @@ def test_public_manifests_keep_vm_out_and_policy_cluster_local(tmp_path: Path) -
     assert "14400" in controller["command"]
     assert "antioch.relay" in " ".join(relay["command"])
     assert "18444" in relay["command"]
+    init_mounts = {item["name"] for item in pod["initContainers"][0]["volumeMounts"]}
+    assert {"private", "state", "runtime", "runtime-cache"} <= init_mounts
     rendered = json.dumps(manifests, sort_keys=True)
     assert "LoadBalancer" not in rendered
     assert "hostNetwork" not in rendered
