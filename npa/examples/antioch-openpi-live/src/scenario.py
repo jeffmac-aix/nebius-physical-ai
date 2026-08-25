@@ -130,7 +130,7 @@ def _look_at(stage, path: str, eye, target) -> None:
     transform.AddTransformOp().Set(matrix)
 
 
-def _validated_actions(response: dict, current) -> object:
+def _validated_actions(response: dict, current) -> tuple[object, int]:
     import numpy as np
 
     actions = np.asarray(response.get("actions"))
@@ -142,15 +142,18 @@ def _validated_actions(response: dict, current) -> object:
     low, high = np.asarray(JOINT_LOW), np.asarray(JOINT_HIGH)
     if np.any(targets[:, :7] < low) or np.any(targets[:, :7] > high):
         raise ActionValidationError("joint_limit")
-    # The reviewed pi05_droid_jointpos_polaris output contract is seven
-    # absolute arm joints plus one normalized gripper position.
-    if np.any(targets[:, 7] < 0.0) or np.any(targets[:, 7] > 1.0):
-        raise ActionValidationError("gripper_range")
+    # Upstream DroidOutputs returns the eighth model dimension unchanged. Keep
+    # the finite check strict, then saturate that command to the actuator's
+    # reviewed normalized range before mapping it to finger joint positions.
+    gripper_saturations = int(
+        np.count_nonzero((targets[:, 7] < 0.0) | (targets[:, 7] > 1.0))
+    )
+    targets[:, 7] = np.clip(targets[:, 7], 0.0, 1.0)
     prior = np.asarray(current[:7], dtype=np.float64)
     deltas = np.diff(np.vstack([prior, targets[:, :7]]), axis=0)
     if np.max(np.abs(deltas)) > MAX_JOINT_STEP:
         raise ActionValidationError("joint_step")
-    return targets
+    return targets, gripper_saturations
 
 
 def _install_overlay():
@@ -260,6 +263,7 @@ def openpi_franka_mk8s_live(
     latencies_ms: list[float] = []
     luminance_means: list[float] = []
     luminance_variances: list[float] = []
+    gripper_saturations = 0
     last_latency = 0.0
     started = time.monotonic()
     next_attempt = 0.0
@@ -283,7 +287,10 @@ def openpi_franka_mk8s_live(
                     response, last_latency = pending.result()
                     if last_latency > MAX_RESPONSE_AGE_SECONDS:
                         raise TimeoutError("policy response was stale")
-                    chunk = _validated_actions(response, pending_joint_positions)
+                    chunk, saturated = _validated_actions(
+                        response, pending_joint_positions
+                    )
+                    gripper_saturations += saturated
                     chunk_index = 0
                     round_trips += 1
                     latencies_ms.append(last_latency * 1000.0)
@@ -293,7 +300,8 @@ def openpi_franka_mk8s_live(
                         f"observation={pending_observation} "
                         f"round_trips={round_trips} "
                         f"latency_ms={last_latency * 1000.0:.3f} "
-                        "action_shape=[15,8] finite=true",
+                        "action_shape=[15,8] finite=true safety_validated=true "
+                        f"gripper_saturations={gripper_saturations}",
                         flush=True,
                     )
                     print(
@@ -307,6 +315,7 @@ def openpi_franka_mk8s_live(
                         f"rejected_joint_limit={rejected_actions['joint_limit']} "
                         f"rejected_gripper_range={rejected_actions['gripper_range']} "
                         f"rejected_joint_step={rejected_actions['joint_step']} "
+                        f"gripper_saturations={gripper_saturations} "
                         f"transport_failures={sum(transport_failures.values())} "
                         f"reconnects={client.reconnects} "
                         f"luminance_mean_min={min(luminance_means):.3f} "
@@ -318,10 +327,7 @@ def openpi_franka_mk8s_live(
                         flush=True,
                     )
                 except Exception as exc:
-                    client.close()
                     safe_holds += 1
-                    delay = client.reconnect_delay()
-                    next_attempt = now + delay
                     reason = (
                         exc.reason
                         if isinstance(exc, ActionValidationError)
@@ -329,8 +335,11 @@ def openpi_franka_mk8s_live(
                     )
                     if isinstance(exc, ActionValidationError):
                         rejected_actions[reason] += 1
+                        next_attempt = now + 1.0 / CONTROL_HZ
                     else:
                         transport_failures[reason] += 1
+                        client.close()
+                        next_attempt = now + client.reconnect_delay()
                     logger.value("policy/error", rr.TextLog(reason))
                     print(
                         "NPA_OPENPI_SAFE_HOLD "
@@ -428,6 +437,7 @@ def openpi_franka_mk8s_live(
             logger.scalar("decision/safe_hold", int(safe_hold))
             logger.scalar("decision/reconnects", client.reconnects)
             logger.scalar("decision/safe_targets_applied", applied)
+            logger.scalar("decision/gripper_saturations", gripper_saturations)
             logger.scalar(
                 "decision/rejected_actions", sum(rejected_actions.values())
             )
@@ -470,6 +480,7 @@ def openpi_franka_mk8s_live(
         run.add_result("policy_requests", requests)
         run.add_result("policy_round_trips", round_trips)
         run.add_result("safe_targets_applied", applied)
+        run.add_result("gripper_saturations", gripper_saturations)
         run.add_result("reconnects", client.reconnects)
         run.add_result("rejected_actions", dict(sorted(rejected_actions.items())))
         run.add_result("transport_failures", dict(sorted(transport_failures.items())))

@@ -10,10 +10,13 @@ live counters; neither is reconstructed from a recording.
 The client uses a 90-second response-age safety deadline because a cold request
 can take tens of seconds even though warmed B200 requests are normally tens of
 milliseconds. The reviewed `pi05_droid_jointpos_polaris` output contract is seven
-absolute arm joints plus one normalized gripper position; the client maps the
-gripper value into the Franka finger range only after validating the complete
-`[15, 8]` chunk. Five returned targets are applied at a nominal 15 Hz. The
-observation-to-action loop is best-effort and not hard real time.
+absolute arm joints plus one raw gripper command. Upstream `DroidOutputs` returns
+that eighth dimension unchanged, so the client requires it to be finite and
+saturates it to the normalized actuator range before mapping it into the Franka
+finger range. The saturation count is reported alongside strict shape, finite,
+arm-limit, and per-target step validation for every `[15, 8]` chunk. Five returned
+targets are applied at a nominal 15 Hz. The observation-to-action loop is
+best-effort and not hard real time.
 
 The checked-in project ID is deliberately unusable. The cluster-native controller
 creates a private runtime copy with an assigned Antioch project ID, starts the
