@@ -172,7 +172,8 @@ def build_public_manifests(config: ClusterLiveConfig) -> dict[str, dict[str, Any
         "install -m 0600 /sources/project/project-id /private/project-id; "
         "find /private -type d -exec chmod 0700 {} +; "
         "find /private -type f -exec chmod 0600 {} +; "
-        "chown -R 10001:10001 /private"
+        "chown -R 10001:10001 /private /state /runtime /runtime-cache; "
+        "chmod 0700 /state /runtime /runtime-cache"
     )
     volumes: list[dict[str, Any]] = [
         {"name": "private", "emptyDir": {"medium": "Memory"}},
@@ -364,6 +365,12 @@ def build_public_manifests(config: ClusterLiveConfig) -> dict[str, dict[str, Any
                                     "name": "source-project",
                                     "mountPath": "/sources/project",
                                     "readOnly": True,
+                                },
+                                {"name": "state", "mountPath": "/state"},
+                                {"name": "runtime", "mountPath": "/runtime"},
+                                {
+                                    "name": "runtime-cache",
+                                    "mountPath": "/runtime-cache",
                                 },
                                 {"name": "tmp", "mountPath": "/tmp"},
                             ],
