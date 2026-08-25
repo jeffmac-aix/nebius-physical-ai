@@ -341,7 +341,7 @@ def build_public_manifests(config: ClusterLiveConfig) -> dict[str, dict[str, Any
                                 # only the capability needed for that handoff.
                                 "capabilities": {
                                     "drop": ["ALL"],
-                                    "add": ["CHOWN", "DAC_OVERRIDE"],
+                                    "add": ["CHOWN"],
                                 },
                             },
                             "resources": {

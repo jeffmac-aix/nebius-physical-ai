@@ -92,7 +92,7 @@ def test_public_manifests_keep_vm_out_and_policy_cluster_local(tmp_path: Path) -
     assert "cp -L /sources/bundle/*" in init_command
     assert init["securityContext"]["capabilities"] == {
         "drop": ["ALL"],
-        "add": ["CHOWN", "DAC_OVERRIDE"],
+        "add": ["CHOWN"],
     }
     init_mounts = {mount["name"]: mount["mountPath"] for mount in init["volumeMounts"]}
     assert init_mounts["state"] == "/state"
