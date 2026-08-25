@@ -656,8 +656,11 @@ def _write_supervisor(
         bundle_check,
     ]
     stage_block = " &&\n      ".join(stage_commands)
+    module_root = Path(__file__).resolve().parents[3]
     reconcile = shlex.join(
         [
+            "env",
+            f"PYTHONPATH={module_root}",
             str(python_path),
             "-m",
             "npa.workbench.antioch.live_reconcile",

@@ -201,6 +201,7 @@ def test_supervisor_has_finite_run_boundary_but_no_total_limit(tmp_path: Path) -
     assert "--timeout 14400 --stream --verbose" in source
     assert "NPA_ANTIOCH_RENEWAL" in source
     assert "npa.workbench.antioch.live_reconcile" in source
+    assert "PYTHONPATH=" in source
     assert "NPA_ANTIOCH_RECONCILED_TERMINAL" in source
     assert "services cp" in source
     assert "services exec sim /bin/sh -lc" in source
