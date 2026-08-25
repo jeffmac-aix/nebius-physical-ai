@@ -10,9 +10,9 @@ services:
       context: "."
       dockerfile: "Dockerfile"
     ports:
-      # Antioch publishes this only on the operator's localhost while services
+      # Antioch publishes this only on the adapter pod's localhost while services
       # are up. The persistent sim service terminates authenticated TLS here;
-      # the supervised operator relay carries the other verified WSS leg to the
+      # the same-pod bounded relay carries the other verified WSS leg to the
       # B200 gateway.
       - name: policy-relay
         target: 8444
@@ -24,7 +24,7 @@ services:
         path: src/relay_bridge.py
 
 suites:
-  live:
-    description: "Continuing Franka camera-to-policy live demonstration"
+  mk8s_native:
+    description: "Cluster-native Franka camera-to-policy live demonstration"
     select:
-      - tags: ["openpi-live"]
+      - tags: ["mk8s-native"]

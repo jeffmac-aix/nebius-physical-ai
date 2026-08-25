@@ -36,9 +36,11 @@ endpoints, print identity/config/environment data, or inspect unrelated runs.
 - Start the sim service before copying a run-scoped CA/API-key/endpoint bundle into
   a 0700 service directory. Never use `--set`, environment dumps, tmux command
   arguments, or project source for policy credentials.
-- Supervise the foreground streamed run in a named tmux session and capture its
-  ordinary output with `pipe-pane`. The tmux supervisor may renew after the CLI's
-  finite per-scenario timeout, but must have no total run limit unless requested.
+- The supported steady-state path is the MK8s adapter Deployment: run the Antioch
+  service tunnel and bounded relay in one pod network namespace and target a
+  ClusterIP policy Service. The operator VM may deploy/status it but must not
+  carry frames or actions. The legacy tmux path is recovery-only and must not be
+  retained after a cluster-native cutover.
 - An accepted interactive run can outlive a detached foreground CLI. Before a
   renewal, reconcile the exact project-scoped scenario through supported
   `scenario list` and `machine status` JSON. Adopt only the matching stream owner,
@@ -55,13 +57,13 @@ endpoints, print identity/config/environment data, or inspect unrelated runs.
   Stage a full bundle generation and atomically switch one symlink so a renewing
   bridge cannot observe a certificate/key or token generation mix.
 - When direct policy egress is unavailable, use a declared Antioch service port
-  published only on operator localhost. When the streamed scenario is not the
+  published only on adapter-pod localhost. When the streamed scenario is not the
   declared-port owner, terminate authenticated WSS in the persistent sim service,
   preferably as the detached service entrypoint waiting for the runtime-staged
   bundle. Use short `services exec` health probes rather than a long exec-held
   daemon. Let the scenario connect outbound with a distinct authenticated role, and
-  supervise another tmux window that bridges the operator role to the policy's independently
-  authenticated, CA-verified WSS port 443. Bound messages, queues, connections,
+  run the same-pod relay that bridges the operator role to the policy's independently
+  authenticated, CA-verified ClusterIP WSS port 443. Bound messages, queues, connections,
   requests, timeouts, and reconnect backoff; never substitute an unauthenticated
   public proxy, disabled TLS verification, a token in a URL, or an undocumented
   Antioch endpoint.
@@ -77,6 +79,10 @@ endpoints, print identity/config/environment data, or inspect unrelated runs.
   project identity is intentionally unusable and is replaced only in private runtime
   state. The OpenPI gateway/controller lives in
   `npa.workflows.byof.openpi_live`.
+- Use `npa workbench antioch live-k8s-deploy|live-k8s-status|live-k8s-stop`
+  with one mode-0600 runtime config. Keep exact Kubernetes, Antioch, and secret
+  coordinates in that file, not argv or ordinary output. Finalize removal of an
+  exact owned public rollback Service only after sustained acceptance.
 
 ## Cleanup and evidence
 

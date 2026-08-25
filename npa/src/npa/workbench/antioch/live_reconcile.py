@@ -31,13 +31,17 @@ def _project_id(runtime: Path) -> str:
 
 
 def _active_run(
-    cli: AntiochCli, *, runtime: Path, project_id: str
+    cli: AntiochCli,
+    *,
+    runtime: Path,
+    project_id: str,
+    scenario: str = "openpi_droid_live",
 ) -> dict[str, Any] | None:
     rows = cli.list_for_project(runtime, kind="scenario", project_id=project_id)
     candidates = {
         str(row["scenario_run_id"]): row
         for row in rows
-        if row.get("scenario") == "openpi_droid_live"
+        if row.get("scenario") == scenario
         and row.get("phase") in LIVE_PHASES
         and row.get("scenario_run_id")
     }
@@ -79,13 +83,16 @@ def reconcile_active(
     runtime: Path,
     stop_file: Path,
     state_path: Path,
+    scenario: str = "openpi_droid_live",
     poll_seconds: float = 5.0,
 ) -> bool:
     """Wait on one exact accepted run; return False when there is none."""
 
     cli = AntiochCli(cli_path)
     project_id = _project_id(runtime)
-    active = _active_run(cli, runtime=runtime, project_id=project_id)
+    active = _active_run(
+        cli, runtime=runtime, project_id=project_id, scenario=scenario
+    )
     if active is None:
         return False
     remote_id = str(active["scenario_run_id"])
@@ -93,7 +100,7 @@ def reconcile_active(
         state_path,
         {
             "schema": "npa.workbench.antioch-live-active.v1",
-            "scenario": "openpi_droid_live",
+            "scenario": scenario,
             "scenario_run_id": remote_id,
             "status": "reconciled",
         },
@@ -102,13 +109,15 @@ def reconcile_active(
     while True:
         if stop_file.exists():
             cli.cancel(runtime, kind="scenario", remote_id=remote_id)
-        current = _active_run(cli, runtime=runtime, project_id=project_id)
+        current = _active_run(
+            cli, runtime=runtime, project_id=project_id, scenario=scenario
+        )
         if current is None:
             _write_state(
                 state_path,
                 {
                     "schema": "npa.workbench.antioch-live-active.v1",
-                    "scenario": "openpi_droid_live",
+                    "scenario": scenario,
                     "scenario_run_id": remote_id,
                     "status": "terminal",
                 },
@@ -128,6 +137,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--runtime", required=True)
     parser.add_argument("--stop-file", required=True)
     parser.add_argument("--state-path", required=True)
+    parser.add_argument("--scenario", default="openpi_droid_live")
     parser.add_argument("--poll-seconds", type=float, default=5.0)
     return parser
 
@@ -139,6 +149,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         runtime=Path(args.runtime),
         stop_file=Path(args.stop_file),
         state_path=Path(args.state_path),
+        scenario=args.scenario,
         poll_seconds=args.poll_seconds,
     )
     return 0 if adopted else NO_ACTIVE_RUN

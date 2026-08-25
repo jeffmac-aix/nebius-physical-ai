@@ -321,6 +321,7 @@ def _cancel_remote_live_runs(
     *,
     runtime: Path,
     project_id: str,
+    scenario: str = "openpi_droid_live",
     attempts: int = 60,
 ) -> int:
     """Cancel only this project's exact live scenario before service teardown."""
@@ -335,7 +336,7 @@ def _cancel_remote_live_runs(
         candidates: dict[str, dict[str, Any]] = {
             str(row["scenario_run_id"]): row
             for row in rows
-            if row.get("scenario") == "openpi_droid_live"
+            if row.get("scenario") == scenario
             and row.get("phase") in live_phases
             and row.get("scenario_run_id")
             and str(row["scenario_run_id"]) not in terminal
@@ -411,6 +412,7 @@ def _write_supervisor(
     stop_file: Path,
     active_state_path: Path,
     scenario_timeout_seconds: int,
+    scenario_name: str = "openpi_droid_live",
 ) -> None:
     if scenario_timeout_seconds < 60:
         raise AntiochLiveError(
@@ -422,7 +424,7 @@ def _write_supervisor(
             "scenario",
             "run",
             "--scenario",
-            "openpi_droid_live",
+            scenario_name,
             "--timeout",
             str(scenario_timeout_seconds),
             "--stream",
@@ -603,6 +605,8 @@ def _write_supervisor(
             str(stop_file),
             "--state-path",
             str(active_state_path),
+            "--scenario",
+            scenario_name,
         ]
     )
     content = f"""#!/bin/sh
@@ -782,6 +786,7 @@ def start_live(
         stop_file=stop_file,
         active_state_path=active_state,
         scenario_timeout_seconds=scenario_timeout_seconds,
+        scenario_name="openpi_droid_live",
     )
     _write_relay_supervisor(
         relay_supervisor,
@@ -966,6 +971,7 @@ def stop_live(*, project_id: str, timeout_seconds: float = 120.0) -> dict[str, A
         cli,
         runtime=runtime,
         project_id=project_id,
+        scenario="openpi_droid_live",
     )
     if _window_running(session, "relay"):
         _tmux("send-keys", "-t", f"{session}:relay.0", "C-c")

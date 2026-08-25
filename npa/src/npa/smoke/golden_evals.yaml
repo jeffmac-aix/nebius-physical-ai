@@ -41,7 +41,8 @@ containers:
       useful: true
       role: >-
         CPU-only control plane for durable Antioch simulation submission,
-        reconciliation, cancellation, collection, and offline policy-data export.
+        reconciliation, cancellation, collection, offline policy-data export,
+        and a same-pod tunnel/relay to a cluster-local policy Service.
     safety:
       runs_as: "10001"
       base_image: python:3.12-slim-bookworm

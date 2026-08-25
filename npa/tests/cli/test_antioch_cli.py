@@ -142,3 +142,38 @@ def test_live_stop_orders_through_sdk(monkeypatch) -> None:  # noqa: ANN001
     )
     assert result.exit_code == 0, result.output
     assert json.loads(result.output)["status"] == "stopped"
+
+
+def test_antioch_cluster_live_cli_uses_private_runtime_config(
+    tmp_path: Path, monkeypatch
+) -> None:  # noqa: ANN001
+    runtime = tmp_path / "runtime.json"
+    runtime.write_text("{}", encoding="utf-8")
+    calls = []
+    monkeypatch.setattr(
+        "npa.sdk.workbench.antioch.live_k8s_deploy",
+        lambda **kwargs: calls.append(("deploy", kwargs)) or {"status": "ok"},
+    )
+    monkeypatch.setattr(
+        "npa.sdk.workbench.antioch.live_k8s_status",
+        lambda **kwargs: calls.append(("status", kwargs)) or {"status": "ready"},
+    )
+    runner = CliRunner()
+    for command in ("live-k8s-deploy", "live-k8s-status"):
+        result = runner.invoke(
+            app,
+            [
+                "workbench",
+                "antioch",
+                command,
+                "--runtime-config",
+                str(runtime),
+                "--output",
+                "json",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+    assert calls == [
+        ("deploy", {"runtime_config": runtime}),
+        ("status", {"runtime_config": runtime}),
+    ]

@@ -143,20 +143,52 @@ traffic tradeoff and does not admit ordinary workload-pod sources. The checkpoin
 keys, CA private material, credentials, and simulator
 payload never enter the public image or project source.
 
-The controller uses supported `antioch services build|up|exec|cp` commands to place the
-0600 client bundle in the sim service, then runs `antioch scenario run --stream
---verbose` under a named tmux session with `pipe-pane`. The sim terminates an
-authenticated WSS listener as its detached service entrypoint on a declared
-Antioch service port, published only on the operator's localhost. The entrypoint
-waits for the complete runtime-staged bundle before accepting traffic. A second
-tmux window bridges that verified WSS stream to
-the B200 gateway's authenticated WSS port 443. This preserves encryption and
-authentication when Antioch egress cannot route directly to the managed
-load-balancer range; it does not expose a public relay or put either API key in a
-URL, environment dump, project, or process argument. Scenario timeout is a
-finite platform boundary, so the supervisor renews indefinitely until explicitly
-stopped. Renewal resets the simulated episode and briefly interrupts the viewport;
-it is continuous service supervision, not one immortal scenario process.
+The steady-state deployment is MK8s-native. `live-k8s-deploy` reads one
+operator-owned mode-0600 runtime file and reconciles a two-container adapter
+Deployment in the `workbench` namespace. The controller container runs only
+supported `antioch services build|up|exec|cp|down` operations and `antioch
+scenario run --stream --verbose`. The supported service tunnel binds on pod
+localhost. A bounded relay container in that same pod network namespace connects
+the tunnel's authenticated WSS operator role to a CA-verified, authenticated
+ClusterIP OpenPI Service. The operator VM launches and observes this Deployment
+but carries no camera frames, policy messages, or actions.
+
+The private runtime file contains Kubernetes coordinates and paths to the
+existing Antioch config, exact terms-acceptance file, assigned project-id file,
+and retained OpenPI objects. Those values do not appear in CLI arguments or
+ordinary output. The deployer stages them as owner-labelled Kubernetes Secrets,
+rotates the policy gateway certificate for its `.svc` DNS name, and copies Secret
+files through a root-only init container into a memory-backed 0600 volume owned
+by the non-root runtime uid. Terms values, API keys, certificates, OAuth state,
+and project identity never enter a ConfigMap, image, manifest output, annotation,
+or log.
+
+The policy Service is `ClusterIP` by default. Its NetworkPolicy permits the WSS
+gateway only from the exact adapter identity and permits health ports only from
+the enumerated kubelet node addresses. The adapter denies all ingress and limits
+egress to cluster DNS, the selected policy pods, and TLS service egress. A former
+owned LoadBalancer may remain temporarily for rollback; run
+`live-k8s-finalize-cutover` only after sustained acceptance to remove that exact
+public Service. The retained B200 Deployment and checkpoint PVC are reused, not
+duplicated.
+
+```bash
+npa workbench antioch live-k8s-deploy \
+  --runtime-config /path/to/private-runtime.json --output json
+npa workbench antioch live-k8s-status \
+  --runtime-config /path/to/private-runtime.json --output json
+```
+
+The runtime schema is `npa.antioch.mk8s-live-config.v1`; the checked-in example
+uses only placeholders. `workflow_run` plus `state_id` derive every adapter
+identity, so independent Antioch stages cannot collide. `adapter_image` must be
+an immutable digest. Deployment, status, stop, and cutover-finalization refuse
+unowned objects.
+
+Scenario timeout is a finite platform boundary, so the supervisor renews
+indefinitely until explicitly stopped. Renewal resets the simulated episode and
+briefly interrupts the viewport; it is continuous service supervision, not one
+immortal scenario process.
 The supervisor atomically rechecks and re-stages the private client bundle after
 container recreation, and rebuilds the machine-local service image after a machine
 recycle before dispatching another scenario. A Mission Control stream in `ready` state is
@@ -167,6 +199,15 @@ the now-occupied lease, the supervisor reconciles only the matching project-scop
 scenario from supported `scenario list` plus `machine status` JSON. It waits on
 that exact run instead of issuing duplicate renewals, and records the adopted run
 ID only in owner-private local state.
+
+Before a retained live run is accepted, require at least 120 seconds, 120 valid
+camera pairs, 100 successful policy round trips, and 500 applied targets; at
+least 90% of policy requests must succeed. Camera luminance mean must exceed 5
+and variance 25 for both views. Latency must have p95 at most 2 seconds and
+p99/max at most the 90-second stale-response bound, with at most five reconnects.
+No malformed, non-finite, wrong-shaped, joint-limit, gripper-range, or joint-step
+action may be applied. These thresholds are fixed before live execution and are
+not reduced after observing a run.
 
 ## Policy data contract
 

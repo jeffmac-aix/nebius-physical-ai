@@ -10,6 +10,7 @@ from typing import Any
 
 import typer
 
+from npa.lifecycle_intent import OperationIntent, intent_boundary
 from npa.sdk.workbench import antioch as sdk
 from npa.workbench.antioch.manager import AntiochManager
 from npa.workbench.antioch.project import package_project
@@ -208,6 +209,72 @@ def live_stop_cmd(
             sdk.live_stop(project_id=project_id, timeout_seconds=timeout_seconds),
             output,
         )
+    except Exception as exc:
+        _fail(exc)
+
+
+@app.command("live-k8s-deploy")
+@intent_boundary(OperationIntent.ENSURE_PRESENT)
+def live_k8s_deploy_cmd(
+    runtime_config: Path = typer.Option(
+        ..., "--runtime-config", exists=True, dir_okay=False
+    ),
+    output: OutputFormat = typer.Option(OutputFormat.text, "--output"),
+) -> None:
+    """Reconcile the same-pod Antioch tunnel and cluster-local policy path."""
+    try:
+        _emit(sdk.live_k8s_deploy(runtime_config=runtime_config), output)
+    except Exception as exc:
+        _fail(exc)
+
+
+@app.command("live-k8s-status")
+@intent_boundary(OperationIntent.OBSERVE)
+def live_k8s_status_cmd(
+    runtime_config: Path = typer.Option(
+        ..., "--runtime-config", exists=True, dir_okay=False
+    ),
+    output: OutputFormat = typer.Option(OutputFormat.text, "--output"),
+) -> None:
+    """Return sanitized adapter and retained-policy readiness."""
+    try:
+        _emit(sdk.live_k8s_status(runtime_config=runtime_config), output)
+    except Exception as exc:
+        _fail(exc)
+
+
+@app.command("live-k8s-stop")
+@intent_boundary(OperationIntent.DESTROY)
+def live_k8s_stop_cmd(
+    runtime_config: Path = typer.Option(
+        ..., "--runtime-config", exists=True, dir_okay=False
+    ),
+    timeout_seconds: float = typer.Option(360.0, "--timeout-seconds", min=1.0),
+    output: OutputFormat = typer.Option(OutputFormat.text, "--output"),
+) -> None:
+    """Stop the exact scenario before its supported service tunnel."""
+    try:
+        _emit(
+            sdk.live_k8s_stop(
+                runtime_config=runtime_config, timeout_seconds=timeout_seconds
+            ),
+            output,
+        )
+    except Exception as exc:
+        _fail(exc)
+
+
+@app.command("live-k8s-finalize-cutover")
+@intent_boundary(OperationIntent.DESTROY)
+def live_k8s_finalize_cutover_cmd(
+    runtime_config: Path = typer.Option(
+        ..., "--runtime-config", exists=True, dir_okay=False
+    ),
+    output: OutputFormat = typer.Option(OutputFormat.text, "--output"),
+) -> None:
+    """Disable the exact owned public rollback Service after acceptance."""
+    try:
+        _emit(sdk.live_k8s_finalize_cutover(runtime_config=runtime_config), output)
     except Exception as exc:
         _fail(exc)
 

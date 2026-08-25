@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ssl
 import time
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -181,8 +182,25 @@ def _camera_rgb(camera):
     return frame[:, :, :3].astype(np.uint8, copy=False)
 
 
-@antioch.scenario(tags=["openpi-live"])
-def openpi_droid_live(
+def _franka_link_points(stage):
+    """Read the rendered Franka link transforms for live Rerun geometry."""
+
+    from pxr import Usd, UsdGeom
+
+    points = []
+    for name in [*(f"panda_link{index}" for index in range(8)), "panda_hand"]:
+        prim = stage.GetPrimAtPath(f"/World/Franka/{name}")
+        if not prim or not prim.IsValid() or not prim.IsA(UsdGeom.Xformable):
+            continue
+        transform = UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(
+            Usd.TimeCode.Default()
+        )
+        points.append(list(transform.ExtractTranslation()))
+    return points
+
+
+@antioch.scenario(tags=["openpi-live", "mk8s-native"])
+def openpi_franka_mk8s_live(
     run: antioch.ScenarioRun,
     prompt: str = antioch.param("pick up the cube", description="DROID task prompt"),
 ) -> None:
@@ -237,6 +255,11 @@ def openpi_droid_live(
     overlay = _install_overlay()
     client = SafePolicyClient()
     observation_sequence = requests = round_trips = applied = safe_holds = 0
+    rejected_actions: Counter[str] = Counter()
+    transport_failures: Counter[str] = Counter()
+    latencies_ms: list[float] = []
+    luminance_means: list[float] = []
+    luminance_variances: list[float] = []
     last_latency = 0.0
     started = time.monotonic()
     next_attempt = 0.0
@@ -263,12 +286,35 @@ def openpi_droid_live(
                     chunk = _validated_actions(response, pending_joint_positions)
                     chunk_index = 0
                     round_trips += 1
+                    latencies_ms.append(last_latency * 1000.0)
+                    percentiles = np.percentile(latencies_ms, [50, 95, 99])
                     print(
                         "NPA_OPENPI_ROUND_TRIP "
                         f"observation={pending_observation} "
                         f"round_trips={round_trips} "
                         f"latency_ms={last_latency * 1000.0:.3f} "
                         "action_shape=[15,8] finite=true",
+                        flush=True,
+                    )
+                    print(
+                        "NPA_OPENPI_METRICS "
+                        f"elapsed_seconds={now - started:.3f} "
+                        f"frames={observation_sequence} requests={requests} "
+                        f"round_trips={round_trips} "
+                        f"applied={applied} rejected_actions={sum(rejected_actions.values())} "
+                        f"rejected_wrong_shape={rejected_actions['wrong_shape']} "
+                        f"rejected_non_finite={rejected_actions['non_finite']} "
+                        f"rejected_joint_limit={rejected_actions['joint_limit']} "
+                        f"rejected_gripper_range={rejected_actions['gripper_range']} "
+                        f"rejected_joint_step={rejected_actions['joint_step']} "
+                        f"transport_failures={sum(transport_failures.values())} "
+                        f"reconnects={client.reconnects} "
+                        f"luminance_mean_min={min(luminance_means):.3f} "
+                        f"luminance_variance_min={min(luminance_variances):.3f} "
+                        f"latency_p50_ms={percentiles[0]:.3f} "
+                        f"latency_p95_ms={percentiles[1]:.3f} "
+                        f"latency_p99_ms={percentiles[2]:.3f} "
+                        f"latency_max_ms={max(latencies_ms):.3f}",
                         flush=True,
                     )
                 except Exception as exc:
@@ -281,6 +327,10 @@ def openpi_droid_live(
                         if isinstance(exc, ActionValidationError)
                         else type(exc).__name__
                     )
+                    if isinstance(exc, ActionValidationError):
+                        rejected_actions[reason] += 1
+                    else:
+                        transport_failures[reason] += 1
                     logger.value("policy/error", rr.TextLog(reason))
                     print(
                         "NPA_OPENPI_SAFE_HOLD "
@@ -308,6 +358,14 @@ def openpi_droid_live(
                         print("NPA_OPENPI_FIRST_FRAME", flush=True)
                         first_frame = False
                     observation_sequence += 1
+                    exterior_luminance = np.mean(exterior_rgb, axis=2)
+                    wrist_luminance = np.mean(wrist_rgb, axis=2)
+                    luminance_means.extend(
+                        [float(exterior_luminance.mean()), float(wrist_luminance.mean())]
+                    )
+                    luminance_variances.extend(
+                        [float(exterior_luminance.var()), float(wrist_luminance.var())]
+                    )
                     observation = {
                         "observation/exterior_image_1_left": exterior_rgb,
                         "observation/wrist_image_left": wrist_rgb,
@@ -325,6 +383,12 @@ def openpi_droid_live(
                     )
                     logger.image("camera/exterior", exterior_rgb)
                     logger.image("camera/wrist", wrist_rgb)
+                    logger.scalar(
+                        "camera/luminance_mean", luminance_means[-2]
+                    )
+                    logger.scalar(
+                        "camera/luminance_variance", luminance_variances[-2]
+                    )
                     pending_observation = observation_sequence
                     pending_joint_positions = joint_positions.copy()
                     pending = executor.submit(client.infer, observation)
@@ -365,6 +429,9 @@ def openpi_droid_live(
             logger.scalar("decision/reconnects", client.reconnects)
             logger.scalar("decision/safe_targets_applied", applied)
             logger.scalar(
+                "decision/rejected_actions", sum(rejected_actions.values())
+            )
+            logger.scalar(
                 "decision/applied_target_rate_hz",
                 applied / max(now - started, 1e-6),
             )
@@ -375,6 +442,15 @@ def openpi_droid_live(
                     sizes=[[0.07, 0.07, 0.07]],
                 ),
             )
+            joint_positions = np.asarray(robot.get_joint_positions(), dtype=float)
+            for index, value in enumerate(joint_positions[:9]):
+                logger.scalar(f"robot/franka/joint_{index}", float(value))
+            link_points = _franka_link_points(world.stage)
+            if len(link_points) >= 2:
+                logger.value(
+                    "scene/franka/kinematic_chain",
+                    rr.LineStrips3D([link_points], radii=0.012),
+                )
             overlay[2].text = (
                 "SAFE HOLD / reconnecting"
                 if safe_hold
@@ -395,3 +471,16 @@ def openpi_droid_live(
         run.add_result("policy_round_trips", round_trips)
         run.add_result("safe_targets_applied", applied)
         run.add_result("reconnects", client.reconnects)
+        run.add_result("rejected_actions", dict(sorted(rejected_actions.items())))
+        run.add_result("transport_failures", dict(sorted(transport_failures.items())))
+        if latencies_ms:
+            percentiles = np.percentile(latencies_ms, [50, 95, 99])
+            run.add_result("latency_p50_ms", float(percentiles[0]))
+            run.add_result("latency_p95_ms", float(percentiles[1]))
+            run.add_result("latency_p99_ms", float(percentiles[2]))
+            run.add_result("latency_max_ms", float(max(latencies_ms)))
+        if luminance_means:
+            run.add_result("camera_luminance_mean_min", float(min(luminance_means)))
+            run.add_result(
+                "camera_luminance_variance_min", float(min(luminance_variances))
+            )

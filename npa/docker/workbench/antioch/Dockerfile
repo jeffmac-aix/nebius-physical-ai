@@ -21,7 +21,11 @@ COPY src/npa/workbench/antioch /app/npa/workbench/antioch
 COPY src/npa/clients/storage.py /app/npa/clients/storage.py
 COPY src/npa/adapter/sim_to_lerobot.py /app/npa/adapter/sim_to_lerobot.py
 COPY src/npa/smoke/test_antioch_functional.py /app/npa/smoke/test_antioch_functional.py
-RUN chown -R npa:npa /app
+# The public adapter carries only reviewed NPA bootstrap/scenario source.  The
+# proprietary Antioch CLI and simulator image are fetched at runtime under the
+# operator's own accepted terms.
+COPY examples/antioch-openpi-live /opt/npa/antioch-openpi-live
+RUN chown -R npa:npa /app /opt/npa/antioch-openpi-live
 
 # Build-time proof that the workload-identity resolver is self-contained and
 # does not depend on the host-only npa.clients.config graph.

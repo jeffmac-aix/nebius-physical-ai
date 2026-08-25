@@ -132,3 +132,34 @@ def live_status(*, project_id: str) -> dict[str, Any]:
 
 def live_stop(*, project_id: str, timeout_seconds: float = 120.0) -> dict[str, Any]:
     return stop_live(project_id=project_id, timeout_seconds=timeout_seconds)
+
+
+def live_k8s_deploy(*, runtime_config: Path) -> dict[str, Any]:
+    from npa.workbench.antioch.cluster_deploy import apply_cluster, load_private_config
+
+    return apply_cluster(load_private_config(runtime_config))
+
+
+def live_k8s_status(*, runtime_config: Path) -> dict[str, Any]:
+    from npa.workbench.antioch.cluster_deploy import cluster_status, load_private_config
+
+    return cluster_status(load_private_config(runtime_config))
+
+
+def live_k8s_stop(
+    *, runtime_config: Path, timeout_seconds: float = 360.0
+) -> dict[str, Any]:
+    from npa.workbench.antioch.cluster_deploy import load_private_config, stop_cluster
+
+    return stop_cluster(
+        load_private_config(runtime_config), timeout_seconds=timeout_seconds
+    )
+
+
+def live_k8s_finalize_cutover(*, runtime_config: Path) -> dict[str, Any]:
+    from npa.workbench.antioch.cluster_deploy import (
+        disable_public_rollback_service,
+        load_private_config,
+    )
+
+    return disable_public_rollback_service(load_private_config(runtime_config))
