@@ -52,9 +52,10 @@ staged generation into place atomically because Antioch may legitimately recreat
 the sim container. A machine recycle can also discard its machine-local built
 service image; in that case the supervisor runs the supported service build before
 bringing the exact service back, re-staging source and credentials, or dispatching
-another scenario. Separate bridge and relay tmux windows remain supervised across
-that boundary and reconnect after the service returns. The bridge supervisor uses
-only short supported service-exec health/start calls; the bridge itself remains
+another scenario. The bridge is the detached service container's entrypoint and
+waits for the supported runtime bundle staging before accepting traffic. Separate
+bridge-health and relay tmux windows remain supervised across replacement; the
+health window uses only short service-exec socket probes, while the bridge remains
 bound to the replaceable service container instead of the CLI exec lifetime. If
 Antioch accepts an interactive scenario but the
 foreground CLI loses attachment while reporting the occupied stream lease, the

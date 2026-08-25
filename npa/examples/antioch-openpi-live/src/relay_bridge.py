@@ -6,6 +6,7 @@ import argparse
 import hmac
 import ssl
 import threading
+import time
 from pathlib import Path
 
 from websockets.sync.server import serve
@@ -65,11 +66,14 @@ class RelayBridge:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bundle", required=True)
-    parser.add_argument("--lifetime-seconds", type=float, default=0)
+    parser.add_argument("--wait-for-bundle", action="store_true")
     args = parser.parse_args()
-    if args.lifetime_seconds and not 1 <= args.lifetime_seconds < 120:
-        raise RuntimeError("finite bridge lifetime must be below the exec ceiling")
     bundle = Path(args.bundle)
+    required = ("relay-api-key", "relay-server.crt", "relay-server.key")
+    while args.wait_for_bundle and not all(
+        (bundle / name).is_file() for name in required
+    ):
+        time.sleep(1)
     token = (bundle / "relay-api-key").read_text(encoding="utf-8").strip()
     if len(token) < 32:
         raise RuntimeError("relay API key is missing or malformed")
@@ -90,17 +94,8 @@ def main() -> int:
         open_timeout=10,
         close_timeout=5,
     ) as server:
-        renewal = None
-        if args.lifetime_seconds:
-            renewal = threading.Timer(args.lifetime_seconds, server.shutdown)
-            renewal.daemon = True
-            renewal.start()
         print("NPA_ANTIOCH_BRIDGE_READY", flush=True)
-        try:
-            server.serve_forever()
-        finally:
-            if renewal is not None:
-                renewal.cancel()
+        server.serve_forever()
     return 0
 
 

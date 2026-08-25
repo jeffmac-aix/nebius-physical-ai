@@ -118,6 +118,11 @@ def test_live_sim_image_contains_only_protocol_dependencies() -> None:
     assert "ENV HOME=/tmp/npa-home" in dockerfile
     assert "COPY --chown=1000:1000 src/ /workspace/project/src/" in dockerfile
     assert "USER 1000:1000" in dockerfile
+    assert (
+        'ENTRYPOINT ["/usr/local/bin/python", "/workspace/project/src/relay_bridge.py"'
+        in dockerfile
+    )
+    assert '"--wait-for-bundle"]' in dockerfile
     assert "git clone" not in dockerfile
     assert "checkpoint" not in dockerfile.lower()
 
@@ -202,7 +207,7 @@ def test_relay_supervisor_has_no_credential_values_in_arguments(tmp_path: Path) 
     subprocess.run(["sh", "-n", str(script)], check=True)
 
 
-def test_bridge_supervisor_uses_short_service_exec_calls(tmp_path: Path) -> None:
+def test_bridge_supervisor_uses_short_health_exec_calls(tmp_path: Path) -> None:
     script = tmp_path / "bridge-supervise.sh"
     live._write_bridge_supervisor(
         script,
@@ -210,12 +215,12 @@ def test_bridge_supervisor_uses_short_service_exec_calls(tmp_path: Path) -> None
         stop_file=tmp_path / ".stop",
     )
     source = script.read_text(encoding="utf-8")
-    assert "services exec sim /bin/sh -lc" in source
-    assert "/workspace/project/src/relay_bridge.py" in source
-    assert "nohup /usr/local/bin/python" in source
-    assert "kill -0" in source
-    assert "NPA_ANTIOCH_BRIDGE_STARTED" in source
-    assert "--lifetime-seconds" not in source
+    assert "services exec sim /usr/local/bin/python -c" in source
+    assert "socket.create_connection" in source
+    assert "NPA_ANTIOCH_BRIDGE_HEALTHY" in source
+    assert "NPA_ANTIOCH_BRIDGE_NOT_READY" in source
+    assert "relay_bridge.py" not in source
+    assert "nohup" not in source
     assert "api-key" not in source
     assert "while [ ! -f" in source
     subprocess.run(["sh", "-n", str(script)], check=True)

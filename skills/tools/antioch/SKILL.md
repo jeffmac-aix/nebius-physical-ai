@@ -57,7 +57,9 @@ endpoints, print identity/config/environment data, or inspect unrelated runs.
 - When direct policy egress is unavailable, use a declared Antioch service port
   published only on operator localhost. When the streamed scenario is not the
   declared-port owner, terminate authenticated WSS in the persistent sim service,
-  let the scenario connect outbound with a distinct authenticated role, and
+  preferably as the detached service entrypoint waiting for the runtime-staged
+  bundle. Use short `services exec` health probes rather than a long exec-held
+  daemon. Let the scenario connect outbound with a distinct authenticated role, and
   supervise another tmux window that bridges the operator role to the policy's independently
   authenticated, CA-verified WSS port 443. Bound messages, queues, connections,
   requests, timeouts, and reconnect backoff; never substitute an unauthenticated

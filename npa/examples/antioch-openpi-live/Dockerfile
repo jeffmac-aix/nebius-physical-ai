@@ -20,3 +20,8 @@ ENV HOME=/tmp/npa-home \
     XDG_CACHE_HOME=/tmp/npa-home/.cache
 
 USER 1000:1000
+
+# The declared-port owner is the detached Antioch service container. Runtime
+# credentials arrive later through supported `antioch services cp`; the bridge
+# waits without logging or accepting traffic until the complete bundle appears.
+ENTRYPOINT ["/usr/local/bin/python", "/workspace/project/src/relay_bridge.py", "--bundle", "/tmp/npa-live-client-current", "--wait-for-bundle"]
