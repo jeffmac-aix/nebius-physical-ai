@@ -129,7 +129,7 @@ def _look_at(stage, path: str, eye, target) -> None:
     transform.AddTransformOp().Set(matrix)
 
 
-def _validated_actions(response: dict, current) -> tuple[object, int]:
+def _validated_actions(response: dict, current) -> tuple[object, int, int, int]:
     import numpy as np
 
     actions = np.asarray(response.get("actions"))
@@ -139,8 +139,10 @@ def _validated_actions(response: dict, current) -> tuple[object, int]:
         raise ActionValidationError("non_finite")
     targets = actions.astype(np.float64, copy=True)
     low, high = np.asarray(JOINT_LOW), np.asarray(JOINT_HIGH)
-    if np.any(targets[:, :7] < low) or np.any(targets[:, :7] > high):
-        raise ActionValidationError("joint_limit")
+    joint_limit_saturations = int(
+        np.count_nonzero((targets[:, :7] < low) | (targets[:, :7] > high))
+    )
+    targets[:, :7] = np.clip(targets[:, :7], low, high)
     # Upstream DroidOutputs returns the eighth model dimension unchanged. Keep
     # the finite check strict, then saturate that command to the actuator's
     # reviewed normalized range before mapping it to finger joint positions.
@@ -149,10 +151,22 @@ def _validated_actions(response: dict, current) -> tuple[object, int]:
     )
     targets[:, 7] = np.clip(targets[:, 7], 0.0, 1.0)
     prior = np.asarray(current[:7], dtype=np.float64)
-    deltas = np.diff(np.vstack([prior, targets[:, :7]]), axis=0)
-    if np.max(np.abs(deltas)) > MAX_JOINT_STEP:
-        raise ActionValidationError("joint_step")
-    return targets, gripper_saturations
+    joint_step_saturations = 0
+    for index in range(ACTION_SHAPE[0]):
+        bounded = np.clip(
+            targets[index, :7], prior - MAX_JOINT_STEP, prior + MAX_JOINT_STEP
+        )
+        joint_step_saturations += int(
+            np.count_nonzero(bounded != targets[index, :7])
+        )
+        targets[index, :7] = bounded
+        prior = bounded
+    return (
+        targets,
+        gripper_saturations,
+        joint_limit_saturations,
+        joint_step_saturations,
+    )
 
 
 def _install_overlay():
@@ -241,6 +255,8 @@ def openpi_droid_live(
     client = SafePolicyClient()
     observation_sequence = requests = round_trips = applied = safe_holds = 0
     gripper_saturations = 0
+    joint_limit_saturations = 0
+    joint_step_saturations = 0
     last_latency = 0.0
     started = time.monotonic()
     next_attempt = 0.0
@@ -264,10 +280,12 @@ def openpi_droid_live(
                     response, last_latency = pending.result()
                     if last_latency > MAX_RESPONSE_AGE_SECONDS:
                         raise TimeoutError("policy response was stale")
-                    chunk, saturated = _validated_actions(
-                        response, pending_joint_positions
+                    chunk, gripper_sat, joint_limit_sat, joint_step_sat = (
+                        _validated_actions(response, pending_joint_positions)
                     )
-                    gripper_saturations += saturated
+                    gripper_saturations += gripper_sat
+                    joint_limit_saturations += joint_limit_sat
+                    joint_step_saturations += joint_step_sat
                     chunk_index = 0
                     round_trips += 1
                     print(
@@ -276,7 +294,9 @@ def openpi_droid_live(
                         f"round_trips={round_trips} "
                         f"latency_ms={last_latency * 1000.0:.3f} "
                         "action_shape=[15,8] finite=true safety_validated=true "
-                        f"gripper_saturations={gripper_saturations}",
+                        f"gripper_saturations={gripper_saturations} "
+                        f"joint_limit_saturations={joint_limit_saturations} "
+                        f"joint_step_saturations={joint_step_saturations}",
                         flush=True,
                     )
                 except Exception as exc:
@@ -375,6 +395,10 @@ def openpi_droid_live(
             logger.scalar("decision/reconnects", client.reconnects)
             logger.scalar("decision/safe_targets_applied", applied)
             logger.scalar("decision/gripper_saturations", gripper_saturations)
+            logger.scalar(
+                "decision/joint_limit_saturations", joint_limit_saturations
+            )
+            logger.scalar("decision/joint_step_saturations", joint_step_saturations)
             logger.scalar(
                 "decision/applied_target_rate_hz",
                 applied / max(now - started, 1e-6),
