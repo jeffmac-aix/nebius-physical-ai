@@ -272,15 +272,17 @@ def openpi_droid_live(
                         flush=True,
                     )
                 except Exception as exc:
-                    client.close()
                     safe_holds += 1
-                    delay = client.reconnect_delay()
-                    next_attempt = now + delay
                     reason = (
                         exc.reason
                         if isinstance(exc, ActionValidationError)
                         else type(exc).__name__
                     )
+                    if isinstance(exc, ActionValidationError):
+                        next_attempt = now + 1.0 / CONTROL_HZ
+                    else:
+                        client.close()
+                        next_attempt = now + client.reconnect_delay()
                     logger.value("policy/error", rr.TextLog(reason))
                     print(
                         "NPA_OPENPI_SAFE_HOLD "
