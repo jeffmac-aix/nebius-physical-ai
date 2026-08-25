@@ -5,8 +5,7 @@ LABEL org.opencontainers.image.revision="${NPA_REVISION}"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    NPA_ANTIOCH_RUNTIME_CACHE=/workspace/.cache/npa/antioch \
-    GPG_KEY=""
+    NPA_ANTIOCH_RUNTIME_CACHE=/workspace/.cache/npa/antioch
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg ca-certificates \
