@@ -58,4 +58,5 @@ Generated from `npa --help`. Run `bash scripts/build_docs.sh` after CLI changes.
 - [npa viz](viz.md)
 - [npa workbench vlm-eval](vlm-eval.md)
 - [npa workbench](workbench.md)
+- [npa agent workflow-runtime](workflow-runtime.md)
 - [npa workbench workflow](workflow.md)

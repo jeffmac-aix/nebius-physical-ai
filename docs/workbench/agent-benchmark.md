@@ -17,12 +17,13 @@ components. The benchmark does not substitute mocks for workflow stages.
 - The provider URL must use HTTPS; certificate verification cannot be disabled.
 - Provider keys are read from an environment variable or owner-controlled file
   and are never put in prompts, state summaries, reports, or command arguments.
-- There is no shell tool. Every executor uses a fixed argv template for a normal
-  NPA command, and the workflow path is restricted to the repository's
-  `paidf-cosmos3.yaml`.
-- `cluster_state_reconcile`, `infra_provision`, `skypilot_bootstrap`,
-  `skypilot_api_server`, `registry_provision`, `rerun_image_build`,
-  `rerun_image_push`, `workflow_submit`, `workflow_recovery_run`, and
+- There is no shell tool. Every model-invoked subprocess must pass a fail-closed
+  guard proving that it is one direct invocation of the fixed NPA executable;
+  shell commands and execution-backend clients are rejected. The workflow path
+  is restricted to the repository's `paidf-cosmos3.yaml`.
+- `infra_provision`, `workflow_runtime_prepare`, `registry_provision`,
+  `rerun_image_build`, `rerun_image_push`, `workflow_submit`,
+  `workflow_recovery_run`, and
   `workflow_quality_recovery_run` are mutating.
   Each requires an explicit repeatable `--confirm-action` scope. At execution,
   NPA records the normalized action digest and the benchmark operation digest;
@@ -59,10 +60,8 @@ npa agent benchmark \
   --api-key-file /owner-only/provider-key.txt \
   --state-path /owner-only/run/benchmark-state.json \
   --report-path /owner-only/run/benchmark-report.json \
-  --confirm-action cluster_state_reconcile \
   --confirm-action infra_provision \
-  --confirm-action skypilot_bootstrap \
-  --confirm-action skypilot_api_server \
+  --confirm-action workflow_runtime_prepare \
   --confirm-action registry_provision \
   --confirm-action rerun_image_build \
   --confirm-action rerun_image_push \
@@ -83,7 +82,7 @@ The operation fingerprint prevents a state file from being reused for a
 different project, cluster, bucket, spec, accelerator, seed posture, or secret
 set. It also binds the state to a digest of `NPA_CONFIG_DIR`, preventing a
 resume from silently switching local project, credential, cluster-identity, or
-controller-ownership state. Durable NPA run identity remains fixed across
+workflow-runtime ownership state. Durable NPA run identity remains fixed across
 ordinary resumes. If NPA refuses a resume because repaired repository bytes
 produce a different plan fingerprint, the optional confirmation-bound recovery
 tool may call `npa workbench workflow prepare-run` once. It preserves the failed
@@ -105,14 +104,15 @@ The selected `--accelerator` is also fixed as
 `NPA_WORKFLOW_GPU_ACCELERATOR` for every bounded subprocess, overriding the
 reference spec's portable H100 default without editing the workflow.
 
-Before SkyPilot bootstrap, the bounded `cluster_state_reconcile` action invokes
-only `npa cluster kubeconfig` for the already selected configured project,
-provider cluster name, context, and NPA-owned kubeconfig path. This repairs an
-isolated config whose copied state still names a different kubeconfig location;
-the model cannot supply or redirect any of those identities.
+The bounded `workflow_runtime_prepare` action invokes only `npa agent
+workflow-runtime prepare`. NPA internally refreshes the selected target's access,
+prepares an owner-scoped execution runtime, and verifies the exact target. The
+model cannot supply executable paths, local service addresses, runtime state
+directories, or backend control-plane arguments. `workflow_runtime_status`
+returns only typed, backend-neutral readiness and diagnostic fields.
 
-The reusable operator surfaces behind the bounded tools are `npa registry
-ensure` and `npa workbench image build-rerun-viewer`,
+The reusable operator surfaces behind the bounded tools are `npa workbench
+registry ensure` and `npa workbench image build-rerun-viewer`,
 `inspect-rerun-viewer`, `push-rerun-viewer`, and `verify-rerun-viewer`. The
 inspect command checks the actual local bytes for the non-root/passwordless-sudo,
 SSH, rsync, service, writable-path, argument-forwarding entrypoint, and exact OCI
@@ -147,7 +147,9 @@ resource evidence remains available for later billing reconciliation.
 ## Teardown
 
 The benchmark intentionally has no destroy tool. Cleanup remains an operator
-lifecycle boundary: cancel the exact run, then remove the agent/controller,
-cluster, storage, service account, and task-owned project through normal NPA
-commands in the order documented in [teardown](../teardown.md). Audit every
-resource class afterward.
+lifecycle boundary. Cancel the exact run first, then stop its exact owner-scoped
+runtime with `npa agent workflow-runtime stop --cluster <cluster-context>
+--scope <operation-digest> --yes`. Remove the remaining agent, workflow
+controller, cluster, storage, service account, and task-owned project through
+normal NPA commands in the order documented in [teardown](../teardown.md).
+Audit every resource class afterward.

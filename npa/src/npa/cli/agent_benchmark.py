@@ -21,6 +21,7 @@ import httpx
 import typer
 
 from npa.agent_backend.actions import ToolSpec, run_action_loop
+from npa.agent_backend.workflow_runtime import workflow_runtime_environment
 from npa.deploy.images import DEFAULT_PUBLIC_CONTAINER_REGISTRY, is_public_registry
 from npa.lifecycle_intent import json_stdout_contract
 
@@ -38,6 +39,48 @@ _NEBIUS_ACCOUNT_ID_RE = re.compile(
     r"(?i)(?<![a-z0-9])(?:e|u)00[a-z0-9]{12,}(?![a-z0-9])"
 )
 _NEBIUS_REGISTRY_RE = re.compile(r"(?i)cr\.[a-z0-9-]+\.nebius\.cloud/[a-z0-9._/@:-]+")
+_LOOPBACK_ENDPOINT_RE = re.compile(r"https?://(?:127\.0\.0\.1|localhost):\d+")
+_MODEL_HIDDEN_KEY_RE = re.compile(
+    r"(?i)(?:^|_)(?:pid|port|state_dir|kubeconfig|sky|sky_bin|managed_job|backend|controller|api_server_endpoint)(?:$|_)"
+)
+_LEGACY_RUNTIME_TOOLS = frozenset(
+    {
+        "cluster_state_reconcile",
+        "skypilot_bootstrap",
+        "skypilot_api_server",
+        "skypilot_verify",
+    }
+)
+
+
+def _model_safe_text(text: str) -> str:
+    """Remove execution-backend vocabulary from model/report-visible text."""
+
+    value = str(text or "")
+    identifier_replacements = {
+        "cluster_state_reconcile": "workflow_runtime_prepare",
+        "skypilot_bootstrap": "workflow_runtime_prepare",
+        "skypilot_api_server": "workflow_runtime_prepare",
+        "skypilot_verify": "workflow_runtime_status",
+        "SKYPILOT_API_SERVER_ENDPOINT": "NPA_WORKFLOW_RUNTIME_BINDING",
+        "NPA_SKYPILOT_ISOLATED_CONFIG_DIR": "NPA_WORKFLOW_RUNTIME_SCOPE",
+        "NPA_SKYPILOT_BIN": "NPA_WORKFLOW_RUNTIME_EXECUTABLE",
+        "KUBECONFIG": "NPA_TARGET_ACCESS_CONFIG",
+    }
+    for raw, replacement in identifier_replacements.items():
+        value = value.replace(raw, replacement)
+    value = _LOOPBACK_ENDPOINT_RE.sub("<internal-workflow-runtime>", value)
+    substitutions = (
+        (r"(?i)\bskypilot\b", "NPA workflow runtime"),
+        (r"(?i)\bsky\b", "NPA workflow runtime"),
+        (r"(?i)\bkubectl\b", "NPA target probe"),
+        (r"(?i)\btmux\b", "NPA session"),
+        (r"(?i)\bkubeconfig\b", "target access config"),
+        (r"(?i)\bapi[- ]server\b", "workflow runtime service"),
+    )
+    for pattern, replacement in substitutions:
+        value = re.sub(pattern, replacement, value)
+    return value
 
 
 class OutputFormat(str, Enum):
@@ -61,6 +104,7 @@ def _redact_text(text: str, replacements: Mapping[str, str] | None = None) -> st
     ):
         if raw:
             value = value.replace(raw, label)
+    value = _model_safe_text(value)
     value = _SECRET_RE.sub(
         lambda match: f"{match.group(1)}{match.group(2)}<redacted>", value
     )
@@ -76,12 +120,15 @@ def _sanitize(value: Any, replacements: Mapping[str, str]) -> Any:
         sanitized: dict[str, Any] = {}
         for key, item in value.items():
             name = str(key)
+            if _MODEL_HIDDEN_KEY_RE.search(name):
+                continue
+            safe_name = _model_safe_text(name)
             if re.search(
                 r"(?i)(api_key|secret|password|authorization|credential_value)", name
             ):
-                sanitized[name] = "<redacted>"
+                sanitized[safe_name] = "<redacted>"
             else:
-                sanitized[name] = _sanitize(item, replacements)
+                sanitized[safe_name] = _sanitize(item, replacements)
         return sanitized
     if isinstance(value, (list, tuple)):
         return [_sanitize(item, replacements) for item in value]
@@ -323,8 +370,13 @@ class StreamingPlanner:
 
 
 def _command_json(
-    argv: Sequence[str], *, cwd: Path, env: Mapping[str, str] | None = None
+    argv: Sequence[str],
+    *,
+    cwd: Path,
+    npa_executable: str,
+    env: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
+    _require_npa_command(argv, npa_executable=npa_executable)
     started = time.monotonic()
     result = subprocess.run(
         list(argv),
@@ -359,6 +411,22 @@ def _command_json(
     }
 
 
+def _require_npa_command(
+    argv: Sequence[str], *, npa_executable: str
+) -> tuple[str, ...]:
+    """Fail closed unless an executor is one direct, fixed NPA invocation."""
+
+    normalized = tuple(str(item) for item in argv)
+    if not normalized or normalized[0] != str(npa_executable):
+        raise ValueError("benchmark executors may invoke only the fixed NPA CLI")
+    if any("\x00" in item or "\n" in item or "\r" in item for item in normalized):
+        raise ValueError("benchmark NPA argv contains an unsafe control character")
+    forbidden = {"bash", "sh", "zsh", "fish", "sky", "kubectl", "tmux"}
+    if any(item.strip().lower() in forbidden for item in normalized[1:]):
+        raise ValueError("benchmark NPA argv requests a forbidden shell/backend primitive")
+    return normalized
+
+
 class BenchmarkToolbox:
     """Fixed-argv NPA executors; the model never receives a shell primitive."""
 
@@ -371,11 +439,9 @@ class BenchmarkToolbox:
         "workflow_validate",
         "workflow_plan",
         "infra_plan",
-        "cluster_state_reconcile",
-        "skypilot_bootstrap",
-        "skypilot_api_server",
         "infra_provision",
-        "skypilot_verify",
+        "workflow_runtime_prepare",
+        "workflow_runtime_status",
         "workflow_preflight_images",
         "registry_plan",
         "registry_provision",
@@ -395,9 +461,7 @@ class BenchmarkToolbox:
     MUTATING = frozenset(
         {
             "infra_provision",
-            "cluster_state_reconcile",
-            "skypilot_bootstrap",
-            "skypilot_api_server",
+            "workflow_runtime_prepare",
             "registry_provision",
             "rerun_image_build",
             "rerun_image_push",
@@ -439,22 +503,18 @@ class BenchmarkToolbox:
         self.operation_digest = str(state["operation_digest"])
         self.registry_name = f"npa-deepseek-{self.operation_digest[:16]}"
         self.rerun_tag = f"validation-{self.operation_digest}"
-        config_root = Path(
-            os.environ.get("NPA_CONFIG_DIR", "").strip() or (Path.home() / ".npa")
-        ).resolve()
-        self.skypilot_api_state = config_root / "skypilot-api" / self.operation_digest
-        self.selected_kubeconfig = config_root / "clusters" / cluster / "kubeconfig"
-        port_digest = hashlib.sha256(self.operation_digest.encode("utf-8")).hexdigest()
-        self.skypilot_api_port = 48_000 + int(port_digest[:4], 16) % 1_000
+        self.runtime_scope = (
+            self.operation_digest
+            if re.fullmatch(r"[0-9a-f]{16,64}", self.operation_digest)
+            else hashlib.sha256(self.operation_digest.encode("utf-8")).hexdigest()[:24]
+        )
+        runtime_env = workflow_runtime_environment(
+            scope=self.runtime_scope, cluster=cluster
+        )
         self.command_env = {
             **os.environ,
             "NPA_REGISTRY": registry,
-            "NPA_SKYPILOT_BIN": str(config_root / "skypilot-venv" / "bin" / "sky"),
-            "NPA_SKYPILOT_ISOLATED_CONFIG_DIR": str(self.skypilot_api_state),
-            "SKYPILOT_API_SERVER_ENDPOINT": (
-                f"http://127.0.0.1:{self.skypilot_api_port}"
-            ),
-            "KUBECONFIG": str(self.selected_kubeconfig),
+            **runtime_env,
             # The reference workflow keeps H100 as its portable default. Bind
             # every bounded validate/plan/preflight/submit subprocess to the
             # exact accelerator already included in the operation fingerprint.
@@ -472,21 +532,18 @@ class BenchmarkToolbox:
             rerun_image: "<rerun-image>",
             self.registry_name: "<task-registry-name>",
             self.rerun_tag: "<validation-tag>",
-            str(self.skypilot_api_state): "<isolated-skypilot-state>",
+            runtime_env["NPA_SKYPILOT_ISOLATED_CONFIG_DIR"]: "<workflow-runtime-state>",
+            runtime_env["SKYPILOT_API_SERVER_ENDPOINT"]: "<internal-workflow-runtime>",
         }
         self.replacements[self.bucket] = "<bucket>"
-        # Older resumable observations proved only endpoint health. Re-open the
-        # same bounded action once so DeepSeek can establish the newer exact
-        # kubeconfig binding before another submit.
-        if "skypilot_api_server" in set(self.state.get("completed_tools") or []):
-            observed = self._successful_observation("skypilot_api_server")
-            if observed.get("context_bound") is not True:
-                self.state["completed_tools"] = [
-                    item
-                    for item in self.state.get("completed_tools") or []
-                    if item != "skypilot_api_server"
-                ]
-                self.save()
+        # Older owner-only state may contain the four backend-specific setup
+        # steps. Re-open them as the single stable NPA runtime lifecycle so a
+        # resume proves the new contract without discarding earlier evidence.
+        completed = list(self.state.get("completed_tools") or [])
+        migrated = [item for item in completed if item not in _LEGACY_RUNTIME_TOOLS]
+        if migrated != completed:
+            self.state["completed_tools"] = migrated
+            self.save()
 
     def _successful_observation(self, tool: str) -> Mapping[str, Any]:
         for call in reversed(self.state.get("tool_calls") or []):
@@ -501,7 +558,12 @@ class BenchmarkToolbox:
         return str(self.state.get("rerun_image") or self.rerun_image or "").strip()
 
     def _command(self, argv: Sequence[str]) -> dict[str, Any]:
-        return _command_json(argv, cwd=self.repo, env=self.command_env)
+        return _command_json(
+            argv,
+            cwd=self.repo,
+            npa_executable=self.npa,
+            env=self.command_env,
+        )
 
     @classmethod
     def allowlist(cls) -> dict[str, ToolSpec]:
@@ -514,11 +576,9 @@ class BenchmarkToolbox:
             "workflow_validate": "Validate the selected paidf-cosmos3 npa.workflow offline.",
             "workflow_plan": "Plan the accepted path with one synthetic variant.",
             "infra_plan": "Run additive provision-if-absent dry-run for the selected GPU.",
-            "cluster_state_reconcile": "Regenerate the exact selected cluster's isolated kubeconfig and local state through NPA.",
             "infra_provision": "Apply additive NPA provisioning/validation for the fixed target.",
-            "skypilot_bootstrap": "Install/repair the pinned SkyPilot runtime locally.",
-            "skypilot_api_server": "Ensure a task-isolated loopback SkyPilot API server without disturbing shared state.",
-            "skypilot_verify": "Verify the exact Kubernetes context through NPA.",
+            "workflow_runtime_prepare": "Prepare one owner-scoped NPA workflow runtime for the fixed target.",
+            "workflow_runtime_status": "Inspect typed readiness for the fixed NPA workflow runtime and target.",
             "workflow_preflight_images": "Prove every selected workflow image is pullable.",
             "registry_plan": "Plan a unique registry inside the exact NPA-created task project.",
             "registry_provision": "Create or select that exact task-owned registry and persist its identity.",
@@ -592,22 +652,14 @@ class BenchmarkToolbox:
                     "error": "digest must match the prior push observation",
                 }
         prerequisites = {
-            "cluster_state_reconcile": {"infra_plan"},
-            "skypilot_bootstrap": {"cluster_state_reconcile"},
-            "skypilot_api_server": {"skypilot_bootstrap"},
             "infra_provision": {
                 "health_access",
                 "infra_plan",
-                "cluster_state_reconcile",
-                "skypilot_bootstrap",
             },
-            "skypilot_verify": {
-                "infra_provision",
-                "skypilot_bootstrap",
-                "skypilot_api_server",
-            },
-            "workflow_preflight_images": {"workflow_plan", "skypilot_verify"},
-            "registry_plan": {"skypilot_verify"},
+            "workflow_runtime_prepare": {"infra_provision"},
+            "workflow_runtime_status": {"workflow_runtime_prepare"},
+            "workflow_preflight_images": {"workflow_plan", "workflow_runtime_status"},
+            "registry_plan": {"workflow_runtime_status"},
             "registry_provision": {"registry_plan"},
             "rerun_image_build": {"registry_provision"},
             "rerun_image_inspect": {"rerun_image_build"},
@@ -618,7 +670,7 @@ class BenchmarkToolbox:
                 "workflow_plan",
                 "workflow_preflight_images",
                 "rerun_image_verify",
-                "skypilot_api_server",
+                "workflow_runtime_status",
             },
             "workflow_status": {"workflow_submit"},
             "workflow_artifacts": {"workflow_submit"},
@@ -692,17 +744,16 @@ class BenchmarkToolbox:
     ) -> dict[str, Any]:
         args = args or {}
         if name == "inspect_environment":
-            version = subprocess.run(
-                [self.npa, "--version"],
-                cwd=self.repo,
-                text=True,
-                capture_output=True,
-                check=False,
-                env=self.command_env,
+            version = self._command([self.npa, "--version"])
+            version_result = version.get("result")
+            version_stdout = (
+                str(version_result.get("stdout") or "")
+                if isinstance(version_result, Mapping)
+                else ""
             )
             return {
-                "ok": version.returncode == 0,
-                "npa_version": version.stdout.strip(),
+                "ok": bool(version.get("ok")),
+                "npa_version": version_stdout,
                 "workflow": self.spec.relative_to(self.repo).as_posix(),
                 "workflow_sha256": hashlib.sha256(self.spec.read_bytes()).hexdigest(),
                 "accelerator": self.accelerator,
@@ -796,80 +847,34 @@ class BenchmarkToolbox:
             if name == "infra_plan":
                 argv.append("--dry-run")
             return self._command(argv)
-        if name == "cluster_state_reconcile":
-            from npa.cluster.state import kubeconfig_file, load_cluster_state
-
-            cluster_state = load_cluster_state(self.cluster)
-            provider_name = str(
-                getattr(cluster_state, "provider_name", "")
-                or getattr(cluster_state, "name", "")
-                or ""
-            ).strip()
-            if not provider_name:
-                return {
-                    "ok": False,
-                    "error": "selected cluster has no fixed provider name in NPA state",
-                }
+        if name == "workflow_runtime_prepare":
             return self._command(
                 [
                     self.npa,
-                    "cluster",
-                    "kubeconfig",
-                    "--cluster-name",
-                    provider_name,
+                    "agent",
+                    "workflow-runtime",
+                    "prepare",
                     "--project",
                     self.project,
-                    "--context",
-                    self.cluster,
-                    "--kubeconfig",
-                    str(kubeconfig_file(self.cluster)),
-                ]
-            )
-        if name == "skypilot_bootstrap":
-            result = self._command([self.npa, "skypilot", "bootstrap"])
-            # bootstrap is a human-text command; retain only a bounded digest in
-            # the model observation while its exit code remains authoritative.
-            observation = {
-                "ok": bool(result.get("ok")),
-                "exit_code": result.get("exit_code"),
-                "elapsed_s": result.get("elapsed_s"),
-                "output_digest": _digest(result),
-            }
-            if not observation["ok"]:
-                payload = result.get("result")
-                stdout = (
-                    str(payload.get("stdout") or "")
-                    if isinstance(payload, Mapping)
-                    else ""
-                )
-                diagnostic = str(result.get("stderr") or stdout).strip()
-                if diagnostic:
-                    observation["diagnostic"] = diagnostic[-2000:]
-            return observation
-        if name == "skypilot_api_server":
-            return self._command(
-                [
-                    self.npa,
-                    "skypilot",
-                    "api-server-ensure",
-                    "--state-dir",
-                    str(self.skypilot_api_state),
-                    "--port",
-                    str(self.skypilot_api_port),
-                    "--sky-bin",
-                    self.command_env["NPA_SKYPILOT_BIN"],
-                    "--kubeconfig",
-                    str(self.selected_kubeconfig),
-                ]
-            )
-        if name == "skypilot_verify":
-            return self._command(
-                [
-                    self.npa,
-                    "skypilot",
-                    "verify",
                     "--cluster",
                     self.cluster,
+                    "--scope",
+                    self.runtime_scope,
+                    "--output-format",
+                    "json",
+                ]
+            )
+        if name == "workflow_runtime_status":
+            return self._command(
+                [
+                    self.npa,
+                    "agent",
+                    "workflow-runtime",
+                    "status",
+                    "--cluster",
+                    self.cluster,
+                    "--scope",
+                    self.runtime_scope,
                     "--output-format",
                     "json",
                 ]
@@ -1242,7 +1247,7 @@ def representative_context(
             continue
         text = path.read_text(errors="replace")
         selected = text[:remaining]
-        chunks.append(f"\n--- {relative} ---\n{selected}")
+        chunks.append(f"\n--- {relative} ---\n{_model_safe_text(selected)}")
         manifest.append(
             {
                 "path": relative,
@@ -1685,7 +1690,8 @@ def benchmark_cmd(
             + "."
         )
         live_context = json.dumps(
-            {
+            _sanitize(
+                {
                 "operation": {
                     "digest": operation_digest,
                     "workflow": "paidf-cosmos3",
@@ -1695,7 +1701,9 @@ def benchmark_cmd(
                 "required_exact_args": exact_args,
                 "completed_tools": state["completed_tools"],
                 "recent_tool_calls": state["tool_calls"][-5:],
-            },
+                },
+                toolbox.replacements,
+            ),
             sort_keys=True,
         )
         result = run_action_loop(
@@ -1720,7 +1728,7 @@ def benchmark_cmd(
             break
 
     state["finished_at"] = _utc_now()
-    summary = _summary(state, planner, started)
+    summary = _sanitize(_summary(state, planner, started), toolbox.replacements)
     sanitized_state = _sanitize(state, toolbox.replacements)
     report = {
         "schema": REPORT_SCHEMA,

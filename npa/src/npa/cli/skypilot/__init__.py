@@ -347,59 +347,6 @@ def status_cmd(
     typer.echo(f"sky_check: {summary}")
 
 
-@app.command("api-server-ensure")
-@intent_boundary(OperationIntent.ENSURE_PRESENT)
-@json_stdout_contract
-def api_server_ensure_cmd(
-    state_dir: Path = typer.Option(..., "--state-dir"),
-    port: int = typer.Option(..., "--port", min=1024, max=65535),
-    sky_bin: str = typer.Option("", "--sky-bin"),
-    kubeconfig: Path = typer.Option(
-        ..., "--kubeconfig", exists=True, dir_okay=False
-    ),
-) -> None:
-    """Ensure a dedicated loopback SkyPilot API server with owner-only state."""
-    from npa.orchestration.skypilot.api_server import (
-        IsolatedApiServerError,
-        ensure_isolated_api_server,
-    )
-
-    try:
-        resolved = ensure_isolated_api_server(
-            sky_bin=sky_bin or str(_resolve_venv_path(None) / "bin" / "sky"),
-            state_dir=state_dir,
-            port=port,
-            kubeconfig=kubeconfig,
-        )
-    except IsolatedApiServerError as exc:
-        _fail(str(exc))
-        return
-    typer.echo(json.dumps(resolved.to_dict(), sort_keys=True))
-
-
-@app.command("api-server-stop")
-@intent_boundary(OperationIntent.DESTROY)
-@json_stdout_contract
-def api_server_stop_cmd(
-    state_dir: Path = typer.Option(..., "--state-dir"),
-    yes: bool = typer.Option(False, "--yes", help="Confirm exact-process teardown."),
-) -> None:
-    """Stop only the isolated server attested in the selected state directory."""
-    if not yes:
-        _fail("--yes is required to stop the isolated SkyPilot API server")
-        return
-    from npa.orchestration.skypilot.api_server import (
-        IsolatedApiServerError,
-        stop_isolated_api_server,
-    )
-
-    try:
-        result = stop_isolated_api_server(state_dir=state_dir)
-    except IsolatedApiServerError as exc:
-        _fail(str(exc))
-        return
-    typer.echo(json.dumps(result, sort_keys=True))
-
 @app.command("cleanup-controller")
 @intent_boundary(OperationIntent.DESTROY)
 @json_stdout_contract

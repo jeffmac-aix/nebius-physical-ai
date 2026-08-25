@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import concurrent.futures
+import re
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -9,12 +10,11 @@ from types import SimpleNamespace
 import httpx
 import pytest
 from jsonschema import Draft202012Validator
-from npa.cluster.state import ClusterState, save_cluster_state
-
 from npa.cli.agent_benchmark import (
     BenchmarkToolbox,
     StreamingPlanner,
     _execution_evidence,
+    _require_npa_command,
     _sanitize,
     representative_context,
 )
@@ -149,38 +149,46 @@ def test_benchmark_toolbox_fails_closed_on_prerequisites_and_operation_digest(
     assert state["tool_calls"] == [], "rejected proposals are not executed tool calls"
 
 
-def test_cluster_state_reconcile_uses_fixed_selected_identity(
-    tmp_path: Path, monkeypatch, mocker
-) -> None:
-    config_dir = tmp_path / "config"
-    monkeypatch.setenv("NPA_CONFIG_DIR", str(config_dir))
-    # agent_benchmark imports cluster.state lazily so its path constants observe
-    # the benchmark's isolated config root in a fresh test process in production.
-    import npa.cluster.state as cluster_state_module
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["sky", "jobs", "queue"],
+        ["kubectl", "get", "pods"],
+        ["tmux", "list-sessions"],
+        ["bash", "-lc", "npa --version"],
+        ["/fixed/npa", "workbench", "workflow", "status", "run\nwhoami"],
+    ],
+)
+def test_benchmark_subprocess_guard_rejects_non_npa_or_shell_argv(argv) -> None:
+    with pytest.raises(ValueError):
+        _require_npa_command(argv, npa_executable="/fixed/npa")
 
-    monkeypatch.setattr(cluster_state_module, "CLUSTERS_DIR", config_dir / "clusters")
-    save_cluster_state(
-        ClusterState(
-            name="selected-context",
-            provider_name="provider-cluster",
-            cluster_id="cluster-id",
-            project_id="project-id",
-            region="us-central1",
-            node_count=2,
-            node_platform="gpu-rtx6000",
-            node_preset="1gpu-24vcpu-218gb",
-            k8s_version="1.32",
-            subnet_id="subnet-id",
-            created_at="2026-01-01T00:00:00Z",
-            kubeconfig_path="/stale/global/kubeconfig",
-        )
+
+def test_benchmark_model_tool_contract_has_no_shell_or_backend_parameters() -> None:
+    encoded = json.dumps(
+        [spec.to_dict() for spec in BenchmarkToolbox.allowlist().values()]
+    ).lower()
+    assert not any(
+        forbidden in encoded
+        for forbidden in ("skypilot", "kubectl", "tmux", '"command"', '"argv"')
     )
+    assert set(BenchmarkToolbox.allowlist()) >= {
+        "workflow_runtime_prepare",
+        "workflow_runtime_status",
+        "workflow_submit",
+        "workflow_status",
+    }
+
+
+def test_workflow_runtime_prepare_uses_fixed_npa_lifecycle_argv(
+    tmp_path: Path, mocker
+) -> None:
     spec = tmp_path / "paidf-cosmos3.yaml"
     spec.write_text("apiVersion: npa.workflow/v0.0.1\n")
     state = {
         "run_id": "run-fixed",
         "operation_digest": "op-fixed",
-        "completed_tools": ["infra_plan"],
+        "completed_tools": ["infra_provision"],
         "tool_calls": [],
     }
     toolbox = BenchmarkToolbox(
@@ -198,23 +206,24 @@ def test_cluster_state_reconcile_uses_fixed_selected_identity(
     command = mocker.patch.object(toolbox, "_command", return_value={"ok": True})
 
     result = toolbox.execute(
-        "cluster_state_reconcile", {"operation_digest": "op-fixed"}
+        "workflow_runtime_prepare", {"operation_digest": "op-fixed"}
     )
 
     assert result["ok"] is True
     argv = command.call_args.args[0]
     assert argv == [
         str(tmp_path / "npa/.venv/bin/npa"),
-        "cluster",
-        "kubeconfig",
-        "--cluster-name",
-        "provider-cluster",
+        "agent",
+        "workflow-runtime",
+        "prepare",
         "--project",
         "project-alias",
-        "--context",
+        "--cluster",
         "selected-context",
-        "--kubeconfig",
-        str(config_dir / "clusters" / "selected-context" / "kubeconfig"),
+        "--scope",
+        toolbox.runtime_scope,
+        "--output-format",
+        "json",
     ]
 
 
@@ -231,11 +240,11 @@ def test_toolbox_normalizes_configured_s3_bucket_for_workflow_argv(
             "workflow_plan",
             "workflow_preflight_images",
             "rerun_image_verify",
-            "skypilot_api_server",
+            "workflow_runtime_status",
         ],
         "tool_calls": [
             {
-                "tool": "skypilot_api_server",
+                "tool": "workflow_runtime_status",
                 "ok": True,
                 "observation": {"result": {"context_bound": True}},
             }
@@ -263,10 +272,6 @@ def test_toolbox_normalizes_configured_s3_bucket_for_workflow_argv(
     assert "bucket=bucket-name" in argv
     assert not any("s3://bucket-name" in item for item in argv)
     assert toolbox.command_env["NPA_WORKFLOW_GPU_ACCELERATOR"] == "RTXPRO6000:1"
-    assert toolbox.command_env["NPA_SKYPILOT_BIN"].endswith("/skypilot-venv/bin/sky")
-    assert toolbox.command_env["SKYPILOT_API_SERVER_ENDPOINT"].startswith(
-        "http://127.0.0.1:"
-    )
 
 
 def test_toolbox_resumes_failed_submission_and_allows_status_observation(
@@ -282,11 +287,11 @@ def test_toolbox_resumes_failed_submission_and_allows_status_observation(
             "workflow_plan",
             "workflow_preflight_images",
             "rerun_image_verify",
-            "skypilot_api_server",
+            "workflow_runtime_status",
         ],
         "tool_calls": [
             {
-                "tool": "skypilot_api_server",
+                "tool": "workflow_runtime_status",
                 "ok": True,
                 "observation": {"result": {"context_bound": True}},
             }
@@ -574,7 +579,7 @@ def test_remediation_requires_observed_preflight_failure_and_digest_binding(
     state = {
         "run_id": "run-fixed",
         "operation_digest": "op-fixed",
-        "completed_tools": ["skypilot_verify"],
+        "completed_tools": ["workflow_runtime_status"],
         "tool_calls": [],
     }
     toolbox = BenchmarkToolbox(
@@ -662,6 +667,19 @@ def test_sanitizer_removes_bare_nebius_account_ids() -> None:
     assert sanitized == "<task-registry>"
 
 
+def test_sanitizer_removes_backend_control_plane_details() -> None:
+    raw = {
+        "sky_task_id": "17",
+        "controller_backend": "kubernetes",
+        "diagnostic": "kubectl and sky failed through tmux",
+        "safe_status": "FAILED_PRECHECKS",
+    }
+    sanitized = _sanitize(raw, {})
+    encoded = json.dumps(sanitized).lower()
+    assert "safe_status" in sanitized
+    assert not any(term in encoded for term in ("sky", "kubectl", "tmux", "kubernetes"))
+
+
 def test_representative_context_uses_real_files_and_is_bounded() -> None:
     repo_root = Path(__file__).resolve().parents[3]
     context, manifest = representative_context(repo_root, max_chars=5_000)
@@ -672,6 +690,7 @@ def test_representative_context_uses_real_files_and_is_bounded() -> None:
     assert manifest[0]["path"] == "AGENTS.md"
     assert all(item["sha256"] for item in manifest)
     assert not any("padding" in item["path"] for item in manifest)
+    assert not re.search(r"(?i)\b(?:skypilot|sky|kubectl|tmux)\b", context)
 
 
 def test_execution_evidence_extracts_stage_and_resource_seconds() -> None:

@@ -81,11 +81,13 @@ normalized action digest and the fixed operation digest. The ordinary agent API
 does not pass an `action_authorizer`, so its single-use confirmation-token
 contract is unchanged.
 
-The allowlist includes a narrow `cluster_state_reconcile` recovery action before
-SkyPilot bootstrap. It wraps `npa cluster kubeconfig` with the selected project's
-provider name, context, and NPA-owned output path fixed from local state; the
-model supplies only the operation digest. Failed bootstrap observations expose
-a bounded, sanitized diagnostic instead of an opaque output digest alone.
+The model-facing allowlist uses only stable NPA lifecycle vocabulary. Its
+`workflow_runtime_prepare` action invokes `npa agent workflow-runtime prepare`,
+which internally refreshes exact target access, prepares the isolated execution
+runtime, and verifies the target. The model never receives executable paths,
+local service addresses, state directories, or backend control-plane arguments.
+Every model-invoked subprocess passes a fail-closed NPA-only argv guard, and
+runtime observations expose typed readiness/diagnostic fields.
 
 The report measures streaming TTFT/latency/tokens/throughput, tool timing,
 representative high context, concurrency, resume state, and a clearly labeled
@@ -96,11 +98,11 @@ stays out of the sanitized report. See
 The PAIDF scenario deliberately lets the first Rerun image preflight fail before
 unlocking remediation. The external model must use the observed failure to plan
 `registry_plan`/`registry_provision`, then build, inspect, push, and verify the
-checked-in viewer through fixed `npa registry ensure` and `npa workbench image`
-commands. Build/push remain confirmation-gated. Push is additionally bound to the
-prior local image ID plus inspection digest, and submit consumes the verified
-immutable registry digest only. Do not replace this with an operator-scripted
-prelude or expose Docker/shell arguments to the model.
+checked-in viewer through fixed `npa workbench registry ensure` and `npa
+workbench image` commands. Build/push remain confirmation-gated. Push is
+additionally bound to the prior local image ID plus inspection digest, and submit
+consumes the verified immutable registry digest only. Do not replace this with
+an operator-scripted prelude or expose Docker/shell arguments to the model.
 
 ## Adding a capability cheaply (decision order)
 

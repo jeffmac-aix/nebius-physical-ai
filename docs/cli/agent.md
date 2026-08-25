@@ -21,6 +21,7 @@ bootstrap  Re-bootstrap agent UI/backend/nginx on an existing VM (refresh withou
 status  Show agent status, URLs, and health checks.
 destroy  Destroy agent VM/resources by exact identity; receipts need no project stanza.
 verify-live  Exit 0 only when live infra checks and tests pass.
+workflow-runtime  Prepare, inspect, and stop an isolated NPA workflow runtime.
 ```
 
 ## Options
@@ -44,6 +45,7 @@ verify-live  Exit 0 only when live infra checks and tests pass.
 | `status` | Show agent status, URLs, and health checks. |
 | `destroy` | Destroy agent VM/resources by exact identity; receipts need no project stanza. |
 | `verify-live` | Exit 0 only when live infra checks and tests pass. |
+| `workflow-runtime` | Prepare, inspect, and stop an isolated NPA workflow runtime. |
 
 ## Examples
 

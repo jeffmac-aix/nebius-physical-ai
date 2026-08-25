@@ -29,23 +29,6 @@ Python callers can also pass `sky_bin=` directly to
 with setup guidance rather than importing SkyPilot into NPA's Python
 environment.
 
-When multiple NPA runs share one operator host, use a dedicated loopback API
-server so SkyPilot's process-level Kubernetes caches cannot cross run scopes:
-
-```bash
-npa skypilot api-server-ensure \
-  --state-dir <owner-only-run-dir>/skypilot-api \
-  --port <unused-loopback-port>
-export SKYPILOT_API_SERVER_ENDPOINT=http://127.0.0.1:<unused-loopback-port>
-export NPA_SKYPILOT_ISOLATED_CONFIG_DIR=<owner-only-run-dir>/skypilot-api
-```
-
-The ensure command refuses an occupied unowned port and records the exact
-server PID and argv in the owner-only state directory. After all submitted jobs
-are terminal, stop only that recorded process with `npa skypilot
-api-server-stop --state-dir <owner-only-run-dir>/skypilot-api --yes`. This does
-not stop or restart the host's shared SkyPilot API server.
-
 ## PATH Alternative
 
 You can put the isolated venv on `PATH` instead of setting
