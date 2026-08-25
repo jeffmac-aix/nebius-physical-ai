@@ -601,6 +601,17 @@ def _apply_owned(
     return "reconciled"
 
 
+def _matching_policy_deployments(
+    deployments: list[Any], selector: dict[str, str]
+) -> list[Any]:
+    """Match the pod selector contract, not unrelated Deployment metadata."""
+    return [
+        deployment
+        for deployment in deployments
+        if dict(deployment.spec.selector.match_labels or {}) == selector
+    ]
+
+
 def apply_cluster(config: ClusterLiveConfig) -> dict[str, Any]:
     """Stage owner-scoped Secrets, rotate cluster-DNS TLS, and reconcile workloads."""
 
@@ -613,12 +624,10 @@ def apply_cluster(config: ClusterLiveConfig) -> dict[str, Any]:
     apps = client.AppsV1Api()
     networking = client.NetworkingV1Api()
     core.read_namespace(name=config.namespace)
-    selector = ",".join(
-        f"{key}={value}" for key, value in sorted(config.policy_selector.items())
+    deployments = _matching_policy_deployments(
+        apps.list_namespaced_deployment(namespace=config.namespace).items,
+        config.policy_selector,
     )
-    deployments = apps.list_namespaced_deployment(
-        namespace=config.namespace, label_selector=selector
-    ).items
     if len(deployments) != 1:
         raise ClusterLiveError("policy selector must resolve exactly one Deployment")
     policy_deployment = deployments[0]
@@ -866,12 +875,10 @@ def cluster_status(config: ClusterLiveConfig) -> dict[str, Any]:
         and len(pods) == 1
         and restart_count == 0
     )
-    policy = apps.list_namespaced_deployment(
-        config.namespace,
-        label_selector=",".join(
-            f"{key}={value}" for key, value in sorted(config.policy_selector.items())
-        ),
-    ).items
+    policy = _matching_policy_deployments(
+        apps.list_namespaced_deployment(config.namespace).items,
+        config.policy_selector,
+    )
     if len(policy) != 1 or not _owned(
         policy[0].metadata, config.identity, allow_openpi=True
     ):

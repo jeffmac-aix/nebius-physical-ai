@@ -170,6 +170,17 @@ def test_apply_refuses_ambiguous_policy_selector(
         cluster_deploy.apply_cluster(config)
 
 
+def test_policy_lookup_uses_pod_selector_not_deployment_metadata() -> None:
+    expected = {"app": "policy", "npa.nebius.ai/cleanup-owner": "owned-run"}
+    deployment = SimpleNamespace(
+        metadata=SimpleNamespace(labels={"app": "different-metadata"}),
+        spec=SimpleNamespace(selector=SimpleNamespace(match_labels=dict(expected))),
+    )
+    assert cluster_deploy._matching_policy_deployments([deployment], expected) == [
+        deployment
+    ]
+
+
 def test_source_uses_only_supported_antioch_live_commands() -> None:
     live = Path(cluster_runtime.__file__).read_text(encoding="utf-8")
     helper = (
