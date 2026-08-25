@@ -163,8 +163,11 @@ def build_public_manifests(config: ClusterLiveConfig) -> dict[str, dict[str, Any
     state_root = "/var/run/npa-antioch"
     copy_private = (
         "install -d -m 0700 /private/antioch-config /private/live-bundle; "
-        "cp -a /sources/config/. /private/antioch-config/; "
-        "cp -a /sources/bundle/. /private/live-bundle/; "
+        # Kubernetes Secret volumes are symlink farms backed by read-only
+        # projections. Dereference their regular files into the writable tmpfs;
+        # preserving those symlinks makes the later ownership change fail.
+        "cp -L /sources/config/* /private/antioch-config/; "
+        "cp -L /sources/bundle/* /private/live-bundle/; "
         "install -m 0600 /sources/terms/accepted /private/antioch-terms; "
         "install -m 0600 /sources/project/project-id /private/project-id; "
         "find /private -type d -exec chmod 0700 {} +; "
@@ -327,7 +330,14 @@ def build_public_manifests(config: ClusterLiveConfig) -> dict[str, dict[str, Any
                                 "runAsNonRoot": False,
                                 "allowPrivilegeEscalation": False,
                                 "readOnlyRootFilesystem": True,
-                                "capabilities": {"drop": ["ALL"]},
+                                # The init container copies root-owned Secret
+                                # projections into tmpfs, then hands that copy
+                                # to the non-root runtime containers. Retain
+                                # only the capability needed for that handoff.
+                                "capabilities": {
+                                    "drop": ["ALL"],
+                                    "add": ["CHOWN"],
+                                },
                             },
                             "resources": {
                                 "requests": {"cpu": "25m", "memory": "32Mi"},
