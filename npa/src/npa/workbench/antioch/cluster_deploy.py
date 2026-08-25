@@ -204,7 +204,11 @@ def build_public_manifests(config: ClusterLiveConfig) -> dict[str, dict[str, Any
             },
         },
     ]
-    private_mount = {"name": "private", "mountPath": private_root, "readOnly": True}
+    private_read_only_mount = {
+        "name": "private",
+        "mountPath": private_root,
+        "readOnly": True,
+    }
     controller = {
         "name": "antioch-controller",
         "image": config.adapter_image,
@@ -230,7 +234,7 @@ def build_public_manifests(config: ClusterLiveConfig) -> dict[str, dict[str, Any
             "limits": {"cpu": "2", "memory": "2Gi"},
         },
         "volumeMounts": [
-            private_mount,
+            {"name": "private", "mountPath": private_root},
             {"name": "state", "mountPath": state_root},
             {"name": "runtime", "mountPath": "/var/lib/npa-antioch-live"},
             {"name": "runtime-cache", "mountPath": "/workspace/.cache/npa/antioch"},
@@ -276,7 +280,7 @@ def build_public_manifests(config: ClusterLiveConfig) -> dict[str, dict[str, Any
             "limits": {"cpu": "1", "memory": "1Gi"},
         },
         "volumeMounts": [
-            private_mount,
+            private_read_only_mount,
             {"name": "state", "mountPath": state_root},
             {"name": "tmp", "mountPath": "/tmp"},
         ],
