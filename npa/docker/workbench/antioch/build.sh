@@ -7,6 +7,7 @@ NPA_PYTHON="${NPA_ROOT}/.venv/bin/python"
 REGISTRY=""
 TAG="0.1.0-cli0.3.63"
 PUSH=0
+REVISION="$(git -C "$NPA_ROOT/.." rev-parse HEAD)"
 
 usage() {
   echo "Usage: $0 [--registry HOST/PATH] [--tag TAG] [--push]" >&2
@@ -36,6 +37,7 @@ BUILD_ARGS=(
   --platform linux/amd64
   --file "$SCRIPT_DIR/Dockerfile"
   --tag "$LOCAL_IMAGE"
+  --build-arg "NPA_REVISION=${REVISION}"
 )
 if [[ -n "$REGISTRY" ]]; then
   REGISTRY_IMAGE="${REGISTRY%/}/npa-antioch:${TAG}"
