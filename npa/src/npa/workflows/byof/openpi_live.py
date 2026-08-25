@@ -737,6 +737,7 @@ def deploy_live(args: argparse.Namespace) -> dict[str, Any]:
     except Exception as exc:
         if _api_status(exc) != 404:
             raise
+        existing_auth = None
         api_key = secrets.token_urlsafe(48)
     else:
         if not _owned(existing_auth.metadata, args.run_id):
@@ -747,7 +748,23 @@ def deploy_live(args: argparse.Namespace) -> dict[str, Any]:
         api_key = base64.b64decode(encoded).decode("utf-8").strip()
         if len(api_key) < 32:
             raise OpenPIServiceError("existing authentication Secret is malformed")
-    ca, certificate, private_key = _certificate(endpoint)
+    if existing_auth is None:
+        ca, certificate, private_key = _certificate(endpoint)
+    else:
+        existing_tls = core.read_namespaced_secret(
+            name=tls_name, namespace=args.namespace
+        )
+        if not _owned(existing_tls.metadata, args.run_id):
+            raise OpenPIServiceError("refusing to reuse an unowned TLS Secret")
+        encoded_tls = existing_tls.data or {}
+        try:
+            ca = base64.b64decode(encoded_tls["ca.crt"], validate=True)
+            certificate = base64.b64decode(encoded_tls["tls.crt"], validate=True)
+            private_key = base64.b64decode(encoded_tls["tls.key"], validate=True)
+        except (KeyError, ValueError) as exc:
+            raise OpenPIServiceError(
+                "existing TLS Secret lacks reusable CA/certificate material"
+            ) from exc
     secret_bodies = {
         auth_name: {
             "apiVersion": "v1",
@@ -770,6 +787,7 @@ def deploy_live(args: argparse.Namespace) -> dict[str, Any]:
             },
             "type": "kubernetes.io/tls",
             "data": {
+                "ca.crt": base64.b64encode(ca).decode(),
                 "tls.crt": base64.b64encode(certificate).decode(),
                 "tls.key": base64.b64encode(private_key).decode(),
             },

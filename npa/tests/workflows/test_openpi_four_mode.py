@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import tomllib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -26,6 +27,18 @@ SPEC = (
     / "openpi-pi05-four-mode.yaml"
 )
 DIGEST_IMAGE = "registry.example.invalid/openpi@sha256:" + "a" * 64
+
+
+def test_live_deployer_is_installed_publicly_and_reuses_tls_material() -> None:
+    pyproject = tomllib.loads((ROOT / "npa/pyproject.toml").read_text(encoding="utf-8"))
+    assert pyproject["project"]["scripts"]["npa-openpi-live-deploy"] == (
+        "npa.workflows.byof.openpi_live:main"
+    )
+    source = Path(openpi_live.__file__).read_text(encoding="utf-8")
+    assert 'encoded_tls["ca.crt"]' in source
+    assert "if existing_auth is None:" in source
+    assert "hmac.compare_digest" in openpi_live.gateway_program()
+    assert 'state["total_connections"]' in openpi_live.gateway_program()
 
 
 def test_terms_gate_exits_before_openpi_import_or_checkpoint_fetch(

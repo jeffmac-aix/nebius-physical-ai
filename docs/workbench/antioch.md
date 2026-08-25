@@ -137,7 +137,8 @@ in Antioch telemetry, and counters for observation sequence/time, requests, roun
 trips, latency, action shape/index, safe hold, reconnects, and safely applied
 targets. These are emitted by the running scenario, not inferred from an `.rrd`.
 
-The OpenPI side is built by `npa.workflows.byof.openpi_live`: a single B200
+The OpenPI bootstrap is publicly installed as `npa-openpi-live-deploy` (implemented
+by `npa.workflows.byof.openpi_live`): a single B200
 Deployment with readiness/liveness, `Recreate` rollout semantics, and a PVC-backed
 runtime checkpoint cache. Only a bounded TLS WebSocket gateway is exposed; an
 API-key Secret and TLS Secret are generated per live deployment, while the raw

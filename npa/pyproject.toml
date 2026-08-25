@@ -155,6 +155,7 @@ dev = [
 
 [project.scripts]
 npa = "npa.cli.entry:main"
+npa-openpi-live-deploy = "npa.workflows.byof.openpi_live:main"
 
 [tool.npa.supported-tools]
 antioch = "0.1.0-cli0.3.63"
