@@ -64,25 +64,6 @@ def test_resolve_sky_bin_config_file_default(monkeypatch: pytest.MonkeyPatch, tm
     assert resolve_sky_bin() == discovered.resolve()
 
 
-def test_resolve_sky_bin_uses_active_npa_config_scope(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """An isolated NPA process must not inherit the host SkyPilot runtime."""
-    host = _executable(tmp_path / "host-sky")
-    isolated = _executable(tmp_path / "isolated" / "skypilot-venv" / "bin" / "sky")
-    host_config = tmp_path / "host-config.yaml"
-    host_config.write_text(f"skypilot:\n  sky_bin: {host}\n", encoding="utf-8")
-    isolated_config = tmp_path / "isolated" / "config.yaml"
-    isolated_config.parent.mkdir(parents=True, exist_ok=True)
-    isolated_config.write_text(
-        f"skypilot:\n  sky_bin: {isolated}\n", encoding="utf-8"
-    )
-    monkeypatch.setattr(bin_module, "CONFIG_PATH", host_config)
-    monkeypatch.setenv("NPA_CONFIG_DIR", str(isolated_config.parent))
-
-    assert resolve_sky_bin() == isolated.resolve()
-
-
 def test_resolve_sky_bin_missing_raises(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.delenv("NPA_SKYPILOT_BIN", raising=False)
     monkeypatch.setattr(bin_module, "CONFIG_PATH", tmp_path / "missing.yaml")

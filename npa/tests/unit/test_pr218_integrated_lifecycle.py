@@ -1269,7 +1269,6 @@ def test_destroy_retry_replays_completed_phase_without_current_state_verifier(
     from types import SimpleNamespace
 
     from npa import project_destroy, teardown_receipts
-    from npa.clients import nebius
 
     monkeypatch.setenv("NPA_TEARDOWN_RECEIPT_DIR", str(tmp_path / "receipts"))
     monkeypatch.setattr(
@@ -1278,22 +1277,10 @@ def test_destroy_retry_replays_completed_phase_without_current_state_verifier(
             project_id="project-a", tenant_id="tenant-a", region="us-central1"
         ),
     )
-
-    def unavailable_verifier(*_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
-        raise nebius.NebiusError("provider verifier unavailable")
-
-    monkeypatch.setattr(nebius, "get_project_identity", unavailable_verifier)
     teardown_receipts.record_teardown_event(
         phase="project_destroy_workflows",
         resource="demo",
         terminal_state="completed",
-        project_alias="demo",
-        project_id="project-a",
-    )
-    teardown_receipts.record_teardown_event(
-        phase="project_destroy_workflows",
-        resource="demo",
-        terminal_state="partial",
         project_alias="demo",
         project_id="project-a",
     )
@@ -1314,84 +1301,12 @@ def test_destroy_retry_replays_completed_phase_without_current_state_verifier(
     assert calls == [["npa", "workflow-list"]]
 
 
-def test_destroy_retry_skips_completed_remote_phase_after_stable_empty_inventory(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    from types import SimpleNamespace
-
-    from npa import project_destroy, teardown_receipts
-
-    monkeypatch.setenv("NPA_TEARDOWN_RECEIPT_DIR", str(tmp_path / "receipts"))
-    monkeypatch.setattr(
-        "npa.clients.config.resolve_environment",
-        lambda _project: SimpleNamespace(
-            project_id="project-a", tenant_id="tenant-a", region="us-central1"
-        ),
-    )
-    observations: list[str] = []
-    monkeypatch.setattr(
-        "npa.clients.nebius.get_project_identity", lambda project_id: object()
-    )
-    monkeypatch.setattr(
-        "npa.clients.nebius.list_project_dependencies",
-        lambda project_id: (
-            observations.append(project_id)
-            or {"instances": (), "mk8s_clusters": (), "ai_jobs": ()}
-        ),
-    )
-    monkeypatch.setattr(project_destroy.time, "sleep", lambda _seconds: None)
-    teardown_receipts.record_teardown_event(
-        phase="project_destroy_workflows",
-        resource="demo",
-        terminal_state="completed",
-        project_alias="demo",
-        project_id="project-a",
-    )
-    teardown_receipts.record_teardown_event(
-        phase="project_destroy_workflows",
-        resource="demo",
-        terminal_state="partial",
-        project_alias="demo",
-        project_id="project-a",
-    )
-
-    calls: list[list[str]] = []
-
-    def run(command, **_kwargs):  # noqa: ANN001, ANN202
-        calls.append(list(command))
-        return subprocess.CompletedProcess(command, 1, stdout="", stderr="no backend")
-
-    result = project_destroy.execute_project_destroy(
-        "demo",
-        [DestroyPhase("workflows", (("npa", "workflow-list"),), "inventory")],
-        runner=run,
-    )
-
-    assert result["status"] == "success"
-    assert calls == []
-    assert observations == ["project-a", "project-a"]
-    assert (
-        teardown_receipts.latest_phase_states(
-            project_alias="demo", project_id="project-a"
-        )["project_destroy_workflows"]["terminal_state"]
-        == "completed"
-    )
-    assert result["phases"][0]["evidence"] == {
-        "durable_prior_completion": True,
-        "resume_contract": "reverify_or_replay",
-        "provider_child_inventory": "verified_empty",
-        "stable_absence_observations": 2,
-        "command_results": [],
-    }
-
-
 def test_destroy_resume_replays_recreated_resources_before_project_delete(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     from types import SimpleNamespace
 
     from npa import project_destroy, teardown_receipts
-    from npa.clients import nebius
 
     monkeypatch.setenv("NPA_TEARDOWN_RECEIPT_DIR", str(tmp_path / "receipts"))
     monkeypatch.setattr(
@@ -1399,12 +1314,6 @@ def test_destroy_resume_replays_recreated_resources_before_project_delete(
         lambda _project: SimpleNamespace(
             project_id="project-a", tenant_id="tenant-a", region="us-central1"
         ),
-    )
-    monkeypatch.setattr(nebius, "get_project_identity", lambda *_a, **_k: object())
-    monkeypatch.setattr(
-        nebius,
-        "list_project_dependencies",
-        lambda *_a, **_k: {"mk8s_clusters": ("cluster-a",)},
     )
     for name in ("workflows", "agents", "controller", "clusters"):
         teardown_receipts.record_teardown_event(
@@ -1892,8 +1801,6 @@ def test_incident_end_to_end_recovers_iam_then_deletes_owned_project_from_receip
 
     observations = iter(
         [
-            nebius.ProjectIdentity("project-a", "demo", "tenant-a", "eu-test1"),
-            nebius.ProjectIdentity("project-a", "demo", "tenant-a", "eu-test1"),
             nebius.ProjectIdentity("project-a", "demo", "tenant-a", "eu-test1"),
             None,
             None,

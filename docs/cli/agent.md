@@ -12,7 +12,6 @@ Options
 Commands
 auth-profile  Complete a human Nebius CLI profile on this operator/dev VM.
 list  List agent deployments recorded in ~/.npa/config.yaml.
-benchmark  Benchmark a real model-guided NPA setup-to-workflow loop with bounded tools.
 preflight  Check Route C prerequisites before `npa agent deploy` / `fresh-setup`.
 deploy  Provision VM + bootstrap the public NPA agent stack.
 fresh-setup  Initialize fresh project config and deploy a new agent from scratch.
@@ -21,7 +20,6 @@ bootstrap  Re-bootstrap agent UI/backend/nginx on an existing VM (refresh withou
 status  Show agent status, URLs, and health checks.
 destroy  Destroy agent VM/resources by exact identity; receipts need no project stanza.
 verify-live  Exit 0 only when live infra checks and tests pass.
-workflow-runtime  Prepare, inspect, and stop an isolated NPA workflow runtime.
 ```
 
 ## Options
@@ -36,7 +34,6 @@ workflow-runtime  Prepare, inspect, and stop an isolated NPA workflow runtime.
 | --- | --- |
 | `auth-profile` | Complete a human Nebius CLI profile on this operator/dev VM. |
 | `list` | List agent deployments recorded in ~/.npa/config.yaml. |
-| `benchmark` | Benchmark a real model-guided NPA setup-to-workflow loop with bounded tools. |
 | `preflight` | Check Route C prerequisites before `npa agent deploy` / `fresh-setup`. |
 | `deploy` | Provision VM + bootstrap the public NPA agent stack. |
 | `fresh-setup` | Initialize fresh project config and deploy a new agent from scratch. |
@@ -45,7 +42,6 @@ workflow-runtime  Prepare, inspect, and stop an isolated NPA workflow runtime.
 | `status` | Show agent status, URLs, and health checks. |
 | `destroy` | Destroy agent VM/resources by exact identity; receipts need no project stanza. |
 | `verify-live` | Exit 0 only when live infra checks and tests pass. |
-| `workflow-runtime` | Prepare, inspect, and stop an isolated NPA workflow runtime. |
 
 ## Examples
 

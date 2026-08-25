@@ -35,6 +35,8 @@ app = typer.Typer(
 console = Console(stderr=True)
 logger = logging.getLogger(__name__)
 _PLACEHOLDER_RE = re.compile(r"\$\{([^}]+)\}")
+DEFAULT_LOG_OUTPUT_CHARS = 32_768
+MAX_LOG_OUTPUT_CHARS = 262_144
 
 
 class OutputFormat(str, Enum):
@@ -50,6 +52,64 @@ class ActionSpace(str, Enum):
 class ControllerBackendOption(str, Enum):
     kubernetes = "kubernetes"
     nebius = "nebius"
+
+
+def _bounded_log_text(text: str, max_output_chars: int) -> tuple[str, dict[str, object]]:
+    """Return the diagnostic tail and a machine-readable truncation contract."""
+
+    if not 1 <= max_output_chars <= MAX_LOG_OUTPUT_CHARS:
+        raise ValueError(
+            f"--max-output-chars must be between 1 and {MAX_LOG_OUTPUT_CHARS}"
+        )
+    value = str(text or "")
+    total = len(value)
+    bounded = value if total <= max_output_chars else value[-max_output_chars:]
+    return bounded, {
+        "log_truncated": total > max_output_chars,
+        "log_chars_total": total,
+        "log_chars_returned": len(bounded),
+        "log_output_limit": max_output_chars,
+    }
+
+
+def _bounded_log_streams(
+    stdout: str, stderr: str, max_output_chars: int
+) -> tuple[str, str, dict[str, object]]:
+    """Bound two log streams together while retaining each diagnostic tail."""
+
+    combined = f"{stdout or ''}{stderr or ''}"
+    _, metadata = _bounded_log_text(combined, max_output_chars)
+    if not metadata["log_truncated"]:
+        return str(stdout or ""), str(stderr or ""), metadata
+
+    stdout_value = str(stdout or "")
+    stderr_value = str(stderr or "")
+    stderr_budget = min(
+        len(stderr_value), max_output_chars // 2 if stdout_value else max_output_chars
+    )
+    stdout_budget = min(len(stdout_value), max_output_chars - stderr_budget)
+    remaining = max_output_chars - stdout_budget - stderr_budget
+    if remaining:
+        extra_stderr = min(len(stderr_value) - stderr_budget, remaining)
+        stderr_budget += extra_stderr
+        remaining -= extra_stderr
+    if remaining:
+        stdout_budget += min(len(stdout_value) - stdout_budget, remaining)
+
+    bounded_stdout = stdout_value[-stdout_budget:] if stdout_budget else ""
+    bounded_stderr = stderr_value[-stderr_budget:] if stderr_budget else ""
+    metadata["log_chars_returned"] = len(bounded_stdout) + len(bounded_stderr)
+    return bounded_stdout, bounded_stderr, metadata
+
+
+def _emit_log_truncation(metadata: Mapping[str, object]) -> None:
+    if metadata.get("log_truncated"):
+        typer.echo(
+            "npa_log_truncated: true "
+            f"(returned {metadata['log_chars_returned']} of "
+            f"{metadata['log_chars_total']} chars)",
+            err=True,
+        )
 
 
 def _fail(msg: str, code: int = 1) -> None:
@@ -3161,28 +3221,33 @@ def _adopt_npa_kubeconfig(context: str) -> bool:
     ``~/.kube/config``, while `sky jobs launch` reads ``KUBECONFIG`` (or
     ``~/.kube/config``). A cluster npa had just created was therefore invisible to
     the submit that asked for it — `Context <name> not found ... Available
-    contexts: []` — unless the operator knew to export KUBECONFIG by hand. When
-    npa owns the requested context, bind this process to that exact kubeconfig.
-    Keeping ambient kubeconfigs in the list is unsafe here: a long-lived local
-    SkyPilot API server can resolve the same context through a stale later entry
-    and launch against a different cluster than the one npa just verified.
+    contexts: []` — unless the operator knew to export KUBECONFIG by hand. Prepend
+    npa's kubeconfig when the context is missing from the active one.
     """
     if not context:
         return False
+    available = _available_kube_contexts()
+    if available is not None and context in available:
+        return True
+
     from npa.cluster.state import existing_kubeconfig
 
     path = existing_kubeconfig(context)
-    if path is not None:
-        os.environ["KUBECONFIG"] = str(path)
-        typer.echo(
-            f"Using the npa kubeconfig for context {context!r}: {path} "
-            "(exclusive KUBECONFIG for this run).",
-            err=True,
-        )
-        return True
-
-    available = _available_kube_contexts()
-    return available is not None and context in available
+    if path is None:
+        return False
+    current = os.environ.get("KUBECONFIG", "").strip()
+    entries = [str(path)] + [
+        entry
+        for entry in current.split(os.pathsep)
+        if entry.strip() and entry != str(path)
+    ]
+    os.environ["KUBECONFIG"] = os.pathsep.join(entries)
+    typer.echo(
+        f"Using the npa kubeconfig for context {context!r}: {path} "
+        "(prepended to KUBECONFIG for this run).",
+        err=True,
+    )
+    return True
 
 
 def _spec_self_provisions(yaml_path: Path) -> bool:
@@ -4957,8 +5022,18 @@ def logs_cmd(
     json_output: bool = typer.Option(
         False, "--json", help="Emit the log-source contract as JSON."
     ),
+    max_output_chars: int = typer.Option(
+        DEFAULT_LOG_OUTPUT_CHARS,
+        "--max-output-chars",
+        min=1,
+        max=MAX_LOG_OUTPUT_CHARS,
+        help=(
+            "Maximum redacted log characters returned. The diagnostic tail is kept "
+            "when truncation is required."
+        ),
+    ),
 ) -> None:
-    """Show logs for a specific stage of a workflow run."""
+    """Show a bounded log tail for a specific stage of a workflow run."""
     selected_stage = stage_option or stage or ""
     try:
         from npa.orchestration.npa_workflow.run_resolution import validate_run_id
@@ -5026,13 +5101,34 @@ def logs_cmd(
                 )
                 safe_stdout = redact_text(live.stdout)
                 safe_stderr = redact_text(live.stderr)
+                safe_stdout, safe_stderr, log_metadata = _bounded_log_streams(
+                    safe_stdout, safe_stderr, max_output_chars
+                )
                 if safe_stdout and not json_output:
                     typer.echo(safe_stdout, nl=False)
                 if safe_stderr and not json_output:
                     typer.echo(safe_stderr, err=True, nl=False)
+                if not json_output:
+                    _emit_log_truncation(log_metadata)
                 if live.returncode != 0:
                     raise RuntimeError(
                         "run found with manifest pending, but SkyPilot logs are unavailable"
+                    )
+                if json_output:
+                    typer.echo(
+                        json.dumps(
+                            {
+                                "run_id": resolution.run_id,
+                                "stage": selected_stage,
+                                "manifest_state": "pending",
+                                "live_log_state": "available",
+                                "log": safe_stdout,
+                                "stderr": safe_stderr,
+                                **log_metadata,
+                            },
+                            indent=2,
+                            sort_keys=True,
+                        )
                     )
                 return
             assert state is not None
@@ -5187,6 +5283,9 @@ def logs_cmd(
                         cached_text = read_stage_log(state, selected_stage)
                     except Exception:  # noqa: BLE001 - reported through the source contract
                         cached_text = ""
+                    cached_text, log_metadata = _bounded_log_text(
+                        cached_text, max_output_chars
+                    )
                     source_payload = apply_verification(
                         source_payload,
                         status=CACHED,
@@ -5201,6 +5300,7 @@ def logs_cmd(
                         "available" if cached_text else "unavailable"
                     )
                     source_payload["log"] = cached_text
+                    source_payload.update(log_metadata)
                     if json_output:
                         typer.echo(json.dumps(source_payload, indent=2, sort_keys=True))
                     else:
@@ -5213,6 +5313,7 @@ def logs_cmd(
                         )
                         if cached_text:
                             typer.echo(cached_text, nl=False)
+                        _emit_log_truncation(log_metadata)
                     return
                 if not job_id:
                     reason = (
@@ -5260,10 +5361,15 @@ def logs_cmd(
                 )
                 safe_stdout = redact_text(live.stdout)
                 safe_stderr = redact_text(live.stderr)
+                safe_stdout, safe_stderr, log_metadata = _bounded_log_streams(
+                    safe_stdout, safe_stderr, max_output_chars
+                )
                 if safe_stdout and not json_output:
                     typer.echo(safe_stdout, nl=False)
                 if safe_stderr and not json_output:
                     typer.echo(safe_stderr, err=True, nl=False)
+                if not json_output:
+                    _emit_log_truncation(log_metadata)
                 if live.returncode != 0:
                     from npa.verification import (
                         classify_verification_failure,
@@ -5313,7 +5419,12 @@ def logs_cmd(
                         retry_command=log_retry,
                     )
                     source_payload.update(
-                        {"live_log_state": "available", "log": safe_stdout}
+                        {
+                            "live_log_state": "available",
+                            "log": safe_stdout,
+                            "stderr": safe_stderr,
+                            **log_metadata,
+                        }
                     )
                     typer.echo(json.dumps(source_payload, indent=2, sort_keys=True))
                 elif live.stdout:
@@ -5332,13 +5443,21 @@ def logs_cmd(
                 )
                 safe_stdout = redact_text(live.stdout)
                 safe_stderr = redact_text(live.stderr)
+                safe_stdout, safe_stderr, log_metadata = _bounded_log_streams(
+                    safe_stdout, safe_stderr, max_output_chars
+                )
                 if safe_stdout:
                     typer.echo(safe_stdout, nl=False)
                 if safe_stderr:
                     typer.echo(safe_stderr, err=True, nl=False)
+                _emit_log_truncation(log_metadata)
                 if live.returncode == 0:
                     return
-            typer.echo(read_stage_log(state, selected_stage), nl=False)
+            cached_text, log_metadata = _bounded_log_text(
+                read_stage_log(state, selected_stage), max_output_chars
+            )
+            typer.echo(cached_text, nl=False)
+            _emit_log_truncation(log_metadata)
             return
         except typer.Exit:
             raise
@@ -5358,7 +5477,9 @@ def logs_cmd(
         _fail(str(exc))
         return
 
-    typer.echo(logs)
+    bounded_logs, log_metadata = _bounded_log_text(logs, max_output_chars)
+    typer.echo(bounded_logs)
+    _emit_log_truncation(log_metadata)
 
 
 @app.command("artifacts")

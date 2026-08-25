@@ -14,7 +14,6 @@ Nebius Physical AI.
 | [workbench/kubernetes.md](workbench/kubernetes.md) | User setup and operational guide for running Workbench on managed Kubernetes |
 | [workbench/cosmos3-generate.md](workbench/cosmos3-generate.md) | Cosmos 3 generation (`npa-cosmos3`) — build, run via CLI/SDK/workflow, and the runtime-credential posture that keeps weights out of the image |
 | [workbench/cosmos3-b200-checkpoint-evaluation-20260814.md](workbench/cosmos3-b200-checkpoint-evaluation-20260814.md) | Reserved-B200 Cosmos3 still-image checkpoint benchmark, blind three-seed review, and recommendation |
-| [workbench/agent-benchmark.md](workbench/agent-benchmark.md) | Bounded-tool, resumable OpenAI-compatible agent benchmark over a real PAIDF-Cosmos3 seed workflow |
 | [workbench/cosmos3-super-serving.md](workbench/cosmos3-super-serving.md) | Cosmos3-Super serving (`npa-cosmos3-serving`), an 8-GPU single-node endpoint: build, run, readiness window, and guardrail posture |
 | [../npa/workflows/workbench/npa-workflows/README.md](../npa/workflows/workbench/npa-workflows/README.md) | **Workflow catalog** — find the right `npa.workflow` spec by what you want to do |
 | [architecture/solutions-model.md](architecture/solutions-model.md) | Platform model for adding and maintaining solutions |
@@ -27,7 +26,6 @@ Nebius Physical AI.
 | [cli/README.md](cli/README.md) | CLI command reference index |
 | [cli-errors.md](cli-errors.md) | End-user CLI error formatting, exit codes, and JSON error output |
 | [sdk/errors.md](sdk/errors.md) | Typed exceptions for programmatic SDK consumers and agents |
-| [sdk/task-registry-image.md](sdk/task-registry-image.md) | Ownership-gated task registries and digest-bound Rerun image build/inspect/push/verify SDK |
 | [testing/e2e-serverless.md](testing/e2e-serverless.md) | E2E test conventions for serverless workloads |
 | [testing/e2e.md](testing/e2e.md) | General E2E test conventions |
 | [testing/dev-vm-daily.md](testing/dev-vm-daily.md) | Daily tests run on the dev VM over SSH from GitHub Actions |

@@ -815,59 +815,6 @@ def test_run_chat_action_loop_gpu_tool_needs_confirmation_without_token():
     assert result["proposed_action"]["tool"] == "sim2real_submit"
 
 
-def test_scoped_authorizer_is_bound_to_the_planned_action_digest():
-    submitted = {"count": 0}
-    seen = []
-
-    def authorize(action, digest):
-        seen.append((action, digest))
-        return digest == A.action_digest(action)
-
-    planner = _scripted_planner(
-        [
-            {"tool": "sim2real_submit", "args": {"run_id": "fixed-run"}},
-            {"final": "submitted"},
-        ]
-    )
-    result = A.run_action_loop(
-        "launch",
-        tools={
-            "sim2real_submit": lambda args: submitted.update(count=submitted["count"] + 1)
-            or {"ok": True, "run_id": args["run_id"]}
-        },
-        model_call=planner,
-        action_authorizer=authorize,
-    )
-
-    assert submitted["count"] == 1
-    assert seen == [
-        (
-            {"tool": "sim2real_submit", "args": {"run_id": "fixed-run"}},
-            A.action_digest(
-                {"tool": "sim2real_submit", "args": {"run_id": "fixed-run"}}
-            ),
-        )
-    ]
-    call = next(step for step in result["steps"] if step.get("phase") == "call")
-    assert call["authorization"] == "task_scope"
-    assert call["action_digest"] == seen[0][1]
-
-
-def test_scoped_authorizer_denial_keeps_confirmation_gate_closed():
-    result = A.run_action_loop(
-        "launch",
-        tools={"sim2real_submit": lambda args: {"ok": True}},
-        model_call=_scripted_planner(
-            [{"tool": "sim2real_submit", "args": {"run_id": "fixed-run"}}]
-        ),
-        action_authorizer=lambda action, digest: False,
-    )
-    assert result["stopped_reason"] == A.STOP_NEEDS_CONFIRMATION
-    assert result["proposed_action"]["digest"] == A.action_digest(
-        {"tool": "sim2real_submit", "args": {"run_id": "fixed-run"}}
-    )
-
-
 # ── Planner robustness against reasoning-model output ────────────────────────
 # Regression coverage for a live failure observed against Token Factory
 # ``Qwen/Qwen3-32B`` (the cheap planner tier): the model emits a ``<think>`` block

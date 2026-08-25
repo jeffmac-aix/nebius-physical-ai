@@ -121,19 +121,6 @@ def fake_media_pipeline(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(dfi, "_extract_conditioning_frames", fake_extract)
 
 
-@pytest.fixture
-def fake_fixture_encoder(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
-    calls: list[list[str]] = []
-
-    def fake_run(command: list[str], **_kwargs) -> subprocess.CompletedProcess[str]:
-        calls.append(command)
-        Path(command[-1]).write_bytes(b"repository-synthetic-h264-mp4")
-        return subprocess.CompletedProcess(command, 0, "", "")
-
-    monkeypatch.setattr(dfi.subprocess, "run", fake_run)
-    return calls
-
-
 def test_default_selection_is_pinned_real_starter() -> None:
     result = dfi.plan_paidf_input(run_id="paidf-one", bucket="bucket")
 
@@ -167,7 +154,8 @@ def test_explicit_selectors_override_default() -> None:
     assert dfi.select_paidf_input(input_uri="s3://bucket/capture.mp4") == "object_uri"
     assert dfi.select_paidf_input(seed_fixture=True) == "synthetic_fixture"
     assert (
-        dfi.select_paidf_input(lerobot_uri="s3://bucket/dataset/") == "lerobot_dataset"
+        dfi.select_paidf_input(lerobot_uri="s3://bucket/dataset/")
+        == "lerobot_dataset"
     )
 
 
@@ -213,20 +201,23 @@ def test_lerobot_selector_materializes_only_selected_camera_episode(
     storage.s3.objects[
         (
             "artifacts",
-            prefix + "videos/chunk-000/observation.images.front/episode_000001.mp4",
+            prefix
+            + "videos/chunk-000/observation.images.front/episode_000001.mp4",
         )
     ] = b"front-episode-one"
     storage.s3.objects[
         (
             "artifacts",
-            prefix + "videos/chunk-000/observation.images.wrist/episode_000001.mp4",
+            prefix
+            + "videos/chunk-000/observation.images.wrist/episode_000001.mp4",
         )
     ] = b"wrist-episode-one"
     # An unrelated episode proves that PAIDF does not materialize the full dataset.
     storage.s3.objects[
         (
             "artifacts",
-            prefix + "videos/chunk-000/observation.images.front/episode_000000.mp4",
+            prefix
+            + "videos/chunk-000/observation.images.front/episode_000000.mp4",
         )
     ] = b"front-episode-zero"
 
@@ -256,7 +247,8 @@ def test_lerobot_selector_materializes_only_selected_camera_episode(
     assert storage.s3.downloads == [
         (
             "artifacts",
-            prefix + "videos/chunk-000/observation.images.wrist/episode_000001.mp4",
+            prefix
+            + "videos/chunk-000/observation.images.wrist/episode_000001.mp4",
         )
     ]
     assert storage.s3.list_requests == []
@@ -278,7 +270,9 @@ def test_lerobot_camera_and_episode_validation_is_fail_closed() -> None:
             lerobot_episode=-1,
         )
     with pytest.raises(dfi.PaidfInputError, match="require --lerobot-uri"):
-        dfi.plan_paidf_input(run_id="bad", bucket="artifacts", lerobot_camera="front")
+        dfi.plan_paidf_input(
+            run_id="bad", bucket="artifacts", lerobot_camera="front"
+        )
 
 
 @pytest.mark.parametrize(
@@ -581,44 +575,8 @@ def test_fixture_cannot_replace_committed_user_input(
         )
 
 
-def test_fixture_materializes_video_and_reuses_committed_provenance(
-    fake_media_pipeline: None,
-    fake_fixture_encoder: list[list[str]],
-) -> None:
-    storage = FakeStorage()
-
-    first = dfi.prepare_paidf_input(
-        run_id="paidf-fixture-video",
-        bucket="artifacts",
-        seed_fixture=True,
-        storage_client=storage,
-    )
-    upload_count = len(storage.s3.uploads)
-    second = dfi.prepare_paidf_input(
-        run_id="paidf-fixture-video",
-        bucket="artifacts",
-        seed_fixture=True,
-        storage_client=storage,
-    )
-
-    prefix = "physical-ai-data-factory/paidf-fixture-video/input/"
-    assert first.selection == "synthetic_fixture"
-    assert first.provenance["staged_source_uri"].endswith("/source.mp4")
-    assert first.provenance["media"]["container"] == "mp4"
-    assert first.provenance["media"]["codec"] == "h264"
-    assert first.provenance["derivation"]["media"]["frame_count"] == 93
-    assert ("artifacts", prefix + "source.mp4") in storage.s3.objects
-    assert ("artifacts", prefix + "conditioning.mp4") in storage.s3.objects
-    assert ("artifacts", prefix + "provenance.json") in storage.s3.objects
-    assert second.reused is True
-    assert len(storage.s3.uploads) == upload_count
-    assert len(fake_fixture_encoder) == 1
-
-
 def test_implicit_retry_reuses_committed_fixture_without_starter_fetch(
     monkeypatch: pytest.MonkeyPatch,
-    fake_media_pipeline: None,
-    fake_fixture_encoder: list[list[str]],
 ) -> None:
     storage = FakeStorage()
     prefix = "physical-ai-data-factory/paidf-fixture-retry/input/"
@@ -641,46 +599,7 @@ def test_implicit_retry_reuses_committed_fixture_without_starter_fetch(
     )
 
     assert result.selection == "synthetic_fixture"
-    assert result.reused is False
-    assert result.cache_status == "legacy_provenance_replaced"
-    assert result.provenance["staged_source_uri"].endswith("/source.mp4")
-    committed = json.loads(
-        storage.s3.objects[("artifacts", prefix + "provenance.json")]
-    )
-    assert committed == result.provenance
-    assert (
-        storage.s3.metadata[("artifacts", prefix + "provenance.json")][
-            "npa-schema-upgrade"
-        ]
-        == "synthetic-fixture-video-v1"
-    )
-    assert len(fake_fixture_encoder) == 1
-
-
-def test_fixture_upgrade_rejects_nonlegacy_provenance_before_staging(
-    fake_media_pipeline: None,
-    fake_fixture_encoder: list[list[str]],
-) -> None:
-    storage = FakeStorage()
-    prefix = "physical-ai-data-factory/paidf-fixture-tampered/input/"
-    provenance = dfi._fixture_provenance(
-        "paidf-fixture-tampered", f"s3://artifacts/{prefix}"
-    )
-    provenance["unexpected"] = "field"
-    storage.s3.objects[("artifacts", prefix + "provenance.json")] = json.dumps(
-        provenance
-    ).encode()
-
-    with pytest.raises(dfi.PaidfInputError, match="non-legacy fixture provenance"):
-        dfi.prepare_paidf_input(
-            run_id="paidf-fixture-tampered",
-            bucket="artifacts",
-            seed_fixture=True,
-            storage_client=storage,
-        )
-
-    assert storage.s3.uploads == []
-    assert fake_fixture_encoder == []
+    assert result.reused is True
 
 
 def test_local_video_staging_records_lineage_and_is_idempotent(

@@ -59,11 +59,7 @@ def resolve_config(
 ) -> SkyPilotConfig:
     """Resolve SkyPilot runtime config with explicit -> env -> config precedence."""
 
-    config_path = (
-        Path(npa_config_path)
-        if npa_config_path is not None
-        else _active_npa_config_path()
-    )
+    config_path = Path(npa_config_path) if npa_config_path is not None else CONFIG_PATH
     file_config = _load_skypilot_file_config(config_path)
     sky_value, sky_source = _first_config_value(
         (sky_bin, "explicit sky_bin"),
@@ -95,13 +91,6 @@ def resolve_config(
         global_config_path=_optional_path(global_value),
         isolated_config_dir=_optional_path(isolated_value),
     )
-
-
-def _active_npa_config_path() -> Path:
-    """Resolve the config scope at call time, including isolated NPA processes."""
-
-    configured = os.environ.get("NPA_CONFIG_DIR", "").strip()
-    return Path(configured).expanduser() / "config.yaml" if configured else CONFIG_PATH
 
 
 def resolve_sky_bin(sky_bin: SkyBin = None) -> Path:

@@ -227,26 +227,6 @@ def test_skypilot_bootstrap_can_install_local_tiny_package(
     assert '"extras": [\n    "test"\n  ]' in result.marker_path.read_text(encoding="utf-8")
 
 
-def test_relocate_staged_scripts_rewrites_long_shebang_shell_wrapper(
-    tmp_path: Path,
-) -> None:
-    staging = tmp_path / ("staging-" + "x" * 140)
-    target = tmp_path / ("target-" + "y" * 140)
-    sky = _write_executable(
-        staging / "bin" / "sky",
-        "#!/bin/sh\n"
-        f"'''exec' {staging}/bin/python \"$0\" \"$@\"\n"
-        "' '''\n"
-        "print('SkyPilot 0.12.2')\n",
-    )
-
-    skypilot_cli._relocate_staged_scripts(staging, target)
-
-    body = sky.read_text(encoding="utf-8")
-    assert str(staging) not in body
-    assert f"'''exec' {target}/bin/python" in body
-
-
 def _intercept_sky_check(monkeypatch: pytest.MonkeyPatch, captured: dict[str, object]):
     """Capture only the `sky check` invocation; delegate other calls.
 

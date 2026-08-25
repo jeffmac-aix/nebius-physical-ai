@@ -302,40 +302,26 @@ def prepare_paidf_input(
                     f"committed {existing.get('input_origin_label', 'input')} at "
                     f"{base_uri}. Use a new --run-id."
                 )
-            staged_source = str(existing.get("staged_source_uri") or "")
-            if staged_source:
-                report(
-                    f"PAIDF input: reusing committed Synthetic seeded fixture at {base_uri}"
-                )
-                return PreparedPaidfInput(
-                    selection, dict(existing), reused=True, cache_status=""
-                )
-        if not existing:
-            legacy = _legacy_staged_video(storage_client, base_uri)
-            if legacy:
-                raise PaidfInputError(
-                    "run input is immutable: --seed-fixture cannot replace the existing "
-                    f"uncommitted video {legacy}. Use a new --run-id."
-                )
-        return _prepare_synthetic_fixture(
-            storage_client,
-            run_id=clean_run_id,
-            base_uri=base_uri,
-            legacy_provenance=existing,
-        )
+            report(
+                f"PAIDF input: reusing committed Synthetic seeded fixture at {base_uri}"
+            )
+            return PreparedPaidfInput(
+                selection, dict(existing), reused=True, cache_status=""
+            )
+        legacy = _legacy_staged_video(storage_client, base_uri)
+        if legacy:
+            raise PaidfInputError(
+                "run input is immutable: --seed-fixture cannot replace the existing "
+                f"uncommitted video {legacy}. Use a new --run-id."
+            )
+        provenance = _fixture_provenance(clean_run_id, base_uri)
+        return PreparedPaidfInput(selection, provenance, reused=False)
 
     if (
         existing
         and selection == "starter"
         and existing.get("source_kind") == "synthetic_fixture"
     ):
-        if not str(existing.get("staged_source_uri") or ""):
-            return _prepare_synthetic_fixture(
-                storage_client,
-                run_id=clean_run_id,
-                base_uri=base_uri,
-                legacy_provenance=existing,
-            )
         report(f"PAIDF input: reusing committed Synthetic seeded fixture at {base_uri}")
         return PreparedPaidfInput(
             "synthetic_fixture", dict(existing), reused=True, cache_status=""
@@ -1105,7 +1091,9 @@ def _materialize_lerobot_episode(
             "could not validate the configured LeRobot meta/info.json contract"
         ) from exc
     if not isinstance(info, dict) or not isinstance(info.get("features"), dict):
-        raise PaidfInputError("LeRobot meta/info.json must contain a features mapping")
+        raise PaidfInputError(
+            "LeRobot meta/info.json must contain a features mapping"
+        )
     version_family = _lerobot_version_family(info)
     video_features = sorted(
         str(name)
@@ -1126,7 +1114,9 @@ def _materialize_lerobot_episode(
             "LeRobot total_episodes must be a positive integer"
         ) from exc
     if total_episodes < 1:
-        raise PaidfInputError("LeRobot total_episodes must be a positive integer")
+        raise PaidfInputError(
+            "LeRobot total_episodes must be a positive integer"
+        )
     if episode >= total_episodes:
         raise PaidfInputError(
             "the requested LeRobot episode is outside the declared dataset range"
@@ -1304,7 +1294,9 @@ def _read_lerobot_episode_record(
         except PaidfInputError:
             raise
         except Exception as exc:  # noqa: BLE001
-            raise PaidfInputError("could not read LeRobot v3 episode metadata") from exc
+            raise PaidfInputError(
+                "could not read LeRobot v3 episode metadata"
+            ) from exc
         finally:
             local.unlink(missing_ok=True)
         for row in rows:
@@ -1459,7 +1451,9 @@ def _trim_lerobot_episode(
         str(destination),
     ]
     try:
-        result = subprocess.run(command, capture_output=True, text=True, check=False)
+        result = subprocess.run(
+            command, capture_output=True, text=True, check=False
+        )
     except (OSError, subprocess.SubprocessError) as exc:
         raise PaidfInputError("could not extract the selected LeRobot episode") from exc
     if result.returncode != 0 or not destination.is_file():
@@ -1512,143 +1506,6 @@ def _fixture_provenance(run_id: str, base_uri: str) -> dict[str, Any]:
     }
 
 
-def _prepare_synthetic_fixture(
-    storage_client: Any,
-    *,
-    run_id: str,
-    base_uri: str,
-    legacy_provenance: dict[str, Any] | None,
-) -> PreparedPaidfInput:
-    """Render and stage the explicit repository-authored geometric video fixture."""
-
-    if legacy_provenance and legacy_provenance != _fixture_provenance(run_id, base_uri):
-        raise PaidfInputError(
-            "run input is immutable: refusing to replace non-legacy fixture "
-            "provenance; use a new --run-id"
-        )
-    if shutil.which("ffprobe") is None or shutil.which("ffmpeg") is None:
-        raise PaidfInputError(
-            "ffprobe and ffmpeg are required to materialize --seed-fixture"
-        )
-    from PIL import Image, ImageDraw
-
-    with tempfile.TemporaryDirectory(prefix="npa-paidf-fixture-") as tmp_name:
-        tmp = Path(tmp_name)
-        frames = tmp / "frames"
-        frames.mkdir()
-        for index in range(CONDITIONING_FRAMES):
-            # The benchmark pins the matching ``synthetic-neutral-v1`` PAIDF
-            # appearance profile. Flat off-white, cool-gray geometry and a soft
-            # right-side shadow make every requested attribute visible without
-            # embedding text or pretending that this is captured media.
-            image = Image.new("RGB", (1280, 720), (238, 240, 238))
-            draw = ImageDraw.Draw(image)
-            block_x = 200 + (index * 90) % 700
-            draw.ellipse([block_x + 35, 475, block_x + 295, 555], fill=(205, 210, 212))
-            draw.rectangle([block_x, 300, block_x + 260, 520], fill=(112, 142, 158))
-            draw.rectangle([600, 120, 680, 340], fill=(174, 184, 189))
-            draw.ellipse([570, 285, 710, 425], fill=(151, 165, 172))
-            draw.rectangle([625, 390, 655, 590], fill=(165, 176, 181))
-            image.save(frames / f"frame_{index:04d}.png")
-
-        source = tmp / "source.mp4"
-        command = [
-            "ffmpeg",
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-y",
-            "-framerate",
-            "8",
-            "-i",
-            str(frames / "frame_%04d.png"),
-            "-c:v",
-            "libx264",
-            "-pix_fmt",
-            "yuv420p",
-            "-movflags",
-            "+faststart",
-            str(source),
-        ]
-        try:
-            result = subprocess.run(
-                command, capture_output=True, text=True, check=False
-            )
-        except (OSError, subprocess.SubprocessError) as exc:
-            raise PaidfInputError(
-                "could not encode the synthetic fixture as H.264 MP4"
-            ) from exc
-        if result.returncode != 0 or not source.is_file():
-            raise PaidfInputError("could not encode the synthetic fixture as H.264 MP4")
-        media = probe_video(source)
-        source_sha = _sha256(source)
-        conditioning = tmp / "conditioning.mp4"
-        ffmpeg_contract = _derive_conditioning(source, conditioning) or {
-            "name": "ffmpeg",
-            "version": "unreported",
-            "arguments": _conditioning_arguments(),
-        }
-        conditioning_sha = _sha256(conditioning)
-        provenance = _build_provenance(
-            run_id=run_id,
-            base_uri=base_uri,
-            source={
-                "source_kind": "synthetic_fixture",
-                "kind": "npa_seeded_fixture",
-                "input_origin": "synthetic_generated",
-                "input_origin_label": "Synthetic seeded fixture",
-                "authenticity": {
-                    "classification": "synthetic_generated",
-                    "evidence": (
-                        "NPA-generated geometric frames; explicit --seed-fixture only."
-                    ),
-                },
-                "asset_license": "repository-authored test fixture",
-                "source_ref": "repository-generated geometric fixture",
-                "sha256": source_sha,
-                "byte_size": source.stat().st_size,
-                "media": media,
-            },
-            derivation={
-                "kind": "fixture_frames_to_conditioning_clip",
-                "source_frames": [
-                    f"frame_{index:04d}.png" for index in range(CONDITIONING_FRAMES)
-                ],
-                "sha256": conditioning_sha,
-                "byte_size": conditioning.stat().st_size,
-                "media": probe_video(conditioning),
-                "tool": ffmpeg_contract,
-                "staged_uri": f"{base_uri}conditioning.mp4",
-            },
-        )
-        _stage_file(
-            storage_client,
-            source,
-            f"{base_uri}source.mp4",
-            source_sha,
-            immutable_source=True,
-        )
-        _stage_file(
-            storage_client,
-            conditioning,
-            f"{base_uri}conditioning.mp4",
-            conditioning_sha,
-        )
-        _upload_fixture_provenance(
-            storage_client,
-            provenance,
-            f"{base_uri}provenance.json",
-            tmp,
-            legacy_provenance=legacy_provenance,
-        )
-    return PreparedPaidfInput(
-        "synthetic_fixture",
-        provenance,
-        reused=False,
-        cache_status="legacy_provenance_replaced" if legacy_provenance else "",
-    )
-
-
 def _build_provenance(
     *, run_id: str, base_uri: str, source: dict[str, Any], derivation: dict[str, Any]
 ) -> dict[str, Any]:
@@ -1692,9 +1549,12 @@ def _assert_existing_matches(
         return
     existing_sha = str(existing.get("sha256") or "")
     requested_sha = str(requested.get("sha256") or "")
-    if not existing_sha and (
-        existing.get("source_kind") == "lerobot_dataset"
-        or requested.get("source_kind") == "lerobot_dataset"
+    if (
+        not existing_sha
+        and (
+            existing.get("source_kind") == "lerobot_dataset"
+            or requested.get("source_kind") == "lerobot_dataset"
+        )
     ):
         # _stage_file compares the selected bytes against the immutable staged
         # source without persisting the confidential digest.
@@ -1910,57 +1770,6 @@ def _upload_json(
         digest,
         persist_digest_metadata=persist_digest_metadata,
     )
-
-
-def _upload_fixture_provenance(
-    client: Any,
-    payload: dict[str, Any],
-    uri: str,
-    tmp: Path,
-    *,
-    legacy_provenance: dict[str, Any] | None,
-) -> None:
-    """Commit fixture provenance, upgrading only the exact pre-video schema."""
-
-    if not legacy_provenance:
-        _upload_json(client, payload, uri, tmp)
-        return
-    run_id = str(payload.get("run_id") or "")
-    base_uri = str(payload.get("staged_canonical_s3_uri") or "")
-    expected_legacy = _fixture_provenance(run_id, base_uri)
-    if legacy_provenance != expected_legacy:
-        raise PaidfInputError(
-            "run input is immutable: refusing to replace non-legacy fixture "
-            "provenance; use a new --run-id"
-        )
-    current = _read_provenance(client, base_uri)
-    if current != expected_legacy:
-        raise PaidfInputError(
-            "run input changed while upgrading legacy fixture provenance; "
-            "retry with a new --run-id"
-        )
-    local = tmp / "provenance.json"
-    local.write_text(
-        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
-    bucket, key = _split_s3(uri)
-    try:
-        client.s3.upload_file(
-            str(local),
-            bucket,
-            key,
-            ExtraArgs={
-                "Metadata": {
-                    "npa-role": "paidf-input",
-                    "sha256": _sha256(local),
-                    "npa-schema-upgrade": "synthetic-fixture-video-v1",
-                }
-            },
-        )
-    except Exception as exc:  # noqa: BLE001
-        raise PaidfInputError(
-            f"could not upgrade legacy fixture provenance at {uri}: {exc}"
-        ) from exc
 
 
 def _verify_file(path: Path, digest: str, size: int, *, context: str) -> None:

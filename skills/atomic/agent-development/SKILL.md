@@ -70,40 +70,6 @@ Pure, side-effect-free functions (no network) so they unit-test cheaply:
 The `/chat` handler classifies the tier, enforces the input guardrail, honors an
 explicit model override, and returns `tier` + `usage` + `input_budget_ok`.
 
-## Reproducible external-model benchmark
-
-`npa agent benchmark` is the operator-side live benchmark for an
-OpenAI-compatible text model. Its implementation is
-`npa/src/npa/cli/agent_benchmark.py`; it reuses `run_action_loop` with a distinct
-fixed allowlist and never exposes a shell/SSH primitive. Mutating tools require
-explicit task-scoped action classes, and every execution records both the
-normalized action digest and the fixed operation digest. The ordinary agent API
-does not pass an `action_authorizer`, so its single-use confirmation-token
-contract is unchanged.
-
-The model-facing allowlist uses only stable NPA lifecycle vocabulary. Its
-`workflow_runtime_prepare` action invokes `npa agent workflow-runtime prepare`,
-which internally refreshes exact target access, prepares the isolated execution
-runtime, and verifies the target. The model never receives executable paths,
-local service addresses, state directories, or backend control-plane arguments.
-Every model-invoked subprocess passes a fail-closed NPA-only argv guard, and
-runtime observations expose typed readiness/diagnostic fields.
-
-The report measures streaming TTFT/latency/tokens/throughput, tool timing,
-representative high context, concurrency, resume state, and a clearly labeled
-non-agentic deterministic baseline. Exact provider and infrastructure identity
-stays out of the sanitized report. See
-`docs/workbench/agent-benchmark.md` and its JSON schema.
-
-The PAIDF scenario deliberately lets the first Rerun image preflight fail before
-unlocking remediation. The external model must use the observed failure to plan
-`registry_plan`/`registry_provision`, then build, inspect, push, and verify the
-checked-in viewer through fixed `npa workbench registry ensure` and `npa
-workbench image` commands. Build/push remain confirmation-gated. Push is
-additionally bound to the prior local image ID plus inspection digest, and submit
-consumes the verified immutable registry digest only. Do not replace this with
-an operator-scripted prelude or expose Docker/shell arguments to the model.
-
 ## Adding a capability cheaply (decision order)
 
 1. **Grounded intent** — can a regex intent + grounded state reply answer it?

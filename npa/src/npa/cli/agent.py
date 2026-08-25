@@ -164,8 +164,6 @@ from npa.provisioning_journal import (
     operation_heartbeats,
 )
 from npa.cli import agent_foxglove_config
-from npa.cli.agent_benchmark import benchmark_cmd
-from npa.cli.agent_workflow_runtime import app as workflow_runtime_app
 
 app = typer.Typer(
     name="agent",
@@ -174,8 +172,6 @@ app = typer.Typer(
 )
 app.command("auth-profile")(auth_profile_cmd)
 app.command("list")(agent_list_cmd)
-app.command("benchmark")(benchmark_cmd)
-app.add_typer(workflow_runtime_app, name="workflow-runtime")
 
 DEFAULT_AGENT_PORT = 8088
 DEFAULT_BACKEND_PORT = 8787

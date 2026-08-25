@@ -1145,14 +1145,19 @@ def test_workflow_dns_failure_is_unavailable_and_eight_ledger_stages_remain_visi
     assert "<none>" not in logs.output
     assert synthetic_secret not in logs.output
 
-    monkeypatch.setattr(
-        "npa.orchestration.skypilot.workflow_state.tail_live_job_logs",
-        lambda **kwargs: subprocess.CompletedProcess(
+    def successful_log_tail(**kwargs):  # noqa: ANN003, ANN202
+        log_task_ids.append(kwargs["stage"])
+        return subprocess.CompletedProcess(
             ["sky", "jobs", "logs"],
             0,
-            f"progress AWS_SECRET_ACCESS_KEY={synthetic_secret}\n",
+            "discarded-prefix\n" * 20
+            + f"progress AWS_SECRET_ACCESS_KEY={synthetic_secret}\n",
             "",
-        ),
+        )
+
+    monkeypatch.setattr(
+        "npa.orchestration.skypilot.workflow_state.tail_live_job_logs",
+        successful_log_tail,
     )
     successful_logs = runner.invoke(
         app,
@@ -1163,13 +1168,20 @@ def test_workflow_dns_failure_is_unavailable_and_eight_ledger_stages_remain_visi
             uri,
             "--stage",
             "stage-0",
+            "--max-output-chars",
+            "64",
             "--json",
         ],
     )
     assert successful_logs.exit_code == 0, successful_logs.output
     assert synthetic_secret not in successful_logs.output
-    assert "<redacted>" in json.loads(successful_logs.output)["log"]
-    assert log_task_ids == ["0"]
+    successful_payload = json.loads(successful_logs.output)
+    assert "<redacted>" in successful_payload["log"]
+    assert successful_payload["log_truncated"] is True
+    assert successful_payload["log_chars_returned"] == 64
+    assert successful_payload["log_chars_total"] > 64
+    assert len(successful_payload["log"] + successful_payload["stderr"]) == 64
+    assert log_task_ids == ["0", "0"]
 
 
 def test_workflow_cached_status_is_opt_in_and_skips_live_controller(

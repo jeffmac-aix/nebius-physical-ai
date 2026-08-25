@@ -575,12 +575,6 @@ def test_new_workbench_tools_require_contract_or_explicit_seam() -> None:
         "golden-eval",
         "groot",
         "health",
-        # Task-owned image lifecycle (CLI + SDK + local Docker/registry bytes),
-        # not a workload service and not invokable from an npa.workflow stage.
-        "image",
-        # Task-owned registry lifecycle used only to publish validated image bytes;
-        # it is a guarded CLI/SDK provisioning seam, not a workload service.
-        "registry",
         "insights",
         "isaac-lab",
         "lancedb",
