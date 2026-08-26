@@ -228,6 +228,7 @@ def test_cli_rejects_malformed_success(monkeypatch: pytest.MonkeyPatch) -> None:
         (lambda cli: cli.services_up(Path(".")), []),
         (lambda cli: cli.services_down(Path(".")), []),
         (lambda cli: cli.machine_status(Path("."), project_id="p"), []),
+        (lambda cli: cli.machine_release(Path("."), project_id="p"), []),
     ],
 )
 def test_vendor_cli_rejects_malformed_response_shapes_directly(
@@ -264,6 +265,7 @@ def test_supported_live_service_commands_never_inline_credentials(
     )
     cli.services_copy(tmp_path, tmp_path / "api-key", "sim:/workspace/client/api-key")
     cli.services_down(tmp_path)
+    cli.machine_release(tmp_path, project_id="assigned-project-for-test")
 
     assert calls == [
         ["antioch", "services", "build", "--service", "sim", "--json"],
@@ -288,6 +290,15 @@ def test_supported_live_service_commands_never_inline_credentials(
             "--json",
         ],
         ["antioch", "services", "down", "--json"],
+        [
+            "antioch",
+            "machine",
+            "release",
+            "--project",
+            "assigned-project-for-test",
+            "--yes",
+            "--json",
+        ],
     ]
 
 

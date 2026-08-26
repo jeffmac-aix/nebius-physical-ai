@@ -323,6 +323,27 @@ class AntiochCli:
             )
         return payload
 
+    def machine_release(self, cwd: Path, *, project_id: str) -> dict[str, Any]:
+        """Release only the exact project's assigned machine without prompting."""
+
+        payload = self._run(
+            [
+                "machine",
+                "release",
+                "--project",
+                project_id,
+                "--yes",
+                "--json",
+            ],
+            cwd=cwd,
+        ).payload
+        if not isinstance(payload, dict):
+            raise AntiochCliError(
+                "Antioch machine release response was malformed",
+                error_type="malformed_cli_output",
+            )
+        return payload
+
 
 def remote_id(payload: dict[str, Any], *, kind: str) -> str:
     keys = (

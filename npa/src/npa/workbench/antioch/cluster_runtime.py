@@ -41,6 +41,7 @@ DAEMON_POLL_SECONDS = 5.0
 DAEMON_ABSENCE_THRESHOLD = 3
 DAEMON_ERROR_THRESHOLD = 3
 DAEMON_STARTUP_GRACE_SECONDS = 600.0
+ASSIGNMENT_BOUND_MARKER = "SSH is already bound to another local client"
 
 
 def _write_state(path: Path, **values: Any) -> None:
@@ -188,6 +189,42 @@ def _private_value(path: Path, *, label: str) -> str:
     return value
 
 
+def _start_cluster_service(
+    cli: AntiochCli,
+    *,
+    runtime: Path,
+    project_id: str,
+    scenario: str,
+) -> bool:
+    """Start the service, releasing only a proven dead-client assignment.
+
+    A provider machine can outlive the Kubernetes pod whose local SSH client
+    owned it.  The supported service command then fails deterministically
+    before any new stream is dispatched.  Cancel the exact project's live run
+    first, release that exact assignment, and retry once.  Other failures stay
+    fail-closed.
+    """
+
+    try:
+        cli.services_build(runtime, service="sim")
+        cli.services_up(runtime)
+        return False
+    except AntiochCliError as exc:
+        if ASSIGNMENT_BOUND_MARKER not in str(exc):
+            raise
+    _cancel_remote_live_runs(
+        cli,
+        runtime=runtime,
+        project_id=project_id,
+        scenario=scenario,
+        attempts=5,
+    )
+    cli.machine_release(runtime, project_id=project_id)
+    cli.services_build(runtime, service="sim")
+    cli.services_up(runtime)
+    return True
+
+
 def run_cluster(args: argparse.Namespace) -> int:
     private_root = Path(args.private_root)
     bundle = private_root / "live-bundle"
@@ -250,8 +287,12 @@ def run_cluster(args: argparse.Namespace) -> int:
             scenario=args.scenario,
             heartbeat_unix=0.0,
         )
-        cli.services_build(runtime, service="sim")
-        cli.services_up(runtime)
+        _start_cluster_service(
+            cli,
+            runtime=runtime,
+            project_id=project_id,
+            scenario=args.scenario,
+        )
         service_started = True
         _stage_runtime_source(cli, runtime=runtime)
         _stage_private_bundle(cli, runtime=runtime, client_bundle=bundle)

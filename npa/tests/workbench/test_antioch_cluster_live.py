@@ -13,6 +13,7 @@ import pytest
 from pydantic import ValidationError
 
 from npa.workbench.antioch import cluster_deploy, cluster_runtime
+from npa.workbench.antioch.vendor_cli import AntiochCliError
 
 
 def _config(tmp_path: Path, **updates: object) -> cluster_deploy.ClusterLiveConfig:
@@ -297,6 +298,68 @@ def test_supervisor_recovery_requires_converged_loss(
         "max_age_seconds": 30.0,
     }
     assert cluster_runtime._supervisor_recovery_reason(**(defaults | values)) == expected
+
+
+def test_bound_provider_assignment_is_released_after_exact_run_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    class Cli:
+        build_attempts = 0
+
+        def services_build(self, *_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+            calls.append("build")
+            self.build_attempts += 1
+            if self.build_attempts == 1:
+                raise AntiochCliError(
+                    "assignment SSH is already bound to another local client"
+                )
+            return {}
+
+        def services_up(self, *_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+            calls.append("up")
+            return {}
+
+        def machine_release(self, *_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+            calls.append("release")
+            return {}
+
+    def cancel(*_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+        calls.append("cancel")
+
+    monkeypatch.setattr(cluster_runtime, "_cancel_remote_live_runs", cancel)
+    recovered = cluster_runtime._start_cluster_service(
+        Cli(),  # type: ignore[arg-type]
+        runtime=tmp_path,
+        project_id="assigned-project-for-test",
+        scenario="openpi_franka_mk8s_live",
+    )
+    assert recovered is True
+    assert calls == ["build", "cancel", "release", "build", "up"]
+
+
+def test_unrelated_service_start_failure_does_not_release_assignment(
+    tmp_path: Path,
+) -> None:
+    class Cli:
+        def services_build(self, *_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+            raise AntiochCliError("provider capacity unavailable")
+
+        def services_up(self, *_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+            raise AssertionError("must not be called")
+
+        def machine_release(self, *_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+            raise AssertionError("must not be called")
+
+    with pytest.raises(AntiochCliError, match="capacity"):
+        cluster_runtime._start_cluster_service(
+            Cli(),  # type: ignore[arg-type]
+            runtime=tmp_path,
+            project_id="assigned-project-for-test",
+            scenario="openpi_franka_mk8s_live",
+        )
 
 
 def test_remote_state_read_recovers_transient_exec_fragment(
