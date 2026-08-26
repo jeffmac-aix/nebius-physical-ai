@@ -678,7 +678,9 @@ def _matching_policy_deployments(
     ]
 
 
-def _recover_unready_adapter(apps: Any, config: ClusterLiveConfig) -> str:
+def _recover_unready_adapter(
+    apps: Any, core: Any, config: ClusterLiveConfig
+) -> str:
     """Roll only an exact owned, reconciled adapter whose replica is unhealthy."""
 
     deployment = apps.read_namespaced_deployment(
@@ -686,7 +688,21 @@ def _recover_unready_adapter(apps: Any, config: ClusterLiveConfig) -> str:
     )
     if not _owned(deployment.metadata, config.identity):
         raise ClusterLiveError("adapter Deployment ownership is not proven")
-    if config.adapter_replicas != 1 or int(deployment.status.ready_replicas or 0) == 1:
+    pods = core.list_namespaced_pod(
+        config.namespace,
+        label_selector=f"npa.nebius.ai/live-identity={config.identity}",
+    ).items
+    restart_count = sum(
+        int(status.restart_count or 0)
+        for pod in pods
+        for status in (getattr(pod.status, "container_statuses", None) or [])
+    )
+    healthy = (
+        int(deployment.status.ready_replicas or 0) == 1
+        and len(pods) == 1
+        and restart_count == 0
+    )
+    if config.adapter_replicas != 1 or healthy:
         return "not_needed"
     generation = hashlib.sha256(
         f"{config.identity}\n{time.time_ns()}".encode()
@@ -992,7 +1008,7 @@ def apply_cluster(config: ClusterLiveConfig) -> dict[str, Any]:
         identity=config.identity,
     )
     if actions["adapter_deployment"] == "reconciled":
-        actions["adapter_recovery"] = _recover_unready_adapter(apps, config)
+        actions["adapter_recovery"] = _recover_unready_adapter(apps, core, config)
     adapter_np = manifests["adapter_network_policy"]
     actions["adapter_network_policy"] = _apply_owned(
         networking.read_namespaced_network_policy,

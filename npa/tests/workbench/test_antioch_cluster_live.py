@@ -314,11 +314,16 @@ def test_apply_cluster_guards_ownership_and_dependencies_beyond_selector(
 
 
 @pytest.mark.parametrize(
-    "ready_replicas,expected_patches,expected_status",
-    [(1, 0, "not_needed"), (0, 1, "rolled_out")],
+    "ready_replicas,restarts,expected_patches,expected_status",
+    [
+        (1, 0, 0, "not_needed"),
+        (0, 0, 1, "rolled_out"),
+        (1, 1, 1, "rolled_out"),
+    ],
 )
 def test_reconcile_rolls_only_an_unready_owned_adapter(
     ready_replicas: int,
+    restarts: int,
     expected_patches: int,
     expected_status: str,
     tmp_path: Path,
@@ -333,8 +338,24 @@ def test_reconcile_rolls_only_an_unready_owned_adapter(
         read_namespaced_deployment=lambda **_kwargs: deployment,
         patch_namespaced_deployment=lambda **kwargs: patches.append(kwargs),
     )
+    core = SimpleNamespace(
+        list_namespaced_pod=lambda *_args, **_kwargs: SimpleNamespace(
+            items=[
+                SimpleNamespace(
+                    status=SimpleNamespace(
+                        container_statuses=[
+                            SimpleNamespace(restart_count=restarts)
+                        ]
+                    )
+                )
+            ]
+        )
+    )
 
-    assert cluster_deploy._recover_unready_adapter(apps, config) == expected_status
+    assert (
+        cluster_deploy._recover_unready_adapter(apps, core, config)
+        == expected_status
+    )
     assert len(patches) == expected_patches
     if patches:
         annotations = patches[0]["body"]["spec"]["template"]["metadata"][
