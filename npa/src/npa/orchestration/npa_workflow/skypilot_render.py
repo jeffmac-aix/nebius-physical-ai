@@ -996,6 +996,19 @@ def render_task_run_script(command: Sequence[str], *, preamble: str = "") -> str
         "  fi\n"
         "  export PYTHONPATH\n"
         "fi\n"
+        # Baked workflow images copy the source attested by NPA_IMAGE_SOURCE_SHA to
+        # /opt/npa/src. SkyPilot intentionally removes image-level PYTHONPATH while
+        # bootstrapping, so setup records that trusted path for the separate run shell.
+        "if [ -s /tmp/npa-baked-pythonpath ]; then\n"
+        '  npa_baked_pythonpath="$(cat /tmp/npa-baked-pythonpath)"\n'
+        '  if [ -d "$npa_baked_pythonpath" ]; then\n'
+        '    if [ -n "$PYTHONPATH" ]; then\n'
+        '      export PYTHONPATH="$npa_baked_pythonpath:$PYTHONPATH"\n'
+        "    else\n"
+        '      export PYTHONPATH="$npa_baked_pythonpath"\n'
+        "    fi\n"
+        "  fi\n"
+        "fi\n"
         'npa_python=""\n'
         "if [ -s /tmp/npa-python ]; then\n"
         '  npa_python="$(cat /tmp/npa-python)"\n'
@@ -1548,6 +1561,11 @@ def render_setup_for_tool(
             '  echo "baked NPA interpreter is not executable: $npa_baked_python" >&2\n'
             "  exit 69\n"
             "fi\n"
+            'npa_baked_pythonpath=""\n'
+            "if [ -d /opt/npa/src ]; then\n"
+            '  npa_baked_pythonpath=/opt/npa/src\n'
+            '  export PYTHONPATH="$npa_baked_pythonpath${PYTHONPATH:+:$PYTHONPATH}"\n'
+            "fi\n"
             "\"$npa_baked_python\" - <<'PY'\n"
             "import importlib\n"
             "import os\n"
@@ -1563,6 +1581,9 @@ def render_setup_for_tool(
             "print('immutable baked NPA runtime verified', actual)\n"
             "PY\n"
             "printf '%s\\n' \"$npa_baked_python\" > /tmp/npa-python\n"
+            'if [ -n "$npa_baked_pythonpath" ]; then\n'
+            "  printf '%s\\n' \"$npa_baked_pythonpath\" > /tmp/npa-baked-pythonpath\n"
+            "fi\n"
         )
     parts = [default_npa_setup()]
     parts.append(render_vendor_interpreter_setup(tool_vendor_interpreters(tool_ref)))

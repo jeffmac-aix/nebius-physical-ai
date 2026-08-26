@@ -664,6 +664,9 @@ def test_exact_source_and_per_state_immutable_images_reach_rendered_tasks() -> N
         )
         assert "NPA_BAKED_PYTHON" in task["setup"]
         assert "/tmp/npa-python" in task["setup"]
+        assert "/opt/npa/src" in task["setup"]
+        assert "/tmp/npa-baked-pythonpath" in task["setup"]
+        assert "/tmp/npa-baked-pythonpath" in task["run"]
         assert "baked NPA interpreter must be an absolute path" in task["setup"]
         assert "baked NPA interpreter is not executable" in task["setup"]
         assert "pip install" not in task["setup"]
