@@ -4,6 +4,7 @@ import importlib.util
 import hashlib
 import re
 import subprocess
+import time
 from pathlib import Path
 
 import numpy as np
@@ -18,6 +19,37 @@ from npa.workflows.byof.openpi_live import _certificate
 
 ROOT = Path(__file__).resolve().parents[3]
 EXAMPLE = ROOT / "npa/examples/antioch-openpi-live"
+
+
+def _daemon_status(
+    *, state: str = "idle", scenario_run_id: str = "", session: bool = True
+) -> dict[str, object]:
+    observed = int(time.time() * 1_000_000)
+    stream = {"state": state, "scenario_run_id": scenario_run_id}
+    leases: list[dict[str, str]] = []
+    if scenario_run_id:
+        leases = [
+            {"kind": "process", "label": "scenario"},
+            {"kind": "stream", "label": "stream"},
+        ]
+        if session:
+            leases.append(
+                {"kind": "session", "label": "antioch scenario run"}
+            )
+    observation = {"observed_at": observed, "leases": leases, "stream": stream}
+    return {
+        "daemon_error": None,
+        "runtime": observation,
+        "runtime_status": {
+            "guest_state": "healthy",
+            "guest_observed_at": observed,
+            "guest_failure_started_at": None,
+            "observation": observation,
+        },
+        # Deliberately include the cached compatibility field. Production
+        # liveness must ignore it and use the two structured observations.
+        "stream": stream,
+    }
 
 
 def test_live_example_uses_only_runtime_project_identity() -> None:
@@ -480,7 +512,7 @@ def test_live_cleanup_cancels_only_exact_active_scenario(
             return next(pages)
 
         def machine_status(self, *_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
-            return {"stream": {}}
+            return _daemon_status()
 
         def show(self, *_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
             return {
@@ -528,7 +560,7 @@ def test_live_cleanup_accepts_exact_list_cancel_terminalization_race(
             return next(pages)
 
         def machine_status(self, *_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
-            return {"stream": {"state": "idle"}}
+            return _daemon_status()
 
         def cancel(self, *_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
             raise AntiochCliError("scenario run 'just-terminalized' was not found")
@@ -552,7 +584,9 @@ def test_live_cleanup_accepts_terminal_failed_stream_record(
             return []
 
         def machine_status(self, *_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
-            return {"stream": {"state": "failed", "scenario_run_id": "terminal"}}
+            return _daemon_status(
+                state="failed", scenario_run_id="terminal", session=False
+            )
 
         def show(self, *_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
             return {
@@ -596,7 +630,7 @@ def test_live_cleanup_tolerates_typed_missing_run_during_cancel(
             return next(pages)
 
         def machine_status(self, *_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
-            return {"stream": {}}
+            return _daemon_status()
 
         def cancel(self, *_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
             raise AntiochCliError(
@@ -628,12 +662,7 @@ def test_live_reconcile_adopts_only_machine_stream_owner(tmp_path: Path) -> None
             ]
 
         def machine_status(self, *_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
-            return {
-                "stream": {
-                    "state": "ready",
-                    "scenario_run_id": "exact-active",
-                }
-            }
+            return _daemon_status(state="ready", scenario_run_id="exact-active")
 
     active = live_reconcile._active_run(
         Cli(),  # type: ignore[arg-type]
@@ -650,7 +679,7 @@ def test_live_reconcile_rejects_unlisted_stream_owner(tmp_path: Path) -> None:
             return []
 
         def machine_status(self, *_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
-            return {"stream": {"state": "ready", "scenario_run_id": "other"}}
+            return _daemon_status(state="ready", scenario_run_id="other")
 
     with pytest.raises(
         live_reconcile.AntiochLiveReconcileError,
@@ -675,7 +704,7 @@ def test_daemon_liveness_requires_exact_machine_stream_owner(tmp_path: Path) -> 
             ]
 
         def machine_status(self, *_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
-            return {"stream": {"state": "idle"}}
+            return _daemon_status()
 
     cli = Cli()
     assert live_reconcile._active_run(  # type: ignore[arg-type]
@@ -692,6 +721,52 @@ def test_daemon_liveness_requires_exact_machine_stream_owner(tmp_path: Path) -> 
         )
         is None
     )
+
+
+def test_stdout_compatible_cached_stream_cannot_mask_dead_rome_heartbeat() -> None:
+    machine = _daemon_status(state="ready", scenario_run_id="exact-active")
+    runtime_status = machine["runtime_status"]
+    assert isinstance(runtime_status, dict)
+    runtime_status["guest_state"] = "unreachable"
+    runtime_status["guest_failure_started_at"] = int(time.time() * 1_000_000)
+
+    with pytest.raises(
+        live_reconcile.AntiochLiveReconcileError,
+        match="Rome daemon liveness is unhealthy",
+    ):
+        live_reconcile._daemon_runtime_snapshot(machine)
+
+
+def test_stale_exact_stream_without_vendor_session_fails_closed() -> None:
+    machine = _daemon_status(
+        state="ready", scenario_run_id="exact-active", session=False
+    )
+    with pytest.raises(
+        live_reconcile.AntiochLiveReconcileError,
+        match="process/session/stream lease ownership",
+    ):
+        live_reconcile._daemon_runtime_snapshot(machine)
+
+
+def test_malformed_or_stale_daemon_observation_fails_closed() -> None:
+    malformed = _daemon_status(state="ready", scenario_run_id="exact-active")
+    runtime = malformed["runtime"]
+    assert isinstance(runtime, dict)
+    runtime["observed_at"] = "not-a-timestamp"
+    with pytest.raises(
+        live_reconcile.AntiochLiveReconcileError, match="timestamp is malformed"
+    ):
+        live_reconcile._daemon_runtime_snapshot(malformed)
+
+    stale = _daemon_status(state="ready", scenario_run_id="exact-active")
+    stale_runtime = stale["runtime"]
+    assert isinstance(stale_runtime, dict)
+    stale_runtime["observed_at"] = int((time.time() - 31) * 1_000_000)
+    with pytest.raises(
+        live_reconcile.AntiochLiveReconcileError,
+        match="direct daemon observation is stale",
+    ):
+        live_reconcile._daemon_runtime_snapshot(stale)
 
 
 def test_double_wss_relay_forwards_bounded_request_reply(
@@ -807,7 +882,7 @@ def test_live_stop_cancels_scenario_before_service(
 
         def machine_status(self, *_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
             calls.append("machine-status")
-            return {"stream": {}}
+            return _daemon_status()
 
         def services_down(self, _runtime: Path) -> None:
             calls.append("services-down")

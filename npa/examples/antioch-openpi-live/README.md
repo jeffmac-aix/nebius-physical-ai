@@ -62,13 +62,15 @@ another scenario. The bridge is the detached service container's entrypoint and
 waits for the supported runtime bundle staging before accepting traffic. Separate
 bridge health and relay state remain supervised across replacement; health uses
 only short service-exec socket probes, while the bridge remains bound to the
-replaceable service container instead of the CLI exec lifetime. If
-Antioch accepts an interactive scenario but the
-foreground CLI loses attachment while reporting the occupied stream lease, the
-supervisor reconciles the exact run through supported project-scoped
-`scenario list` and `machine status` JSON. It adopts only the matching stream
-owner, waits for terminal state, and never dispatches a duplicate renewal while
-that accepted run is active.
+replaceable service container instead of the CLI exec lifetime. The pod controller
+owns the foreground `antioch scenario run --stream --verbose` client directly;
+no shell wrapper, operator process, tunnel, or retained exec owns its daemon
+session heartbeat. Supported structured `machine status` must show both a fresh
+Rome daemon-health observation and a fresh direct-daemon observation, with
+matching exact stream ownership and one scenario session lease. A child exit or
+missing/stale lease revokes readiness immediately. Recovery cancels only the exact
+run, proves stable absence, rebuilds and re-stages after recycle when needed, and
+starts one successor with capped backoff; ambiguous ownership fails closed.
 
 Mission Control can report the livestream as `ready` until an authenticated
 viewer opens the supported console link. Isaac's first rendered camera frame may

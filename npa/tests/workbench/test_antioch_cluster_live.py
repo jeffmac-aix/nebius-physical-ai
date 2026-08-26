@@ -4,6 +4,7 @@ import base64
 import io
 import json
 import os
+import stat
 import tarfile
 import time
 from pathlib import Path
@@ -214,13 +215,24 @@ def test_cluster_runtime_probe_is_fail_closed(tmp_path: Path) -> None:
     state.write_text(json.dumps({"status": "starting"}), encoding="utf-8")
     assert cluster_runtime.probe(state, **kwargs) == 1
     healthy = {
-        "schema_version": 2,
+        "schema_version": 3,
         "owner_identity": "owner",
         "session_id": "session",
         "scenario_run_id": "run",
         "status": "running",
         "daemon_status": "owned",
         "heartbeat_unix": time.time(),
+        "vendor_process_status": "running",
+        "daemon_guest_state": "healthy",
+        "controller_pid": 1,
+        "vendor_pid": 2,
+        "vendor_parent_pid": 1,
+        "vendor_process_group_isolated": True,
+        "daemon_observed_at": time.time(),
+        "rome_guest_observed_at": time.time(),
+        "scenario_session_leases": 1,
+        "process_leases": 1,
+        "stream_leases": 1,
     }
     state.write_text(json.dumps(healthy), encoding="utf-8")
     assert cluster_runtime.probe(state, **kwargs) == 0
@@ -298,6 +310,84 @@ def test_supervisor_recovery_requires_converged_loss(
         "max_age_seconds": 30.0,
     }
     assert cluster_runtime._supervisor_recovery_reason(**(defaults | values)) == expected
+
+
+def test_vendor_stream_process_observes_real_child_exit_and_drains_output(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    executable = tmp_path / "vendor-client"
+    executable.write_text(
+        "#!/bin/sh\n"
+        "printf 'secret-shaped-vendor-output\\n'\n"
+        "printf 'NPA_OPENPI_METRICS frames=2 round_trips=1\\n'\n"
+        "exit 7\n",
+        encoding="utf-8",
+    )
+    executable.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
+
+    vendor = cluster_runtime.VendorStreamProcess.start(
+        executable=executable,
+        runtime=tmp_path,
+        scenario="scenario-for-test",
+        timeout_seconds=60,
+    )
+    assert vendor.process.wait(timeout=5) == 7
+    assert vendor.exit_snapshot() == ("nonzero", 7)
+    assert vendor._drain is not None
+    vendor._drain.join(timeout=5)
+    output_bytes, output_age = vendor.output_snapshot()
+    assert output_bytes > 0
+    assert output_age >= 0
+    rendered = capsys.readouterr().out
+    assert rendered == "NPA_OPENPI_METRICS frames=2 round_trips=1\n"
+    assert "secret-shaped" not in rendered
+
+
+def test_vendor_stream_process_outlives_an_unrelated_operator_process(
+    tmp_path: Path,
+) -> None:
+    executable = tmp_path / "vendor-client"
+    executable.write_text("#!/bin/sh\nsleep 30\n", encoding="utf-8")
+    executable.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
+
+    vendor = cluster_runtime.VendorStreamProcess.start(
+        executable=executable,
+        runtime=tmp_path,
+        scenario="scenario-for-test",
+        timeout_seconds=60,
+    )
+    unrelated = __import__("subprocess").run(["/bin/true"], check=False)
+    assert unrelated.returncode == 0
+    assert vendor.process.poll() is None
+    vendor.terminate()
+
+
+def test_successor_launch_proves_absence_and_dispatches_once(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls: list[str] = []
+    expected = object()
+
+    monkeypatch.setattr(
+        cluster_runtime,
+        "_cancel_remote_live_runs",
+        lambda *_args, **_kwargs: calls.append("reconcile-absence"),
+    )
+    monkeypatch.setattr(
+        cluster_runtime.VendorStreamProcess,
+        "start",
+        lambda **_kwargs: calls.append("dispatch") or expected,
+    )
+    result = cluster_runtime._launch_vendor_successor(
+        object(),  # type: ignore[arg-type]
+        executable=tmp_path / "antioch",
+        runtime=tmp_path,
+        project_id="project-for-test",
+        scenario="scenario-for-test",
+        timeout_seconds=60,
+    )
+    assert result is expected
+    assert calls == ["reconcile-absence", "dispatch"]
 
 
 def test_bound_provider_assignment_is_released_after_exact_run_cleanup(

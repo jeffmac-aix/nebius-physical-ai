@@ -216,25 +216,28 @@ exact live run, releases only that project assignment through the supported CLI,
 retries the service build once before dispatch. A Mission Control stream in `ready` state is
 published but waiting for an authenticated viewer; do not describe it as actively
 viewed until the viewer connects and the first rendered frame advances.
-If an interactive dispatch is accepted but its foreground CLI detaches and reports
-the now-occupied lease, the supervisor reconciles only the matching project-scoped
-scenario from supported `scenario list` plus `machine status` JSON. It waits on
-that exact run instead of issuing duplicate renewals, and records the adopted run
-ID only in owner-private local state.
+The controller owns `antioch scenario run --stream --verbose` as its direct
+foreground child and drains its output in-process. A remote run cannot be adopted
+after that child exits: the daemon session heartbeat belongs to the departed CLI.
+The controller cancels only the matching project-scoped run, proves stable exact
+absence through supported `scenario list` and `machine status` JSON, and then starts
+one successor. This prevents both a stale run with no client heartbeat and duplicate
+stream dispatch.
 
 Adapter readiness is an exact daemon-ownership contract, not a process or open-port
 check. The controller continuously reconciles the project-scoped scenario inventory
-with `machine status`; readiness requires one matching stream owner, a current run ID,
-the adapter ownership identity and session generation, and a heartbeat no more than 30
-seconds old. State uses versioned JSON and owner-only atomic replacement. Local and
+with the supported structured `machine status` contract. Readiness requires Rome's
+`runtime_status.guest_state` to be healthy and freshly observed, a fresh direct-daemon
+`runtime` observation, matching Rome/direct exact stream ownership, exactly one
+`antioch scenario run` session lease, process and stream leases, and a live direct
+child whose parent is container PID 1. State uses versioned JSON and owner-only atomic replacement. Local and
 Kubernetes-exec readers base64-frame the file bytes to prevent transport-level JSON
 coercion and retry a bounded number of transient empty/partial reads, but a
 missing schema, malformed value, wrong identity, stale heartbeat, absent stream owner,
-or unreadable state revokes readiness. Three authoritative absences sustained beyond
-the 120-second recovery window replace the in-pod supervisor. The replacement first
-reconciles and adopts an existing exact run, so it does not create a second stream
-lease; only authoritative absence permits a new dispatch. Controller-child exit and
-provider machine recycle use the same cluster-native recovery path. The operator/Codex
+missing vendor session, unhealthy/stale Rome observation, child exit, or unreadable
+state revokes readiness. Converged loss terminates the exact child process group,
+cancels the exact run, rebuilds and re-stages after recycle when needed, and starts one
+successor with capped backoff. Ambiguous ownership fails closed. The operator/Codex
 process is not part of this supervision and may exit after handoff.
 
 Before a retained live run is accepted, require at least 120 seconds, 120 valid

@@ -9,12 +9,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
+import re
 import signal
 import subprocess
-import sys
+import threading
 import time
 import uuid
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -25,15 +28,15 @@ from .live import (
     _stage_project,
     _stage_runtime_source,
     _validate_bundle,
-    _write_supervisor,
 )
-from .live_reconcile import _active_run_snapshot
+from .live_reconcile import AntiochLiveReconcileError, _active_run_snapshot
 from .runtime import ensure_runtime
 from .vendor_cli import AntiochCli, AntiochCliError
 
 
-SCHEMA = "npa.workbench.antioch-cluster-live.v2"
-SCHEMA_VERSION = 2
+SCHEMA = "npa.workbench.antioch-cluster-live.v3"
+SCHEMA_VERSION = 3
+RELAY_SCHEMA_VERSION = 2
 DEFAULT_CONTROLLER_MAX_AGE_SECONDS = 30.0
 DEFAULT_RELAY_MAX_AGE_SECONDS = 150.0
 STATE_READ_ATTEMPTS = 3
@@ -42,6 +45,128 @@ DAEMON_ABSENCE_THRESHOLD = 3
 DAEMON_ERROR_THRESHOLD = 3
 DAEMON_STARTUP_GRACE_SECONDS = 600.0
 ASSIGNMENT_BOUND_MARKER = "SSH is already bound to another local client"
+RESTAGE_INTERVAL_SECONDS = 60.0
+RECOVERY_BACKOFF_SECONDS = (2.0, 5.0, 10.0, 20.0, 30.0)
+_METRIC_KEY = re.compile(r"^[a-z][a-z0-9_]*$")
+
+
+def _sanitized_metric_line(line: bytes) -> str:
+    """Return only the fixed numeric OpenPI metrics contract from vendor output."""
+
+    marker = b"NPA_OPENPI_METRICS "
+    if marker not in line:
+        return ""
+    fields: list[str] = []
+    for raw in line.split(marker, 1)[1].split():
+        key, separator, value = raw.partition(b"=")
+        try:
+            key_text = key.decode("ascii")
+            value_text = value.decode("ascii")
+            number = float(value_text)
+        except (UnicodeDecodeError, ValueError):
+            return ""
+        if not separator or not _METRIC_KEY.fullmatch(key_text) or not math.isfinite(number):
+            return ""
+        fields.append(f"{key_text}={value_text}")
+    return f"NPA_OPENPI_METRICS {' '.join(fields)}" if fields else ""
+
+
+@dataclass
+class VendorStreamProcess:
+    """One directly-owned foreground Antioch stream client and its drain."""
+
+    process: subprocess.Popen[bytes]
+    started_monotonic: float
+    last_output_monotonic: float
+    output_bytes: int = 0
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    _drain: threading.Thread | None = field(default=None, repr=False)
+
+    @classmethod
+    def start(
+        cls,
+        *,
+        executable: Path,
+        runtime: Path,
+        scenario: str,
+        timeout_seconds: int,
+    ) -> "VendorStreamProcess":
+        started = time.monotonic()
+        process = subprocess.Popen(
+            [
+                str(executable),
+                "scenario",
+                "run",
+                "--scenario",
+                scenario,
+                "--timeout",
+                str(timeout_seconds),
+                "--stream",
+                "--verbose",
+            ],
+            cwd=runtime,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+        owned = cls(
+            process=process,
+            started_monotonic=started,
+            last_output_monotonic=started,
+        )
+        drain = threading.Thread(
+            target=owned._drain_output,
+            name="antioch-vendor-output-drain",
+            daemon=True,
+        )
+        owned._drain = drain
+        drain.start()
+        return owned
+
+    def _drain_output(self) -> None:
+        stream = self.process.stdout
+        if stream is None:
+            return
+        pending = b""
+        while True:
+            chunk = stream.read(65_536)
+            if not chunk:
+                line = _sanitized_metric_line(pending)
+                if line:
+                    print(line, flush=True)
+                return
+            with self._lock:
+                self.output_bytes += len(chunk)
+                self.last_output_monotonic = time.monotonic()
+            pending += chunk
+            while b"\n" in pending:
+                raw_line, pending = pending.split(b"\n", 1)
+                line = _sanitized_metric_line(raw_line)
+                if line:
+                    print(line, flush=True)
+            if len(pending) > 65_536:
+                pending = pending[-65_536:]
+
+    def output_snapshot(self, *, now: float | None = None) -> tuple[int, float]:
+        with self._lock:
+            observed_now = time.monotonic() if now is None else now
+            return self.output_bytes, observed_now - self.last_output_monotonic
+
+    def exit_snapshot(self) -> tuple[str, int | None]:
+        code = self.process.poll()
+        if code is None:
+            return "running", None
+        if code < 0:
+            return "signal", code
+        if code == 0:
+            return "completed", code
+        return "nonzero", code
+
+    def terminate(self) -> None:
+        _terminate_process_group(self.process)
+        if self._drain is not None:
+            self._drain.join(timeout=5)
 
 
 def _write_state(path: Path, **values: Any) -> None:
@@ -92,27 +217,54 @@ def _state_ready(
     max_age_seconds: float,
     now: float | None = None,
 ) -> bool:
-    if int(state.get("schema_version") or 0) != SCHEMA_VERSION:
+    expected_schema_version = (
+        SCHEMA_VERSION if component.startswith("controller") else RELAY_SCHEMA_VERSION
+    )
+    if int(state.get("schema_version") or 0) != expected_schema_version:
         return False
     if str(state.get("owner_identity") or "") != expected_owner_identity:
         return False
+    observed_now = time.time() if now is None else now
+
+    def vendor_session_ready() -> bool:
+        daemon_observed = state.get("daemon_observed_at")
+        rome_observed = state.get("rome_guest_observed_at")
+        if not all(
+            isinstance(value, (int, float)) and not isinstance(value, bool)
+            for value in (daemon_observed, rome_observed)
+        ):
+            return False
+        return bool(
+            state.get("vendor_process_status") == "running"
+            and state.get("daemon_guest_state") == "healthy"
+            and int(state.get("controller_pid") or 0) == 1
+            and int(state.get("vendor_parent_pid") or 0) == 1
+            and int(state.get("vendor_pid") or 0) > 1
+            and state.get("vendor_process_group_isolated") is True
+            and int(state.get("scenario_session_leases") or 0) == 1
+            and int(state.get("process_leases") or 0) >= 1
+            and int(state.get("stream_leases") or 0) == 1
+            and -5.0 <= observed_now - float(daemon_observed) <= max_age_seconds
+            and -5.0 <= observed_now - float(rome_observed) <= max_age_seconds
+        )
+
     if component == "controller-liveness":
         published = state.get("published_unix")
         published_age = (
-            (time.time() if now is None else now) - float(published)
+            observed_now - float(published)
             if isinstance(published, (int, float))
             and not isinstance(published, bool)
             else max_age_seconds + 1
         )
-        return bool(
-            -5.0 <= published_age <= max_age_seconds
-            and state.get("status")
-            in {"starting", "running", "degraded", "recovering"}
-        )
+        if not (-5.0 <= published_age <= max_age_seconds):
+            return False
+        if state.get("status") == "running":
+            return vendor_session_ready()
+        return state.get("status") in {"starting", "recovering"}
     heartbeat = state.get("heartbeat_unix")
     if not isinstance(heartbeat, (int, float)) or isinstance(heartbeat, bool):
         return False
-    age = (time.time() if now is None else now) - float(heartbeat)
+    age = observed_now - float(heartbeat)
     if age < -5.0 or age > max_age_seconds:
         return False
     if component == "controller":
@@ -121,6 +273,7 @@ def _state_ready(
             and state.get("daemon_status") == "owned"
             and str(state.get("scenario_run_id") or "")
             and str(state.get("session_id") or "")
+            and vendor_session_ready()
         )
     if component == "relay-liveness":
         return state.get("status") in {
@@ -133,7 +286,7 @@ def _state_ready(
     return state.get("status") == "connected"
 
 
-def _terminate_process_group(process: subprocess.Popen[str]) -> None:
+def _terminate_process_group(process: subprocess.Popen[Any]) -> None:
     if process.poll() is not None:
         return
     try:
@@ -225,6 +378,32 @@ def _start_cluster_service(
     return True
 
 
+def _launch_vendor_successor(
+    cli: AntiochCli,
+    *,
+    executable: Path,
+    runtime: Path,
+    project_id: str,
+    scenario: str,
+    timeout_seconds: int,
+) -> VendorStreamProcess:
+    """Prove exact absence before starting one foreground successor."""
+
+    _cancel_remote_live_runs(
+        cli,
+        runtime=runtime,
+        project_id=project_id,
+        scenario=scenario,
+        attempts=60,
+    )
+    return VendorStreamProcess.start(
+        executable=executable,
+        runtime=runtime,
+        scenario=scenario,
+        timeout_seconds=timeout_seconds,
+    )
+
+
 def run_cluster(args: argparse.Namespace) -> int:
     private_root = Path(args.private_root)
     bundle = private_root / "live-bundle"
@@ -246,33 +425,18 @@ def run_cluster(args: argparse.Namespace) -> int:
     # A container restart keeps the pod's emptyDir. A prior SIGTERM path may
     # have left its stop marker behind; the new owner session must not inherit it.
     stop_file.unlink(missing_ok=True)
-    supervisor = runtime / ".supervise.sh"
-    active_state = runtime / "active-run.json"
     session_id = uuid.uuid4().hex
     cli_path = ensure_runtime()
     cli = AntiochCli(cli_path, config_dir=str(private_root / "antioch-config"))
-    _write_supervisor(
-        supervisor,
-        cli_path=Path(cli_path),
-        python_path=Path(sys.executable),
-        client_bundle=bundle,
-        stop_file=stop_file,
-        active_state_path=active_state,
-        scenario_timeout_seconds=args.scenario_timeout_seconds,
-        scenario_name=args.scenario,
-        owner_identity=args.owner_identity,
-        session_id=session_id,
-    )
-
-    process: subprocess.Popen[str] | None = None
+    vendor: VendorStreamProcess | None = None
     stopping = False
 
     def request_stop(_signum: int, _frame: object) -> None:
         nonlocal stopping
         stopping = True
         stop_file.touch(mode=0o600, exist_ok=True)
-        if process is not None and process.poll() is None:
-            _terminate_process_group(process)
+        if vendor is not None and vendor.process.poll() is None:
+            vendor.terminate()
 
     signal.signal(signal.SIGTERM, request_stop)
     signal.signal(signal.SIGINT, request_stop)
@@ -296,10 +460,20 @@ def run_cluster(args: argparse.Namespace) -> int:
         service_started = True
         _stage_runtime_source(cli, runtime=runtime)
         _stage_private_bundle(cli, runtime=runtime, client_bundle=bundle)
-        process = subprocess.Popen(
-            [str(supervisor)], cwd=runtime, text=True, start_new_session=True
+        # A predecessor foreground client cannot be adopted across a pod
+        # lifecycle: its exact daemon session heartbeat belongs to that
+        # process. Reconcile and cancel only this project's exact live run,
+        # prove stable absence, then create one cluster-owned successor.
+        vendor = _launch_vendor_successor(
+            cli,
+            executable=Path(cli_path),
+            runtime=runtime,
+            project_id=project_id,
+            scenario=args.scenario,
+            timeout_seconds=args.scenario_timeout_seconds,
         )
         supervisor_started = time.monotonic()
+        last_restage = supervisor_started
         last_owned_heartbeat = 0.0
         last_run_id = ""
         consecutive_absence = 0
@@ -309,7 +483,7 @@ def run_cluster(args: argparse.Namespace) -> int:
             if stop_file.exists() and not stopping:
                 request_stop(signal.SIGTERM, None)
                 break
-            child_dead = process.poll() is not None
+            child_dead = vendor.process.poll() is not None
             recovery_reason = _supervisor_recovery_reason(
                 child_dead=child_dead,
                 last_owned_heartbeat=last_owned_heartbeat,
@@ -358,6 +532,7 @@ def run_cluster(args: argparse.Namespace) -> int:
                             scenario_run_id=last_run_id,
                             heartbeat_unix=last_owned_heartbeat,
                             recoveries=recoveries,
+                            vendor_process_status=vendor.exit_snapshot()[0],
                         )
                     else:
                         consecutive_absence = 0
@@ -375,10 +550,30 @@ def run_cluster(args: argparse.Namespace) -> int:
                             stream_state=str(active.get("stream_state") or ""),
                             heartbeat_unix=last_owned_heartbeat,
                             recoveries=recoveries,
+                            vendor_process_status=vendor.exit_snapshot()[0],
+                            vendor_output_bytes=vendor.output_snapshot()[0],
+                            vendor_output_age_seconds=round(vendor.output_snapshot()[1], 3),
+                            controller_pid=os.getpid(),
+                            vendor_pid=vendor.process.pid,
+                            vendor_parent_pid=os.getpid(),
+                            vendor_process_group_isolated=(
+                                os.getpgid(vendor.process.pid) == vendor.process.pid
+                            ),
+                            daemon_guest_state=str(active.get("daemon_guest_state") or ""),
+                            daemon_observed_at=float(active["daemon_observed_at"]),
+                            rome_guest_observed_at=float(active["rome_guest_observed_at"]),
+                            scenario_session_leases=int(active["scenario_session_leases"]),
+                            process_leases=int(active["process_leases"]),
+                            stream_leases=int(active["stream_leases"]),
                             transport="same-pod-antioch-tunnel-double-wss",
                             dev_vm_in_data_path=False,
                         )
-                except (AntiochCliError, AntiochLiveError, RuntimeError) as exc:
+                except (
+                    AntiochCliError,
+                    AntiochLiveError,
+                    AntiochLiveReconcileError,
+                    RuntimeError,
+                ) as exc:
                     consecutive_errors += 1
                     age = (
                         time.time() - last_owned_heartbeat
@@ -405,9 +600,11 @@ def run_cluster(args: argparse.Namespace) -> int:
                         heartbeat_unix=last_owned_heartbeat,
                         error_type=type(exc).__name__,
                         recoveries=recoveries,
+                        vendor_process_status=vendor.exit_snapshot()[0],
                     )
             if recovery_reason:
                 recoveries += 1
+                exit_class, exit_code = vendor.exit_snapshot()
                 _write_state(
                     state_path,
                     status="recovering",
@@ -419,16 +616,61 @@ def run_cluster(args: argparse.Namespace) -> int:
                     heartbeat_unix=last_owned_heartbeat,
                     recovery_reason=recovery_reason,
                     recoveries=recoveries,
+                    vendor_exit_class=exit_class,
+                    vendor_exit_code=exit_code,
                 )
-                _terminate_process_group(process)
-                process = subprocess.Popen(
-                    [str(supervisor)], cwd=runtime, text=True, start_new_session=True
+                vendor.terminate()
+                _cancel_remote_live_runs(
+                    cli,
+                    runtime=runtime,
+                    project_id=project_id,
+                    scenario=args.scenario,
+                    attempts=60,
+                )
+                try:
+                    cli.services_exec(runtime, "sim", ["/bin/true"])
+                except AntiochCliError:
+                    try:
+                        cli.services_up(runtime)
+                    except AntiochCliError:
+                        cli.services_build(runtime, service="sim")
+                        cli.services_up(runtime)
+                _stage_runtime_source(cli, runtime=runtime)
+                _stage_private_bundle(cli, runtime=runtime, client_bundle=bundle)
+                delay = RECOVERY_BACKOFF_SECONDS[
+                    min(recoveries - 1, len(RECOVERY_BACKOFF_SECONDS) - 1)
+                ]
+                if stop_file.exists():
+                    break
+                time.sleep(delay)
+                vendor = _launch_vendor_successor(
+                    cli,
+                    executable=Path(cli_path),
+                    runtime=runtime,
+                    project_id=project_id,
+                    scenario=args.scenario,
+                    timeout_seconds=args.scenario_timeout_seconds,
                 )
                 supervisor_started = time.monotonic()
+                last_restage = supervisor_started
                 consecutive_absence = 0
                 consecutive_errors = 0
                 last_owned_heartbeat = 0.0
                 last_run_id = ""
+            elif time.monotonic() - last_restage >= RESTAGE_INTERVAL_SECONDS:
+                # Finite supported probes ensure a recycled service is rebuilt
+                # and atomically restaged without an exec-held daemon.
+                try:
+                    cli.services_exec(runtime, "sim", ["/bin/true"])
+                except AntiochCliError:
+                    try:
+                        cli.services_up(runtime)
+                    except AntiochCliError:
+                        cli.services_build(runtime, service="sim")
+                        cli.services_up(runtime)
+                    _stage_runtime_source(cli, runtime=runtime)
+                    _stage_private_bundle(cli, runtime=runtime, client_bundle=bundle)
+                last_restage = time.monotonic()
             time.sleep(args.daemon_poll_seconds)
     except Exception as exc:
         _write_state(
@@ -444,8 +686,8 @@ def run_cluster(args: argparse.Namespace) -> int:
         raise
     finally:
         stop_file.touch(mode=0o600, exist_ok=True)
-        if process is not None and process.poll() is None:
-            _terminate_process_group(process)
+        if vendor is not None and vendor.process.poll() is None:
+            vendor.terminate()
         if service_started:
             try:
                 _cancel_remote_live_runs(

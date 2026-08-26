@@ -374,7 +374,13 @@ def _cancel_remote_live_runs(
             and str(row["scenario_run_id"]) not in terminal
         }
         machine = cli.machine_status(runtime, project_id=project_id)
-        stream = machine.get("stream") or {}
+        # Import locally to keep the legacy live module independent at import
+        # time while sharing the exact supported Rome/direct-daemon contract.
+        from .live_reconcile import _daemon_runtime_snapshot
+
+        stream = _daemon_runtime_snapshot(
+            machine, require_session_owner=False
+        )["stream"]
         stream_run_id = str(stream.get("scenario_run_id") or "")
         stream_state = str(stream.get("state") or "").lower()
         stream_live = bool(stream_run_id) and stream_state not in terminal_stream_states
