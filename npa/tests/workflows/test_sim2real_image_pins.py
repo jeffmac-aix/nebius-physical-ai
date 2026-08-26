@@ -78,6 +78,7 @@ def test_canonical_sim2real_workflow_requires_operator_pinned_images() -> None:
         "viewer_image",
     )
     assert config["require_baked_npa"] == "1"
+    assert config["baked_npa_import"] == "npa.workflows.sim2real.workflow_stage"
     assert all(config[name] == "" for name in image_inputs)
     resources = runbook["resources"]
     assert all(
