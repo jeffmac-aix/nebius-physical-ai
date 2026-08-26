@@ -138,6 +138,23 @@ def test_shared_isaac_runtime_uses_system_ffmpeg_without_bundled_payload() -> No
     assert ' = "ffmpeg"' in installer
 
 
+def test_blackwell_envgen_chain_uses_system_ffmpeg_without_bundled_payload() -> None:
+    paths = (
+        REPO_ROOT / "npa" / "docker" / "workbench" / "base" / "cuda13-b300" / "Dockerfile",
+        REPO_ROOT / "npa" / "docker" / "workbench" / "genesis" / "Dockerfile.sm120",
+        REPO_ROOT / "npa" / "docker" / "workbench" / "sim2real-envgen" / "Dockerfile",
+    )
+    for path in paths:
+        dockerfile = path.read_text(encoding="utf-8")
+        assert "IMAGEIO_FFMPEG_EXE=/usr/bin/ffmpeg" in dockerfile
+        assert "*/imageio_ffmpeg/binaries/ffmpeg*" in dockerfile
+        assert "get_ffmpeg_exe()" in dockerfile
+        assert '== "/usr/bin/ffmpeg"' in dockerfile
+    envgen = paths[-1].read_text(encoding="utf-8")
+    assert "python -m pip uninstall -y npa" in envgen
+    assert "pip install --no-deps -e /opt/npa" not in envgen
+
+
 @pytest.mark.parametrize("path", PAYLOAD_PATHS)
 def test_scanner_flags_real_kit_payload(path: str) -> None:
     why = scanner.classify_path(path)
