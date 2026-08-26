@@ -115,6 +115,11 @@ successful `npa skypilot verify --cluster <exact-context>`:
   pull with the credentials it injects and refuses to launch on a `403`; run it
   standalone with `npa workbench workflow preflight-images <spec.yaml>`, or skip
   with `--no-preflight-images`.
+- **A large authenticated cold pull is not an access failure.** Bootstrap probes
+  default to a 30-minute observation window. Use
+  `--image-bootstrap-timeout-seconds 0` for no deadline while warming large
+  images; digest, authentication, attestation, capability, exact ownership, and
+  verified cleanup gates remain mandatory.
 - **A silent 15-minute submit is usually the kubernetes client.** SkyPilot 0.12.2
   does not cap the client version, and client 36+ makes every `pod_config` fail
   validation, so the managed-jobs controller retries forever. `npa skypilot

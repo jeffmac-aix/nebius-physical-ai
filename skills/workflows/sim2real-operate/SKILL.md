@@ -23,6 +23,10 @@ with an actionable migration to this canonical spec.
    source SHA; never use source overlays or best-effort bootstrap.
 3. Validate the task-aligned seed manifest, HF/NGC access, S3 read/write, image
    pulls, and primary/side/overhead capture before a full run.
+   Large cold images may need `--image-bootstrap-timeout-seconds 0`; this removes
+   only the observation deadline and still requires immutable digest, registry
+   authorization, source attestation, runtime capabilities, and verified probe
+   cleanup. Repeat-safe runs reuse only digest-bound compatible evidence.
 4. Run `validate-spec`, `plan-spec --waves`, scheduler-plan, and submit plan-only
    on the same canonical file.
 

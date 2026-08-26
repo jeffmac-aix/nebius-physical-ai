@@ -725,6 +725,50 @@ def test_runtime_bootstrap_probe_receives_declared_image_pull_secrets(
     assert observed["image_pull_secrets"] == ("operator-registry",)
 
 
+def test_runtime_bootstrap_probe_receives_no_deadline_observation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    digest = "sha256:" + "d" * 64
+    image = "registry-us.example/u000/npa-groot:0.1.0-sky1"
+    immutable = image.rsplit(":", 1)[0] + "@" + digest
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(
+        "npa.orchestration.skypilot.registry_preflight.resolve_registry_credentials",
+        lambda *_args, **_kwargs: ("iam", "opaque"),
+    )
+    monkeypatch.setattr(
+        "npa.orchestration.skypilot.registry_preflight.fetch_image_config_metadata",
+        lambda *_args, **_kwargs: (digest, {}),
+    )
+    observed: dict[str, object] = {}
+
+    def probe(**kwargs):
+        observed.update(kwargs)
+        return ImageContractEvidence(
+            image=immutable,
+            digest=digest,
+            contract_version=CONTRACT_VERSION,
+            state="compatible",
+            source="ephemeral_capability_probe",
+            checks=("runtime_capabilities",),
+            cleanup="verified",
+        )
+
+    monkeypatch.setattr(
+        "npa.orchestration.skypilot.image_bootstrap_contract.probe_image_capabilities",
+        probe,
+    )
+
+    workflow_cli._preflight_image_bootstrap_contracts(
+        images=[image],
+        pull_checks=[ImagePullCheck(image=image, status="ok", digest=digest)],
+        context="exact-context",
+        observation_timeout_seconds=0,
+    )
+
+    assert observed["observation_timeout_seconds"] == 0
+
+
 def test_preflight_is_skipped_when_disabled(
     monkeypatch: pytest.MonkeyPatch, spec_path: Path
 ) -> None:
