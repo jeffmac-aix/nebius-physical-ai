@@ -299,6 +299,22 @@ def test_cosmos3_baked_runtime_survives_skypilot_pythonpath_scrubbing() -> None:
     assert "from npa.workflows.sim2real.workflow_stage import main" in dockerfile
 
 
+def test_envgen_baked_runtime_survives_skypilot_pythonpath_scrubbing() -> None:
+    """EnvGen's exact source remains importable when Sky clears PYTHONPATH."""
+
+    dockerfile = (
+        Path(__file__).resolve().parents[2]
+        / "docker"
+        / "workbench"
+        / "sim2real-envgen"
+        / "Dockerfile"
+    ).read_text(encoding="utf-8")
+    assert "NPA_BAKED_PYTHON=/opt/npa/venv/bin/python" in dockerfile
+    assert "npa-exact-source.pth" in dockerfile
+    assert "env -u PYTHONPATH /opt/npa/venv/bin/python -c" in dockerfile
+    assert "from npa.workflows.sim2real.workflow_stage import main" in dockerfile
+
+
 def test_sim2real_control_plane_requirement_closure_is_exact() -> None:
     requirements = (
         Path(__file__).resolve().parents[2]

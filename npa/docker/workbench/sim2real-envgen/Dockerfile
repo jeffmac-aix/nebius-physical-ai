@@ -37,11 +37,15 @@ RUN /usr/local/bin/install-workflow-runtime-prereqs "${UBUNTU_SNAPSHOT}" \
     && IMAGEIO_FFMPEG_EXE=/usr/bin/ffmpeg python -c \
       'import imageio_ffmpeg; assert imageio_ffmpeg.get_ffmpeg_exe() == "/usr/bin/ffmpeg"' \
     && python -m pip check \
+    && python -c "import site; from pathlib import Path; Path(site.getsitepackages()[0], 'npa-exact-source.pth').write_text('/opt/npa/src\\n', encoding='utf-8')" \
+    && env -u PYTHONPATH /opt/npa/venv/bin/python -c \
+      'import boto3; from npa.workflows.sim2real.workflow_stage import main; assert callable(main)' \
     && python -c 'import importlib.metadata as m; assert not any(d.metadata["Name"].lower() == "transformers" for d in m.distributions())' \
     && python -m py_compile /opt/npa/src/npa/workflows/sim2real_envgen.py
 
 ENV PATH=/opt/npa/venv/bin:$PATH \
     NPA_IMAGE_SOURCE_SHA=${NPA_SOURCE_SHA} \
+    NPA_BAKED_PYTHON=/opt/npa/venv/bin/python \
     IMAGEIO_FFMPEG_EXE=/usr/bin/ffmpeg \
     PYTHONPATH=/opt/npa/src
 
