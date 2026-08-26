@@ -227,7 +227,8 @@ check. The controller continuously reconciles the project-scoped scenario invent
 with `machine status`; readiness requires one matching stream owner, a current run ID,
 the adapter ownership identity and session generation, and a heartbeat no more than 30
 seconds old. State uses versioned JSON and owner-only atomic replacement. Local and
-Kubernetes-exec readers retry a bounded number of transient empty/partial reads, but a
+Kubernetes-exec readers base64-frame the file bytes to prevent transport-level JSON
+coercion and retry a bounded number of transient empty/partial reads, but a
 missing schema, malformed value, wrong identity, stale heartbeat, absent stream owner,
 or unreadable state revokes readiness. Three authoritative absences sustained beyond
 the 120-second recovery window replace the in-pod supervisor. The replacement first

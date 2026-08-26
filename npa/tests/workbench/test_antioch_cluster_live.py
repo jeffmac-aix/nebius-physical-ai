@@ -365,16 +365,33 @@ def test_unrelated_service_start_failure_does_not_release_assignment(
 def test_remote_state_read_recovers_transient_exec_fragment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    replies = iter(("{", '{"schema_version":2,"status":"connected"}'))
+    replies = iter(
+        (
+            "not-base64",
+            base64.b64encode(
+                b'{"schema_version":2,"status":"connected"}'
+            ).decode(),
+        )
+    )
+    commands: list[list[str]] = []
+
+    def execute(*_args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        commands.append(kwargs["command"])
+        return next(replies)
+
     monkeypatch.setattr(cluster_deploy.time, "sleep", lambda _seconds: None)
     result = cluster_deploy._read_remote_state(
-        lambda *_args, **_kwargs: next(replies),
+        execute,
         SimpleNamespace(connect_get_namespaced_pod_exec=object()),
         pod_name="owned-pod",
         namespace="workbench",
         path="/state.json",
     )
     assert result["status"] == "connected"
+    assert commands == [
+        ["/usr/bin/base64", "-w", "0", "/state.json"],
+        ["/usr/bin/base64", "-w", "0", "/state.json"],
+    ]
 
 
 def test_live_metrics_parser_uses_latest_complete_numeric_line() -> None:
@@ -681,14 +698,16 @@ def test_cluster_status_reports_sanitized_probe_exception_classes(
         if calls == 1:
             return "10.0\n"
         if calls == 2:
-            return json.dumps(
-                {
-                    "status": "running",
-                    "scenario": "openpi_franka_mk8s_live",
-                    "transport": "same-pod-antioch-tunnel-double-wss",
-                    "dev_vm_in_data_path": False,
-                }
-            )
+            return base64.b64encode(
+                json.dumps(
+                    {
+                        "status": "running",
+                        "scenario": "openpi_franka_mk8s_live",
+                        "transport": "same-pod-antioch-tunnel-double-wss",
+                        "dev_vm_in_data_path": False,
+                    }
+                ).encode()
+            ).decode()
         if calls == 3:
             raise ValueError("private relay endpoint must not leak")
         raise RuntimeError("private DNS target must not leak")
@@ -750,7 +769,16 @@ def test_stop_cluster_requires_supported_remote_cleanup_evidence(
     monkeypatch.setattr(client, "AppsV1Api", lambda: apps)
     monkeypatch.setattr(client, "CoreV1Api", lambda: core)
     monkeypatch.setattr(cluster_deploy.time, "sleep", lambda _seconds: None)
-    replies = iter(("", "", "{", "[]", json.dumps({"status": cleanup_status})))
+    replies = iter(
+        (
+            "",
+            "not-base64",
+            base64.b64encode(b"[]").decode(),
+            base64.b64encode(
+                json.dumps({"status": cleanup_status}).encode()
+            ).decode(),
+        )
+    )
     monkeypatch.setattr("kubernetes.stream.stream", lambda *_args, **_kwargs: next(replies))
     if stops:
         result = cluster_deploy.stop_cluster(config, timeout_seconds=10)

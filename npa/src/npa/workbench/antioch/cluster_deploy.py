@@ -682,7 +682,13 @@ def _read_remote_state(
     container: str = "policy-relay",
     attempts: int = 3,
 ) -> dict[str, Any]:
-    """Converge across transient partial Kubernetes exec stdout frames."""
+    """Converge across transient Kubernetes exec frames without JSON coercion.
+
+    Some Kubernetes exec transports coerce stdout that is exactly one JSON
+    object into a language-native mapping representation.  Frame the bytes as
+    base64 in the container, then strictly decode and parse them locally so the
+    versioned JSON contract survives that transport unchanged.
+    """
 
     last_error: Exception | None = None
     for attempt in range(attempts):
@@ -692,13 +698,14 @@ def _read_remote_state(
                 pod_name,
                 namespace,
                 container=container,
-                command=["/bin/cat", path],
+                command=["/usr/bin/base64", "-w", "0", path],
                 stderr=False,
                 stdin=False,
                 stdout=True,
                 tty=False,
             )
-            parsed = json.loads(raw)
+            decoded = base64.b64decode(str(raw).strip(), validate=True)
+            parsed = json.loads(decoded)
             if not isinstance(parsed, dict):
                 raise TypeError("remote state is not an object")
             return parsed
@@ -1434,23 +1441,17 @@ def stop_cluster(
     )
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
-        raw = stream(
-            core.connect_get_namespaced_pod_exec,
-            pod_name,
-            config.namespace,
-            container="antioch-controller",
-            command=["/bin/cat", "/var/run/npa-antioch/controller.json"],
-            stderr=False,
-            stdin=False,
-            stdout=True,
-            tty=False,
-        )
         try:
-            cleanup_state = json.loads(raw)
-            if not isinstance(cleanup_state, dict):
-                raise TypeError("adapter cleanup evidence is not an object")
+            cleanup_state = _read_remote_state(
+                stream,
+                core,
+                pod_name=pod_name,
+                namespace=config.namespace,
+                container="antioch-controller",
+                path="/var/run/npa-antioch/controller.json",
+            )
             cleanup_status = str(cleanup_state.get("status") or "")
-        except (TypeError, json.JSONDecodeError):
+        except Exception:
             # Kubernetes exec can yield an empty or partial stdout frame while
             # the controller atomically replaces its state file.  A single
             # malformed read is not affirmative cleanup evidence, so keep
