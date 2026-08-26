@@ -469,6 +469,15 @@ def test_cluster_status_reports_sanitized_probe_exception_classes(
         if calls == 1:
             return "10.0\n"
         if calls == 2:
+            return json.dumps(
+                {
+                    "status": "running",
+                    "scenario": "openpi_franka_mk8s_live",
+                    "transport": "same-pod-antioch-tunnel-double-wss",
+                    "dev_vm_in_data_path": False,
+                }
+            )
+        if calls == 3:
             raise ValueError("private relay endpoint must not leak")
         raise RuntimeError("private DNS target must not leak")
 
@@ -477,6 +486,13 @@ def test_cluster_status_reports_sanitized_probe_exception_classes(
     assert result["probe_diagnostics"] == {
         "relay_state": {"status": "failed", "exception_class": "ValueError"},
         "policy_dns": {"status": "failed", "exception_class": "RuntimeError"},
+    }
+    assert result["controller"] == {
+        "dev_vm_in_data_path": False,
+        "error_type": None,
+        "scenario": "openpi_franka_mk8s_live",
+        "status": "running",
+        "transport": "same-pod-antioch-tunnel-double-wss",
     }
     rendered = json.dumps(result)
     assert "private relay" not in rendered

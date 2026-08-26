@@ -1036,6 +1036,34 @@ def cluster_status(config: ClusterLiveConfig) -> dict[str, Any]:
         for pod in pods
         for status in (getattr(pod.status, "container_statuses", None) or [])
     )
+    container_states: dict[str, dict[str, Any]] = {}
+    for pod in pods:
+        for container_status in getattr(pod.status, "container_statuses", None) or []:
+            state = getattr(container_status, "state", None)
+            current_reason = ""
+            for phase in ("waiting", "terminated", "running"):
+                detail = getattr(state, phase, None)
+                if detail is not None:
+                    current_reason = str(getattr(detail, "reason", "") or phase)
+                    break
+            last_terminated = getattr(
+                getattr(container_status, "last_state", None), "terminated", None
+            )
+            container_states[str(container_status.name)] = {
+                "ready": bool(container_status.ready),
+                "restart_count": int(container_status.restart_count or 0),
+                "state": current_reason,
+                "last_exit_code": (
+                    int(last_terminated.exit_code)
+                    if last_terminated is not None
+                    else None
+                ),
+                "last_reason": (
+                    str(last_terminated.reason or "")
+                    if last_terminated is not None
+                    else ""
+                ),
+            }
     ready = (
         int(getattr(deployment.status, "ready_replicas", 0) or 0) == 1
         and len(pods) == 1
@@ -1052,6 +1080,7 @@ def cluster_status(config: ClusterLiveConfig) -> dict[str, Any]:
     policy_ready = int(policy[0].status.ready_replicas or 0) == 1
     policy_placement: dict[str, Any] = {}
     relay_state: dict[str, Any] = {}
+    controller_state: dict[str, Any] = {}
     probe_diagnostics: dict[str, dict[str, str]] = {}
     live_metrics: dict[str, int | float] = {}
     cluster_local_policy_resolved = False
@@ -1079,6 +1108,35 @@ def cluster_status(config: ClusterLiveConfig) -> dict[str, Any]:
         }
     if len(pods) == 1:
         pod_name = pods[0].metadata.name
+        try:
+            raw_controller = stream(
+                core.connect_get_namespaced_pod_exec,
+                pod_name,
+                config.namespace,
+                container="antioch-controller",
+                command=["/bin/cat", "/var/run/npa-antioch/controller.json"],
+                stderr=False,
+                stdin=False,
+                stdout=True,
+                tty=False,
+            )
+            parsed_controller = json.loads(raw_controller)
+            controller_allowed = {
+                "status",
+                "scenario",
+                "error_type",
+                "transport",
+                "dev_vm_in_data_path",
+            }
+            controller_state = {
+                key: parsed_controller.get(key) for key in sorted(controller_allowed)
+            }
+        except Exception as exc:
+            controller_state = {"status": "unavailable"}
+            probe_diagnostics["controller_state"] = {
+                "status": "failed",
+                "exception_class": type(exc).__name__,
+            }
         try:
             raw_state = stream(
                 core.connect_get_namespaced_pod_exec,
@@ -1159,6 +1217,8 @@ def cluster_status(config: ClusterLiveConfig) -> dict[str, Any]:
         "adapter_image_digest": config.adapter_image.rsplit("@", 1)[-1],
         "adapter_pods": len(pods),
         "adapter_restarts": restart_count,
+        "adapter_container_states": container_states,
+        "controller": controller_state,
         "policy_service_type": "ClusterIP",
         "cluster_local_policy_resolved": cluster_local_policy_resolved,
         "relay": relay_state,
