@@ -1113,7 +1113,9 @@ def cluster_status(config: ClusterLiveConfig) -> dict[str, Any]:
                 core.connect_get_namespaced_pod_exec,
                 pod_name,
                 config.namespace,
-                container="antioch-controller",
+                # The state volume is shared. Read through the relay sidecar so
+                # a crashing controller can still report its sanitized state.
+                container="policy-relay",
                 command=["/bin/cat", "/var/run/npa-antioch/controller.json"],
                 stderr=False,
                 stdin=False,
