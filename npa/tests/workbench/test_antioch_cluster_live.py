@@ -5,6 +5,7 @@ import io
 import json
 import os
 import tarfile
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -161,6 +162,15 @@ def test_public_manifests_keep_vm_out_and_policy_cluster_local(tmp_path: Path) -
     assert "14400" in controller["command"]
     assert "antioch.relay" in " ".join(relay["command"])
     assert "18444" in relay["command"]
+    assert "controller" in controller["readinessProbe"]["exec"]["command"]
+    assert (
+        "controller-liveness"
+        in controller["livenessProbe"]["exec"]["command"]
+    )
+    assert controller["readinessProbe"]["failureThreshold"] == 3
+    assert relay["readinessProbe"]["failureThreshold"] == 3
+    assert "--owner-identity" in controller["command"]
+    assert "--owner-identity" in relay["command"]
     rendered = json.dumps(manifests, sort_keys=True)
     assert "LoadBalancer" not in rendered
     assert "hostNetwork" not in rendered
@@ -194,15 +204,114 @@ def test_public_manifests_keep_vm_out_and_policy_cluster_local(tmp_path: Path) -
 
 def test_cluster_runtime_probe_is_fail_closed(tmp_path: Path) -> None:
     state = tmp_path / "state.json"
-    assert cluster_runtime.probe(state, component="controller") == 1
+    kwargs = {
+        "component": "controller",
+        "expected_owner_identity": "owner",
+        "max_age_seconds": 30.0,
+    }
+    assert cluster_runtime.probe(state, **kwargs) == 1
     state.write_text(json.dumps({"status": "starting"}), encoding="utf-8")
-    assert cluster_runtime.probe(state, component="controller") == 1
-    state.write_text(json.dumps({"status": "running"}), encoding="utf-8")
-    assert cluster_runtime.probe(state, component="controller") == 0
-    state.write_text(json.dumps({"status": "reconnecting"}), encoding="utf-8")
-    assert cluster_runtime.probe(state, component="relay") == 1
-    state.write_text(json.dumps({"status": "connected"}), encoding="utf-8")
-    assert cluster_runtime.probe(state, component="relay") == 0
+    assert cluster_runtime.probe(state, **kwargs) == 1
+    healthy = {
+        "schema_version": 2,
+        "owner_identity": "owner",
+        "session_id": "session",
+        "scenario_run_id": "run",
+        "status": "running",
+        "daemon_status": "owned",
+        "heartbeat_unix": time.time(),
+    }
+    state.write_text(json.dumps(healthy), encoding="utf-8")
+    assert cluster_runtime.probe(state, **kwargs) == 0
+    healthy["heartbeat_unix"] = time.time() - 31
+    state.write_text(json.dumps(healthy), encoding="utf-8")
+    assert cluster_runtime.probe(state, **kwargs) == 1
+    healthy["heartbeat_unix"] = time.time()
+    healthy["owner_identity"] = "different"
+    state.write_text(json.dumps(healthy), encoding="utf-8")
+    assert cluster_runtime.probe(state, **kwargs) == 1
+
+    relay = {
+        "schema_version": 2,
+        "owner_identity": "owner",
+        "status": "connected",
+        "heartbeat_unix": time.time() - 241,
+    }
+    state.write_text(json.dumps(relay), encoding="utf-8")
+    assert (
+        cluster_runtime.probe(
+            state,
+            component="relay-liveness",
+            expected_owner_identity="owner",
+            max_age_seconds=240,
+        )
+        == 1
+    )
+
+
+def test_atomic_state_read_recovers_one_transient_partial_json(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    replies = iter(("{", json.dumps({"schema_version": 2, "status": "running"})))
+
+    class FlakyPath:
+        def read_text(self, **_kwargs):  # noqa: ANN003, ANN202
+            return next(replies)
+
+    monkeypatch.setattr(cluster_runtime.time, "sleep", lambda _seconds: None)
+    assert cluster_runtime._read_state(FlakyPath()) == {  # type: ignore[arg-type]
+        "schema_version": 2,
+        "status": "running",
+    }
+
+
+@pytest.mark.parametrize(
+    "values,expected",
+    [
+        ({"child_dead": True}, "controller_child_exit"),
+        (
+            {
+                "last_owned_heartbeat": 1.0,
+                "consecutive_absence": 3,
+                "age_seconds": 31.0,
+            },
+            "daemon_owner_absent",
+        ),
+        (
+            {"consecutive_errors": 3, "age_seconds": 31.0},
+            "daemon_state_unreadable",
+        ),
+        ({"consecutive_errors": 1, "age_seconds": 31.0}, ""),
+    ],
+)
+def test_supervisor_recovery_requires_converged_loss(
+    values: dict[str, object], expected: str
+) -> None:
+    defaults: dict[str, object] = {
+        "child_dead": False,
+        "last_owned_heartbeat": 0.0,
+        "consecutive_absence": 0,
+        "consecutive_errors": 0,
+        "age_seconds": 0.0,
+        "startup_age_seconds": 0.0,
+        "max_age_seconds": 30.0,
+    }
+    assert cluster_runtime._supervisor_recovery_reason(**(defaults | values)) == expected
+
+
+def test_remote_state_read_recovers_transient_exec_fragment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    replies = iter(("{", '{"schema_version":2,"status":"connected"}'))
+    monkeypatch.setattr(cluster_deploy.time, "sleep", lambda _seconds: None)
+    result = cluster_deploy._read_remote_state(
+        lambda *_args, **_kwargs: next(replies),
+        SimpleNamespace(connect_get_namespaced_pod_exec=object()),
+        pod_name="owned-pod",
+        namespace="workbench",
+        path="/state.json",
+    )
+    assert result["status"] == "connected"
 
 
 def test_live_metrics_parser_uses_latest_complete_numeric_line() -> None:
@@ -344,9 +453,28 @@ def test_reconcile_rolls_only_an_unready_owned_adapter(
                 SimpleNamespace(
                     status=SimpleNamespace(
                         container_statuses=[
-                            SimpleNamespace(restart_count=restarts)
+                            SimpleNamespace(
+                                name="antioch-controller",
+                                restart_count=restarts,
+                                ready=True,
+                            ),
+                            SimpleNamespace(
+                                name="policy-relay",
+                                restart_count=0,
+                                ready=True,
+                            ),
                         ]
-                    )
+                    ),
+                    spec=SimpleNamespace(
+                        containers=[
+                            SimpleNamespace(
+                                name="antioch-controller", image=config.adapter_image
+                            ),
+                            SimpleNamespace(
+                                name="policy-relay", image=config.adapter_image
+                            ),
+                        ]
+                    ),
                 )
             ]
         )
@@ -504,11 +632,23 @@ def test_cluster_status_reports_sanitized_probe_exception_classes(
 
     monkeypatch.setattr("kubernetes.stream.stream", failing_stream)
     result = cluster_deploy.cluster_status(config)
+    assert result["status"] == "not_ready"
+    assert result["daemon_liveness_ready"] is False
+    assert result["relay_liveness_ready"] is False
     assert result["probe_diagnostics"] == {
-        "relay_state": {"status": "failed", "exception_class": "ValueError"},
+        "relay_state": {"status": "failed", "exception_class": "RuntimeError"},
         "policy_dns": {"status": "failed", "exception_class": "RuntimeError"},
     }
-    assert result["controller"] == {
+    assert {
+        key: result["controller"][key]
+        for key in (
+            "dev_vm_in_data_path",
+            "error_type",
+            "scenario",
+            "status",
+            "transport",
+        )
+    } == {
         "dev_vm_in_data_path": False,
         "error_type": None,
         "scenario": "openpi_franka_mk8s_live",

@@ -219,6 +219,20 @@ scenario from supported `scenario list` plus `machine status` JSON. It waits on
 that exact run instead of issuing duplicate renewals, and records the adopted run
 ID only in owner-private local state.
 
+Adapter readiness is an exact daemon-ownership contract, not a process or open-port
+check. The controller continuously reconciles the project-scoped scenario inventory
+with `machine status`; readiness requires one matching stream owner, a current run ID,
+the adapter ownership identity and session generation, and a heartbeat no more than 30
+seconds old. State uses versioned JSON and owner-only atomic replacement. Local and
+Kubernetes-exec readers retry a bounded number of transient empty/partial reads, but a
+missing schema, malformed value, wrong identity, stale heartbeat, absent stream owner,
+or unreadable state revokes readiness. Three authoritative absences sustained beyond
+the 120-second recovery window replace the in-pod supervisor. The replacement first
+reconciles and adopts an existing exact run, so it does not create a second stream
+lease; only authoritative absence permits a new dispatch. Controller-child exit and
+provider machine recycle use the same cluster-native recovery path. The operator/Codex
+process is not part of this supervision and may exit after handoff.
+
 Before a retained live run is accepted, require at least 120 seconds, 120 valid
 camera pairs, 100 successful policy round trips, and 500 applied targets; at
 least 90% of policy requests must succeed. Camera luminance mean must exceed 5

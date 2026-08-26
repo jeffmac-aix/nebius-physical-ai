@@ -63,6 +63,7 @@ def _local_settings(
 
 
 def _write_state(path: Path, state: dict[str, Any]) -> None:
+    state["heartbeat_unix"] = time.time()
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(path.parent, 0o700)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
@@ -78,7 +79,12 @@ def _write_state(path: Path, state: dict[str, Any]) -> None:
 
 
 def run_relay(
-    *, bundle: Path, local_port: int, stop_file: Path, state_path: Path
+    *,
+    bundle: Path,
+    local_port: int,
+    stop_file: Path,
+    state_path: Path,
+    owner_identity: str,
 ) -> dict[str, Any]:
     """Reconnect indefinitely and forward one bounded request/reply stream."""
 
@@ -87,7 +93,9 @@ def run_relay(
         bundle, local_port=local_port
     )
     state: dict[str, Any] = {
-        "schema": "npa.workbench.antioch-live-relay.v1",
+        "schema": "npa.workbench.antioch-live-relay.v2",
+        "schema_version": 2,
+        "owner_identity": owner_identity,
         "status": "starting",
         "connections": 0,
         "reconnects": 0,
@@ -189,6 +197,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--local-port", type=int, default=18_444)
     parser.add_argument("--stop-file", required=True)
     parser.add_argument("--state-path", required=True)
+    parser.add_argument("--owner-identity", required=True)
     return parser
 
 
@@ -199,6 +208,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         local_port=args.local_port,
         stop_file=Path(args.stop_file),
         state_path=Path(args.state_path),
+        owner_identity=args.owner_identity,
     )
     print(json.dumps(result, sort_keys=True))
     return 0

@@ -30,12 +30,13 @@ def _project_id(runtime: Path) -> str:
     return project_id
 
 
-def _active_run(
+def _active_run_snapshot(
     cli: AntiochCli,
     *,
     runtime: Path,
     project_id: str,
     scenario: str = "openpi_droid_live",
+    require_stream_owner: bool = False,
 ) -> dict[str, Any] | None:
     rows = cli.list_for_project(runtime, kind="scenario", project_id=project_id)
     candidates = {
@@ -55,12 +56,40 @@ def _active_run(
             raise AntiochLiveReconcileError(
                 "active stream owner is absent from the exact project run inventory"
             )
-        return selected
+        return {
+            **selected,
+            "scenario_run_id": stream_run_id,
+            "stream_state": stream_state,
+        }
     if len(candidates) > 1:
         raise AntiochLiveReconcileError(
             "multiple exact live runs are active; refusing ambiguous adoption"
         )
-    return next(iter(candidates.values()), None)
+    if require_stream_owner:
+        return None
+    selected = next(iter(candidates.values()), None)
+    if selected is None:
+        return None
+    return {**selected, "stream_state": stream_state or "unavailable"}
+
+
+def _active_run(
+    cli: AntiochCli,
+    *,
+    runtime: Path,
+    project_id: str,
+    scenario: str = "openpi_droid_live",
+    require_stream_owner: bool = False,
+) -> dict[str, Any] | None:
+    """Compatibility wrapper returning one exact supported ownership snapshot."""
+
+    return _active_run_snapshot(
+        cli,
+        runtime=runtime,
+        project_id=project_id,
+        scenario=scenario,
+        require_stream_owner=require_stream_owner,
+    )
 
 
 def _write_state(path: Path, payload: dict[str, Any]) -> None:
@@ -85,12 +114,14 @@ def reconcile_active(
     state_path: Path,
     scenario: str = "openpi_droid_live",
     poll_seconds: float = 5.0,
+    owner_identity: str = "",
+    session_id: str = "",
 ) -> bool:
     """Wait on one exact accepted run; return False when there is none."""
 
     cli = AntiochCli(cli_path)
     project_id = _project_id(runtime)
-    active = _active_run(
+    active = _active_run_snapshot(
         cli, runtime=runtime, project_id=project_id, scenario=scenario
     )
     if active is None:
@@ -99,9 +130,14 @@ def reconcile_active(
     _write_state(
         state_path,
         {
-            "schema": "npa.workbench.antioch-live-active.v1",
+            "schema": "npa.workbench.antioch-live-active.v2",
+            "schema_version": 2,
+            "owner_identity": owner_identity,
+            "session_id": session_id,
             "scenario": scenario,
             "scenario_run_id": remote_id,
+            "stream_state": active.get("stream_state"),
+            "heartbeat_unix": time.time(),
             "status": "reconciled",
         },
     )
@@ -109,16 +145,20 @@ def reconcile_active(
     while True:
         if stop_file.exists():
             cli.cancel(runtime, kind="scenario", remote_id=remote_id)
-        current = _active_run(
+        current = _active_run_snapshot(
             cli, runtime=runtime, project_id=project_id, scenario=scenario
         )
         if current is None:
             _write_state(
                 state_path,
                 {
-                    "schema": "npa.workbench.antioch-live-active.v1",
+                    "schema": "npa.workbench.antioch-live-active.v2",
+                    "schema_version": 2,
+                    "owner_identity": owner_identity,
+                    "session_id": session_id,
                     "scenario": scenario,
                     "scenario_run_id": remote_id,
+                    "heartbeat_unix": time.time(),
                     "status": "terminal",
                 },
             )
@@ -128,6 +168,20 @@ def reconcile_active(
             raise AntiochLiveReconcileError(
                 "the active live run changed during reconciliation"
             )
+        _write_state(
+            state_path,
+            {
+                "schema": "npa.workbench.antioch-live-active.v2",
+                "schema_version": 2,
+                "owner_identity": owner_identity,
+                "session_id": session_id,
+                "scenario": scenario,
+                "scenario_run_id": remote_id,
+                "stream_state": current.get("stream_state"),
+                "heartbeat_unix": time.time(),
+                "status": "reconciled",
+            },
+        )
         time.sleep(poll_seconds)
 
 
@@ -139,6 +193,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--state-path", required=True)
     parser.add_argument("--scenario", default="openpi_droid_live")
     parser.add_argument("--poll-seconds", type=float, default=5.0)
+    parser.add_argument("--owner-identity", default="")
+    parser.add_argument("--session-id", default="")
     return parser
 
 
@@ -151,6 +207,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         state_path=Path(args.state_path),
         scenario=args.scenario,
         poll_seconds=args.poll_seconds,
+        owner_identity=args.owner_identity,
+        session_id=args.session_id,
     )
     return 0 if adopted else NO_ACTIVE_RUN
 

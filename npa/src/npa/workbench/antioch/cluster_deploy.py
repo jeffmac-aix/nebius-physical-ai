@@ -230,6 +230,10 @@ def build_public_manifests(config: ClusterLiveConfig) -> dict[str, dict[str, Any
             "run",
             "--scenario-timeout-seconds",
             str(config.scenario_timeout_seconds),
+            "--owner-identity",
+            config.identity,
+            "--daemon-max-age-seconds",
+            "120",
             "--stop-file",
             f"{state_root}/stop",
         ],
@@ -263,10 +267,35 @@ def build_public_manifests(config: ClusterLiveConfig) -> dict[str, dict[str, Any
                     "controller",
                     "--state-path",
                     f"{state_root}/controller.json",
+                    "--expected-owner-identity",
+                    config.identity,
+                    "--max-age-seconds",
+                    "30",
                 ]
             },
             "periodSeconds": 5,
-            "failureThreshold": 60,
+            "failureThreshold": 3,
+        },
+        "livenessProbe": {
+            "exec": {
+                "command": [
+                    "python",
+                    "-m",
+                    "npa.workbench.antioch.cluster_runtime",
+                    "probe",
+                    "--component",
+                    "controller-liveness",
+                    "--state-path",
+                    f"{state_root}/controller.json",
+                    "--expected-owner-identity",
+                    config.identity,
+                    "--max-age-seconds",
+                    "180",
+                ]
+            },
+            "periodSeconds": 10,
+            "failureThreshold": 3,
+            "initialDelaySeconds": 600,
         },
     }
     relay = {
@@ -285,6 +314,8 @@ def build_public_manifests(config: ClusterLiveConfig) -> dict[str, dict[str, Any
             f"{state_root}/stop",
             "--state-path",
             f"{state_root}/relay.json",
+            "--owner-identity",
+            config.identity,
         ],
         "securityContext": _container_security(),
         "resources": {
@@ -307,10 +338,34 @@ def build_public_manifests(config: ClusterLiveConfig) -> dict[str, dict[str, Any
                     "relay",
                     "--state-path",
                     f"{state_root}/relay.json",
+                    "--expected-owner-identity",
+                    config.identity,
+                    "--max-age-seconds",
+                    "150",
                 ]
             },
             "periodSeconds": 5,
-            "failureThreshold": 120,
+            "failureThreshold": 3,
+        },
+        "livenessProbe": {
+            "exec": {
+                "command": [
+                    "python",
+                    "-m",
+                    "npa.workbench.antioch.cluster_runtime",
+                    "probe",
+                    "--component",
+                    "relay-liveness",
+                    "--state-path",
+                    f"{state_root}/relay.json",
+                    "--expected-owner-identity",
+                    config.identity,
+                    "--max-age-seconds",
+                    "240",
+                ]
+            },
+            "periodSeconds": 15,
+            "failureThreshold": 6,
         },
     }
     deployment = {
@@ -617,6 +672,44 @@ def _parse_live_metrics(logs: str) -> dict[str, int | float]:
     return latest
 
 
+def _read_remote_state(
+    stream_fn: Any,
+    core: Any,
+    *,
+    pod_name: str,
+    namespace: str,
+    path: str,
+    container: str = "policy-relay",
+    attempts: int = 3,
+) -> dict[str, Any]:
+    """Converge across transient partial Kubernetes exec stdout frames."""
+
+    last_error: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            raw = stream_fn(
+                core.connect_get_namespaced_pod_exec,
+                pod_name,
+                namespace,
+                container=container,
+                command=["/bin/cat", path],
+                stderr=False,
+                stdin=False,
+                stdout=True,
+                tty=False,
+            )
+            parsed = json.loads(raw)
+            if not isinstance(parsed, dict):
+                raise TypeError("remote state is not an object")
+            return parsed
+        except Exception as exc:
+            last_error = exc
+            if attempt + 1 < attempts:
+                time.sleep(0.05)
+    assert last_error is not None
+    raise last_error
+
+
 def _owned(
     metadata: Any,
     identity: str,
@@ -697,10 +790,34 @@ def _recover_unready_adapter(
         for pod in pods
         for status in (getattr(pod.status, "container_statuses", None) or [])
     )
+    expected_containers = {"antioch-controller", "policy-relay"}
+    selected_statuses = [
+        status
+        for pod in pods
+        for status in (getattr(pod.status, "container_statuses", None) or [])
+        if str(status.name) in expected_containers
+    ]
+    selected_containers = [
+        container
+        for pod in pods
+        for container in (getattr(pod.spec, "containers", None) or [])
+        if str(container.name) in expected_containers
+    ]
+    container_ready = {
+        str(status.name) for status in selected_statuses
+    } == expected_containers and all(bool(status.ready) for status in selected_statuses)
+    matching_images = {
+        str(container.name) for container in selected_containers
+    } == expected_containers and all(
+        str(container.image) == config.adapter_image
+        for container in selected_containers
+    )
     healthy = (
         int(deployment.status.ready_replicas or 0) == 1
         and len(pods) == 1
         and restart_count == 0
+        and container_ready
+        and matching_images
     )
     if config.adapter_replicas != 1 or healthy:
         return "not_needed"
@@ -1035,6 +1152,8 @@ def cluster_status(config: ClusterLiveConfig) -> dict[str, Any]:
     from kubernetes.client.exceptions import ApiException
     from kubernetes.stream import stream
 
+    from .cluster_runtime import _state_ready
+
     kube_config.load_kube_config(
         config_file=config.kubeconfig, context=config.context or None
     )
@@ -1080,10 +1199,9 @@ def cluster_status(config: ClusterLiveConfig) -> dict[str, Any]:
                     else ""
                 ),
             }
-    ready = (
+    kubernetes_ready = (
         int(getattr(deployment.status, "ready_replicas", 0) or 0) == 1
         and len(pods) == 1
-        and restart_count == 0
     )
     policy = _matching_policy_deployments(
         apps.list_namespaced_deployment(config.namespace).items,
@@ -1125,23 +1243,27 @@ def cluster_status(config: ClusterLiveConfig) -> dict[str, Any]:
     if len(pods) == 1:
         pod_name = pods[0].metadata.name
         try:
-            raw_controller = stream(
-                core.connect_get_namespaced_pod_exec,
-                pod_name,
-                config.namespace,
-                # The state volume is shared. Read through the relay sidecar so
-                # a crashing controller can still report its sanitized state.
+            parsed_controller = _read_remote_state(
+                stream,
+                core,
+                pod_name=pod_name,
+                namespace=config.namespace,
+                path="/var/run/npa-antioch/controller.json",
                 container="policy-relay",
-                command=["/bin/cat", "/var/run/npa-antioch/controller.json"],
-                stderr=False,
-                stdin=False,
-                stdout=True,
-                tty=False,
             )
-            parsed_controller = json.loads(raw_controller)
             controller_allowed = {
+                "schema",
+                "schema_version",
                 "status",
+                "daemon_status",
+                "owner_identity",
+                "session_id",
                 "scenario",
+                "scenario_run_id",
+                "run_phase",
+                "stream_state",
+                "heartbeat_unix",
+                "recoveries",
                 "error_type",
                 "transport",
                 "dev_vm_in_data_path",
@@ -1149,6 +1271,13 @@ def cluster_status(config: ClusterLiveConfig) -> dict[str, Any]:
             controller_state = {
                 key: parsed_controller.get(key) for key in sorted(controller_allowed)
             }
+            heartbeat = parsed_controller.get("heartbeat_unix")
+            controller_state["heartbeat_age_seconds"] = (
+                round(max(0.0, time.time() - float(heartbeat)), 3)
+                if isinstance(heartbeat, (int, float))
+                and not isinstance(heartbeat, bool)
+                else None
+            )
         except Exception as exc:
             controller_state = {"status": "unavailable"}
             probe_diagnostics["controller_state"] = {
@@ -1156,19 +1285,19 @@ def cluster_status(config: ClusterLiveConfig) -> dict[str, Any]:
                 "exception_class": type(exc).__name__,
             }
         try:
-            raw_state = stream(
-                core.connect_get_namespaced_pod_exec,
-                pod_name,
-                config.namespace,
-                container="policy-relay",
-                command=["/bin/cat", "/var/run/npa-antioch/relay.json"],
-                stderr=False,
-                stdin=False,
-                stdout=True,
-                tty=False,
+            parsed = _read_remote_state(
+                stream,
+                core,
+                pod_name=pod_name,
+                namespace=config.namespace,
+                path="/var/run/npa-antioch/relay.json",
+                container="antioch-controller",
             )
-            parsed = json.loads(raw_state)
             allowed = {
+                "schema",
+                "schema_version",
+                "owner_identity",
+                "heartbeat_unix",
                 "status",
                 "connections",
                 "reconnects",
@@ -1179,6 +1308,13 @@ def cluster_status(config: ClusterLiveConfig) -> dict[str, Any]:
                 "last_failed_phase",
             }
             relay_state = {key: parsed.get(key) for key in sorted(allowed)}
+            heartbeat = parsed.get("heartbeat_unix")
+            relay_state["heartbeat_age_seconds"] = (
+                round(max(0.0, time.time() - float(heartbeat)), 3)
+                if isinstance(heartbeat, (int, float))
+                and not isinstance(heartbeat, bool)
+                else None
+            )
         except Exception as exc:
             relay_state = {"status": "unavailable"}
             probe_diagnostics["relay_state"] = {
@@ -1225,10 +1361,26 @@ def cluster_status(config: ClusterLiveConfig) -> dict[str, Any]:
                 "status": "failed",
                 "exception_class": type(exc).__name__,
             }
+    controller_ready = _state_ready(
+        controller_state,
+        component="controller",
+        expected_owner_identity=config.identity,
+        max_age_seconds=30.0,
+    )
+    relay_ready = _state_ready(
+        relay_state,
+        component="relay",
+        expected_owner_identity=config.identity,
+        max_age_seconds=150.0,
+    )
+    ready = kubernetes_ready and controller_ready and relay_ready and policy_ready
     return {
-        "status": "ready" if ready and policy_ready else "not_ready",
+        "status": "ready" if ready else "not_ready",
         "identity": config.identity,
         "adapter_ready": ready,
+        "kubernetes_ready": kubernetes_ready,
+        "daemon_liveness_ready": controller_ready,
+        "relay_liveness_ready": relay_ready,
         "policy_ready": policy_ready,
         "policy_placement": policy_placement,
         "checkpoint_cache_bound": checkpoint_cache_bound,

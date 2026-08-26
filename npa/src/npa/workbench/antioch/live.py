@@ -456,6 +456,8 @@ def _write_supervisor(
     active_state_path: Path,
     scenario_timeout_seconds: int,
     scenario_name: str = "openpi_droid_live",
+    owner_identity: str = "",
+    session_id: str = "",
 ) -> None:
     if scenario_timeout_seconds < 60:
         raise AntiochLiveError(
@@ -674,6 +676,12 @@ def _write_supervisor(
             str(active_state_path),
             "--scenario",
             scenario_name,
+            *(
+                ["--owner-identity", owner_identity]
+                if owner_identity
+                else []
+            ),
+            *(["--session-id", session_id] if session_id else []),
         ]
     )
     content = f"""#!/bin/sh

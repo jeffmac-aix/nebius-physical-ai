@@ -194,6 +194,8 @@ def test_supervisor_has_finite_run_boundary_but_no_total_limit(tmp_path: Path) -
         stop_file=tmp_path / ".stop",
         active_state_path=tmp_path / "active-run.json",
         scenario_timeout_seconds=14_400,
+        owner_identity="owned-adapter",
+        session_id="owned-session",
     )
     source = script.read_text(encoding="utf-8")
     assert "while [ ! -f" in source
@@ -203,6 +205,11 @@ def test_supervisor_has_finite_run_boundary_but_no_total_limit(tmp_path: Path) -
     assert "npa.workbench.antioch.live_reconcile" in source
     assert "PYTHONPATH=" in source
     assert "NPA_ANTIOCH_RECONCILED_TERMINAL" in source
+    assert "--owner-identity owned-adapter" in source
+    assert "--session-id owned-session" in source
+    assert source.index("npa.workbench.antioch.live_reconcile") < source.index(
+        "scenario run --scenario openpi_droid_live"
+    )
     assert "services cp" in source
     assert "services exec sim /bin/sh -lc" in source
     assert "npa-live-supervisor-source-" in source
@@ -656,6 +663,37 @@ def test_live_reconcile_rejects_unlisted_stream_owner(tmp_path: Path) -> None:
         )
 
 
+def test_daemon_liveness_requires_exact_machine_stream_owner(tmp_path: Path) -> None:
+    class Cli:
+        def list_for_project(self, *_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+            return [
+                {
+                    "scenario": "openpi_droid_live",
+                    "phase": "running",
+                    "scenario_run_id": "listed-but-unowned",
+                }
+            ]
+
+        def machine_status(self, *_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+            return {"stream": {"state": "idle"}}
+
+    cli = Cli()
+    assert live_reconcile._active_run(  # type: ignore[arg-type]
+        cli,
+        runtime=tmp_path,
+        project_id="assigned-project-for-test",
+    ) is not None
+    assert (
+        live_reconcile._active_run(  # type: ignore[arg-type]
+            cli,
+            runtime=tmp_path,
+            project_id="assigned-project-for-test",
+            require_stream_owner=True,
+        )
+        is None
+    )
+
+
 def test_double_wss_relay_forwards_bounded_request_reply(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -716,6 +754,7 @@ def test_double_wss_relay_forwards_bounded_request_reply(
         local_port=18_444,
         stop_file=stop_file,
         state_path=tmp_path / "relay-state.json",
+        owner_identity="test-owner",
     )
 
     assert policy.sent == [b"request"]

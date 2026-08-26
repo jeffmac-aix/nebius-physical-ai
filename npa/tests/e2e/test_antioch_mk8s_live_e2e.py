@@ -79,6 +79,10 @@ def test_real_franka_camera_policy_loop_sustains_cluster_native_acceptance() -> 
         metrics = status.get("live_metrics") or {}
         if _accepted(metrics):
             assert status["status"] == "ready"
+            assert status["daemon_liveness_ready"] is True
+            assert status["relay_liveness_ready"] is True
+            assert status["controller"]["scenario_run_id"]
+            assert status["controller"]["heartbeat_age_seconds"] <= 30
             assert status["adapter_restarts"] == 0
             assert status["cluster_local_policy_resolved"] is True
             assert status["dev_vm_in_data_path"] is False
