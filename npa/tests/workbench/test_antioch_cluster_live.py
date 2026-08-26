@@ -278,6 +278,46 @@ def test_atomic_state_read_recovers_one_transient_partial_json(
     }
 
 
+def test_recovery_heartbeat_keeps_liveness_fresh_but_readiness_revoked(
+    tmp_path: Path,
+) -> None:
+    state = tmp_path / "controller.json"
+    recovery = {
+        "status": "recovering",
+        "daemon_status": "replacing_supervisor",
+        "owner_identity": "owner",
+        "session_id": "session",
+        "scenario": "scenario",
+        "scenario_run_id": "failed-run",
+        "heartbeat_unix": time.time() - 60,
+        "recovery_reason": "controller_child_exit",
+        "recoveries": 1,
+        "vendor_exit_class": "nonzero",
+        "vendor_exit_code": 1,
+    }
+    cluster_runtime._write_state(state, **recovery)
+    first_publication = cluster_runtime._read_state(state)["published_unix"]
+
+    with cluster_runtime._recovery_heartbeat(
+        state, interval_seconds=0.01, **recovery
+    ):
+        time.sleep(0.04)
+        refreshed = cluster_runtime._read_state(state)
+        assert refreshed["published_unix"] > first_publication
+        assert cluster_runtime._state_ready(
+            refreshed,
+            component="controller-liveness",
+            expected_owner_identity="owner",
+            max_age_seconds=0.02,
+        )
+        assert not cluster_runtime._state_ready(
+            refreshed,
+            component="controller",
+            expected_owner_identity="owner",
+            max_age_seconds=30,
+        )
+
+
 @pytest.mark.parametrize(
     "values,expected",
     [

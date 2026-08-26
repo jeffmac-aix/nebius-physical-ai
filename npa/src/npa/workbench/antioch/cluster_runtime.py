@@ -8,6 +8,7 @@ localhost, so the operator VM never carries frame or action traffic.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import math
 import os
@@ -17,9 +18,10 @@ import subprocess
 import threading
 import time
 import uuid
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 from .live import (
     AntiochLiveError,
@@ -187,6 +189,49 @@ def _write_state(path: Path, **values: Any) -> None:
         os.close(descriptor)
     os.replace(temporary, path)
     os.chmod(path, 0o600)
+
+
+@contextlib.contextmanager
+def _recovery_heartbeat(
+    path: Path,
+    *,
+    interval_seconds: float = 5.0,
+    **values: Any,
+) -> Iterator[None]:
+    """Keep PID-1 liveness fresh while supported recovery calls block.
+
+    Recovery never satisfies the readiness probe: this republishes only the
+    explicit ``recovering`` state.  It prevents Kubernetes from killing PID 1
+    while bounded vendor cancellation, service repair, or restaging is still
+    making progress.
+    """
+
+    stopped = threading.Event()
+    failure: list[Exception] = []
+
+    def publish() -> None:
+        while not stopped.wait(interval_seconds):
+            try:
+                _write_state(path, **values)
+            except Exception as exc:  # pragma: no cover - surfaced below
+                failure.append(exc)
+                return
+
+    heartbeat = threading.Thread(
+        target=publish,
+        name="antioch-recovery-heartbeat",
+        daemon=True,
+    )
+    heartbeat.start()
+    try:
+        yield
+    finally:
+        stopped.set()
+        heartbeat.join(timeout=max(1.0, interval_seconds * 2.0))
+    if heartbeat.is_alive():
+        raise RuntimeError("recovery heartbeat did not stop")
+    if failure:
+        raise failure[0]
 
 
 def _read_state(
@@ -605,52 +650,53 @@ def run_cluster(args: argparse.Namespace) -> int:
             if recovery_reason:
                 recoveries += 1
                 exit_class, exit_code = vendor.exit_snapshot()
-                _write_state(
-                    state_path,
-                    status="recovering",
-                    daemon_status="replacing_supervisor",
-                    owner_identity=args.owner_identity,
-                    session_id=session_id,
-                    scenario=args.scenario,
-                    scenario_run_id=last_run_id,
-                    heartbeat_unix=last_owned_heartbeat,
-                    recovery_reason=recovery_reason,
-                    recoveries=recoveries,
-                    vendor_exit_class=exit_class,
-                    vendor_exit_code=exit_code,
-                )
-                vendor.terminate()
-                _cancel_remote_live_runs(
-                    cli,
-                    runtime=runtime,
-                    project_id=project_id,
-                    scenario=args.scenario,
-                    attempts=60,
-                )
-                try:
-                    cli.services_exec(runtime, "sim", ["/bin/true"])
-                except AntiochCliError:
+                recovery_state = {
+                    "status": "recovering",
+                    "daemon_status": "replacing_supervisor",
+                    "owner_identity": args.owner_identity,
+                    "session_id": session_id,
+                    "scenario": args.scenario,
+                    "scenario_run_id": last_run_id,
+                    "heartbeat_unix": last_owned_heartbeat,
+                    "recovery_reason": recovery_reason,
+                    "recoveries": recoveries,
+                    "vendor_exit_class": exit_class,
+                    "vendor_exit_code": exit_code,
+                }
+                _write_state(state_path, **recovery_state)
+                with _recovery_heartbeat(state_path, **recovery_state):
+                    vendor.terminate()
+                    _cancel_remote_live_runs(
+                        cli,
+                        runtime=runtime,
+                        project_id=project_id,
+                        scenario=args.scenario,
+                        attempts=60,
+                    )
                     try:
-                        cli.services_up(runtime)
+                        cli.services_exec(runtime, "sim", ["/bin/true"])
                     except AntiochCliError:
-                        cli.services_build(runtime, service="sim")
-                        cli.services_up(runtime)
-                _stage_runtime_source(cli, runtime=runtime)
-                _stage_private_bundle(cli, runtime=runtime, client_bundle=bundle)
-                delay = RECOVERY_BACKOFF_SECONDS[
-                    min(recoveries - 1, len(RECOVERY_BACKOFF_SECONDS) - 1)
-                ]
-                if stop_file.exists():
-                    break
-                time.sleep(delay)
-                vendor = _launch_vendor_successor(
-                    cli,
-                    executable=Path(cli_path),
-                    runtime=runtime,
-                    project_id=project_id,
-                    scenario=args.scenario,
-                    timeout_seconds=args.scenario_timeout_seconds,
-                )
+                        try:
+                            cli.services_up(runtime)
+                        except AntiochCliError:
+                            cli.services_build(runtime, service="sim")
+                            cli.services_up(runtime)
+                    _stage_runtime_source(cli, runtime=runtime)
+                    _stage_private_bundle(cli, runtime=runtime, client_bundle=bundle)
+                    delay = RECOVERY_BACKOFF_SECONDS[
+                        min(recoveries - 1, len(RECOVERY_BACKOFF_SECONDS) - 1)
+                    ]
+                    if stop_file.exists():
+                        break
+                    time.sleep(delay)
+                    vendor = _launch_vendor_successor(
+                        cli,
+                        executable=Path(cli_path),
+                        runtime=runtime,
+                        project_id=project_id,
+                        scenario=args.scenario,
+                        timeout_seconds=args.scenario_timeout_seconds,
+                    )
                 supervisor_started = time.monotonic()
                 last_restage = supervisor_started
                 consecutive_absence = 0
