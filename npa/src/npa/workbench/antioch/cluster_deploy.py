@@ -709,6 +709,73 @@ def _recover_unready_adapter(apps: Any, config: ClusterLiveConfig) -> str:
     return "rolled_out"
 
 
+def _policy_placement_status(
+    core: Any, policy_deployment: Any, config: ClusterLiveConfig, stream_fn: Any
+) -> dict[str, Any]:
+    """Return sanitized live policy request, placement, image, and CUDA evidence."""
+
+    selector = dict(policy_deployment.spec.selector.match_labels or {})
+    label_selector = ",".join(f"{key}={selector[key]}" for key in sorted(selector))
+    pods = core.list_namespaced_pod(
+        config.namespace, label_selector=label_selector
+    ).items
+    container = policy_deployment.spec.template.spec.containers[0]
+    requests = dict(getattr(container.resources, "requests", None) or {})
+    gpu_request = int(requests.get("nvidia.com/gpu", 0) or 0)
+    image = str(container.image or "")
+    image_digest = image.rsplit("@", 1)[-1] if "@sha256:" in image else ""
+    scheduled = [pod for pod in pods if str(pod.spec.node_name or "")]
+    products: set[str] = set()
+    capabilities: list[str] = []
+    for pod in scheduled:
+        node = core.read_node(name=pod.spec.node_name)
+        product = str(
+            (getattr(node.metadata, "labels", None) or {}).get(
+                "nvidia.com/gpu.product", ""
+            )
+        ).strip()
+        if product:
+            products.add(product)
+        raw = stream_fn(
+            core.connect_get_namespaced_pod_exec,
+            pod.metadata.name,
+            config.namespace,
+            container=container.name,
+            command=[
+                "nvidia-smi",
+                "--query-gpu=compute_cap",
+                "--format=csv,noheader",
+            ],
+            stderr=False,
+            stdin=False,
+            stdout=True,
+            tty=False,
+        )
+        capabilities.extend(
+            line.strip() for line in str(raw).splitlines() if line.strip()
+        )
+    unique_capabilities = sorted(set(capabilities))
+    cuda_capability = (
+        unique_capabilities[0] if len(unique_capabilities) == 1 else ""
+    )
+    cuda_sm = ""
+    match = re.fullmatch(r"(\d+)\.(\d+)", cuda_capability)
+    if match:
+        cuda_sm = f"sm_{int(match.group(1))}{int(match.group(2))}"
+    return {
+        "deployment_replicas": int(policy_deployment.spec.replicas or 0),
+        "pod_count": len(pods),
+        "scheduled_pod_count": len(scheduled),
+        "gpu_request_per_pod": gpu_request,
+        "gpu_request_total": gpu_request * len(pods),
+        "visible_gpu_count": len(capabilities),
+        "gpu_products": sorted(products),
+        "cuda_capability": cuda_capability,
+        "cuda_sm": cuda_sm,
+        "image_digest": image_digest,
+    }
+
+
 def apply_cluster(config: ClusterLiveConfig) -> dict[str, Any]:
     """Stage owner-scoped Secrets, rotate cluster-DNS TLS, and reconcile workloads."""
 
@@ -983,10 +1050,33 @@ def cluster_status(config: ClusterLiveConfig) -> dict[str, Any]:
     ):
         raise ClusterLiveError("policy Deployment ownership is not proven")
     policy_ready = int(policy[0].status.ready_replicas or 0) == 1
+    policy_placement: dict[str, Any] = {}
     relay_state: dict[str, Any] = {}
     probe_diagnostics: dict[str, dict[str, str]] = {}
     live_metrics: dict[str, int | float] = {}
     cluster_local_policy_resolved = False
+    checkpoint_cache_bound = False
+    try:
+        policy_placement = _policy_placement_status(core, policy[0], config, stream)
+    except Exception as exc:
+        probe_diagnostics["policy_placement"] = {
+            "status": "failed",
+            "exception_class": type(exc).__name__,
+        }
+    try:
+        checkpoint_cache_bound = (
+            str(
+                core.read_namespaced_persistent_volume_claim(
+                    name=config.policy_cache_pvc_name, namespace=config.namespace
+                ).status.phase
+            )
+            == "Bound"
+        )
+    except Exception as exc:
+        probe_diagnostics["checkpoint_cache"] = {
+            "status": "failed",
+            "exception_class": type(exc).__name__,
+        }
     if len(pods) == 1:
         pod_name = pods[0].metadata.name
         try:
@@ -1064,6 +1154,9 @@ def cluster_status(config: ClusterLiveConfig) -> dict[str, Any]:
         "identity": config.identity,
         "adapter_ready": ready,
         "policy_ready": policy_ready,
+        "policy_placement": policy_placement,
+        "checkpoint_cache_bound": checkpoint_cache_bound,
+        "adapter_image_digest": config.adapter_image.rsplit("@", 1)[-1],
         "adapter_pods": len(pods),
         "adapter_restarts": restart_count,
         "policy_service_type": "ClusterIP",

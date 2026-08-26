@@ -343,6 +343,55 @@ def test_reconcile_rolls_only_an_unready_owned_adapter(
         assert set(annotations) == {"npa.nebius.ai/owned-recovery-generation"}
 
 
+def test_policy_placement_status_reports_sanitized_live_gpu_evidence(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    container = SimpleNamespace(
+        name="policy",
+        image="ghcr.io/example/openpi@sha256:" + "a" * 64,
+        resources=SimpleNamespace(requests={"nvidia.com/gpu": "1"}),
+    )
+    deployment = SimpleNamespace(
+        spec=SimpleNamespace(
+            replicas=1,
+            selector=SimpleNamespace(match_labels=config.policy_selector),
+            template=SimpleNamespace(
+                spec=SimpleNamespace(containers=[container])
+            ),
+        )
+    )
+    pod = SimpleNamespace(
+        metadata=SimpleNamespace(name="policy-pod"),
+        spec=SimpleNamespace(node_name="gpu-node"),
+    )
+    node = SimpleNamespace(
+        metadata=SimpleNamespace(labels={"nvidia.com/gpu.product": "NVIDIA-B200"})
+    )
+    core = SimpleNamespace(
+        list_namespaced_pod=lambda *_args, **_kwargs: SimpleNamespace(items=[pod]),
+        read_node=lambda **_kwargs: node,
+        connect_get_namespaced_pod_exec=object(),
+    )
+
+    result = cluster_deploy._policy_placement_status(
+        core, deployment, config, lambda *_args, **_kwargs: "10.0\n"
+    )
+
+    assert result == {
+        "deployment_replicas": 1,
+        "pod_count": 1,
+        "scheduled_pod_count": 1,
+        "gpu_request_per_pod": 1,
+        "gpu_request_total": 1,
+        "visible_gpu_count": 1,
+        "gpu_products": ["NVIDIA-B200"],
+        "cuda_capability": "10.0",
+        "cuda_sm": "sm_100",
+        "image_digest": "sha256:" + "a" * 64,
+    }
+
+
 def test_cluster_status_reports_sanitized_probe_exception_classes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -359,12 +408,32 @@ def test_cluster_status_reports_sanitized_probe_exception_classes(
         ),
         status=SimpleNamespace(ready_replicas=1),
         spec=SimpleNamespace(
-            selector=SimpleNamespace(match_labels=config.policy_selector)
+            replicas=1,
+            selector=SimpleNamespace(match_labels=config.policy_selector),
+            template=SimpleNamespace(
+                spec=SimpleNamespace(
+                    containers=[
+                        SimpleNamespace(
+                            name="policy",
+                            image="ghcr.io/example/openpi@sha256:" + "a" * 64,
+                            resources=SimpleNamespace(
+                                requests={"nvidia.com/gpu": "1"}
+                            ),
+                        )
+                    ]
+                )
+            ),
         ),
     )
     pod = SimpleNamespace(
         metadata=SimpleNamespace(name="adapter-pod"),
         status=SimpleNamespace(container_statuses=[]),
+        spec=SimpleNamespace(node_name=""),
+    )
+    policy_pod = SimpleNamespace(
+        metadata=SimpleNamespace(name="policy-pod"),
+        status=SimpleNamespace(container_statuses=[]),
+        spec=SimpleNamespace(node_name="gpu-node"),
     )
     apps = SimpleNamespace(
         read_namespaced_deployment=lambda *_args, **_kwargs: deployment,
@@ -373,7 +442,19 @@ def test_cluster_status_reports_sanitized_probe_exception_classes(
         ),
     )
     core = SimpleNamespace(
-        list_namespaced_pod=lambda *_args, **_kwargs: SimpleNamespace(items=[pod]),
+        list_namespaced_pod=lambda *_args, **kwargs: SimpleNamespace(
+            items=[pod]
+            if "live-identity" in kwargs.get("label_selector", "")
+            else [policy_pod]
+        ),
+        read_node=lambda **_kwargs: SimpleNamespace(
+            metadata=SimpleNamespace(
+                labels={"nvidia.com/gpu.product": "NVIDIA-B200"}
+            )
+        ),
+        read_namespaced_persistent_volume_claim=lambda **_kwargs: SimpleNamespace(
+            status=SimpleNamespace(phase="Bound")
+        ),
         connect_get_namespaced_pod_exec=object(),
         read_namespaced_pod_log=lambda *_args, **_kwargs: "",
     )
@@ -386,6 +467,8 @@ def test_cluster_status_reports_sanitized_probe_exception_classes(
         nonlocal calls
         calls += 1
         if calls == 1:
+            return "10.0\n"
+        if calls == 2:
             raise ValueError("private relay endpoint must not leak")
         raise RuntimeError("private DNS target must not leak")
 
