@@ -678,6 +678,37 @@ def _matching_policy_deployments(
     ]
 
 
+def _recover_unready_adapter(apps: Any, config: ClusterLiveConfig) -> str:
+    """Roll only an exact owned, reconciled adapter whose replica is unhealthy."""
+
+    deployment = apps.read_namespaced_deployment(
+        name=config.adapter_name, namespace=config.namespace
+    )
+    if not _owned(deployment.metadata, config.identity):
+        raise ClusterLiveError("adapter Deployment ownership is not proven")
+    if config.adapter_replicas != 1 or int(deployment.status.ready_replicas or 0) == 1:
+        return "not_needed"
+    generation = hashlib.sha256(
+        f"{config.identity}\n{time.time_ns()}".encode()
+    ).hexdigest()[:16]
+    apps.patch_namespaced_deployment(
+        name=config.adapter_name,
+        namespace=config.namespace,
+        body={
+            "spec": {
+                "template": {
+                    "metadata": {
+                        "annotations": {
+                            "npa.nebius.ai/owned-recovery-generation": generation
+                        }
+                    }
+                }
+            }
+        },
+    )
+    return "rolled_out"
+
+
 def apply_cluster(config: ClusterLiveConfig) -> dict[str, Any]:
     """Stage owner-scoped Secrets, rotate cluster-DNS TLS, and reconcile workloads."""
 
@@ -893,6 +924,8 @@ def apply_cluster(config: ClusterLiveConfig) -> dict[str, Any]:
         body=adapter,
         identity=config.identity,
     )
+    if actions["adapter_deployment"] == "reconciled":
+        actions["adapter_recovery"] = _recover_unready_adapter(apps, config)
     adapter_np = manifests["adapter_network_policy"]
     actions["adapter_network_policy"] = _apply_owned(
         networking.read_namespaced_network_policy,
@@ -1090,9 +1123,18 @@ def stop_cluster(
             tty=False,
         )
         try:
-            cleanup_status = str(json.loads(raw).get("status") or "")
-        except (TypeError, json.JSONDecodeError) as exc:
-            raise ClusterLiveError("adapter cleanup evidence is malformed") from exc
+            cleanup_state = json.loads(raw)
+            if not isinstance(cleanup_state, dict):
+                raise TypeError("adapter cleanup evidence is not an object")
+            cleanup_status = str(cleanup_state.get("status") or "")
+        except (TypeError, json.JSONDecodeError):
+            # Kubernetes exec can yield an empty or partial stdout frame while
+            # the controller atomically replaces its state file.  A single
+            # malformed read is not affirmative cleanup evidence, so keep
+            # polling within the caller's existing timeout and still fail
+            # closed if a complete supported state never arrives.
+            time.sleep(2)
+            continue
         if cleanup_status == "cleanup_failed":
             raise ClusterLiveError(
                 "supported remote scenario/service cleanup failed; Deployment retained"

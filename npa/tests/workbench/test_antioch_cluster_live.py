@@ -313,6 +313,36 @@ def test_apply_cluster_guards_ownership_and_dependencies_beyond_selector(
         cluster_deploy.apply_cluster(config)
 
 
+@pytest.mark.parametrize(
+    "ready_replicas,expected_patches,expected_status",
+    [(1, 0, "not_needed"), (0, 1, "rolled_out")],
+)
+def test_reconcile_rolls_only_an_unready_owned_adapter(
+    ready_replicas: int,
+    expected_patches: int,
+    expected_status: str,
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    deployment = SimpleNamespace(
+        metadata=SimpleNamespace(labels=cluster_deploy._labels(config)),
+        status=SimpleNamespace(ready_replicas=ready_replicas),
+    )
+    patches: list[dict[str, object]] = []
+    apps = SimpleNamespace(
+        read_namespaced_deployment=lambda **_kwargs: deployment,
+        patch_namespaced_deployment=lambda **kwargs: patches.append(kwargs),
+    )
+
+    assert cluster_deploy._recover_unready_adapter(apps, config) == expected_status
+    assert len(patches) == expected_patches
+    if patches:
+        annotations = patches[0]["body"]["spec"]["template"]["metadata"][
+            "annotations"
+        ]
+        assert set(annotations) == {"npa.nebius.ai/owned-recovery-generation"}
+
+
 def test_cluster_status_reports_sanitized_probe_exception_classes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -396,15 +426,16 @@ def test_stop_cluster_requires_supported_remote_cleanup_evidence(
     monkeypatch.setattr("kubernetes.config.load_kube_config", lambda **_kwargs: None)
     monkeypatch.setattr(client, "AppsV1Api", lambda: apps)
     monkeypatch.setattr(client, "CoreV1Api", lambda: core)
-    replies = iter(("", json.dumps({"status": cleanup_status})))
+    monkeypatch.setattr(cluster_deploy.time, "sleep", lambda _seconds: None)
+    replies = iter(("", "", "{", "[]", json.dumps({"status": cleanup_status})))
     monkeypatch.setattr("kubernetes.stream.stream", lambda *_args, **_kwargs: next(replies))
     if stops:
-        result = cluster_deploy.stop_cluster(config, timeout_seconds=1)
+        result = cluster_deploy.stop_cluster(config, timeout_seconds=10)
         assert result["remote_terminal_evidence"] == "supported-controller-cleanup"
         assert len(scales) == 1
     else:
         with pytest.raises(cluster_deploy.ClusterLiveError, match="cleanup failed"):
-            cluster_deploy.stop_cluster(config, timeout_seconds=1)
+            cluster_deploy.stop_cluster(config, timeout_seconds=10)
         assert scales == []
 
 
