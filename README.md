@@ -103,6 +103,10 @@ and the error prints the exact install command to run.
 each setup guide inline: [Hugging Face](docs/workbench/huggingface-token.md) ·
 [NVIDIA NGC](docs/workbench/ngc-api-key.md) ·
 [Nebius Token Factory](docs/workbench/token-factory-key.md).
+Its Hugging Face and NGC access summary is informative: missing, rejected,
+gated, or temporarily unreachable providers do not prevent otherwise-valid
+configuration from being saved. Use `npa workbench health access` when access
+must be an enforcing gate.
 
 If an agent is operating the checkout, attach these values to its **private
 environment** instead of pasting token values into chat:
@@ -149,7 +153,9 @@ Install or verify npa and its reported host prerequisites, including Terraform
 and, for SkyPilot Kubernetes on Debian/Ubuntu, socat. Verify the active Nebius
 CLI identity and configure the known tenant, project, and region
 non-interactively. Persist supported environment credentials with npa configure
---save-env-credentials and provision or reuse writable project object storage.
+--save-env-credentials and use explicit --provision to create or reuse writable
+project object storage. Without --provision, known-project setup must remain
+provider-free and leave storage unselected.
 Confirm the active identity can create the tenant IAM objects that secure that
 storage. Then run npa configure --show,
 npa workbench health preflight --json, and
@@ -308,7 +314,7 @@ npa workbench workflow plan-spec     npa/workflows/workbench/npa-workflows/vlm-e
 
 # Launch on Nebius (after npa configure)
 npa workbench workflow submit npa/workflows/workbench/npa-workflows/vlm-eval-single.yaml \
-  --run-id demo --registry cr.eu-north1.nebius.cloud/<your-registry-id>
+  --run-id demo --registry registry.example/customer
 
 # Inspect the plan without launching
 npa workbench workflow submit npa/workflows/workbench/npa-workflows/token-factory-caption.yaml \
@@ -363,8 +369,8 @@ The GHCR mirror is the runtime default; no registry setup is required in
 locally modified images, and select it with `NPA_REGISTRY` or an explicit image:
 
 ```bash
-REGISTRY_HOST=cr.eu-north1.nebius.cloud npa/scripts/nebius_registry_docker_login.sh
-export NPA_REGISTRY=cr.eu-north1.nebius.cloud/<your-registry-id>
+docker login registry.example
+export NPA_REGISTRY=registry.example/customer
 npa/docker/workbench/lerobot/build.sh --registry "$NPA_REGISTRY" --push
 ```
 

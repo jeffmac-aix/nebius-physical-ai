@@ -507,17 +507,17 @@ def resolve_credentials() -> CredentialsConfig:
 
 
 def resolve_container_registry(project: str | None = None) -> str:
-    """Resolve an image registry override, then fall back to public GHCR."""
+    """Return the environment, project, global, or default registry in order."""
     yml = _load_yaml()
     try:
         proj = _resolve_project_section(yml, project)
     except ConfigError:
         proj = {}
 
-    # Explicit environment configuration wins over legacy saved values, matching
-    # the repository-wide explicit > env > config precedence contract. Honor both
-    # supported registry env vars so NPA_REGISTRY_ID behaves consistently across
-    # tool-deploy paths (lerobot/fiftyone/sonic/detection-training/sim2real).
+    # An explicit execution override must win over legacy project registry
+    # configuration. This is especially important for digest-pinned public
+    # development images, which must not silently resolve back to a provider
+    # registry saved in ~/.npa/config.yaml.
     from npa.deploy.images import registry_from_env
 
     value = registry_from_env()
@@ -1501,6 +1501,12 @@ def resolve_project_storage(
             alias="" if read_only else str(project or ""),
             migrate_legacy=not read_only,
         )
+        # ``configure --no-provision`` retains exact-project storage as audit
+        # and cleanup evidence, but explicitly removes it from operational
+        # selection.  Do not fall through to that record, an older inline
+        # stanza, or ambient shared credentials after the user deselects it.
+        if record.get("storage_selected") is False:
+            return StorageConfig(checkpoint_bucket="", endpoint_url="")
         saved_storage = record.get("storage")
         if isinstance(saved_storage, dict):
             project_storage_credentials = saved_storage
