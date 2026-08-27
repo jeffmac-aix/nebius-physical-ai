@@ -25,6 +25,8 @@ JOINT_LOW = (-2.8973, -1.7628, -2.8973, -3.0718, -2.8973, -0.0175, -2.8973)
 JOINT_HIGH = (2.8973, 1.7628, 2.8973, -0.0698, 2.8973, 3.7525, 2.8973)
 MAX_JOINT_STEP = 0.35
 GRIPPER_JOINT_MAX = 0.04
+MIN_CAMERA_LUMINANCE_MEAN = 5.0
+MIN_CAMERA_LUMINANCE_VARIANCE = 25.0
 
 
 class ActionValidationError(ValueError):
@@ -185,7 +187,7 @@ def _install_overlay():
 
 
 def _camera_rgb(camera):
-    """Return a validated RGB frame, or None while the annotator warms up."""
+    """Return a rendered RGB frame, or None while the annotator warms up."""
 
     import numpy as np
 
@@ -197,7 +199,14 @@ def _camera_rgb(camera):
         return None
     if not np.issubdtype(frame.dtype, np.number) or not np.isfinite(frame).all():
         return None
-    return frame[:, :, :3].astype(np.uint8, copy=False)
+    rgb = frame[:, :, :3].astype(np.uint8, copy=False)
+    luminance = np.mean(rgb, axis=2)
+    if (
+        float(luminance.mean()) <= MIN_CAMERA_LUMINANCE_MEAN
+        or float(luminance.var()) <= MIN_CAMERA_LUMINANCE_VARIANCE
+    ):
+        return None
+    return rgb
 
 
 def _franka_link_points(stage):

@@ -194,6 +194,41 @@ def test_live_franka_proxy_is_volumetric_oriented_and_asset_free(
     assert "Mesh3D" not in (EXAMPLE / "src/scenario.py").read_text(encoding="utf-8")
 
 
+def test_live_camera_rejects_black_or_flat_annotator_warmup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_antioch = types.ModuleType("antioch")
+    fake_antioch.Logger = lambda *_args, **_kwargs: object()
+    fake_antioch.param = lambda default, **_kwargs: default
+    fake_antioch.scenario = lambda **_kwargs: lambda function: function
+    monkeypatch.setitem(sys.modules, "antioch", fake_antioch)
+    path = EXAMPLE / "src/scenario.py"
+    spec = importlib.util.spec_from_file_location("antioch_live_camera_test", path)
+    assert spec is not None and spec.loader is not None
+    scenario = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(scenario)
+
+    class Camera:
+        def __init__(self, frame: np.ndarray | None) -> None:
+            self.frame = frame
+
+        def get_rgba(self) -> np.ndarray | None:
+            return self.frame
+
+    assert scenario._camera_rgb(Camera(None)) is None
+    assert scenario._camera_rgb(Camera(np.zeros((8, 8, 4), dtype=np.uint8))) is None
+    assert (
+        scenario._camera_rgb(Camera(np.full((8, 8, 4), 64, dtype=np.uint8)))
+        is None
+    )
+    rendered = np.zeros((8, 8, 4), dtype=np.uint8)
+    rendered[:, 4:, :3] = 255
+    rendered[:, :, 3] = 255
+    np.testing.assert_array_equal(
+        scenario._camera_rgb(Camera(rendered)), rendered[:, :, :3]
+    )
+
+
 def test_live_protocol_codec_round_trips_arrays_and_rejects_objects() -> None:
     pytest.importorskip("msgpack")
     path = EXAMPLE / "src/openpi_protocol.py"
