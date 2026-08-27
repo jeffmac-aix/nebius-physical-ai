@@ -427,7 +427,7 @@ containers:
     physical_ai:
       useful: true
       role: >-
-        Cosmos-Reason1 VLM reasoning stage of the sim-to-real inner loop
+        Cosmos-Reason2 VLM reasoning stage of the sim-to-real inner loop
         (rollout scoring / reasoning).
     safety:
       runs_as: ubuntu
@@ -873,8 +873,10 @@ containers:
       network: internal (viewer port 9090)
       external_fetch: [pypi]
       notes: >-
-        Rerun SDK image and non-root SkyPilot visualization worker; no persistent
-        storage or outbound calls at runtime beyond the viewer bind.
+        Exact-source standard-workflow Stage 14 image with resolver-closed
+        Rerun/MCAP dependencies, baked non-root SkyPilot Kubernetes prerequisites,
+        and an interactive-server fallback; no models, datasets, credentials,
+        persistent storage, or runtime caches are baked.
     golden_eval:
       kind: build-import
       command: 'python -c "import rerun; assert rerun.__version__"'
