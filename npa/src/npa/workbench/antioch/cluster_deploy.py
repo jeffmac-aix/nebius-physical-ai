@@ -258,14 +258,19 @@ def build_public_manifests(config: ClusterLiveConfig) -> dict[str, dict[str, Any
             {"name": "runtime-cache", "mountPath": "/workspace/.cache/npa/antioch"},
             {"name": "tmp", "mountPath": "/tmp"},
         ],
-        "ports": [{"name": "controller-health", "containerPort": 18080}],
+        "ports": [{"name": "ctrl-health", "containerPort": 18080}],
         "readinessProbe": {
-            "httpGet": {"path": "/ready", "port": "controller-health"},
+            # Null is the strategic-merge tombstone for the former exec probe.
+            # Without it, a reconcile leaves both handlers and the API rejects
+            # the Deployment before rollout.
+            "exec": None,
+            "httpGet": {"path": "/ready", "port": "ctrl-health"},
             "periodSeconds": 5,
             "failureThreshold": 3,
         },
         "livenessProbe": {
-            "httpGet": {"path": "/live", "port": "controller-health"},
+            "exec": None,
+            "httpGet": {"path": "/live", "port": "ctrl-health"},
             "periodSeconds": 10,
             "failureThreshold": 3,
             "initialDelaySeconds": 600,
@@ -305,11 +310,13 @@ def build_public_manifests(config: ClusterLiveConfig) -> dict[str, dict[str, Any
         ],
         "ports": [{"name": "relay-health", "containerPort": 18081}],
         "readinessProbe": {
+            "exec": None,
             "httpGet": {"path": "/ready", "port": "relay-health"},
             "periodSeconds": 5,
             "failureThreshold": 3,
         },
         "livenessProbe": {
+            "exec": None,
             "httpGet": {"path": "/live", "port": "relay-health"},
             "periodSeconds": 15,
             "failureThreshold": 6,

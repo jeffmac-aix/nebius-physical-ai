@@ -234,11 +234,11 @@ def test_public_manifests_keep_vm_out_and_policy_cluster_local(tmp_path: Path) -
     assert "18444" in relay["command"]
     assert controller["readinessProbe"]["httpGet"] == {
         "path": "/ready",
-        "port": "controller-health",
+        "port": "ctrl-health",
     }
     assert controller["livenessProbe"]["httpGet"] == {
         "path": "/live",
-        "port": "controller-health",
+        "port": "ctrl-health",
     }
     assert relay["readinessProbe"]["httpGet"] == {
         "path": "/ready",
@@ -248,6 +248,10 @@ def test_public_manifests_keep_vm_out_and_policy_cluster_local(tmp_path: Path) -
         "path": "/live",
         "port": "relay-health",
     }
+    assert controller["ports"] == [{"name": "ctrl-health", "containerPort": 18080}]
+    for container in (controller, relay):
+        assert container["readinessProbe"]["exec"] is None
+        assert container["livenessProbe"]["exec"] is None
     assert "--resume-after-stop" in relay["command"]
     assert controller["readinessProbe"]["failureThreshold"] == 3
     assert relay["readinessProbe"]["failureThreshold"] == 3
