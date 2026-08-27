@@ -125,6 +125,25 @@ def _fail(msg: str, code: int = 1) -> None:
     raise typer.Exit(code)
 
 
+def _emit_image_bootstrap_observing_progress(
+    *, digest: str, timeout_seconds: int
+) -> None:
+    """Report that an immutable image capability probe is being observed."""
+
+    typer.echo(
+        json.dumps(
+            {
+                "apiVersion": "npa.image-bootstrap-progress/v1",
+                "digest": digest,
+                "state": "observing",
+                "timeout_seconds": timeout_seconds,
+            },
+            sort_keys=True,
+        ),
+        err=True,
+    )
+
+
 @app.command("prepare-run")
 def prepare_run_cmd(
     yaml_path: Path = typer.Argument(help="npa.workflow/v0.0.1 YAML path."),
@@ -2710,17 +2729,9 @@ def _preflight_image_bootstrap_contracts(
                     # does not implement the full contract, so the label cannot
                     # establish provenance. Probe the selected immutable bytes and
                     # ignore stale label-backed cache entries for the same digest.
-                    typer.echo(
-                        json.dumps(
-                            {
-                                "apiVersion": "npa.image-bootstrap-progress/v1",
-                                "digest": digest,
-                                "state": "observing",
-                                "timeout_seconds": observation_timeout_seconds,
-                            },
-                            sort_keys=True,
-                        ),
-                        err=True,
+                    _emit_image_bootstrap_observing_progress(
+                        digest=digest,
+                        timeout_seconds=observation_timeout_seconds,
                     )
                     evidence = probe_image_capabilities(
                         image=image,
@@ -2742,17 +2753,9 @@ def _preflight_image_bootstrap_contracts(
                     # to substitute a runtime probe for that build contract.
                     evidence = attested
                 else:
-                    typer.echo(
-                        json.dumps(
-                            {
-                                "apiVersion": "npa.image-bootstrap-progress/v1",
-                                "digest": digest,
-                                "state": "observing",
-                                "timeout_seconds": observation_timeout_seconds,
-                            },
-                            sort_keys=True,
-                        ),
-                        err=True,
+                    _emit_image_bootstrap_observing_progress(
+                        digest=digest,
+                        timeout_seconds=observation_timeout_seconds,
                     )
                     evidence = probe_image_capabilities(
                         image=image,
