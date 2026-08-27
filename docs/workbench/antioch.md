@@ -136,7 +136,9 @@ The live viewer includes the normal streamed Isaac viewport, current camera imag
 in Antioch telemetry, and counters for observation sequence/time, requests, round
 trips, latency, action shape/index, safe hold, reconnects, and safely applied
 targets. These are emitted by the running scenario, not inferred from an `.rrd`.
-The default dispatched instruction is `pick up the red cube`; public proof telemetry
+The versioned `openpi_franka_mk8s_live_v2` remote scenario identity prevents a
+previously published definition from masking the schema-2 camera/action contract.
+Its default dispatched instruction is `pick up the red cube`; public proof telemetry
 uses only the non-sensitive `red_cube_pickup` label.
 
 The OpenPI bootstrap is publicly installed as `npa-openpi-live-deploy` (implemented

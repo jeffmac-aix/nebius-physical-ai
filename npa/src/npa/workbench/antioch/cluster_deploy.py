@@ -24,7 +24,7 @@ CONFIG_SCHEMA = "npa.antioch.mk8s-live-config.v1"
 ANTIOCH_TLS_EGRESS_PORTS = (22, 443, 8443)
 UNRESTRICTED_VENDOR_EGRESS_CIDR = "0.0.0.0/0"
 MANAGED_BY = "npa-antioch-mk8s-live"
-SCENARIO = "openpi_franka_mk8s_live"
+SCENARIO = "openpi_franka_mk8s_live_v2"
 _DNS_LABEL = re.compile(r"^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$")
 _SECRET_KEY = re.compile(r"^[A-Za-z0-9._-]+$")
 _METRIC_KEY = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -228,6 +228,8 @@ def build_public_manifests(config: ClusterLiveConfig) -> dict[str, dict[str, Any
             "-m",
             "npa.workbench.antioch.cluster_runtime",
             "run",
+            "--scenario",
+            SCENARIO,
             "--scenario-timeout-seconds",
             str(config.scenario_timeout_seconds),
             "--owner-identity",

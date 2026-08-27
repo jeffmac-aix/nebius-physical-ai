@@ -82,7 +82,9 @@ viewer opens the supported console link. Isaac's first rendered camera frame may
 wait at that boundary; the controller never fabricates a viewer session or reads
 browser authentication storage.
 
-`openpi_franka_mk8s_live` dispatches the default instruction `pick up the red cube`
+`openpi_franka_mk8s_live_v2` uses a versioned remote scenario identity so an
+already-published definition cannot mask a new camera/action contract. It dispatches
+the default instruction `pick up the red cube`
 and records only the non-sensitive `red_cube_pickup` task label in proof telemetry.
 It records both current cameras, per-view luminance/variance, typed action-rejection
 and projection reasons, latency percentiles, every Franka joint, and the

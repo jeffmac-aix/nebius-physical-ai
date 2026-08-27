@@ -230,6 +230,7 @@ def test_public_manifests_keep_vm_out_and_policy_cluster_local(tmp_path: Path) -
     assert relay_mounts["private"]["readOnly"] is True
     assert "cluster_runtime" in " ".join(controller["command"])
     assert "14400" in controller["command"]
+    assert "openpi_franka_mk8s_live_v2" in controller["command"]
     assert "antioch.relay" in " ".join(relay["command"])
     assert "18444" in relay["command"]
     assert controller["readinessProbe"]["httpGet"] == {

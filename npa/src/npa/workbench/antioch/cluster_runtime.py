@@ -871,7 +871,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--runtime-root", default="/var/lib/npa-antioch-live")
     run.add_argument("--state-path", default="/var/run/npa-antioch/controller.json")
     run.add_argument("--stop-file", default="/var/run/npa-antioch/stop")
-    run.add_argument("--scenario", default="openpi_franka_mk8s_live")
+    run.add_argument("--scenario", default="openpi_franka_mk8s_live_v2")
     run.add_argument("--scenario-timeout-seconds", type=int, default=14_400)
     run.add_argument("--owner-identity", required=True)
     run.add_argument("--health-port", type=int, default=18_080)

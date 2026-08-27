@@ -403,7 +403,7 @@ def _franka_proxy_geometry(link_points):
 
 
 @antioch.scenario(tags=["openpi-live", "mk8s-native"])
-def openpi_franka_mk8s_live(
+def openpi_franka_mk8s_live_v2(
     run: antioch.ScenarioRun,
     prompt: str = antioch.param(
         "pick up the red cube", description="DROID task prompt"

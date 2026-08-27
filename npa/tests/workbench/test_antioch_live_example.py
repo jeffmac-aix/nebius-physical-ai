@@ -83,6 +83,7 @@ def test_live_scenario_is_real_bounded_and_fail_closed() -> None:
         "DROID_RESET_JOINTS",
         '"pick up the red cube"',
         'TASK_LABEL = "red_cube_pickup"',
+        "def openpi_franka_mk8s_live_v2(",
         "raw_gripper_range_mismatches",
         "raw_joint_limit_mismatches",
         "joint_limit_projections",
