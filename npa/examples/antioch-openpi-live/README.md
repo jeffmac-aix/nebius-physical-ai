@@ -79,9 +79,11 @@ browser authentication storage.
 
 `openpi_franka_mk8s_live` records both current cameras, luminance/variance,
 typed action-rejection reasons, latency percentiles, every Franka joint, and the
-rendered robot's USD link-transform chain in Rerun. This makes the arm geometry
-and motion distinguishable from the cube rather than treating a viewport-ready
-handshake as policy-loop evidence.
+rendered robot's USD link transforms in Rerun. Those transforms drive generated
+volumetric link, joint, base, palm, and finger primitives, so the live 3D view is
+recognizably Franka-shaped instead of a thick line strip. The actual Isaac render
+remains visible in the exterior and wrist camera panes. No Isaac or Franka mesh
+bytes are copied into telemetry, source, or the image.
 
 The source is original Apache-2.0 NPA example code. Isaac Sim is supplied by the
 Antioch-managed runtime under the operator-accepted NVIDIA terms. OpenPI source and

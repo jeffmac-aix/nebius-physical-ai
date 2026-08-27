@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import ssl
 import time
 from collections import Counter
@@ -214,6 +215,104 @@ def _franka_link_points(stage):
         )
         points.append(list(transform.ExtractTranslation()))
     return points
+
+
+def _unit_vector(vector):
+    length = math.sqrt(sum(component * component for component in vector))
+    if length <= 1e-9:
+        return None
+    return [component / length for component in vector]
+
+
+def _z_axis_quaternion(direction):
+    """Return an xyzw quaternion that rotates local +Z onto direction."""
+
+    unit = _unit_vector(direction)
+    if unit is None:
+        raise ValueError("cannot orient geometry along a zero-length vector")
+    dot = max(-1.0, min(1.0, unit[2]))
+    if dot < -1.0 + 1e-8:
+        return [1.0, 0.0, 0.0, 0.0]
+    quaternion = [-unit[1], unit[0], 0.0, 1.0 + dot]
+    norm = math.sqrt(sum(component * component for component in quaternion))
+    return [component / norm for component in quaternion]
+
+
+def _franka_proxy_geometry(link_points):
+    """Build a volumetric Franka proxy from live USD link translations.
+
+    The proxy intentionally contains only generated primitives. The Isaac/Franka
+    mesh remains inside the operator-accepted runtime and is visible through the
+    two rendered camera streams, while Rerun gets recognizable moving geometry
+    without copying any simulator asset bytes.
+    """
+
+    points = [[float(component) for component in point] for point in link_points]
+    links = {"centers": [], "sizes": [], "quaternions": [], "colors": []}
+    last_direction = None
+    for index, (start, end) in enumerate(zip(points, points[1:])):
+        direction = [right - left for left, right in zip(start, end)]
+        unit = _unit_vector(direction)
+        if unit is None:
+            continue
+        length = math.sqrt(sum(component * component for component in direction))
+        width = 0.105 if index < 2 else 0.085 if index < 5 else 0.065
+        links["centers"].append(
+            [(left + right) / 2.0 for left, right in zip(start, end)]
+        )
+        links["sizes"].append([width, width, length])
+        links["quaternions"].append(_z_axis_quaternion(direction))
+        links["colors"].append(
+            [230, 232, 235, 255] if index % 2 == 0 else [195, 200, 206, 255]
+        )
+        last_direction = unit
+
+    if not points:
+        return {"base": None, "links": links, "joints": None, "gripper": None}
+
+    base = {
+        "centers": [[points[0][0], points[0][1], points[0][2] - 0.055]],
+        "sizes": [[0.20, 0.20, 0.11]],
+        "colors": [[58, 63, 70, 255]],
+    }
+    joints = {
+        "centers": points,
+        "radii": [0.057 if index < 2 else 0.046 for index in range(len(points))],
+        "colors": [[40, 44, 52, 255]] * len(points),
+    }
+    if last_direction is None:
+        return {"base": base, "links": links, "joints": joints, "gripper": None}
+
+    up = [0.0, 0.0, 1.0]
+    lateral = _unit_vector(
+        [
+            last_direction[1] * up[2] - last_direction[2] * up[1],
+            last_direction[2] * up[0] - last_direction[0] * up[2],
+            last_direction[0] * up[1] - last_direction[1] * up[0],
+        ]
+    )
+    if lateral is None:
+        lateral = [1.0, 0.0, 0.0]
+    hand = points[-1]
+    orientation = _z_axis_quaternion(last_direction)
+    palm_center = [
+        value + 0.025 * axis for value, axis in zip(hand, last_direction)
+    ]
+    finger_centers = []
+    for sign in (-1.0, 1.0):
+        finger_centers.append(
+            [
+                value + 0.10 * axis + sign * 0.047 * side
+                for value, axis, side in zip(hand, last_direction, lateral)
+            ]
+        )
+    gripper = {
+        "centers": [palm_center, *finger_centers],
+        "sizes": [[0.14, 0.09, 0.055], [0.024, 0.024, 0.15], [0.024, 0.024, 0.15]],
+        "quaternions": [orientation, orientation, orientation],
+        "colors": [[58, 63, 70, 255], [34, 39, 48, 255], [34, 39, 48, 255]],
+    }
+    return {"base": base, "links": links, "joints": joints, "gripper": gripper}
 
 
 @antioch.scenario(tags=["openpi-live", "mk8s-native"])
@@ -482,10 +581,23 @@ def openpi_franka_mk8s_live(
             for index, value in enumerate(joint_positions[:9]):
                 logger.scalar(f"robot/franka/joint_{index}", float(value))
             link_points = _franka_link_points(world.stage)
-            if len(link_points) >= 2:
+            proxy = _franka_proxy_geometry(link_points)
+            if proxy["base"] is not None:
                 logger.value(
-                    "scene/franka/kinematic_chain",
-                    rr.LineStrips3D([link_points], radii=0.012),
+                    "scene/franka/base",
+                    rr.Boxes3D(**proxy["base"]),
+                )
+            if proxy["links"]["centers"]:
+                logger.value("scene/franka/links", rr.Boxes3D(**proxy["links"]))
+            if proxy["joints"] is not None:
+                logger.value(
+                    "scene/franka/joints",
+                    rr.Ellipsoids3D(**proxy["joints"]),
+                )
+            if proxy["gripper"] is not None:
+                logger.value(
+                    "scene/franka/gripper",
+                    rr.Boxes3D(**proxy["gripper"]),
                 )
             overlay[2].text = (
                 "SAFE HOLD / reconnecting"

@@ -4,7 +4,9 @@ import importlib.util
 import hashlib
 import re
 import subprocess
+import sys
 import time
+import types
 from pathlib import Path
 
 import numpy as np
@@ -100,6 +102,13 @@ def test_live_scenario_is_real_bounded_and_fail_closed() -> None:
         'logger.scalar("decision/gripper_saturations"',
         '"decision/joint_limit_saturations"',
         'logger.scalar("decision/joint_step_saturations"',
+        '"scene/franka/base"',
+        '"scene/franka/links"',
+        '"scene/franka/joints"',
+        '"scene/franka/gripper"',
+        "rr.Boxes3D(**proxy",
+        "rr.Ellipsoids3D(**proxy",
+        "_franka_proxy_geometry(link_points)",
         "ArticulationAction",
         'enable_extension("isaacsim.robot.manipulators.examples")',
         "NPA_OPENPI_ROUND_TRIP",
@@ -114,6 +123,7 @@ def test_live_scenario_is_real_bounded_and_fail_closed() -> None:
         assert contract in source
     assert "WebsocketClientPolicy(" not in source
     assert "verify_mode = ssl.CERT_NONE" not in source
+    assert "rr.LineStrips3D" not in source
     assert "while True:" in source
 
     relay = (ROOT / "npa/src/npa/workbench/antioch/relay.py").read_text(
@@ -132,6 +142,56 @@ def test_live_scenario_is_real_bounded_and_fail_closed() -> None:
     assert '"0.0.0.0",\n        8444,' in bridge
     assert "hmac.compare_digest" in bridge
     assert 'ROLES = frozenset({"operator", "simulation"})' in bridge
+
+
+def test_live_franka_proxy_is_volumetric_oriented_and_asset_free(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_antioch = types.ModuleType("antioch")
+    fake_antioch.Logger = lambda *_args, **_kwargs: object()
+    fake_antioch.param = lambda default, **_kwargs: default
+    fake_antioch.scenario = lambda **_kwargs: lambda function: function
+    monkeypatch.setitem(sys.modules, "antioch", fake_antioch)
+    path = EXAMPLE / "src/scenario.py"
+    spec = importlib.util.spec_from_file_location("antioch_live_scenario_test", path)
+    assert spec is not None and spec.loader is not None
+    scenario = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(scenario)
+
+    geometry = scenario._franka_proxy_geometry(
+        [
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.3],
+            [0.0, 0.0, 0.3],  # zero-length USD offset is ignored
+            [0.2, 0.0, 0.5],
+            [0.35, 0.1, 0.65],
+        ]
+    )
+
+    assert geometry["base"]["sizes"] == [[0.20, 0.20, 0.11]]
+    assert len(geometry["links"]["centers"]) == 3
+    assert geometry["links"]["sizes"][0] == pytest.approx([0.105, 0.105, 0.3])
+    assert geometry["links"]["quaternions"][0] == pytest.approx(
+        [0.0, 0.0, 0.0, 1.0]
+    )
+    assert all(
+        sum(component * component for component in quaternion)
+        == pytest.approx(1.0)
+        for quaternion in geometry["links"]["quaternions"]
+    )
+    assert geometry["joints"]["centers"][-1] == [0.35, 0.1, 0.65]
+    assert len(geometry["gripper"]["centers"]) == 3
+    assert geometry["gripper"]["sizes"][1:] == [
+        [0.024, 0.024, 0.15],
+        [0.024, 0.024, 0.15],
+    ]
+    assert all(color[-1] == 255 for color in geometry["links"]["colors"])
+    rr = pytest.importorskip("rerun")
+    rr.Boxes3D(**geometry["base"])
+    rr.Boxes3D(**geometry["links"])
+    rr.Ellipsoids3D(**geometry["joints"])
+    rr.Boxes3D(**geometry["gripper"])
+    assert "Mesh3D" not in (EXAMPLE / "src/scenario.py").read_text(encoding="utf-8")
 
 
 def test_live_protocol_codec_round_trips_arrays_and_rejects_objects() -> None:
