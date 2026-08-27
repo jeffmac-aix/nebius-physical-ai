@@ -306,7 +306,7 @@ def _stage_runtime_source(
     """Copy reviewed source, retrying across a service-container recreation."""
 
     source = runtime / "src"
-    names = ("scenario.py", "openpi_protocol.py", "relay_bridge.py")
+    names = ("scenario_v2.py", "openpi_protocol.py", "relay_bridge.py")
     for name in names:
         path = source / name
         if not path.is_file() or path.is_symlink():
@@ -434,7 +434,7 @@ def _stage_project(source: Path, destination: Path, project_id: str) -> None:
     # so owner-only files become unreadable after that supported copy boundary.
     # These three files are reviewed public source (never the private bundle),
     # and must be readable by the unprivileged service container.
-    for name in ("scenario.py", "openpi_protocol.py", "relay_bridge.py"):
+    for name in ("scenario_v2.py", "openpi_protocol.py", "relay_bridge.py"):
         staged_source = destination / "src" / name
         if not staged_source.is_file() or staged_source.is_symlink():
             raise AntiochLiveError(f"live runtime source {name!r} is unavailable")
@@ -482,7 +482,7 @@ def _write_supervisor(
             "--verbose",
         ]
     )
-    source_names = ("scenario.py", "openpi_protocol.py", "relay_bridge.py")
+    source_names = ("scenario_v2.py", "openpi_protocol.py", "relay_bridge.py")
     source_paths = {name: path.parent / "src" / name for name in source_names}
     for name, source_path in source_paths.items():
         if not source_path.is_file() or source_path.is_symlink():

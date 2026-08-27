@@ -2,7 +2,7 @@
 # project ID before dispatch. Never commit a live project or machine ID.
 id: "replace-at-runtime"
 name: "npa-openpi-live"
-scenario_paths: ["src/scenario.py"]
+scenario_paths: ["src/scenario_v2.py"]
 
 services:
   sim:

@@ -73,7 +73,7 @@ def test_live_example_uses_only_runtime_project_identity() -> None:
 
 
 def test_live_scenario_is_real_bounded_and_fail_closed() -> None:
-    source = (EXAMPLE / "src/scenario.py").read_text(encoding="utf-8")
+    source = (EXAMPLE / "src/scenario_v2.py").read_text(encoding="utf-8")
     compile(source, "antioch-openpi-live-scenario", "exec")
     for contract in (
         "ACTION_SHAPE = (15, 8)",
@@ -168,7 +168,7 @@ def test_live_franka_proxy_is_volumetric_oriented_and_asset_free(
     fake_antioch.param = lambda default, **_kwargs: default
     fake_antioch.scenario = lambda **_kwargs: lambda function: function
     monkeypatch.setitem(sys.modules, "antioch", fake_antioch)
-    path = EXAMPLE / "src/scenario.py"
+    path = EXAMPLE / "src/scenario_v2.py"
     spec = importlib.util.spec_from_file_location("antioch_live_scenario_test", path)
     assert spec is not None and spec.loader is not None
     scenario = importlib.util.module_from_spec(spec)
@@ -207,7 +207,7 @@ def test_live_franka_proxy_is_volumetric_oriented_and_asset_free(
     rr.Boxes3D(**geometry["links"])
     rr.Ellipsoids3D(**geometry["joints"])
     rr.Boxes3D(**geometry["gripper"])
-    assert "Mesh3D" not in (EXAMPLE / "src/scenario.py").read_text(encoding="utf-8")
+    assert "Mesh3D" not in (EXAMPLE / "src/scenario_v2.py").read_text(encoding="utf-8")
 
 
 def test_live_camera_rejects_black_or_flat_annotator_warmup(
@@ -218,7 +218,7 @@ def test_live_camera_rejects_black_or_flat_annotator_warmup(
     fake_antioch.param = lambda default, **_kwargs: default
     fake_antioch.scenario = lambda **_kwargs: lambda function: function
     monkeypatch.setitem(sys.modules, "antioch", fake_antioch)
-    path = EXAMPLE / "src/scenario.py"
+    path = EXAMPLE / "src/scenario_v2.py"
     spec = importlib.util.spec_from_file_location("antioch_live_camera_test", path)
     assert spec is not None and spec.loader is not None
     scenario = importlib.util.module_from_spec(spec)
@@ -257,7 +257,7 @@ def test_live_droid_jointpos_and_gripper_mapping_matches_pinned_contract(
     fake_antioch.param = lambda default, **_kwargs: default
     fake_antioch.scenario = lambda **_kwargs: lambda function: function
     monkeypatch.setitem(sys.modules, "antioch", fake_antioch)
-    path = EXAMPLE / "src/scenario.py"
+    path = EXAMPLE / "src/scenario_v2.py"
     spec = importlib.util.spec_from_file_location("antioch_live_action_test", path)
     assert spec is not None and spec.loader is not None
     scenario = importlib.util.module_from_spec(spec)
@@ -286,7 +286,7 @@ def test_live_droid_jointpos_and_gripper_mapping_matches_pinned_contract(
 
 
 def test_live_scene_is_tabletop_lit_and_droid_reset_aligned() -> None:
-    source = (EXAMPLE / "src/scenario.py").read_text(encoding="utf-8")
+    source = (EXAMPLE / "src/scenario_v2.py").read_text(encoding="utf-8")
     assert 'world.scene.add_ground_plane(z_position=-0.75)' in source
     assert 'prim_path="/World/Tabletop"' in source
     assert 'prim_path="/World/Cube"' in source
@@ -367,14 +367,14 @@ def test_runtime_staging_keeps_private_project_id_out_of_source(tmp_path: Path) 
     assert source["id"] == "replace-at-runtime"
     assert destination.stat().st_mode & 0o777 == 0o700
     assert (destination / "antioch.yaml").stat().st_mode & 0o777 == 0o600
-    for name in ("scenario.py", "openpi_protocol.py", "relay_bridge.py"):
+    for name in ("scenario_v2.py", "openpi_protocol.py", "relay_bridge.py"):
         assert (destination / "src" / name).stat().st_mode & 0o777 == 0o644
 
 
 def test_supervisor_has_finite_run_boundary_but_no_total_limit(tmp_path: Path) -> None:
     source_dir = tmp_path / "src"
     source_dir.mkdir()
-    for name in ("scenario.py", "openpi_protocol.py", "relay_bridge.py"):
+    for name in ("scenario_v2.py", "openpi_protocol.py", "relay_bridge.py"):
         (source_dir / name).write_text("# reviewed source\n", encoding="utf-8")
     bundle = tmp_path / "bundle"
     bundle.mkdir()
@@ -408,7 +408,7 @@ def test_supervisor_has_finite_run_boundary_but_no_total_limit(tmp_path: Path) -
     assert "services cp" in source
     assert "services exec sim /bin/sh -lc" in source
     assert "npa-live-supervisor-source-" in source
-    assert "sha256sum /workspace/project/src/scenario.py" in source
+    assert "sha256sum /workspace/project/src/scenario_v2.py" in source
     assert "sha256sum /workspace/project/src/openpi_protocol.py" in source
     assert "install -m 0644" in source
     assert "services up --json" in source
@@ -578,7 +578,7 @@ def test_runtime_source_is_staged_through_supported_service_copy(
 ) -> None:
     source = tmp_path / "src"
     source.mkdir()
-    for name in ("scenario.py", "openpi_protocol.py", "relay_bridge.py"):
+    for name in ("scenario_v2.py", "openpi_protocol.py", "relay_bridge.py"):
         (source / name).write_text("# reviewed public source\n", encoding="utf-8")
     calls: list[tuple[str, object]] = []
 
@@ -596,9 +596,9 @@ def test_runtime_source_is_staged_through_supported_service_copy(
 
     assert calls[0][0] == "exec"
     copies = [call for call in calls if call[0] == "copy"]
-    assert copies[0][1][0] == "scenario.py"
+    assert copies[0][1][0] == "scenario_v2.py"
     assert copies[0][1][1].startswith("sim:/tmp/npa-live-source-")
-    assert copies[0][1][1].endswith("/scenario.py")
+    assert copies[0][1][1].endswith("/scenario_v2.py")
     assert copies[1][1][0] == "openpi_protocol.py"
     assert copies[1][1][1].startswith("sim:/tmp/npa-live-source-")
     assert copies[1][1][1].endswith("/openpi_protocol.py")
@@ -612,7 +612,7 @@ def test_runtime_source_staging_recovers_from_service_recreation(
 ) -> None:
     source = tmp_path / "src"
     source.mkdir()
-    for name in ("scenario.py", "openpi_protocol.py", "relay_bridge.py"):
+    for name in ("scenario_v2.py", "openpi_protocol.py", "relay_bridge.py"):
         (source / name).write_text("# reviewed public source\n", encoding="utf-8")
     copies: list[str] = []
 
@@ -636,7 +636,7 @@ def test_runtime_source_staging_recovers_from_service_recreation(
     live._stage_runtime_source(cli, runtime=tmp_path, attempts=2)  # type: ignore[arg-type]
 
     assert cli.attempts == 2
-    assert copies.count("scenario.py") == 2
+    assert copies.count("scenario_v2.py") == 2
     assert copies.count("openpi_protocol.py") == 2
     assert copies.count("relay_bridge.py") == 1
 
@@ -1033,7 +1033,7 @@ def test_cluster_relay_holds_stopped_state_until_controller_resumes(
 
 
 def test_live_metrics_bind_current_valid_camera_pair_to_policy_request() -> None:
-    source = (EXAMPLE / "src/scenario.py").read_text(encoding="utf-8")
+    source = (EXAMPLE / "src/scenario_v2.py").read_text(encoding="utf-8")
     assert "camera_quality_schema=2" in source
     assert "action_horizon={ACTION_SHAPE[0]}" in source
     assert "action_dimension={ACTION_SHAPE[1]} action_finite=1" in source
