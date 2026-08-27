@@ -82,7 +82,7 @@ CELL_H = 26
 ROW_GAP = 2
 BAND_H = 30
 TOP = 96
-LEGEND_H = 62
+LEGEND_H = 80
 
 
 def published_images() -> dict[str, str]:
@@ -225,22 +225,23 @@ def render(published: dict[str, str], rows: dict[str, list[str]]) -> str:
         y += 8
 
     legend_y = y + 6
-    out.append(
-        f'<text x="16" y="{legend_y}" font-size="11.5" fill="#59636e">'
-        "verified = a real capability run on that part &#183; supported = the toolchain "
-        "can execute there, no run recorded &#183; historical = a run on an earlier "
-        "candidate &#183; blocked = an upstream or physical limit &#183; not routed = the "
-        "launcher never sends work there. Hover a cell for the reason.</text>"
+    legend_lines = (
+        "verified = a real capability run on that part &#183; supported = the toolchain can "
+        "execute there, no run recorded &#183; historical = a run on an earlier candidate",
+        "blocked = an upstream or physical limit &#183; not routed = the launcher never sends "
+        "work there &#183; no GPU run = built, nothing measured. Hover a cell for the reason.",
+        "Rendering needs RT cores, which only L40S and RTX PRO 6000 have. Every image is "
+        "linux/amd64, so aarch64 gpu-gb300 is uncovered.",
     )
+    for offset, line in enumerate(legend_lines):
+        out.append(
+            f'<text x="16" y="{legend_y + offset * 17}" font-size="11.5" fill="#59636e">'
+            f"{line}</text>"
+        )
     out.append(
-        f'<text x="16" y="{legend_y + 18}" font-size="11.5" fill="#59636e">'
-        "Rendering needs RT cores, which only L40S and RTX PRO 6000 have. Every image "
-        "is linux/amd64, so aarch64 gpu-gb300 is uncovered.</text>"
-    )
-    out.append(
-        f'<text x="16" y="{legend_y + 36}" font-size="10.5" fill="#818b98">'
-        f"Rendered {dt.date.today().isoformat()} by npa/scripts/render_gpu_coverage_chart.py"
-        "</text>"
+        f'<text x="16" y="{legend_y + len(legend_lines) * 17 + 4}" font-size="10.5" '
+        f'fill="#818b98">Rendered {dt.date.today().isoformat()} by '
+        "npa/scripts/render_gpu_coverage_chart.py</text>"
     )
     out.append("</svg>")
     return "\n".join(out) + "\n"
