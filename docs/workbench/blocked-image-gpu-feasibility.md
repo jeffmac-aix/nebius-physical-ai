@@ -1,22 +1,30 @@
 # Can the blocked images support every Nebius GPU?
 
-Six published images carry at least one `blocked` cell in the
+Eight published images carry at least one `blocked` cell in the
 [image ↔ Nebius GPU compatibility matrix](image-gpu-compatibility-matrix.md):
-`npa-cosmos`, `npa-cosmos2-transfer`, `npa-groot`, `npa-isaac-lab`, `npa-sonic`,
-and `npa-leisaac`. This page evaluates, per image, whether that can be closed.
+`npa-content-agents`, `npa-cosmos`, `npa-cosmos2-transfer`, `npa-cosmos3-serving`,
+`npa-groot`, `npa-isaac-lab`, `npa-leisaac`, and `npa-sonic`. This page evaluates,
+per image, whether that can be closed.
 
-The short answer is that "blocked" covers three different situations that need
+A ninth row, `npa-sonic-mujoco`, still shows blocked cells on B200 and B300 in the
+matrix as written, but that is stale rather than substantive: its published digest
+has a recorded B200 rollout, and the cells are reconciled against that evidence in
+[#325](https://github.com/nebius/nebius-physical-ai/pull/325). It is treated as
+unblocked below.
+
+The short answer is that "blocked" covers four different situations that need
 different remedies, and only some of them can be closed at all:
 
 | Kind of block | Remedy | Images |
 | --- | --- | --- |
-| **Physical.** The workload rasterizes, which needs RT cores. H100, H200, B200, and B300 have none. | None. No software change adds RT cores. | `npa-leisaac` (whole service), the render paths of `npa-isaac-lab` and `npa-sonic` |
+| **Physical.** The workload rasterizes, which needs RT cores. H100, H200, B200, and B300 have none. | None. No software change adds RT cores. | `npa-content-agents` and `npa-leisaac` (whole service), the render paths of `npa-isaac-lab` and `npa-sonic` |
 | **Software gate.** The kernels are present; a version check refuses to dispatch on the part. | Widen the gate upstream or patch it, then prove the kernel numerically on each part. | `npa-cosmos` |
 | **Toolchain or validation.** The image needs a different CUDA build, or it has simply never run there. | Rebuild on the other extra, or spend the GPU hour. | `npa-cosmos2-transfer`, `npa-groot`, the headless paths of `npa-isaac-lab` and `npa-sonic` |
+| **Sizing.** The architecture is fine; the part does not have the memory the pinned configuration needs. | A different parallel decomposition, which is a serving-config decision. | `npa-cosmos3-serving` on L40S |
 
 Two constraints bound every answer below. Rasterized rendering cannot move to a
 datacenter part, and no published image runs on aarch64 `gpu-gb300`, because all
-26 are `linux/amd64`. "Every Nebius GPU" therefore means the five x86_64
+30 are `linux/amd64`. "Every Nebius GPU" therefore means the five x86_64
 platforms: L40S, H100, H200, RTX PRO 6000, B200, and B300.
 
 ## Measured dependency coverage
@@ -139,6 +147,22 @@ means a dependency release built from NATTEN ≥ 0.21.1. L40S also needs its VRA
 headroom checked against the served model, which is a separate question from
 architecture.
 
+## `npa-cosmos3-serving` — yes in principle, but it is a serving-config decision
+
+Blocked only on L40S, and uniquely among these eight the reason is neither
+architecture nor an upstream gate. The pinned strategy is an 8-GPU decomposition
+over a checkpoint that is about 124 GB on disk plus 17 GB of guardrail weights,
+roughly 145 GB to hold. Its own runbook already treats the 8-GPU shape as a hard
+precondition, failing with `the pinned parallel config needs 8 GPUs, found N`.
+
+So the L40S cell is a memory floor, not an `sm_89` problem: the wheel closure runs
+there, the model does not fit the way this configuration shards it. Closing it
+means qualifying a different decomposition against 48 GB cards and accepting
+whatever it costs in latency, which is a product decision about whether an L40S
+serving tier is wanted at all — not a packaging fix. Everything else about this
+image is already strong: B200 and 8xH200 both have real generation runs behind
+them, and RTX PRO 6000 and B300 are supported at the same 8-GPU shape.
+
 ## `npa-sonic` — partly, and it is queued behind an unrelated failure
 
 Blocked on B200 and B300. The policy layer is not what blocks it:
@@ -161,9 +185,12 @@ compute-only datacenter variant worth building. Rendering stays on RT-core parts
 permanently, so `npa-sonic` can at best reach "supported (headless)" on B200 and
 B300.
 
-`npa-sonic-mujoco` is the tractable subset — MuJoCo evaluation touches no Isaac
-at all — but it is restricted and not part of the public publishing plan, so it
-is not one of the six.
+`npa-sonic-mujoco` was the predicted tractable subset — MuJoCo evaluation touches
+no Isaac at all — and it has since been published and validated exactly that way:
+its `0.2.0-runtime` digest ran a real Unitree G1 rollout on B200, EGL headless
+physics with no Omniverse and no RT-core rendering. It is no longer blocked, which
+is the strongest available evidence that SONIC's datacenter problem is Isaac
+rather than the architecture.
 
 ## `npa-isaac-lab` — no; headless is the ceiling
 
@@ -210,16 +237,34 @@ broadening the hard-coded GPU product and node affinity, then running the real
 `LeIsaac-SO101-PickOrange-v0` teleoperation smoke with WebRTC on an L40S node.
 That would take `npa-leisaac` to its ceiling of two platforms out of six.
 
+## `npa-content-agents` — no; the same physical wall as LeIsaac
+
+Blocked on H100, H200, B200, and B300, and this one is not close to the line. The
+accepted workflow ends in OVRTX path tracing, and the recorded run is a one-GPU
+RTX PRO 6000 pass with 6 material, 6 physics, and 1 validation render. Path
+tracing is the deliverable, so a datacenter part cannot substitute for it at any
+quality setting.
+
+Its L40S cell already reads supported, so its ceiling — two of the six platforms
+— is one validation run away rather than a build away. Closing it means running
+the real Material Agent, Physics Agent, OVRTX, and Validation Agent path on an
+L40S node. The hosted-VLM portion of the workflow is unaffected by GPU choice.
+
 ## What this evaluation does not change
 
-No cell in the compatibility matrix moves here, and no verdict in
+No cell moves on the strength of this evaluation, and no verdict in
 `npa/docker/workbench/blackwell-dc-images.json` changes. Wheel-arch measurement
 is a screen that cheaply rules architectures out; the repository's rule that a
 cell needs a real capability run on the real part still decides what is written
-down. The measurements above narrow what is worth attempting and in what order:
-a `cu130` rebuild for Cosmos Transfer, a validation run for GR00T, an upstream
-decision for Cosmos Predict2, a bug fix before SONIC, and no expectation at all
-of rendering on a datacenter part.
+down. Two cells did move recently, but on recorded runs rather than on analysis:
+`npa-sonic-mujoco` on B200 and `npa-cosmos3-serving` on B200 were reconciled
+against evidence their publication had already produced.
+
+What the measurements change is what is worth attempting and in what order: a
+`cu130` rebuild for Cosmos Transfer, a validation run for GR00T, an upstream
+decision for Cosmos Predict2, a serving-shape decision for Cosmos3-Super on L40S,
+a bug fix before SONIC, an L40S run to finish Content Agents, and no expectation
+at all of rendering on a datacenter part.
 
 ## Reproducing the measurements
 
