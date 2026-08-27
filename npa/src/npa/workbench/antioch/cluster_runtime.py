@@ -51,14 +51,70 @@ ASSIGNMENT_BOUND_MARKER = "SSH is already bound to another local client"
 RESTAGE_INTERVAL_SECONDS = 60.0
 RECOVERY_BACKOFF_SECONDS = (2.0, 5.0, 10.0, 20.0, 30.0)
 _METRIC_KEY = re.compile(r"^[a-z][a-z0-9_]*$")
+_CAMERA_REJECTION_VIEWS = frozenset({"exterior", "wrist", "pair"})
+_CAMERA_REJECTION_REASONS = frozenset(
+    {
+        "missing",
+        "wrong_shape",
+        "non_finite",
+        "blank",
+        "flat",
+        "low_dynamic_range",
+        "cube_not_visible",
+        "cube_out_of_frame",
+        "stale",
+        "not_distinct",
+    }
+)
 
 
 def _sanitized_metric_line(line: bytes) -> str:
-    """Return only the fixed numeric OpenPI metrics contract from vendor output."""
+    """Return only fixed numeric metrics or a typed camera rejection event."""
 
     marker = b"NPA_OPENPI_METRICS "
     if marker not in line:
-        return ""
+        rejection_marker = b"NPA_OPENPI_CAMERA_REJECT "
+        if rejection_marker not in line:
+            return ""
+        values: dict[str, str] = {}
+        for raw in line.split(rejection_marker, 1)[1].split():
+            key, separator, value = raw.partition(b"=")
+            if not separator:
+                return ""
+            try:
+                values[key.decode("ascii")] = value.decode("ascii")
+            except UnicodeDecodeError:
+                return ""
+        if set(values) != {
+            "view",
+            "reason",
+            "render_sequence",
+            "exterior_red_cube_pixels",
+            "pair_difference",
+        }:
+            return ""
+        if (
+            values["view"] not in _CAMERA_REJECTION_VIEWS
+            or values["reason"] not in _CAMERA_REJECTION_REASONS
+        ):
+            return ""
+        try:
+            numeric = (
+                float(values["render_sequence"]),
+                float(values["exterior_red_cube_pixels"]),
+                float(values["pair_difference"]),
+            )
+        except ValueError:
+            return ""
+        if not all(math.isfinite(value) for value in numeric):
+            return ""
+        return (
+            "NPA_OPENPI_CAMERA_REJECT "
+            f"view={values['view']} reason={values['reason']} "
+            f"render_sequence={values['render_sequence']} "
+            f"exterior_red_cube_pixels={values['exterior_red_cube_pixels']} "
+            f"pair_difference={values['pair_difference']}"
+        )
     fields: list[str] = []
     for raw in line.split(marker, 1)[1].split():
         key, separator, value = raw.partition(b"=")
@@ -135,25 +191,18 @@ class VendorStreamProcess:
         stream = self.process.stdout
         if stream is None:
             return
-        pending = b""
         while True:
-            chunk = stream.read(65_536)
-            if not chunk:
-                line = _sanitized_metric_line(pending)
-                if line:
-                    print(line, flush=True)
+            raw_line = stream.readline(65_537)
+            if not raw_line:
                 return
             with self._lock:
-                self.output_bytes += len(chunk)
+                self.output_bytes += len(raw_line)
                 self.last_output_monotonic = time.monotonic()
-            pending += chunk
-            while b"\n" in pending:
-                raw_line, pending = pending.split(b"\n", 1)
-                line = _sanitized_metric_line(raw_line)
-                if line:
-                    print(line, flush=True)
-            if len(pending) > 65_536:
-                pending = pending[-65_536:]
+            if len(raw_line) > 65_536 and not raw_line.endswith(b"\n"):
+                continue
+            line = _sanitized_metric_line(raw_line.rstrip(b"\r\n"))
+            if line:
+                print(line, flush=True)
 
     def output_snapshot(self, *, now: float | None = None) -> tuple[int, float]:
         with self._lock:

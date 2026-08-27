@@ -19,11 +19,18 @@ counts are reported separately from Franka-limit and per-target-step safety
 projections. Five returned targets are applied at a nominal 15 Hz. The
 observation-to-action loop is best-effort and not hard real time.
 
-The manipulation scene is a lit tabletop with a reachable red cube, an open Franka
-in the DROID reset posture, a framed exterior camera, and a hand-mounted wrist
-camera. Flat, black, malformed, stale, or non-finite current camera pairs are never
-sent to policy inference. Every accepted pair receives a monotonically increasing
-identity that is carried through its one policy request and response evidence.
+The manipulation scene is a lit tabletop with a reachable red cube and an open
+Franka in the DROID reset posture. The wide exterior camera has explicit optics
+and frames the complete tabletop manipulation region. The wide wrist camera is
+calibrated once from the measured stock-Franka hand and fingertip transforms,
+then its fixed tool-frame extrinsics are re-applied before every rendered step so
+it follows the live gripper without looking through the fingers. Flat, black,
+malformed, stale, non-finite, geometrically irrelevant, or mutually duplicated
+camera pairs are never sent to policy inference. The exterior gate also requires
+rendered red-cube pixels; both views require the known cube center inside their
+current optical frustum. Every accepted pair receives monotonically increasing
+pair and render identities carried unchanged through its one policy request and
+response evidence.
 
 The checked-in project ID is deliberately unusable. The cluster-native controller
 creates a private runtime copy with an assigned Antioch project ID, starts the
@@ -86,8 +93,10 @@ browser authentication storage.
 already-published definition cannot mask a new camera/action contract. It dispatches
 the default instruction `pick up the red cube`
 and records only the non-sensitive `red_cube_pickup` task label in proof telemetry.
-It records both current cameras, per-view luminance/variance, typed action-rejection
-and projection reasons, latency percentiles, every Franka joint, and the
+It records both current cameras in a default side-by-side Rerun layout, per-view
+luminance/variance/dynamic range, cube-frustum evidence, rendered exterior cube
+pixels, pair difference, typed camera/action rejection and projection reasons,
+latency percentiles, every Franka joint, and the
 rendered robot's USD link transforms in Rerun. Those transforms drive generated
 volumetric link, joint, base, palm, and finger primitives, so the live 3D view is
 recognizably Franka-shaped instead of a thick line strip. The actual Isaac render

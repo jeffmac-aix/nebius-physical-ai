@@ -9,6 +9,7 @@ import sys
 import time
 import types
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -22,6 +23,21 @@ from npa.workflows.byof.openpi_live import _certificate
 
 ROOT = Path(__file__).resolve().parents[3]
 EXAMPLE = ROOT / "npa/examples/antioch-openpi-live"
+
+
+def _load_live_scenario(monkeypatch: pytest.MonkeyPatch, module_name: str):
+    fake_antioch = types.ModuleType("antioch")
+    fake_antioch.Logger = lambda *_args, **_kwargs: object()
+    fake_antioch.param = lambda default, **_kwargs: default
+    fake_antioch.scenario = lambda **_kwargs: lambda function: function
+    monkeypatch.setitem(sys.modules, "antioch", fake_antioch)
+    path = EXAMPLE / "src/scenario_v2.py"
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    assert spec is not None and spec.loader is not None
+    scenario = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = scenario
+    spec.loader.exec_module(scenario)
+    return scenario
 
 
 def _daemon_status(
@@ -124,7 +140,10 @@ def test_live_scenario_is_real_bounded_and_fail_closed() -> None:
         "ArticulationAction",
         "track_contact_forces=True",
         "contact_filter_prim_paths_expr",
-        'prim_path="/World/Franka/panda_hand/PolicyWrist"',
+        'WRIST_CAMERA_PATH = "/World/PolicyWrist"',
+        "_wrist_camera_pose_from_points",
+        '_configure_camera_optics(world.stage, WRIST_CAMERA_PATH, "wrist")',
+        "rr.send_blueprint(_camera_blueprint(rrb))",
         "_configure_lighting(world.stage)",
         'enable_extension("isaacsim.robot.manipulators.examples")',
         "NPA_OPENPI_ROUND_TRIP",
@@ -133,7 +152,7 @@ def test_live_scenario_is_real_bounded_and_fail_closed() -> None:
         "NPA_OPENPI_FIRST_FRAME",
         "NPA_OPENPI_REQUEST",
         "NPA_OPENPI_APPLIED",
-        "waiting for camera frames",
+        "NPA_OPENPI_CAMERA_REJECT",
         'ThreadPoolExecutor(max_workers=1, thread_name_prefix="openpi-policy")',
     ):
         assert contract in source
@@ -163,16 +182,7 @@ def test_live_scenario_is_real_bounded_and_fail_closed() -> None:
 def test_live_franka_proxy_is_volumetric_oriented_and_asset_free(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    fake_antioch = types.ModuleType("antioch")
-    fake_antioch.Logger = lambda *_args, **_kwargs: object()
-    fake_antioch.param = lambda default, **_kwargs: default
-    fake_antioch.scenario = lambda **_kwargs: lambda function: function
-    monkeypatch.setitem(sys.modules, "antioch", fake_antioch)
-    path = EXAMPLE / "src/scenario_v2.py"
-    spec = importlib.util.spec_from_file_location("antioch_live_scenario_test", path)
-    assert spec is not None and spec.loader is not None
-    scenario = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(scenario)
+    scenario = _load_live_scenario(monkeypatch, "antioch_live_scenario_test")
 
     geometry = scenario._franka_proxy_geometry(
         [
@@ -213,16 +223,7 @@ def test_live_franka_proxy_is_volumetric_oriented_and_asset_free(
 def test_live_camera_rejects_black_or_flat_annotator_warmup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    fake_antioch = types.ModuleType("antioch")
-    fake_antioch.Logger = lambda *_args, **_kwargs: object()
-    fake_antioch.param = lambda default, **_kwargs: default
-    fake_antioch.scenario = lambda **_kwargs: lambda function: function
-    monkeypatch.setitem(sys.modules, "antioch", fake_antioch)
-    path = EXAMPLE / "src/scenario_v2.py"
-    spec = importlib.util.spec_from_file_location("antioch_live_camera_test", path)
-    assert spec is not None and spec.loader is not None
-    scenario = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(scenario)
+    scenario = _load_live_scenario(monkeypatch, "antioch_live_camera_test")
 
     class Camera:
         def __init__(self, frame: np.ndarray | None) -> None:
@@ -231,37 +232,237 @@ def test_live_camera_rejects_black_or_flat_annotator_warmup(
         def get_rgba(self) -> np.ndarray | None:
             return self.frame
 
-    assert scenario._camera_rgb(Camera(None)) is None
-    assert scenario._camera_rgb(Camera(np.zeros((8, 8, 4), dtype=np.uint8))) is None
+    assert scenario._camera_frame(Camera(None), view="wrist").reason == "missing"
     assert (
-        scenario._camera_rgb(Camera(np.full((8, 8, 4), 64, dtype=np.uint8)))
-        is None
+        scenario._camera_frame(
+            Camera(np.zeros((8, 8, 4), dtype=np.uint8)), view="wrist"
+        ).reason
+        == "wrong_shape"
     )
-    rendered = np.zeros((8, 8, 4), dtype=np.uint8)
-    rendered[:, 4:, :3] = 255
+    assert scenario._camera_frame(
+        Camera(np.full((224, 224, 4), 64, dtype=np.uint8)), view="wrist"
+    ).reason == "flat"
+    rendered = np.zeros((224, 224, 4), dtype=np.uint8)
+    rendered[:, 112:, :3] = 255
     rendered[:, :, 3] = 255
     np.testing.assert_array_equal(
-        scenario._camera_rgb(Camera(rendered)), rendered[:, :, :3]
+        scenario._camera_frame(Camera(rendered), view="wrist").rgb,
+        rendered[:, :, :3],
     )
     normalized = rendered.astype(np.float32) / 255.0
     np.testing.assert_array_equal(
-        scenario._camera_rgb(Camera(normalized)), rendered[:, :, :3]
+        scenario._camera_frame(Camera(normalized), view="wrist").rgb,
+        rendered[:, :, :3],
     )
+
+
+def test_live_camera_optics_and_stock_franka_mount_are_explicit_and_rigid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scenario = _load_live_scenario(monkeypatch, "antioch_live_camera_geometry_test")
+    exterior = scenario._camera_optical_config("exterior")
+    wrist = scenario._camera_optical_config("wrist")
+    assert exterior == {
+        "focal_length": 18.0,
+        "horizontal_aperture": 36.0,
+        "vertical_aperture": 36.0,
+        "clipping_range": (0.01, 100.0),
+        "focus_distance": 1.0,
+        "f_stop": 0.0,
+    }
+    assert wrist["focal_length"] == 12.0
+    assert wrist["horizontal_aperture"] == 36.0
+
+    hand = np.asarray([0.0, 0.0, 0.0])
+    left = np.asarray([0.2, -0.04, 0.0])
+    right = np.asarray([0.2, 0.04, 0.0])
+    eye, target, up = scenario._wrist_camera_pose_from_points(hand, left, right)
+    rotation = np.asarray([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
+    translation = np.asarray([0.5, -0.2, 0.3])
+    moved = [rotation @ point + translation for point in (hand, left, right)]
+    moved_eye, moved_target, moved_up = scenario._wrist_camera_pose_from_points(*moved)
+    np.testing.assert_allclose(moved_eye, rotation @ eye + translation)
+    np.testing.assert_allclose(moved_target, rotation @ target + translation)
+    np.testing.assert_allclose(moved_up, rotation @ up)
+    assert np.linalg.norm(eye - 0.5 * (left + right)) > 0.1
+    assert scenario._point_in_camera_frame(
+        target,
+        (eye, target, up),
+        wrist,
+    )
+
+
+def test_live_camera_optics_are_applied_to_usd_camera(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scenario = _load_live_scenario(monkeypatch, "antioch_live_camera_optics_test")
+    values: dict[str, object] = {}
+
+    class Attribute:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def Set(self, value: object) -> None:  # noqa: N802
+            values[self.name] = value
+
+    class Camera:
+        def __init__(self, _prim: object) -> None:
+            pass
+
+        def __getattr__(self, name: str):
+            assert name.startswith("Create") and name.endswith("Attr")
+            key = name.removeprefix("Create").removesuffix("Attr")
+            key = re.sub(r"(?<!^)(?=[A-Z])", "_", key).lower()
+            return lambda: Attribute(key)
+
+    pxr = types.ModuleType("pxr")
+    pxr.Gf = SimpleNamespace(Vec2f=lambda *items: tuple(items))
+    pxr.UsdGeom = SimpleNamespace(Camera=Camera)
+    monkeypatch.setitem(sys.modules, "pxr", pxr)
+    stage = SimpleNamespace(GetPrimAtPath=lambda _path: object())
+    scenario._configure_camera_optics(stage, "/camera", "wrist")
+    assert values == scenario._camera_optical_config("wrist")
+
+
+def test_live_camera_pair_classifies_each_view_freshness_semantics_and_distinctness(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scenario = _load_live_scenario(monkeypatch, "antioch_live_camera_pair_test")
+
+    class Camera:
+        def __init__(self, frame: np.ndarray | None) -> None:
+            self.frame = frame
+
+        def get_rgba(self) -> np.ndarray | None:
+            return self.frame
+
+    rows, columns = np.indices((224, 224))
+    exterior = np.zeros((224, 224, 4), dtype=np.uint8)
+    texture = (rows * 2 + columns * 3) % 255
+    exterior[..., :3] = texture[..., None]
+    exterior[95:115, 100:120, :3] = [240, 5, 4]
+    exterior[..., 3] = 255
+    wrist = np.roll(exterior, 37, axis=1)
+    no_cube = exterior.copy()
+    no_cube[95:115, 100:120, :3] = [20, 120, 40]
+
+    accepted = scenario._validate_camera_pair(
+        Camera(exterior),
+        Camera(wrist),
+        render_sequence=5,
+        last_accepted_render_sequence=4,
+        exterior_cube_in_frame=True,
+        wrist_cube_in_frame=True,
+    )
+    assert accepted.accepted is True
+    assert accepted.exterior.red_cube_pixels >= 20
+    assert accepted.mean_difference >= scenario.MIN_CAMERA_PAIR_DIFFERENCE
+
+    cases = (
+        (Camera(None), Camera(wrist), 5, 4, True, True, "exterior", "missing"),
+        (Camera(no_cube), Camera(wrist), 5, 4, True, True, "exterior", "cube_not_visible"),
+        (Camera(exterior), Camera(np.zeros_like(wrist)), 5, 4, True, True, "wrist", "blank"),
+        (Camera(exterior), Camera(wrist), 4, 4, True, True, "pair", "stale"),
+        (Camera(exterior), Camera(wrist), 5, 4, False, True, "exterior", "cube_out_of_frame"),
+        (Camera(exterior), Camera(wrist), 5, 4, True, False, "wrist", "cube_out_of_frame"),
+        (Camera(exterior), Camera(exterior.copy()), 5, 4, True, True, "pair", "not_distinct"),
+    )
+    for ext, wr, sequence, last, ext_cube, wrist_cube, view, reason in cases:
+        rejected = scenario._validate_camera_pair(
+            ext,
+            wr,
+            render_sequence=sequence,
+            last_accepted_render_sequence=last,
+            exterior_cube_in_frame=ext_cube,
+            wrist_cube_in_frame=wrist_cube,
+        )
+        assert rejected.accepted is False
+        assert (rejected.rejected_view, rejected.reason) == (view, reason)
+
+
+def test_live_observation_mapping_and_camera_blueprint_are_exact(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scenario = _load_live_scenario(monkeypatch, "antioch_live_mapping_blueprint_test")
+    exterior = np.zeros((224, 224, 3), dtype=np.uint8)
+    wrist = np.ones((224, 224, 3), dtype=np.uint8)
+    joints = np.asarray([*scenario.DROID_RESET_JOINTS, 0.04, 0.04], dtype=np.float32)
+    observation = scenario._build_policy_observation(exterior, wrist, joints, "prompt")
+    assert tuple(observation) == (
+        "observation/exterior_image_1_left",
+        "observation/wrist_image_left",
+        "observation/joint_position",
+        "observation/gripper_position",
+        "prompt",
+    )
+    assert observation["observation/exterior_image_1_left"] is exterior
+    assert observation["observation/wrist_image_left"] is wrist
+    assert abs(float(observation["observation/gripper_position"][0])) < 1e-6
+
+    class Blueprint:
+        def Spatial2DView(self, **kwargs):  # noqa: N802, ANN202
+            return {"kind": "2d", **kwargs}
+
+        def Horizontal(self, *views, **kwargs):  # noqa: N802, ANN202
+            return {"kind": "horizontal", "views": views, **kwargs}
+
+        def Blueprint(self, *children, **kwargs):  # noqa: N802, ANN202
+            return {"kind": "blueprint", "children": children, **kwargs}
+
+    blueprint = scenario._camera_blueprint(Blueprint())
+    horizontal = blueprint["children"][0]
+    assert [view["origin"] for view in horizontal["views"]] == [
+        "camera/exterior",
+        "camera/wrist",
+    ]
+    assert horizontal["column_shares"] == [1.0, 1.0]
+    assert blueprint["auto_layout"] is False
+
+
+def test_live_policy_request_round_trip_preserves_exact_camera_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scenario = _load_live_scenario(monkeypatch, "antioch_live_request_identity_test")
+
+    class Packer:
+        def pack(self, observation: dict) -> bytes:
+            assert observation == {"prompt": "pick up the red cube"}
+            return b"packed-request"
+
+    protocol = types.ModuleType("openpi_protocol")
+    protocol.Packer = Packer
+    protocol.unpackb = lambda payload: {"actions": payload}
+    monkeypatch.setitem(sys.modules, "openpi_protocol", protocol)
+
+    class Connection:
+        sent: list[bytes] = []
+
+        def send(self, payload: bytes) -> None:
+            self.sent.append(payload)
+
+        def recv(self, *, timeout: float) -> bytes:
+            assert timeout == scenario.MAX_RESPONSE_AGE_SECONDS
+            return b"policy-response"
+
+    client = scenario.SafePolicyClient()
+    client._connection = Connection()
+    response, latency, pair_id, render_sequence = client.infer(
+        scenario.PolicyRequest(
+            observation={"prompt": "pick up the red cube"},
+            camera_pair_id=17,
+            render_sequence=913,
+        )
+    )
+    assert response == {"actions": b"policy-response"}
+    assert latency >= 0.0
+    assert (pair_id, render_sequence) == (17, 913)
+    assert client._connection.sent == [b"packed-request"]
 
 
 def test_live_droid_jointpos_and_gripper_mapping_matches_pinned_contract(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    fake_antioch = types.ModuleType("antioch")
-    fake_antioch.Logger = lambda *_args, **_kwargs: object()
-    fake_antioch.param = lambda default, **_kwargs: default
-    fake_antioch.scenario = lambda **_kwargs: lambda function: function
-    monkeypatch.setitem(sys.modules, "antioch", fake_antioch)
-    path = EXAMPLE / "src/scenario_v2.py"
-    spec = importlib.util.spec_from_file_location("antioch_live_action_test", path)
-    assert spec is not None and spec.loader is not None
-    scenario = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(scenario)
+    scenario = _load_live_scenario(monkeypatch, "antioch_live_action_test")
 
     open_state = np.asarray([*scenario.DROID_RESET_JOINTS, 0.04, 0.04])
     closed_state = np.asarray([*scenario.DROID_RESET_JOINTS, 0.0, 0.0])
@@ -292,7 +493,9 @@ def test_live_scene_is_tabletop_lit_and_droid_reset_aligned() -> None:
     assert 'prim_path="/World/Cube"' in source
     assert "position=np.array(CUBE_INITIAL_POSITION)" in source
     assert "robot.set_joint_positions(" in source
-    assert 'prim_path="/World/Franka/panda_hand/PolicyWrist"' in source
+    assert 'WRIST_CAMERA_PATH = "/World/PolicyWrist"' in source
+    assert "wrist_mount = _calibrate_wrist_camera_mount(" in source
+    assert "wrist_pose = _aim_wrist_camera(world.stage, wrist_mount)" in source
     assert 'UsdLux.DomeLight.Define(stage, "/World/PolicyFillLight")' in source
     assert 'UsdLux.DistantLight.Define(stage, "/World/PolicyKeyLight")' in source
 
@@ -1034,14 +1237,16 @@ def test_cluster_relay_holds_stopped_state_until_controller_resumes(
 
 def test_live_metrics_bind_current_valid_camera_pair_to_policy_request() -> None:
     source = (EXAMPLE / "src/scenario_v2.py").read_text(encoding="utf-8")
-    assert "camera_quality_schema=2" in source
+    assert "camera_quality_schema=3" in source
     assert "action_horizon={ACTION_SHAPE[0]}" in source
     assert "action_dimension={ACTION_SHAPE[1]} action_finite=1" in source
     assert "camera_luminance_mean_current_min" in source
     assert "camera_luminance_variance_current_min" in source
     assert "camera_validated_requests += 1" in source
     assert "camera_rejected_pairs += 1" in source
-    assert source.index("observation = {") < source.index("camera_validated_requests += 1")
+    assert source.index("observation = _build_policy_observation(") < source.index(
+        "camera_validated_requests += 1"
+    )
 
 
 def test_live_stop_cancels_scenario_before_service(

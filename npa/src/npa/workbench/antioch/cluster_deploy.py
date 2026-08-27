@@ -673,13 +673,18 @@ def qualify_live_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
             )
         ),
         "camera_pair_identity": (
-            int(number("camera_quality_schema")) == 2
+            int(number("camera_quality_schema")) == 3
             and int(number("camera_validated_requests")) == requests
             and int(number("camera_pair_id")) == requests
             and int(number("request_camera_pair_id"))
             == int(number("camera_pair_id", -1.0))
             and int(number("round_trip_camera_pair_id"))
             == int(number("request_camera_pair_id", -1.0))
+            and int(number("request_render_sequence")) > 0
+            and int(number("round_trip_render_sequence"))
+            == int(number("request_render_sequence", -1.0))
+            and int(number("camera_render_sequence"))
+            >= int(number("request_render_sequence", -1.0))
         ),
         "current_camera_quality": all(
             number(name) > threshold
@@ -693,6 +698,10 @@ def qualify_live_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
         "accepted_camera_quality": (
             number("luminance_mean_min") > 5.0
             and number("luminance_variance_min") > 25.0
+            and number("camera_pair_difference_current") >= 8.0
+            and int(number("camera_exterior_red_cube_pixels_current")) >= 20
+            and int(number("camera_exterior_cube_in_frame_current")) == 1
+            and int(number("camera_wrist_cube_in_frame_current")) == 1
         ),
         "no_safety_projection": (
             int(number("joint_limit_projections", -1.0)) == 0

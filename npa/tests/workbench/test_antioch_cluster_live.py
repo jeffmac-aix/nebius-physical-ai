@@ -83,11 +83,18 @@ def _accepted_live_metrics() -> dict[str, int | float]:
         "rejected_joint_limit": 0,
         "rejected_gripper_range": 0,
         "rejected_joint_step": 0,
-        "camera_quality_schema": 2,
+        "camera_quality_schema": 3,
         "camera_validated_requests": 100,
         "camera_pair_id": 100,
         "request_camera_pair_id": 100,
         "round_trip_camera_pair_id": 100,
+        "camera_render_sequence": 1200,
+        "request_render_sequence": 1199,
+        "round_trip_render_sequence": 1199,
+        "camera_pair_difference_current": 42.0,
+        "camera_exterior_red_cube_pixels_current": 300,
+        "camera_exterior_cube_in_frame_current": 1,
+        "camera_wrist_cube_in_frame_current": 1,
         "camera_exterior_luminance_mean_current": 40.0,
         "camera_exterior_luminance_variance_current": 100.0,
         "camera_wrist_luminance_mean_current": 35.0,
@@ -118,8 +125,12 @@ def test_live_acceptance_requires_current_pair_identity_and_physical_pickup() ->
     for changed, expected_failure in (
         ({"camera_validated_requests": 99}, "camera_pair_identity"),
         ({"round_trip_camera_pair_id": 99}, "camera_pair_identity"),
+        ({"round_trip_render_sequence": 1198}, "camera_pair_identity"),
         ({"camera_wrist_luminance_variance_current": 0}, "current_camera_quality"),
         ({"luminance_mean_min": 0}, "accepted_camera_quality"),
+        ({"camera_pair_difference_current": 7.9}, "accepted_camera_quality"),
+        ({"camera_exterior_red_cube_pixels_current": 19}, "accepted_camera_quality"),
+        ({"camera_wrist_cube_in_frame_current": 0}, "accepted_camera_quality"),
         ({"gripper_contact_samples": 0}, "physical_gripper_contact"),
         ({"cube_lift_max_m": 0.049}, "sustained_pickup"),
         ({"pickup_hold_seconds": 0.999}, "sustained_pickup"),
@@ -529,6 +540,41 @@ def test_vendor_stream_process_observes_real_child_exit_and_drains_output(
     rendered = capsys.readouterr().out
     assert rendered == "NPA_OPENPI_METRICS frames=2 round_trips=1\n"
     assert "secret-shaped" not in rendered
+
+
+def test_vendor_stream_process_emits_sanitized_camera_rejection_before_child_exit(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    executable = tmp_path / "vendor-client"
+    executable.write_text(
+        "#!/bin/sh\n"
+        "printf 'private vendor prefix NPA_OPENPI_CAMERA_REJECT "
+        "view=wrist reason=cube_out_of_frame render_sequence=9 "
+        "exterior_red_cube_pixels=42 pair_difference=18.250\\n'\n"
+        "sleep 30\n",
+        encoding="utf-8",
+    )
+    executable.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
+    vendor = cluster_runtime.VendorStreamProcess.start(
+        executable=executable,
+        runtime=tmp_path,
+        scenario="scenario-for-test",
+        timeout_seconds=60,
+    )
+    deadline = time.monotonic() + 5.0
+    while vendor.output_snapshot()[0] == 0 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    rendered = capsys.readouterr().out
+    vendor.terminate()
+    assert rendered == (
+        "NPA_OPENPI_CAMERA_REJECT view=wrist reason=cube_out_of_frame "
+        "render_sequence=9 exterior_red_cube_pixels=42 pair_difference=18.250\n"
+    )
+    assert "private vendor prefix" not in rendered
+    assert cluster_runtime._sanitized_metric_line(
+        b"NPA_OPENPI_CAMERA_REJECT view=wrist reason=secret "
+        b"render_sequence=9 exterior_red_cube_pixels=42 pair_difference=18.250"
+    ) == ""
 
 
 def test_vendor_stream_process_outlives_an_unrelated_operator_process(
