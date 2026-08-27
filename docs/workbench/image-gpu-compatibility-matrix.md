@@ -65,7 +65,7 @@ The old `npa-cosmos:1.0.9` cu126 image stopped at Hopper. Its additive cu128/tor
 | `npa-lancedb` | supported | **verified** [26] | **verified** [27] | **verified** [24] | **verified** [25] |
 | `npa-detection-training` | supported | **verified** [29] | **verified** [30] | **verified** [28] | **verified** [31] |
 | `npa-cosmos3` | supported | supported | **verified** [59] | supported | supported |
-| `npa-cosmos3-serving` (build-your-own) | blocked (8-GPU memory floor) | **verified** (8xH200) | supported (8 GPUs) | supported (8 GPUs) | supported (8 GPUs) |
+| `npa-cosmos3-serving` | blocked (8-GPU memory floor) | **verified** (8xH200) | supported (8 GPUs) | **verified** (8xB200) [65] | supported (8 GPUs) |
 | `npa-content-agents` | supported (RT cores) | blocked (no RT cores) | **verified** [64] | blocked (no RT cores) | blocked (no RT cores) |
 | `npa-wan2-2` | supported | supported | **historical evidence** [60] | **historical evidence** [61] | supported |
 | `npa-ltx2` | built, no GPU result | built, no GPU result | built, no GPU result | built, no GPU result | built, no GPU result |
@@ -81,7 +81,7 @@ The old `npa-cosmos:1.0.9` cu126 image stopped at Hopper. Its additive cu128/tor
 | `npa-isaac-lab` | supported | supported (headless) | supported | blocked | blocked |
 | `npa-leisaac` | not routed or validated by the current launcher | blocked (no RT cores) | supported (current hard-selected target) | blocked (no RT cores) | blocked (no RT cores) |
 | `npa-sonic` | supported | supported (headless) | supported | blocked | blocked |
-| `npa-sonic-mujoco` | supported | supported (headless) | supported | blocked | blocked |
+| `npa-sonic-mujoco` | supported | supported (headless) | supported | **verified** [66] | supported (same-major `sm_100` coverage; not measured) |
 | `npa-groot` | supported | supported | supported | blocked | blocked |
 | `npa-cosmos-curate` | CPU | CPU | CPU | CPU | CPU |
 | `npa-cosmos-evaluator` | CPU | CPU | CPU | CPU | CPU |
@@ -180,6 +180,8 @@ Managed-Kubernetes nodes were placed successfully for both B200 in us-central1 a
 | 62 | 2026-08-18 | `npa-alpamayo2-super:0.1.0-cu128` (index `sha256:2164450f8baf…`) | NVIDIA B200 (`sm_100`) | exact pinned Alpamayo source loaded the real 34B OpenMDW checkpoint and gated PhysicalAI-AV sample at runtime, predicted a projected ego trajectory, and uploaded result JSON, trajectory JSON, and a calibrated-camera PNG | PASS; shape `[1, 1, 1, 64, 3]`, ADE 1.503835, FDE 4.357265; one wave with no recovery |
 | 63 | 2026-08-18 | same exact Alpamayo image | RTX PRO 6000 (`sm_120`) | independent runtime fetch and the same real upstream surround-view trajectory workflow, with GPU telemetry throughout inference | PASS; shape `[1, 1, 1, 64, 3]`, ADE 1.501321, FDE 4.351557; peak 71,447 MiB and 100% utilization; one wave with no recovery |
 | 64 | 2026-08-22 | `npa-content-agents:0.5.2-npa2` (index `sha256:c64aaf6201bd…`) | NVIDIA RTX PRO 6000 Blackwell Server Edition (`sm_120`) | exact digest ran acquire, real upstream Material Agent, Physics Agent, OVRTX rendering, upstream Validation Agent, and rigid-object packaging with one durable runtime cache | PASS; 6 material + 6 physics + 1 validation renders, 37 artifacts / 1,808,557 bytes, validation pass, non-null rigid physics, and independently reopenable USD/USDZ |
+| 65 | 2026-08-23 | `npa-cosmos3-serving:0.2.0-oss` | 8x NVIDIA B200 (`sm_100`) | guarded 8-GPU service boot and readiness on the zero-payload public digest, then a real `/v1/videos` generation with full H.264 decode | PASS; recorded with the image's publication in [#316](https://github.com/nebius/nebius-physical-ai/pull/316) rather than as a dated standalone run |
+| 66 | 2026-08-23 | `npa-sonic-mujoco:0.2.0-runtime` (`sha256:2388d9e97269…`) | NVIDIA B200 (`sm_100`) | real Unitree G1 SONIC MuJoCo rollout on the exact published digest; EGL headless physics with no Omniverse and no RT-core rendering | PASS; 64 finite simulation steps, fall rate 0, metrics artifact verified; recorded in [#316](https://github.com/nebius/nebius-physical-ai/pull/316) |
 
 ## Measured failures and negative controls
 

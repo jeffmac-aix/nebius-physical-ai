@@ -121,29 +121,36 @@ this chart is generated from that table and the publishing plan:
 
 All 30 planned tags resolved anonymously on 2026-08-27, and they split four ways:
 
-- **Thirteen GPU images have no blocked platform**: `npa-alpamayo2-super`,
+- **Fourteen GPU images have no blocked platform**: `npa-alpamayo2-super`,
   `npa-cosmos3`, `npa-cosmos3-reason`, `npa-detection-training`, `npa-envgen`,
   `npa-genesis`, `npa-lancedb`, `npa-lerobot`, `npa-lerobot-policy`,
-  `npa-lerobot-vlm-rl`, `npa-loop-eval`, `npa-reference-policy`, and
-  `npa-wan2-2`. Their cells still range from a real capability run to
-  toolchain-level support, and the `npa-wan2-2` Blackwell cells carry historical
-  evidence from an earlier candidate rather than the current closure.
-- **Nine are blocked on at least one platform**, for four different reasons.
+  `npa-lerobot-vlm-rl`, `npa-loop-eval`, `npa-reference-policy`,
+  `npa-sonic-mujoco`, and `npa-wan2-2`. Their cells still range from a real
+  capability run to toolchain-level support, and the `npa-wan2-2` Blackwell
+  cells carry historical evidence from an earlier candidate rather than the
+  current closure.
+- **Eight are blocked on at least one platform**, for four different reasons.
   Rendering needs RT cores, which only L40S and RTX PRO 6000 have, so
   `npa-content-agents` and `npa-leisaac` are blocked on all four non-RT parts.
-  The NVIDIA Isaac vendor stack blocks `npa-groot`, `npa-isaac-lab`, `npa-sonic`,
-  and `npa-sonic-mujoco` on B200 and B300. `npa-cosmos` is refused on L40S,
-  RTX PRO 6000, and B300 by the Predict2 v1.0.9 NATTEN compute-capability
-  allowlist, and `npa-cosmos2-transfer` on B300 by CUDA 12.8 NVRTC declining to
-  JIT `sm_103`. `npa-cosmos3-serving` is blocked on L40S by an 8-GPU memory
-  floor rather than by architecture. These are not one problem: an RT-core block
-  is physical, an allowlist is a software gate, and a memory floor is a sizing
-  rule.
+  The NVIDIA Isaac vendor stack blocks `npa-groot`, `npa-isaac-lab`, and
+  `npa-sonic` on B200 and B300. `npa-cosmos` is refused on L40S, RTX PRO 6000,
+  and B300 by the Predict2 v1.0.9 NATTEN compute-capability allowlist, and
+  `npa-cosmos2-transfer` on B300 by CUDA 12.8 NVRTC declining to JIT `sm_103`.
+  `npa-cosmos3-serving` is blocked on L40S by an 8-GPU memory floor rather than
+  by architecture. These are not one problem: an RT-core block is physical, an
+  allowlist is a software gate, and a memory floor is a sizing rule.
 - **One is built with no GPU result anywhere**: `npa-ltx2` is published and
   byte-scanned, but no cell has evidence behind it yet.
 - **Seven are CPU-only and GPU-agnostic**: `npa-cosmos-curate`,
   `npa-cosmos-evaluator`, `npa-fiftyone`, `npa-foxglove-embed`, `npa-lichtblick`,
   `npa-rerun-viewer`, and `npa-retargeting`. Only node-pool scheduling matters.
+
+Building that chart is what caught two stale cells, now corrected in the matrix
+with their evidence: `npa-sonic-mujoco` was still marked blocked on B200 and
+B300 although its published digest has a real Unitree G1 MuJoCo rollout on B200,
+and `npa-cosmos3-serving`'s B200 cell understated a real 8-GPU serving run as
+mere toolchain support. Both images were published in the public-only migration
+without the matrix being reconciled.
 
 Two gaps sit outside that split. No published image runs on `gpu-gb300`: every
 tag above resolved to a single `linux/amd64` manifest, and that platform is
@@ -158,14 +165,13 @@ RTX PRO 6000 that can render.
   `CONTAINER_IMAGE_NAMES` and is therefore outside `publicly_publishable_tools()`;
   anonymous resolution of `npa-sim2real-control:0.1.2` was denied during the
   2026-08-14 audit. Eligibility is not evidence of publication.
-- **`npa-cosmos3-serving`** is `restricted` and build-your-own only. Its pinned
-  vLLM-Omni base embeds a runtime under NVIDIA's Deep Learning Container License;
-  the thin wrapper and anonymous GHCR distribution do not establish that
-  license's derived-distribution conditions. Operators build it into their own
-  registry; see [Cosmos3-Super serving](cosmos3-super-serving.md).
-- **`npa-sonic-mujoco`** is a SONIC variant, not a separate public-publish tool.
-  It ships through the `sonic` tool and SONIC image manifest rather than getting
-  an independent row in the public publishing plan.
+`npa-cosmos3-serving` and `npa-sonic-mujoco` were listed here until the
+public-only migration. Both are now selected by `publicly_publishable_tools()`,
+both have rows above, and both resolved anonymously in the 2026-08-27 check:
+the serving image as the zero-payload `0.2.0-oss` build that no longer carries
+the vLLM-Omni runtime, and the MuJoCo image as the runtime-fetch `0.2.0-runtime`
+build. See [Cosmos3-Super serving](cosmos3-super-serving.md) for the serving
+operator guide.
 
 ## Verification scope
 
