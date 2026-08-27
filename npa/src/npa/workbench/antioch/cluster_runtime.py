@@ -31,6 +31,7 @@ from .live import (
     _stage_runtime_source,
     _validate_bundle,
 )
+from .health import StateHealthServer
 from .live_reconcile import AntiochLiveReconcileError, _active_run_snapshot
 from .runtime import ensure_runtime
 from .vendor_cli import AntiochCli, AntiochCliError
@@ -67,7 +68,11 @@ def _sanitized_metric_line(line: bytes) -> str:
             number = float(value_text)
         except (UnicodeDecodeError, ValueError):
             return ""
-        if not separator or not _METRIC_KEY.fullmatch(key_text) or not math.isfinite(number):
+        if (
+            not separator
+            or not _METRIC_KEY.fullmatch(key_text)
+            or not math.isfinite(number)
+        ):
             return ""
         fields.append(f"{key_text}={value_text}")
     return f"NPA_OPENPI_METRICS {' '.join(fields)}" if fields else ""
@@ -297,15 +302,14 @@ def _state_ready(
         published = state.get("published_unix")
         published_age = (
             observed_now - float(published)
-            if isinstance(published, (int, float))
-            and not isinstance(published, bool)
+            if isinstance(published, (int, float)) and not isinstance(published, bool)
             else max_age_seconds + 1
         )
         if not (-5.0 <= published_age <= max_age_seconds):
             return False
         if state.get("status") == "running":
             return vendor_session_ready()
-        return state.get("status") in {"starting", "recovering"}
+        return state.get("status") in {"starting", "recovering", "stopped"}
     heartbeat = state.get("heartbeat_unix")
     if not isinstance(heartbeat, (int, float)) or isinstance(heartbeat, bool):
         return False
@@ -327,6 +331,7 @@ def _state_ready(
             "connecting_policy",
             "connected",
             "reconnecting",
+            "stopped",
         }
     return state.get("status") == "connected"
 
@@ -368,10 +373,7 @@ def _supervisor_recovery_reason(
         and age_seconds > max_age_seconds
     ):
         return "daemon_owner_absent"
-    if (
-        not last_owned_heartbeat
-        and startup_age_seconds >= DAEMON_STARTUP_GRACE_SECONDS
-    ):
+    if not last_owned_heartbeat and startup_age_seconds >= DAEMON_STARTUP_GRACE_SECONDS:
         return "daemon_owner_startup_timeout"
     if consecutive_errors >= DAEMON_ERROR_THRESHOLD and age_seconds > max_age_seconds:
         return "daemon_state_unreadable"
@@ -456,7 +458,9 @@ def run_cluster(args: argparse.Namespace) -> int:
     project_id = _private_value(private_root / "project-id", label="project identity")
     accepted = _private_value(private_root / "antioch-terms", label="terms acceptance")
     if accepted != "YES":
-        raise AntiochLiveError("Antioch terms acceptance is not the exact required value")
+        raise AntiochLiveError(
+            "Antioch terms acceptance is not the exact required value"
+        )
     os.environ["NPA_ANTIOCH_ACCEPT_TERMS"] = accepted
     os.environ["ANTIOCH_CONFIG_DIR"] = str(private_root / "antioch-config")
 
@@ -476,6 +480,9 @@ def run_cluster(args: argparse.Namespace) -> int:
     vendor: VendorStreamProcess | None = None
     stopping = False
     cleanup_complete = False
+    failed = False
+    cleanup_error: AntiochCliError | AntiochLiveError | None = None
+    health: StateHealthServer | None = None
 
     def request_stop(_signum: int, _frame: object) -> None:
         nonlocal stopping
@@ -499,6 +506,30 @@ def run_cluster(args: argparse.Namespace) -> int:
             scenario=args.scenario,
             heartbeat_unix=0.0,
         )
+        health = StateHealthServer(
+            port=args.health_port,
+            checks={
+                "/ready": lambda: (
+                    probe(
+                        state_path,
+                        component="controller",
+                        expected_owner_identity=args.owner_identity,
+                        max_age_seconds=30.0,
+                    )
+                    == 0
+                ),
+                "/live": lambda: (
+                    probe(
+                        state_path,
+                        component="controller-liveness",
+                        expected_owner_identity=args.owner_identity,
+                        max_age_seconds=180.0,
+                    )
+                    == 0
+                ),
+            },
+        )
+        health.start()
         _start_cluster_service(
             cli,
             runtime=runtime,
@@ -600,17 +631,25 @@ def run_cluster(args: argparse.Namespace) -> int:
                             recoveries=recoveries,
                             vendor_process_status=vendor.exit_snapshot()[0],
                             vendor_output_bytes=vendor.output_snapshot()[0],
-                            vendor_output_age_seconds=round(vendor.output_snapshot()[1], 3),
+                            vendor_output_age_seconds=round(
+                                vendor.output_snapshot()[1], 3
+                            ),
                             controller_pid=os.getpid(),
                             vendor_pid=vendor.process.pid,
                             vendor_parent_pid=os.getpid(),
                             vendor_process_group_isolated=(
                                 os.getpgid(vendor.process.pid) == vendor.process.pid
                             ),
-                            daemon_guest_state=str(active.get("daemon_guest_state") or ""),
+                            daemon_guest_state=str(
+                                active.get("daemon_guest_state") or ""
+                            ),
                             daemon_observed_at=float(active["daemon_observed_at"]),
-                            rome_guest_observed_at=float(active["rome_guest_observed_at"]),
-                            scenario_session_leases=int(active["scenario_session_leases"]),
+                            rome_guest_observed_at=float(
+                                active["rome_guest_observed_at"]
+                            ),
+                            scenario_session_leases=int(
+                                active["scenario_session_leases"]
+                            ),
                             process_leases=int(active["process_leases"]),
                             stream_leases=int(active["stream_leases"]),
                             transport="same-pod-antioch-tunnel-double-wss",
@@ -722,6 +761,7 @@ def run_cluster(args: argparse.Namespace) -> int:
                 last_restage = time.monotonic()
             time.sleep(args.daemon_poll_seconds)
     except Exception as exc:
+        failed = True
         _write_state(
             state_path,
             status="failed",
@@ -748,6 +788,7 @@ def run_cluster(args: argparse.Namespace) -> int:
                 )
                 cli.services_down(runtime)
             except (AntiochCliError, AntiochLiveError) as exc:
+                cleanup_error = exc
                 _write_state(
                     state_path,
                     status="cleanup_failed",
@@ -758,23 +799,44 @@ def run_cluster(args: argparse.Namespace) -> int:
                     heartbeat_unix=time.time(),
                     error_type=type(exc).__name__,
                 )
-                raise
+        terminal_status = (
+            "cleanup_failed"
+            if cleanup_error is not None
+            else "failed"
+            if failed
+            else "stopped"
+        )
         _write_state(
             state_path,
-            status="stopped",
-            daemon_status="terminal",
+            status=terminal_status,
+            daemon_status=terminal_status,
             owner_identity=args.owner_identity,
             session_id=session_id,
             scenario=args.scenario,
             heartbeat_unix=time.time(),
         )
-        # Keep the terminal evidence owned by this exact PID until the
-        # observer scales the Deployment.  Exiting here lets restartPolicy
-        # Always replace ``stopped`` with a fresh ``starting`` state before
-        # stop_cluster's next poll, wedging safe scale-down.
-        cleanup_complete = True
-        while True:
-            time.sleep(60)
+        if failed or cleanup_error is not None:
+            if health is not None:
+                health.close()
+            if cleanup_error is not None and not failed:
+                raise cleanup_error
+        else:
+            # Keep the terminal evidence owned by this exact PID until the
+            # observer scales the Deployment. Exiting here lets restartPolicy
+            # Always replace ``stopped`` with a fresh ``starting`` state before
+            # stop_cluster's next poll, wedging safe scale-down.
+            cleanup_complete = True
+            while True:
+                time.sleep(60)
+                _write_state(
+                    state_path,
+                    status="stopped",
+                    daemon_status="terminal",
+                    owner_identity=args.owner_identity,
+                    session_id=session_id,
+                    scenario=args.scenario,
+                    heartbeat_unix=time.time(),
+                )
 
 
 def probe(
@@ -812,6 +874,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--scenario", default="openpi_franka_mk8s_live")
     run.add_argument("--scenario-timeout-seconds", type=int, default=14_400)
     run.add_argument("--owner-identity", required=True)
+    run.add_argument("--health-port", type=int, default=18_080)
     run.add_argument("--daemon-poll-seconds", type=float, default=DAEMON_POLL_SECONDS)
     run.add_argument(
         "--daemon-max-age-seconds",

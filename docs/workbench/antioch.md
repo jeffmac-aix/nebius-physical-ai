@@ -136,6 +136,8 @@ The live viewer includes the normal streamed Isaac viewport, current camera imag
 in Antioch telemetry, and counters for observation sequence/time, requests, round
 trips, latency, action shape/index, safe hold, reconnects, and safely applied
 targets. These are emitted by the running scenario, not inferred from an `.rrd`.
+The default dispatched instruction is `pick up the red cube`; public proof telemetry
+uses only the non-sensitive `red_cube_pickup` label.
 
 The OpenPI bootstrap is publicly installed as `npa-openpi-live-deploy` (implemented
 by `npa.workflows.byof.openpi_live`): a single B200
@@ -231,8 +233,11 @@ with the supported structured `machine status` contract. Readiness requires Rome
 `runtime` observation, matching Rome/direct exact stream ownership, exactly one
 `antioch scenario run` session lease, process and stream leases, and a live direct
 child whose parent is container PID 1. State uses versioned JSON and owner-only atomic replacement. Local and
-Kubernetes-exec readers base64-frame the file bytes to prevent transport-level JSON
-coercion and retry a bounded number of transient empty/partial reads, but a
+status-command readers base64-frame the file bytes to prevent transport-level JSON
+coercion and retry a bounded number of transient empty/partial reads. Kubelet probes
+use the same fail-closed state predicates over pod-local HTTP because exec-probe RPC
+failures are not application-health evidence; ingress is restricted to the configured
+kubelet CIDRs and the health ports have no Service. A
 missing schema, malformed value, wrong identity, stale heartbeat, absent stream owner,
 missing vendor session, unhealthy/stale Rome observation, child exit, or unreadable
 state revokes readiness. Converged loss terminates the exact child process group,
@@ -240,14 +245,27 @@ cancels the exact run, rebuilds and re-stages after recycle when needed, and sta
 successor with capped backoff. Ambiguous ownership fails closed. The operator/Codex
 process is not part of this supervision and may exit after handoff.
 
-Before a retained live run is accepted, require at least 120 seconds, 120 valid
-camera pairs, 100 successful policy round trips, and 500 applied targets; at
+Before a retained live run is accepted, require at least 930 seconds (15 minutes
+plus a 30-second margin), 120 valid camera pairs, 100 successful policy round trips,
+and 500 applied targets; at
 least 90% of policy requests must succeed. Camera luminance mean must exceed 5
-and variance 25 for both views. Latency must have p95 at most 2 seconds and
+and variance 25 for both views, both cumulatively across accepted pairs and on the
+current pair. The schema-2 camera proof requires one validated pair for every policy
+request; rejected startup or flat pairs are counted but never enter the accepted
+minimum. Latency must have p95 at most 2 seconds and
 p99/max at most the 90-second stale-response bound, with at most five reconnects.
 No malformed, non-finite, wrong-shaped, joint-limit, gripper-range, or joint-step
-action may be applied. These thresholds are fixed before live execution and are
-not reduced after observing a run.
+action may be applied; the live numeric metric contract must also report horizon
+15, dimension 8, and finite=true. The current scene must be a lit tabletop with the
+DROID reset posture, open gripper, reachable red cube, exterior view, and hand-mounted
+wrist view. The action adapter uses absolute seven-joint targets in Franka order and
+DROID's `0=open, 1=closed` gripper convention; raw distribution mismatches remain
+separate from safety-projection counters. Acceptance additionally requires measured
+end-effector approach to within 12 cm, supported Isaac cube-to-finger contact evidence,
+at least 5 cm of cube lift from initialized tabletop height, and at least one continuous
+second of lifted contact with a closed gripper. Action issuance alone is not success.
+These thresholds are fixed before live execution and are not reduced after observing a
+run.
 
 ## Policy data contract
 

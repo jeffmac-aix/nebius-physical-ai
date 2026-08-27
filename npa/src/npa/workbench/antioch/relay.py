@@ -12,6 +12,9 @@ from typing import Any, Sequence
 
 from websockets.sync.client import connect
 
+from .cluster_runtime import _state_ready
+from .health import StateHealthServer
+
 MAX_MESSAGE_BYTES = 32 * 1024 * 1024
 REQUEST_TIMEOUT_SECONDS = 120.0
 MAX_REQUESTS_PER_CONNECTION = 1_000_000
@@ -198,20 +201,63 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--stop-file", required=True)
     parser.add_argument("--state-path", required=True)
     parser.add_argument("--owner-identity", required=True)
+    parser.add_argument("--health-port", type=int, default=0)
+    parser.add_argument("--resume-after-stop", action="store_true")
     return parser
+
+
+def _publish_stopped_until_resumable(
+    *, stop_file: Path, state_path: Path, state: dict[str, Any]
+) -> None:
+    """Keep terminal relay evidence fresh without restart-looping."""
+
+    while stop_file.exists():
+        _write_state(state_path, state)
+        time.sleep(5)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    result = run_relay(
-        bundle=Path(args.bundle),
-        local_port=args.local_port,
-        stop_file=Path(args.stop_file),
-        state_path=Path(args.state_path),
-        owner_identity=args.owner_identity,
-    )
-    print(json.dumps(result, sort_keys=True))
-    return 0
+    stop_file = Path(args.stop_file)
+    state_path = Path(args.state_path)
+    health = None
+    if args.health_port:
+        health = StateHealthServer(
+            port=args.health_port,
+            checks={
+                "/ready": lambda: _state_ready(
+                    json.loads(state_path.read_text(encoding="utf-8")),
+                    component="relay",
+                    expected_owner_identity=args.owner_identity,
+                    max_age_seconds=150.0,
+                ),
+                "/live": lambda: _state_ready(
+                    json.loads(state_path.read_text(encoding="utf-8")),
+                    component="relay-liveness",
+                    expected_owner_identity=args.owner_identity,
+                    max_age_seconds=240.0,
+                ),
+            },
+        )
+        health.start()
+    try:
+        while True:
+            result = run_relay(
+                bundle=Path(args.bundle),
+                local_port=args.local_port,
+                stop_file=stop_file,
+                state_path=state_path,
+                owner_identity=args.owner_identity,
+            )
+            print(json.dumps(result, sort_keys=True))
+            if not args.resume_after_stop:
+                return 0
+            _publish_stopped_until_resumable(
+                stop_file=stop_file, state_path=state_path, state=result
+            )
+    finally:
+        if health is not None:
+            health.close()
 
 
 if __name__ == "__main__":

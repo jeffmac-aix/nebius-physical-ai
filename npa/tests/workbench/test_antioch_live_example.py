@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import hashlib
+import json
 import re
 import subprocess
 import sys
@@ -79,10 +80,15 @@ def test_live_scenario_is_real_bounded_and_fail_closed() -> None:
         "MAX_RESPONSE_AGE_SECONDS",
         "MAX_JOINT_STEP",
         "GRIPPER_JOINT_MAX = 0.04",
-        "targets[:, 7] = np.clip(targets[:, 7], 0.0, 1.0)",
-        "gripper_saturations={gripper_saturations}",
-        "joint_limit_saturations={joint_limit_saturations}",
-        "joint_step_saturations={joint_step_saturations}",
+        "DROID_RESET_JOINTS",
+        '"pick up the red cube"',
+        'TASK_LABEL = "red_cube_pickup"',
+        "raw_gripper_range_mismatches",
+        "raw_joint_limit_mismatches",
+        "joint_limit_projections",
+        "joint_step_projections",
+        "_droid_gripper_observation",
+        "_isaac_finger_target",
         "isinstance(exc, ActionValidationError)",
         "next_attempt = now + 1.0 / CONTROL_HZ",
         "ssl.create_default_context",
@@ -99,9 +105,14 @@ def test_live_scenario_is_real_bounded_and_fail_closed() -> None:
         'logger.scalar("decision/safe_hold"',
         'logger.scalar("decision/reconnects"',
         'logger.scalar("decision/safe_targets_applied"',
-        'logger.scalar("decision/gripper_saturations"',
-        '"decision/joint_limit_saturations"',
-        'logger.scalar("decision/joint_step_saturations"',
+        '"decision/raw_gripper_range_mismatches"',
+        '"decision/raw_joint_limit_mismatches"',
+        '"decision/joint_limit_projections"',
+        '"decision/joint_step_projections"',
+        'logger.scalar("grasp/end_effector_cube_distance_m"',
+        'logger.scalar("grasp/gripper_contact_force_n"',
+        'logger.scalar("grasp/cube_lift_m"',
+        'logger.scalar("grasp/pickup_success"',
         '"scene/franka/base"',
         '"scene/franka/links"',
         '"scene/franka/joints"',
@@ -110,6 +121,10 @@ def test_live_scenario_is_real_bounded_and_fail_closed() -> None:
         "rr.Ellipsoids3D(**proxy",
         "_franka_proxy_geometry(link_points)",
         "ArticulationAction",
+        "track_contact_forces=True",
+        "contact_filter_prim_paths_expr",
+        'prim_path="/World/Franka/panda_hand/PolicyWrist"',
+        "_configure_lighting(world.stage)",
         'enable_extension("isaacsim.robot.manipulators.examples")',
         "NPA_OPENPI_ROUND_TRIP",
         "NPA_OPENPI_SAFE_HOLD",
@@ -231,6 +246,54 @@ def test_live_camera_rejects_black_or_flat_annotator_warmup(
     np.testing.assert_array_equal(
         scenario._camera_rgb(Camera(normalized)), rendered[:, :, :3]
     )
+
+
+def test_live_droid_jointpos_and_gripper_mapping_matches_pinned_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_antioch = types.ModuleType("antioch")
+    fake_antioch.Logger = lambda *_args, **_kwargs: object()
+    fake_antioch.param = lambda default, **_kwargs: default
+    fake_antioch.scenario = lambda **_kwargs: lambda function: function
+    monkeypatch.setitem(sys.modules, "antioch", fake_antioch)
+    path = EXAMPLE / "src/scenario.py"
+    spec = importlib.util.spec_from_file_location("antioch_live_action_test", path)
+    assert spec is not None and spec.loader is not None
+    scenario = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(scenario)
+
+    open_state = np.asarray([*scenario.DROID_RESET_JOINTS, 0.04, 0.04])
+    closed_state = np.asarray([*scenario.DROID_RESET_JOINTS, 0.0, 0.0])
+    assert scenario._droid_gripper_observation(open_state) == pytest.approx(0.0)
+    assert scenario._droid_gripper_observation(closed_state) == pytest.approx(1.0)
+    assert scenario._isaac_finger_target(0.0) == pytest.approx(0.04)
+    assert scenario._isaac_finger_target(1.0) == pytest.approx(0.0)
+
+    actions = np.tile(open_state[:8], (15, 1)).astype(np.float64)
+    actions[:, 7] = np.asarray(
+        [-0.2, -0.1, 0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2]
+    )
+    targets, evidence = scenario._validated_actions(
+        {"actions": actions}, open_state
+    )
+    np.testing.assert_allclose(targets[:, :7], actions[:, :7])
+    assert set(np.unique(targets[:, 7])) <= {0.0, 1.0}
+    assert evidence["raw_gripper_range_mismatches"] == 4
+    assert evidence["raw_joint_limit_mismatches"] == 0
+    assert evidence["joint_limit_projections"] == 0
+    assert evidence["joint_step_projections"] == 0
+
+
+def test_live_scene_is_tabletop_lit_and_droid_reset_aligned() -> None:
+    source = (EXAMPLE / "src/scenario.py").read_text(encoding="utf-8")
+    assert 'world.scene.add_ground_plane(z_position=-0.75)' in source
+    assert 'prim_path="/World/Tabletop"' in source
+    assert 'prim_path="/World/Cube"' in source
+    assert "position=np.array(CUBE_INITIAL_POSITION)" in source
+    assert "robot.set_joint_positions(" in source
+    assert 'prim_path="/World/Franka/panda_hand/PolicyWrist"' in source
+    assert 'UsdLux.DomeLight.Define(stage, "/World/PolicyFillLight")' in source
+    assert 'UsdLux.DistantLight.Define(stage, "/World/PolicyKeyLight")' in source
 
 
 def test_live_protocol_codec_round_trips_arrays_and_rejects_objects() -> None:
@@ -936,6 +999,48 @@ def test_double_wss_relay_forwards_bounded_request_reply(
     assert connection_order == ["simulation", "policy"]
     assert state["forwarded_requests"] == 1
     assert state["status"] == "stopped"
+
+
+def test_cluster_relay_holds_stopped_state_until_controller_resumes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    stop_file = tmp_path / "stop"
+    stop_file.touch()
+    state_path = tmp_path / "relay.json"
+    sleeps = 0
+
+    def resume(_seconds: float) -> None:
+        nonlocal sleeps
+        sleeps += 1
+        stop_file.unlink()
+
+    monkeypatch.setattr(live_relay.time, "sleep", resume)
+    live_relay._publish_stopped_until_resumable(
+        stop_file=stop_file,
+        state_path=state_path,
+        state={
+            "schema_version": 2,
+            "owner_identity": "owner",
+            "status": "stopped",
+        },
+    )
+
+    assert sleeps == 1
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["status"] == "stopped"
+    assert state["heartbeat_unix"] > 0
+
+
+def test_live_metrics_bind_current_valid_camera_pair_to_policy_request() -> None:
+    source = (EXAMPLE / "src/scenario.py").read_text(encoding="utf-8")
+    assert "camera_quality_schema=2" in source
+    assert "action_horizon={ACTION_SHAPE[0]}" in source
+    assert "action_dimension={ACTION_SHAPE[1]} action_finite=1" in source
+    assert "camera_luminance_mean_current_min" in source
+    assert "camera_luminance_variance_current_min" in source
+    assert "camera_validated_requests += 1" in source
+    assert "camera_rejected_pairs += 1" in source
+    assert source.index("observation = {") < source.index("camera_validated_requests += 1")
 
 
 def test_live_stop_cancels_scenario_before_service(

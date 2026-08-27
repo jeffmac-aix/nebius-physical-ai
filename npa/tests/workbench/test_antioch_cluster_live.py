@@ -4,9 +4,12 @@ import base64
 import io
 import json
 import os
+import socket
 import stat
 import tarfile
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -14,6 +17,7 @@ import pytest
 from pydantic import ValidationError
 
 from npa.workbench.antioch import cluster_deploy, cluster_runtime
+from npa.workbench.antioch.health import StateHealthServer
 from npa.workbench.antioch.vendor_cli import AntiochCliError
 
 
@@ -62,6 +66,70 @@ def test_private_config_requires_mode_0600_and_per_state_identity(
 def test_cluster_live_requires_digest_pinned_adapter(tmp_path: Path) -> None:
     with pytest.raises(ValidationError, match="sha256"):
         _config(tmp_path, adapter_image="registry.invalid/npa-antioch:latest")
+
+
+def _accepted_live_metrics() -> dict[str, int | float]:
+    return {
+        "elapsed_seconds": 930.0,
+        "frames": 120,
+        "requests": 100,
+        "round_trips": 100,
+        "applied": 500,
+        "action_horizon": 15,
+        "action_dimension": 8,
+        "action_finite": 1,
+        "rejected_wrong_shape": 0,
+        "rejected_non_finite": 0,
+        "rejected_joint_limit": 0,
+        "rejected_gripper_range": 0,
+        "rejected_joint_step": 0,
+        "camera_quality_schema": 2,
+        "camera_validated_requests": 100,
+        "camera_pair_id": 100,
+        "request_camera_pair_id": 100,
+        "round_trip_camera_pair_id": 100,
+        "camera_exterior_luminance_mean_current": 40.0,
+        "camera_exterior_luminance_variance_current": 100.0,
+        "camera_wrist_luminance_mean_current": 35.0,
+        "camera_wrist_luminance_variance_current": 90.0,
+        "luminance_mean_min": 30.0,
+        "luminance_variance_min": 80.0,
+        "joint_limit_projections": 0,
+        "joint_step_projections": 0,
+        "end_effector_cube_approach_m": 0.2,
+        "end_effector_cube_distance_m": 0.04,
+        "gripper_contact_samples": 20,
+        "gripper_contact_force_max_n": 1.5,
+        "cube_lift_max_m": 0.051,
+        "pickup_hold_seconds": 1.0,
+        "pickup_success": 1,
+        "latency_p95_ms": 100.0,
+        "latency_p99_ms": 120.0,
+        "latency_max_ms": 130.0,
+        "reconnects": 0,
+    }
+
+
+def test_live_acceptance_requires_current_pair_identity_and_physical_pickup() -> None:
+    accepted = cluster_deploy.qualify_live_metrics(_accepted_live_metrics())
+    assert accepted["accepted"] is True
+    assert accepted["failures"] == []
+
+    for changed, expected_failure in (
+        ({"camera_validated_requests": 99}, "camera_pair_identity"),
+        ({"round_trip_camera_pair_id": 99}, "camera_pair_identity"),
+        ({"camera_wrist_luminance_variance_current": 0}, "current_camera_quality"),
+        ({"luminance_mean_min": 0}, "accepted_camera_quality"),
+        ({"gripper_contact_samples": 0}, "physical_gripper_contact"),
+        ({"cube_lift_max_m": 0.049}, "sustained_pickup"),
+        ({"pickup_hold_seconds": 0.999}, "sustained_pickup"),
+        ({"pickup_success": 0}, "sustained_pickup"),
+    ):
+        metrics = _accepted_live_metrics()
+        metrics.update(changed)
+        rejected = cluster_deploy.qualify_live_metrics(metrics)
+        assert rejected["accepted"] is False
+        assert expected_failure in rejected["failures"]
 
 
 def test_cluster_live_terms_acceptance_is_process_scoped(
@@ -164,11 +232,23 @@ def test_public_manifests_keep_vm_out_and_policy_cluster_local(tmp_path: Path) -
     assert "14400" in controller["command"]
     assert "antioch.relay" in " ".join(relay["command"])
     assert "18444" in relay["command"]
-    assert "controller" in controller["readinessProbe"]["exec"]["command"]
-    assert (
-        "controller-liveness"
-        in controller["livenessProbe"]["exec"]["command"]
-    )
+    assert controller["readinessProbe"]["httpGet"] == {
+        "path": "/ready",
+        "port": "controller-health",
+    }
+    assert controller["livenessProbe"]["httpGet"] == {
+        "path": "/live",
+        "port": "controller-health",
+    }
+    assert relay["readinessProbe"]["httpGet"] == {
+        "path": "/ready",
+        "port": "relay-health",
+    }
+    assert relay["livenessProbe"]["httpGet"] == {
+        "path": "/live",
+        "port": "relay-health",
+    }
+    assert "--resume-after-stop" in relay["command"]
     assert controller["readinessProbe"]["failureThreshold"] == 3
     assert relay["readinessProbe"]["failureThreshold"] == 3
     assert "--owner-identity" in controller["command"]
@@ -186,7 +266,15 @@ def test_public_manifests_keep_vm_out_and_policy_cluster_local(tmp_path: Path) -
     ]
     assert ingress[0]["ports"] == [{"protocol": "TCP", "port": 8443}]
     adapter_policy = manifests["adapter_network_policy"]["spec"]
-    assert adapter_policy["ingress"] == []
+    assert adapter_policy["ingress"] == [
+        {
+            "from": [{"ipBlock": {"cidr": "192.0.2.10/32"}}],
+            "ports": [
+                {"protocol": "TCP", "port": 18080},
+                {"protocol": "TCP", "port": 18081},
+            ],
+        }
+    ]
     assert adapter_policy["policyTypes"] == ["Ingress", "Egress"]
     assert adapter_policy["egress"][-1] == {
         "to": [
@@ -260,6 +348,61 @@ def test_cluster_runtime_probe_is_fail_closed(tmp_path: Path) -> None:
         )
         == 1
     )
+
+    relay["status"] = "stopped"
+    relay["heartbeat_unix"] = time.time()
+    assert (
+        cluster_runtime.probe(
+            state,
+            component="relay-liveness",
+            expected_owner_identity="owner",
+            max_age_seconds=240,
+        )
+        == 1
+    )
+    state.write_text(json.dumps(relay), encoding="utf-8")
+    assert (
+        cluster_runtime.probe(
+            state,
+            component="relay-liveness",
+            expected_owner_identity="owner",
+            max_age_seconds=240,
+        )
+        == 0
+    )
+
+
+def test_state_health_server_preserves_fail_closed_probe_semantics() -> None:
+    with socket.socket() as reservation:
+        reservation.bind(("127.0.0.1", 0))
+        port = int(reservation.getsockname()[1])
+    server = StateHealthServer(
+        port=port,
+        checks={"/ready": lambda: False, "/live": lambda: True},
+    )
+    server.start()
+    try:
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/live", timeout=2
+        ) as reply:
+            assert reply.status == 200
+            assert reply.read() == b"ok\n"
+        with pytest.raises(urllib.error.HTTPError) as exc_info:
+            urllib.request.urlopen(f"http://127.0.0.1:{port}/ready", timeout=2)
+        assert exc_info.value.code == 503
+    finally:
+        server.close()
+
+
+def test_state_health_server_can_close_before_start() -> None:
+    with socket.socket() as reservation:
+        reservation.bind(("127.0.0.1", 0))
+        port = int(reservation.getsockname()[1])
+    server = StateHealthServer(
+        port=port,
+        checks={"/ready": lambda: False, "/live": lambda: False},
+    )
+    server.close()
 
 
 def test_atomic_state_read_recovers_one_transient_partial_json(

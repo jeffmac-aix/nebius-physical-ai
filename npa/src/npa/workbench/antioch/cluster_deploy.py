@@ -232,6 +232,8 @@ def build_public_manifests(config: ClusterLiveConfig) -> dict[str, dict[str, Any
             str(config.scenario_timeout_seconds),
             "--owner-identity",
             config.identity,
+            "--health-port",
+            "18080",
             "--daemon-max-age-seconds",
             "120",
             "--stop-file",
@@ -256,43 +258,14 @@ def build_public_manifests(config: ClusterLiveConfig) -> dict[str, dict[str, Any
             {"name": "runtime-cache", "mountPath": "/workspace/.cache/npa/antioch"},
             {"name": "tmp", "mountPath": "/tmp"},
         ],
+        "ports": [{"name": "controller-health", "containerPort": 18080}],
         "readinessProbe": {
-            "exec": {
-                "command": [
-                    "python",
-                    "-m",
-                    "npa.workbench.antioch.cluster_runtime",
-                    "probe",
-                    "--component",
-                    "controller",
-                    "--state-path",
-                    f"{state_root}/controller.json",
-                    "--expected-owner-identity",
-                    config.identity,
-                    "--max-age-seconds",
-                    "30",
-                ]
-            },
+            "httpGet": {"path": "/ready", "port": "controller-health"},
             "periodSeconds": 5,
             "failureThreshold": 3,
         },
         "livenessProbe": {
-            "exec": {
-                "command": [
-                    "python",
-                    "-m",
-                    "npa.workbench.antioch.cluster_runtime",
-                    "probe",
-                    "--component",
-                    "controller-liveness",
-                    "--state-path",
-                    f"{state_root}/controller.json",
-                    "--expected-owner-identity",
-                    config.identity,
-                    "--max-age-seconds",
-                    "180",
-                ]
-            },
+            "httpGet": {"path": "/live", "port": "controller-health"},
             "periodSeconds": 10,
             "failureThreshold": 3,
             "initialDelaySeconds": 600,
@@ -316,6 +289,9 @@ def build_public_manifests(config: ClusterLiveConfig) -> dict[str, dict[str, Any
             f"{state_root}/relay.json",
             "--owner-identity",
             config.identity,
+            "--health-port",
+            "18081",
+            "--resume-after-stop",
         ],
         "securityContext": _container_security(),
         "resources": {
@@ -327,43 +303,14 @@ def build_public_manifests(config: ClusterLiveConfig) -> dict[str, dict[str, Any
             {"name": "state", "mountPath": state_root},
             {"name": "tmp", "mountPath": "/tmp"},
         ],
+        "ports": [{"name": "relay-health", "containerPort": 18081}],
         "readinessProbe": {
-            "exec": {
-                "command": [
-                    "python",
-                    "-m",
-                    "npa.workbench.antioch.cluster_runtime",
-                    "probe",
-                    "--component",
-                    "relay",
-                    "--state-path",
-                    f"{state_root}/relay.json",
-                    "--expected-owner-identity",
-                    config.identity,
-                    "--max-age-seconds",
-                    "150",
-                ]
-            },
+            "httpGet": {"path": "/ready", "port": "relay-health"},
             "periodSeconds": 5,
             "failureThreshold": 3,
         },
         "livenessProbe": {
-            "exec": {
-                "command": [
-                    "python",
-                    "-m",
-                    "npa.workbench.antioch.cluster_runtime",
-                    "probe",
-                    "--component",
-                    "relay-liveness",
-                    "--state-path",
-                    f"{state_root}/relay.json",
-                    "--expected-owner-identity",
-                    config.identity,
-                    "--max-age-seconds",
-                    "240",
-                ]
-            },
+            "httpGet": {"path": "/live", "port": "relay-health"},
             "periodSeconds": 15,
             "failureThreshold": 6,
         },
@@ -523,7 +470,18 @@ def build_public_manifests(config: ClusterLiveConfig) -> dict[str, dict[str, Any
         "spec": {
             "podSelector": {"matchLabels": labels},
             "policyTypes": ["Ingress", "Egress"],
-            "ingress": [],
+            "ingress": [
+                {
+                    "from": [
+                        {"ipBlock": {"cidr": cidr}}
+                        for cidr in sorted(set(config.kubelet_source_cidrs))
+                    ],
+                    "ports": [
+                        {"protocol": "TCP", "port": 18080},
+                        {"protocol": "TCP", "port": 18081},
+                    ],
+                }
+            ],
             "egress": [
                 {
                     "to": [{"podSelector": {"matchLabels": config.policy_selector}}],
@@ -670,6 +628,94 @@ def _parse_live_metrics(logs: str) -> dict[str, int | float]:
             continue
         latest = candidate
     return latest
+
+
+def qualify_live_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
+    """Return the fixed, physical live-acceptance gate without identifiers."""
+
+    def number(name: str, default: float = 0.0) -> float:
+        try:
+            value = float(metrics.get(name, default))
+        except (TypeError, ValueError):
+            return default
+        return value if value == value else default
+
+    requests = int(number("requests"))
+    round_trips = int(number("round_trips"))
+    checks = {
+        "duration": number("elapsed_seconds") >= 930.0,
+        "valid_camera_pairs": int(number("frames")) >= 120,
+        "policy_round_trips": round_trips >= 100,
+        "applied_targets": int(number("applied")) >= 500,
+        "finite_action_shape": (
+            int(number("action_horizon")) == 15
+            and int(number("action_dimension")) == 8
+            and int(number("action_finite")) == 1
+        ),
+        "policy_success_rate": round_trips / max(requests, 1) >= 0.90,
+        "no_rejected_actions": all(
+            int(number(name)) == 0
+            for name in (
+                "rejected_wrong_shape",
+                "rejected_non_finite",
+                "rejected_joint_limit",
+                "rejected_gripper_range",
+                "rejected_joint_step",
+            )
+        ),
+        "camera_pair_identity": (
+            int(number("camera_quality_schema")) == 2
+            and int(number("camera_validated_requests")) == requests
+            and int(number("camera_pair_id")) == requests
+            and int(number("request_camera_pair_id"))
+            == int(number("camera_pair_id", -1.0))
+            and int(number("round_trip_camera_pair_id"))
+            == int(number("request_camera_pair_id", -1.0))
+        ),
+        "current_camera_quality": all(
+            number(name) > threshold
+            for name, threshold in (
+                ("camera_exterior_luminance_mean_current", 5.0),
+                ("camera_exterior_luminance_variance_current", 25.0),
+                ("camera_wrist_luminance_mean_current", 5.0),
+                ("camera_wrist_luminance_variance_current", 25.0),
+            )
+        ),
+        "accepted_camera_quality": (
+            number("luminance_mean_min") > 5.0
+            and number("luminance_variance_min") > 25.0
+        ),
+        "no_safety_projection": (
+            int(number("joint_limit_projections", -1.0)) == 0
+            and int(number("joint_step_projections", -1.0)) == 0
+        ),
+        "physical_approach": (
+            number("end_effector_cube_approach_m") > 0.0
+            and number("end_effector_cube_distance_m", float("inf")) < 0.12
+        ),
+        "physical_gripper_contact": (
+            int(number("gripper_contact_samples")) > 0
+            and number("gripper_contact_force_max_n") > 0.1
+        ),
+        "sustained_pickup": (
+            number("cube_lift_max_m") >= 0.05
+            and number("pickup_hold_seconds") >= 1.0
+            and int(number("pickup_success")) == 1
+        ),
+        "latency": (
+            number("latency_p95_ms", float("inf")) <= 2_000.0
+            and number("latency_p99_ms", float("inf")) <= 90_000.0
+            and number("latency_max_ms", float("inf")) <= 90_000.0
+        ),
+        "reconnects": int(number("reconnects", 1_000_000_000.0)) <= 5,
+    }
+    failures = sorted(name for name, passed in checks.items() if not passed)
+    return {
+        "schema_name": "npa.antioch.live-acceptance.v1",
+        "accepted": not failures,
+        "checks": checks,
+        "failures": failures,
+    }
 
 
 def _read_remote_state(
@@ -1416,6 +1462,7 @@ def cluster_status(config: ClusterLiveConfig) -> dict[str, Any]:
         "cluster_local_policy_resolved": cluster_local_policy_resolved,
         "relay": relay_state,
         "live_metrics": live_metrics,
+        "live_acceptance": qualify_live_metrics(live_metrics),
         "probe_diagnostics": probe_diagnostics,
         "dev_vm_in_data_path": False,
     }

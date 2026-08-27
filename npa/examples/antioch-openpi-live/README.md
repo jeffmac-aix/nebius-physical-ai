@@ -10,15 +10,20 @@ live counters; neither is reconstructed from a recording.
 The client uses a 90-second response-age safety deadline because a cold request
 can take tens of seconds even though warmed B200 requests are normally tens of
 milliseconds. The reviewed `pi05_droid_jointpos_polaris` output contract is seven
-absolute arm joints plus one raw gripper command. Upstream `DroidOutputs` returns
-that eighth dimension unchanged, so the client requires it to be finite and
-saturates it to the normalized actuator range before mapping it into the Franka
-finger range. After strict shape and finite validation, the same safety projection
-clips arm targets to the Franka limits and sequentially rate-limits them to the
-reviewed per-target step bound. Separate gripper, joint-limit, and joint-step
-projection counters are reported for every `[15, 8]` chunk. Five returned targets
-are applied at a nominal 15 Hz. The observation-to-action loop is best-effort and
-not hard real time.
+absolute arm joints plus one DROID gripper-position command. The simulator uses the
+DROID reset posture and maps its finger joints into DROID's `0=open, 1=closed`
+observation convention. The inverse actuator mapping sends `0` to two 4 cm-open
+Isaac finger joints and `1` to closed joints; the model output is binarized at 0.5
+as in the upstream DROID deployment example. Raw out-of-distribution joint/gripper
+counts are reported separately from Franka-limit and per-target-step safety
+projections. Five returned targets are applied at a nominal 15 Hz. The
+observation-to-action loop is best-effort and not hard real time.
+
+The manipulation scene is a lit tabletop with a reachable red cube, an open Franka
+in the DROID reset posture, a framed exterior camera, and a hand-mounted wrist
+camera. Flat, black, malformed, stale, or non-finite current camera pairs are never
+sent to policy inference. Every accepted pair receives a monotonically increasing
+identity that is carried through its one policy request and response evidence.
 
 The checked-in project ID is deliberately unusable. The cluster-native controller
 creates a private runtime copy with an assigned Antioch project ID, starts the
@@ -77,13 +82,21 @@ viewer opens the supported console link. Isaac's first rendered camera frame may
 wait at that boundary; the controller never fabricates a viewer session or reads
 browser authentication storage.
 
-`openpi_franka_mk8s_live` records both current cameras, luminance/variance,
-typed action-rejection reasons, latency percentiles, every Franka joint, and the
+`openpi_franka_mk8s_live` dispatches the default instruction `pick up the red cube`
+and records only the non-sensitive `red_cube_pickup` task label in proof telemetry.
+It records both current cameras, per-view luminance/variance, typed action-rejection
+and projection reasons, latency percentiles, every Franka joint, and the
 rendered robot's USD link transforms in Rerun. Those transforms drive generated
 volumetric link, joint, base, palm, and finger primitives, so the live 3D view is
 recognizably Franka-shaped instead of a thick line strip. The actual Isaac render
 remains visible in the exterior and wrist camera panes. No Isaac or Franka mesh
 bytes are copied into telemetry, source, or the image.
+
+Pickup evidence is physical rather than inferred from action issuance: live Isaac
+poses report end-effector approach and distance, a tracked rigid-contact view reports
+cube-to-finger contact force, and the cube pose reports lift relative to its initialized
+tabletop height. Acceptance requires at least 5 cm of lift held with gripper contact
+and closure for at least one continuous second.
 
 The source is original Apache-2.0 NPA example code. Isaac Sim is supplied by the
 Antioch-managed runtime under the operator-accepted NVIDIA terms. OpenPI source and

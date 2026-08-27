@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from npa.sdk.workbench.antioch import live_k8s_deploy, live_k8s_status
+from npa.workbench.antioch.cluster_deploy import qualify_live_metrics
 
 pytestmark = pytest.mark.e2e_pipeline
 
@@ -44,30 +45,7 @@ RUNTIME_CONFIG = Path(_RUNTIME_CONFIG_VALUE)
 
 
 def _accepted(metrics: dict[str, int | float]) -> bool:
-    requests = int(metrics.get("requests", 0))
-    round_trips = int(metrics.get("round_trips", 0))
-    success_rate = round_trips / max(requests, 1)
-    rejection_keys = (
-        "rejected_wrong_shape",
-        "rejected_non_finite",
-        "rejected_joint_limit",
-        "rejected_gripper_range",
-        "rejected_joint_step",
-    )
-    return (
-        float(metrics.get("elapsed_seconds", 0)) >= 120
-        and int(metrics.get("frames", 0)) >= 120
-        and round_trips >= 100
-        and int(metrics.get("applied", 0)) >= 500
-        and success_rate >= 0.90
-        and all(int(metrics.get(key, 0)) == 0 for key in rejection_keys)
-        and float(metrics.get("luminance_mean_min", 0)) > 5
-        and float(metrics.get("luminance_variance_min", 0)) > 25
-        and float(metrics.get("latency_p95_ms", float("inf"))) <= 2_000
-        and float(metrics.get("latency_p99_ms", float("inf"))) <= 90_000
-        and float(metrics.get("latency_max_ms", float("inf"))) <= 90_000
-        and int(metrics.get("reconnects", 0)) <= 5
-    )
+    return bool(qualify_live_metrics(metrics)["accepted"])
 
 
 def test_real_franka_camera_policy_loop_sustains_cluster_native_acceptance() -> None:

@@ -25,6 +25,22 @@ JOINT_LOW = (-2.8973, -1.7628, -2.8973, -3.0718, -2.8973, -0.0175, -2.8973)
 JOINT_HIGH = (2.8973, 1.7628, 2.8973, -0.0698, 2.8973, 3.7525, 2.8973)
 MAX_JOINT_STEP = 0.35
 GRIPPER_JOINT_MAX = 0.04
+GRIPPER_TOTAL_WIDTH_MAX = 2.0 * GRIPPER_JOINT_MAX
+DROID_RESET_JOINTS = (
+    0.0,
+    -math.pi / 5.0,
+    0.0,
+    -4.0 * math.pi / 5.0,
+    0.0,
+    3.0 * math.pi / 5.0,
+    0.0,
+)
+TASK_LABEL = "red_cube_pickup"
+CUBE_SIZE_METERS = 0.07
+CUBE_INITIAL_POSITION = (0.48, 0.0, CUBE_SIZE_METERS / 2.0)
+PICKUP_LIFT_METERS = 0.05
+PICKUP_HOLD_SECONDS = 1.0
+GRIPPER_CONTACT_FORCE_NEWTONS = 0.1
 MIN_CAMERA_LUMINANCE_MEAN = 5.0
 MIN_CAMERA_LUMINANCE_VARIANCE = 25.0
 
@@ -133,7 +149,66 @@ def _look_at(stage, path: str, eye, target) -> None:
     transform.AddTransformOp().Set(matrix)
 
 
-def _validated_actions(response: dict, current) -> tuple[object, int, int, int]:
+def _configure_lighting(stage) -> None:
+    """Create deterministic fill and key lights for both policy cameras."""
+
+    from pxr import Gf, UsdGeom, UsdLux
+
+    dome = UsdLux.DomeLight.Define(stage, "/World/PolicyFillLight")
+    dome.CreateIntensityAttr(900.0)
+    dome.CreateExposureAttr(1.0)
+    dome.CreateColorAttr(Gf.Vec3f(1.0, 0.98, 0.95))
+
+    key = UsdLux.DistantLight.Define(stage, "/World/PolicyKeyLight")
+    key.CreateIntensityAttr(2_500.0)
+    key.CreateExposureAttr(1.0)
+    key.CreateAngleAttr(4.0)
+    key.CreateColorAttr(Gf.Vec3f(1.0, 0.96, 0.9))
+    transform = UsdGeom.Xformable(key.GetPrim())
+    transform.AddRotateXYZOp().Set(Gf.Vec3f(-35.0, -25.0, -35.0))
+
+
+def _contact_force_magnitude(contact_view, physics_dt: float) -> float:
+    """Read gripper/cube contact from Isaac's tracked-contact view."""
+
+    import numpy as np
+
+    forces = contact_view.get_contact_force_matrix(dt=physics_dt)
+    if forces is None:
+        return 0.0
+    if hasattr(forces, "detach"):
+        forces = forces.detach().cpu().numpy()
+    elif hasattr(forces, "numpy"):
+        forces = forces.numpy()
+    array = np.asarray(forces, dtype=np.float64)
+    if array.size == 0 or not np.isfinite(array).all():
+        return 0.0
+    return float(np.linalg.norm(array, axis=-1).max(initial=0.0))
+
+
+def _droid_gripper_observation(joint_positions) -> float:
+    """Map Isaac finger opening to DROID's 0=open, 1=closed convention."""
+
+    import numpy as np
+
+    fingers = np.asarray(joint_positions, dtype=np.float64)[7:9]
+    if fingers.shape != (2,) or not np.isfinite(fingers).all():
+        raise ActionValidationError("non_finite")
+    opening_width = float(np.clip(fingers.sum(), 0.0, GRIPPER_TOTAL_WIDTH_MAX))
+    return 1.0 - opening_width / GRIPPER_TOTAL_WIDTH_MAX
+
+
+def _isaac_finger_target(droid_gripper_target: float) -> float:
+    """Map DROID gripper position to one Isaac finger joint target."""
+
+    # DROID and the pinned OpenPI policy use 0=open and 1=closed.  The stock
+    # Franka articulation is the inverse: each finger is 0.04 m open and 0 m
+    # closed.  Upstream's deployment example binarizes the model target.
+    closed = float(droid_gripper_target) > 0.5
+    return 0.0 if closed else GRIPPER_JOINT_MAX
+
+
+def _validated_actions(response: dict, current) -> tuple[object, dict[str, int]]:
     import numpy as np
 
     actions = np.asarray(response.get("actions"))
@@ -143,34 +218,34 @@ def _validated_actions(response: dict, current) -> tuple[object, int, int, int]:
         raise ActionValidationError("non_finite")
     targets = actions.astype(np.float64, copy=True)
     low, high = np.asarray(JOINT_LOW), np.asarray(JOINT_HIGH)
-    joint_limit_saturations = int(
+    raw_joint_limit_mismatches = int(
         np.count_nonzero((targets[:, :7] < low) | (targets[:, :7] > high))
     )
     targets[:, :7] = np.clip(targets[:, :7], low, high)
-    # Upstream DroidOutputs returns the eighth model dimension unchanged. Keep
-    # the finite check strict, then saturate that command to the actuator's
-    # reviewed normalized range before mapping it to finger joint positions.
-    gripper_saturations = int(
+    # The pinned Polaris data configuration trains absolute joint positions and
+    # DROID gripper position. DroidOutputs intentionally returns both unchanged.
+    # Preserve raw distribution evidence, but use upstream's documented binary
+    # gripper mapping instead of treating an unbounded model value as finger
+    # opening in metres.
+    raw_gripper_range_mismatches = int(
         np.count_nonzero((targets[:, 7] < 0.0) | (targets[:, 7] > 1.0))
     )
-    targets[:, 7] = np.clip(targets[:, 7], 0.0, 1.0)
+    targets[:, 7] = (targets[:, 7] > 0.5).astype(np.float64)
     prior = np.asarray(current[:7], dtype=np.float64)
-    joint_step_saturations = 0
+    joint_step_projections = 0
     for index in range(ACTION_SHAPE[0]):
         bounded = np.clip(
             targets[index, :7], prior - MAX_JOINT_STEP, prior + MAX_JOINT_STEP
         )
-        joint_step_saturations += int(
-            np.count_nonzero(bounded != targets[index, :7])
-        )
+        joint_step_projections += int(np.count_nonzero(bounded != targets[index, :7]))
         targets[index, :7] = bounded
         prior = bounded
-    return (
-        targets,
-        gripper_saturations,
-        joint_limit_saturations,
-        joint_step_saturations,
-    )
+    return targets, {
+        "raw_gripper_range_mismatches": raw_gripper_range_mismatches,
+        "raw_joint_limit_mismatches": raw_joint_limit_mismatches,
+        "joint_limit_projections": raw_joint_limit_mismatches,
+        "joint_step_projections": joint_step_projections,
+    }
 
 
 def _install_overlay():
@@ -309,9 +384,7 @@ def _franka_proxy_geometry(link_points):
         lateral = [1.0, 0.0, 0.0]
     hand = points[-1]
     orientation = _z_axis_quaternion(last_direction)
-    palm_center = [
-        value + 0.025 * axis for value, axis in zip(hand, last_direction)
-    ]
+    palm_center = [value + 0.025 * axis for value, axis in zip(hand, last_direction)]
     finger_centers = []
     for sign in (-1.0, 1.0):
         finger_centers.append(
@@ -332,13 +405,16 @@ def _franka_proxy_geometry(link_points):
 @antioch.scenario(tags=["openpi-live", "mk8s-native"])
 def openpi_franka_mk8s_live(
     run: antioch.ScenarioRun,
-    prompt: str = antioch.param("pick up the cube", description="DROID task prompt"),
+    prompt: str = antioch.param(
+        "pick up the red cube", description="DROID task prompt"
+    ),
 ) -> None:
     """Continuously render, infer, validate and apply pi0.5 action chunks."""
 
     import numpy as np
     import rerun as rr
-    from isaacsim.core.api.objects import DynamicCuboid
+    from isaacsim.core.api.objects import DynamicCuboid, FixedCuboid
+    from isaacsim.core.prims import RigidPrim
     from isaacsim.core.utils.types import ArticulationAction
     from isaacsim.core.utils.viewports import set_camera_view
     from isaacsim.core.utils.extensions import enable_extension
@@ -349,50 +425,93 @@ def openpi_franka_mk8s_live(
     from isaacsim.sensors.camera import Camera
 
     world = antioch.world()
-    world.scene.add_ground_plane()
+    world.scene.add_ground_plane(z_position=-0.75)
+    tabletop = world.scene.add(
+        FixedCuboid(
+            prim_path="/World/Tabletop",
+            name="tabletop",
+            position=np.array([0.48, 0.0, -0.04]),
+            scale=np.array([0.9, 0.7, 0.08]),
+            color=np.array([0.55, 0.36, 0.2]),
+        )
+    )
+    for index, (x, y) in enumerate(
+        ((0.13, -0.25), (0.83, -0.25), (0.13, 0.25), (0.83, 0.25))
+    ):
+        world.scene.add(
+            FixedCuboid(
+                prim_path=f"/World/TableLeg{index}",
+                name=f"table_leg_{index}",
+                position=np.array([x, y, -0.39]),
+                scale=np.array([0.07, 0.07, 0.7]),
+                color=np.array([0.32, 0.22, 0.14]),
+            )
+        )
     robot = world.scene.add(Franka(prim_path="/World/Franka", name="franka"))
     cube = world.scene.add(
         DynamicCuboid(
             prim_path="/World/Cube",
             name="cube",
-            position=np.array([0.48, 0.0, 0.035]),
-            size=0.07,
-            color=np.array([0.85, 0.12, 0.08]),
+            position=np.array(CUBE_INITIAL_POSITION),
+            size=CUBE_SIZE_METERS,
+            color=np.array([0.95, 0.03, 0.02]),
+        )
+    )
+    cube_gripper_contacts = world.scene.add(
+        RigidPrim(
+            prim_paths_expr="/World/Cube",
+            name="cube_gripper_contacts",
+            track_contact_forces=True,
+            contact_filter_prim_paths_expr=[
+                "/World/Franka/panda_leftfinger",
+                "/World/Franka/panda_rightfinger",
+            ],
+            max_contact_count=16,
         )
     )
     exterior = Camera(
         prim_path="/World/PolicyExterior",
-        position=np.array([1.25, -1.05, 0.85]),
+        position=np.array([1.15, -0.9, 0.72]),
         resolution=(224, 224),
     )
     wrist = Camera(
-        prim_path="/World/PolicyWrist",
-        position=np.array([0.65, -0.38, 0.42]),
+        prim_path="/World/Franka/panda_hand/PolicyWrist",
         resolution=(224, 224),
     )
+    _configure_lighting(world.stage)
     world.reset()
+    robot.set_joint_positions(
+        np.asarray([*DROID_RESET_JOINTS, GRIPPER_JOINT_MAX, GRIPPER_JOINT_MAX])
+    )
     exterior.initialize()
     wrist.initialize()
     _look_at(
-        world.stage, "/World/PolicyExterior", [1.25, -1.05, 0.85], [0.45, 0.0, 0.1]
+        world.stage, "/World/PolicyExterior", [1.15, -0.9, 0.72], [0.46, 0.0, 0.08]
     )
-    _look_at(world.stage, "/World/PolicyWrist", [0.65, -0.38, 0.42], [0.45, 0.0, 0.08])
+    _look_at(
+        world.stage,
+        "/World/Franka/panda_hand/PolicyWrist",
+        [0.055, 0.0, 0.045],
+        [0.24, 0.0, -0.02],
+    )
     set_camera_view(
-        eye=[1.55, -1.3, 0.95],
-        target=[0.42, 0.08, 0.12],
+        eye=[1.35, -1.15, 0.9],
+        target=[0.44, 0.02, 0.1],
         camera_prim_path="/OmniverseKit_Persp",
     )
     overlay = _install_overlay()
     client = SafePolicyClient()
     observation_sequence = requests = round_trips = applied = safe_holds = 0
+    camera_rejected_pairs = camera_validated_requests = 0
     rejected_actions: Counter[str] = Counter()
     transport_failures: Counter[str] = Counter()
     latencies_ms: list[float] = []
     luminance_means: list[float] = []
     luminance_variances: list[float] = []
-    gripper_saturations = 0
-    joint_limit_saturations = 0
-    joint_step_saturations = 0
+    raw_gripper_range_mismatches = 0
+    raw_joint_limit_mismatches = 0
+    joint_limit_projections = 0
+    joint_step_projections = 0
     last_latency = 0.0
     started = time.monotonic()
     next_attempt = 0.0
@@ -400,9 +519,27 @@ def openpi_franka_mk8s_live(
     chunk_index = 0
     last_apply = time.monotonic()
     first_frame = True
+    current_luminance_mean_min = 0.0
+    current_luminance_variance_min = 0.0
+    current_exterior_luminance_mean = 0.0
+    current_exterior_luminance_variance = 0.0
+    current_wrist_luminance_mean = 0.0
+    current_wrist_luminance_variance = 0.0
+    camera_pair_id = request_camera_pair_id = round_trip_camera_pair_id = 0
     pending = None
     pending_observation = 0
+    pending_camera_pair_id = 0
     pending_joint_positions = None
+    cube_initial_height = float(cube.get_world_pose()[0][2])
+    physics_dt = float(world.get_physics_dt())
+    initial_ee_distance = None
+    minimum_ee_distance = float("inf")
+    maximum_cube_lift = 0.0
+    gripper_contact_samples = 0
+    maximum_gripper_contact_force = 0.0
+    pickup_hold_started = None
+    pickup_hold_seconds = 0.0
+    pickup_success = False
     executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="openpi-policy")
 
     print("NPA_OPENPI_LOOP_READY", flush=True)
@@ -416,14 +553,22 @@ def openpi_franka_mk8s_live(
                     response, last_latency = pending.result()
                     if last_latency > MAX_RESPONSE_AGE_SECONDS:
                         raise TimeoutError("policy response was stale")
-                    chunk, gripper_sat, joint_limit_sat, joint_step_sat = (
-                        _validated_actions(response, pending_joint_positions)
+                    chunk, action_evidence = _validated_actions(
+                        response, pending_joint_positions
                     )
-                    gripper_saturations += gripper_sat
-                    joint_limit_saturations += joint_limit_sat
-                    joint_step_saturations += joint_step_sat
+                    raw_gripper_range_mismatches += action_evidence[
+                        "raw_gripper_range_mismatches"
+                    ]
+                    raw_joint_limit_mismatches += action_evidence[
+                        "raw_joint_limit_mismatches"
+                    ]
+                    joint_limit_projections += action_evidence[
+                        "joint_limit_projections"
+                    ]
+                    joint_step_projections += action_evidence["joint_step_projections"]
                     chunk_index = 0
                     round_trips += 1
+                    round_trip_camera_pair_id = pending_camera_pair_id
                     latencies_ms.append(last_latency * 1000.0)
                     percentiles = np.percentile(latencies_ms, [50, 95, 99])
                     print(
@@ -432,9 +577,11 @@ def openpi_franka_mk8s_live(
                         f"round_trips={round_trips} "
                         f"latency_ms={last_latency * 1000.0:.3f} "
                         "action_shape=[15,8] finite=true safety_validated=true "
-                        f"gripper_saturations={gripper_saturations} "
-                        f"joint_limit_saturations={joint_limit_saturations} "
-                        f"joint_step_saturations={joint_step_saturations}",
+                        f"camera_pair_id={round_trip_camera_pair_id} "
+                        f"raw_gripper_range_mismatches={raw_gripper_range_mismatches} "
+                        f"raw_joint_limit_mismatches={raw_joint_limit_mismatches} "
+                        f"joint_limit_projections={joint_limit_projections} "
+                        f"joint_step_projections={joint_step_projections}",
                         flush=True,
                     )
                     print(
@@ -443,18 +590,40 @@ def openpi_franka_mk8s_live(
                         f"frames={observation_sequence} requests={requests} "
                         f"round_trips={round_trips} "
                         f"applied={applied} rejected_actions={sum(rejected_actions.values())} "
+                        f"action_horizon={ACTION_SHAPE[0]} "
+                        f"action_dimension={ACTION_SHAPE[1]} action_finite=1 "
                         f"rejected_wrong_shape={rejected_actions['wrong_shape']} "
                         f"rejected_non_finite={rejected_actions['non_finite']} "
                         f"rejected_joint_limit={rejected_actions['joint_limit']} "
                         f"rejected_gripper_range={rejected_actions['gripper_range']} "
                         f"rejected_joint_step={rejected_actions['joint_step']} "
-                        f"gripper_saturations={gripper_saturations} "
-                        f"joint_limit_saturations={joint_limit_saturations} "
-                        f"joint_step_saturations={joint_step_saturations} "
+                        f"raw_gripper_range_mismatches={raw_gripper_range_mismatches} "
+                        f"raw_joint_limit_mismatches={raw_joint_limit_mismatches} "
+                        f"joint_limit_projections={joint_limit_projections} "
+                        f"joint_step_projections={joint_step_projections} "
                         f"transport_failures={sum(transport_failures.values())} "
                         f"reconnects={client.reconnects} "
+                        "camera_quality_schema=2 "
+                        f"camera_rejected_pairs={camera_rejected_pairs} "
+                        f"camera_validated_requests={camera_validated_requests} "
+                        f"camera_pair_id={camera_pair_id} "
+                        f"request_camera_pair_id={request_camera_pair_id} "
+                        f"round_trip_camera_pair_id={round_trip_camera_pair_id} "
+                        f"camera_luminance_mean_current_min={current_luminance_mean_min:.3f} "
+                        f"camera_luminance_variance_current_min={current_luminance_variance_min:.3f} "
+                        f"camera_exterior_luminance_mean_current={current_exterior_luminance_mean:.3f} "
+                        f"camera_exterior_luminance_variance_current={current_exterior_luminance_variance:.3f} "
+                        f"camera_wrist_luminance_mean_current={current_wrist_luminance_mean:.3f} "
+                        f"camera_wrist_luminance_variance_current={current_wrist_luminance_variance:.3f} "
                         f"luminance_mean_min={min(luminance_means):.3f} "
                         f"luminance_variance_min={min(luminance_variances):.3f} "
+                        f"end_effector_cube_distance_m={minimum_ee_distance:.6f} "
+                        f"end_effector_cube_approach_m={max(0.0, (initial_ee_distance or minimum_ee_distance) - minimum_ee_distance):.6f} "
+                        f"gripper_contact_samples={gripper_contact_samples} "
+                        f"gripper_contact_force_max_n={maximum_gripper_contact_force:.6f} "
+                        f"cube_lift_max_m={maximum_cube_lift:.6f} "
+                        f"pickup_hold_seconds={pickup_hold_seconds:.3f} "
+                        f"pickup_success={int(pickup_success)} "
                         f"latency_p50_ms={percentiles[0]:.3f} "
                         f"latency_p95_ms={percentiles[1]:.3f} "
                         f"latency_p99_ms={percentiles[2]:.3f} "
@@ -494,6 +663,7 @@ def openpi_franka_mk8s_live(
                 exterior_rgb = _camera_rgb(exterior)
                 wrist_rgb = _camera_rgb(wrist)
                 if exterior_rgb is None or wrist_rgb is None:
+                    camera_rejected_pairs += 1
                     safe_holds += 1
                     next_attempt = now + 1.0 / CONTROL_HZ
                     overlay[2].text = "SAFE HOLD / waiting for camera frames"
@@ -505,35 +675,48 @@ def openpi_franka_mk8s_live(
                     exterior_luminance = np.mean(exterior_rgb, axis=2)
                     wrist_luminance = np.mean(wrist_rgb, axis=2)
                     luminance_means.extend(
-                        [float(exterior_luminance.mean()), float(wrist_luminance.mean())]
+                        [
+                            float(exterior_luminance.mean()),
+                            float(wrist_luminance.mean()),
+                        ]
                     )
                     luminance_variances.extend(
                         [float(exterior_luminance.var()), float(wrist_luminance.var())]
                     )
+                    current_exterior_luminance_mean = luminance_means[-2]
+                    current_wrist_luminance_mean = luminance_means[-1]
+                    current_exterior_luminance_variance = luminance_variances[-2]
+                    current_wrist_luminance_variance = luminance_variances[-1]
+                    current_luminance_mean_min = min(luminance_means[-2:])
+                    current_luminance_variance_min = min(luminance_variances[-2:])
+                    camera_pair_id += 1
                     observation = {
                         "observation/exterior_image_1_left": exterior_rgb,
                         "observation/wrist_image_left": wrist_rgb,
                         "observation/joint_position": joint_positions[:7],
                         "observation/gripper_position": np.asarray(
-                            [float(np.sum(joint_positions[7:9]))], dtype=np.float32
+                            [_droid_gripper_observation(joint_positions)],
+                            dtype=np.float32,
                         ),
                         "prompt": prompt,
                     }
                     requests += 1
+                    camera_validated_requests += 1
+                    request_camera_pair_id = camera_pair_id
                     print(
                         "NPA_OPENPI_REQUEST "
-                        f"observation={observation_sequence} requests={requests}",
+                        f"observation={observation_sequence} requests={requests} "
+                        f"camera_pair_id={request_camera_pair_id} "
+                        f"task_label={TASK_LABEL}",
                         flush=True,
                     )
+                    logger.value("task/label", rr.TextLog(TASK_LABEL))
                     logger.image("camera/exterior", exterior_rgb)
                     logger.image("camera/wrist", wrist_rgb)
-                    logger.scalar(
-                        "camera/luminance_mean", luminance_means[-2]
-                    )
-                    logger.scalar(
-                        "camera/luminance_variance", luminance_variances[-2]
-                    )
+                    logger.scalar("camera/luminance_mean", luminance_means[-2])
+                    logger.scalar("camera/luminance_variance", luminance_variances[-2])
                     pending_observation = observation_sequence
+                    pending_camera_pair_id = request_camera_pair_id
                     pending_joint_positions = joint_positions.copy()
                     pending = executor.submit(client.infer, observation)
 
@@ -544,7 +727,7 @@ def openpi_franka_mk8s_live(
                         joint_positions=np.concatenate(
                             [
                                 target[:7],
-                                np.repeat(target[7] * GRIPPER_JOINT_MAX, 2),
+                                np.repeat(_isaac_finger_target(target[7]), 2),
                             ]
                         )
                     )
@@ -559,6 +742,42 @@ def openpi_franka_mk8s_live(
                 if chunk_index >= TARGETS_PER_QUERY:
                     chunk = None
 
+            cube_position = np.asarray(cube.get_world_pose()[0], dtype=np.float64)
+            ee_position = np.asarray(
+                robot.end_effector.get_world_pose()[0], dtype=np.float64
+            )
+            ee_distance = float(np.linalg.norm(ee_position - cube_position))
+            if initial_ee_distance is None:
+                initial_ee_distance = ee_distance
+            minimum_ee_distance = min(minimum_ee_distance, ee_distance)
+            cube_lift = max(0.0, float(cube_position[2]) - cube_initial_height)
+            maximum_cube_lift = max(maximum_cube_lift, cube_lift)
+            contact_force = _contact_force_magnitude(cube_gripper_contacts, physics_dt)
+            maximum_gripper_contact_force = max(
+                maximum_gripper_contact_force, contact_force
+            )
+            in_gripper_contact = contact_force >= GRIPPER_CONTACT_FORCE_NEWTONS
+            if in_gripper_contact:
+                gripper_contact_samples += 1
+            current_joint_positions = np.asarray(
+                robot.get_joint_positions(), dtype=float
+            )
+            gripper_closed = _droid_gripper_observation(current_joint_positions) > 0.5
+            pickup_candidate = bool(
+                cube_lift >= PICKUP_LIFT_METERS
+                and in_gripper_contact
+                and gripper_closed
+            )
+            if pickup_candidate:
+                if pickup_hold_started is None:
+                    pickup_hold_started = now
+                pickup_hold_seconds = now - pickup_hold_started
+                pickup_success = pickup_hold_seconds >= PICKUP_HOLD_SECONDS
+            else:
+                pickup_hold_started = None
+                if not pickup_success:
+                    pickup_hold_seconds = 0.0
+
             safe_hold = chunk is None
             logger.scalar("decision/observation_sequence", observation_sequence)
             logger.scalar("decision/observation_time_seconds", now - started)
@@ -572,14 +791,28 @@ def openpi_franka_mk8s_live(
             logger.scalar("decision/safe_hold", int(safe_hold))
             logger.scalar("decision/reconnects", client.reconnects)
             logger.scalar("decision/safe_targets_applied", applied)
-            logger.scalar("decision/gripper_saturations", gripper_saturations)
             logger.scalar(
-                "decision/rejected_actions", sum(rejected_actions.values())
+                "decision/raw_gripper_range_mismatches",
+                raw_gripper_range_mismatches,
             )
+            logger.scalar("decision/rejected_actions", sum(rejected_actions.values()))
             logger.scalar(
-                "decision/joint_limit_saturations", joint_limit_saturations
+                "decision/raw_joint_limit_mismatches",
+                raw_joint_limit_mismatches,
             )
-            logger.scalar("decision/joint_step_saturations", joint_step_saturations)
+            logger.scalar("decision/joint_limit_projections", joint_limit_projections)
+            logger.scalar("decision/joint_step_projections", joint_step_projections)
+            logger.scalar("grasp/end_effector_cube_distance_m", ee_distance)
+            logger.scalar(
+                "grasp/end_effector_cube_approach_m",
+                max(0.0, initial_ee_distance - minimum_ee_distance),
+            )
+            logger.scalar("grasp/gripper_contact_force_n", contact_force)
+            logger.scalar("grasp/gripper_contact", int(in_gripper_contact))
+            logger.scalar("grasp/gripper_closed", int(gripper_closed))
+            logger.scalar("grasp/cube_lift_m", cube_lift)
+            logger.scalar("grasp/pickup_hold_seconds", pickup_hold_seconds)
+            logger.scalar("grasp/pickup_success", int(pickup_success))
             logger.scalar(
                 "decision/applied_target_rate_hz",
                 applied / max(now - started, 1e-6),
@@ -587,12 +820,20 @@ def openpi_franka_mk8s_live(
             logger.value(
                 "scene/cube",
                 rr.Boxes3D(
-                    centers=[cube.get_world_pose()[0].tolist()],
-                    sizes=[[0.07, 0.07, 0.07]],
+                    centers=[cube_position.tolist()],
+                    sizes=[[CUBE_SIZE_METERS] * 3],
+                    colors=[[242, 8, 5, 255]],
                 ),
             )
-            joint_positions = np.asarray(robot.get_joint_positions(), dtype=float)
-            for index, value in enumerate(joint_positions[:9]):
+            logger.value(
+                "scene/table",
+                rr.Boxes3D(
+                    centers=[tabletop.get_world_pose()[0].tolist()],
+                    sizes=[[0.9, 0.7, 0.08]],
+                    colors=[[140, 92, 51, 255]],
+                ),
+            )
+            for index, value in enumerate(current_joint_positions[:9]):
                 logger.scalar(f"robot/franka/joint_{index}", float(value))
             link_points = _franka_link_points(world.stage)
             proxy = _franka_proxy_geometry(link_points)
@@ -632,12 +873,26 @@ def openpi_franka_mk8s_live(
         run.add_result("policy_requests", requests)
         run.add_result("policy_round_trips", round_trips)
         run.add_result("safe_targets_applied", applied)
-        run.add_result("gripper_saturations", gripper_saturations)
-        run.add_result("joint_limit_saturations", joint_limit_saturations)
-        run.add_result("joint_step_saturations", joint_step_saturations)
+        run.add_result("raw_gripper_range_mismatches", raw_gripper_range_mismatches)
+        run.add_result("raw_joint_limit_mismatches", raw_joint_limit_mismatches)
+        run.add_result("joint_limit_projections", joint_limit_projections)
+        run.add_result("joint_step_projections", joint_step_projections)
         run.add_result("reconnects", client.reconnects)
         run.add_result("rejected_actions", dict(sorted(rejected_actions.items())))
         run.add_result("transport_failures", dict(sorted(transport_failures.items())))
+        run.add_result("camera_quality_schema", 2)
+        run.add_result("camera_rejected_pairs", camera_rejected_pairs)
+        run.add_result("camera_validated_requests", camera_validated_requests)
+        run.add_result("camera_pair_id", camera_pair_id)
+        run.add_result("request_camera_pair_id", request_camera_pair_id)
+        run.add_result("round_trip_camera_pair_id", round_trip_camera_pair_id)
+        run.add_result("task_label", TASK_LABEL)
+        run.add_result("minimum_end_effector_cube_distance_m", minimum_ee_distance)
+        run.add_result("maximum_cube_lift_m", maximum_cube_lift)
+        run.add_result("gripper_contact_samples", gripper_contact_samples)
+        run.add_result("maximum_gripper_contact_force_n", maximum_gripper_contact_force)
+        run.add_result("pickup_hold_seconds", pickup_hold_seconds)
+        run.add_result("pickup_success", pickup_success)
         if latencies_ms:
             percentiles = np.percentile(latencies_ms, [50, 95, 99])
             run.add_result("latency_p50_ms", float(percentiles[0]))
