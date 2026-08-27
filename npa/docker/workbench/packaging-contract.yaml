@@ -375,6 +375,11 @@ images:
     dockerfile: isaac-lab/Dockerfile
     isaac_runtime_fetch: true
     tier: interactive
+    notes: >-
+      Bakes OSS dependencies only and uses Debian FFmpeg at runtime. The image
+      removes imageio-ffmpeg's wheel-bundled static executable in the same layer
+      that installs the Python environment. Isaac Sim/Lab and task assets remain
+      cryptographically verified runtime fetches after EULA preflight.
     redistribution: public
   leisaac:
     dockerfile: leisaac/Dockerfile
@@ -456,9 +461,12 @@ images:
     dockerfile: rerun-viewer/Dockerfile
     tier: job
     ports: [9090]
+    final_user: ubuntu
     notes: >-
-      Command-passthrough entrypoint supports SkyPilot Kubernetes setup as the
-      non-root ubuntu user; an empty argv starts the interactive Rerun server.
+      Purpose-built standard-workflow Stage 14 image with exact NPA source,
+      resolver-closed Rerun/MCAP dependencies, and SkyPilot Kubernetes bootstrap
+      prerequisites. Its command-passthrough entrypoint preserves orchestrator
+      argv, while an empty argv starts the interactive Rerun server.
     passwordless_root_exemption: >-
       SkyPilot's Kubernetes bootstrap installs and starts its in-pod SSH runtime
       as the non-root ubuntu user. The image deletes all build-time SSH host keys,

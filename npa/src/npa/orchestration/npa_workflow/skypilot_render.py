@@ -1504,6 +1504,7 @@ def render_setup_for_tool(
     *,
     config: Mapping[str, Any],
     options: SkypilotRenderOptions,
+    command: Sequence[str] = (),
 ) -> str:
     """Return a SkyPilot ``setup:`` block for a toolRef."""
 
@@ -1542,7 +1543,19 @@ def render_setup_for_tool(
         )
     require_baked = str(config.get("require_baked_npa") or "").strip().lower()
     if require_baked in {"1", "true", "yes", "on"}:
-        baked_import = str(config.get("baked_npa_import") or "npa.cli.main").strip()
+        probe_module = "npa.cli.main"
+        if (
+            not tool_ref
+            and len(command) >= 3
+            and str(command[0]).rsplit("/", 1)[-1].startswith("python")
+            and command[1] == "-m"
+            and re.fullmatch(r"npa(?:\.[A-Za-z_][A-Za-z0-9_]*)+", command[2])
+        ):
+            # Raw module stages never invoke the generated ``npa`` CLI shim.
+            # Probe the exact module they execute so a purpose-built image can
+            # remain dependency-minimal without passing setup on a broken stage.
+            probe_module = command[2]
+        baked_import = str(config.get("baked_npa_import") or probe_module).strip()
         if not re.fullmatch(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*", baked_import):
             raise NpaWorkflowError(
                 "config.baked_npa_import must be a dotted Python module name"
@@ -1571,8 +1584,8 @@ def render_setup_for_tool(
             "import os\n"
             # Validate the actual application module declared by the workflow.
             # Narrow stage images need not carry the full, unrelated CLI
-            # dependency closure. The default preserves the historical CLI
-            # contract for specs that do not declare a narrower entrypoint.
+            # dependency closure. Raw module stages default to their executed
+            # module; other stages preserve the historical CLI contract.
             f"importlib.import_module({baked_import!r})\n"
             "actual = os.environ.get('NPA_IMAGE_SOURCE_SHA', '').strip().lower()\n"
             "expected = os.environ.get('NPA_SIM2REAL_SOURCE_SHA', '').strip().lower()\n"
@@ -1991,6 +2004,7 @@ def build_skypilot_task_doc(
         str(scheduler_task.get("tool_ref") or ""),
         config=spec.config,
         options=options,
+        command=command,
     )
     if setup.strip():
         # setup is where a stage pre-fetches weights (the self-hosted VLM backend
