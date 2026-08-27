@@ -292,6 +292,7 @@ def test_rebuilt_cosmos3_serving_and_sonic_mujoco_are_gpu_accepted() -> None:
         assert is_publicly_redistributable(tool), tool
     assert UNVALIDATED_PUBLICATION_TOOLS == frozenset()
     assert set(images.GPU_ACCEPTED_PUBLIC_IMAGE_DIGESTS) == {
+        "cosmos3-ray-serve",
         "cosmos3-serving",
         "sonic-mujoco",
     }
@@ -324,6 +325,7 @@ def test_public_set_includes_the_oss_tools() -> None:
         "sonic",
         "groot",
         "cosmos3-serving",
+        "cosmos3-ray-serve",
         "sonic-mujoco",
     ):
         assert tool in public, tool
@@ -382,9 +384,15 @@ def test_publish_plan_promotes_dev_sha_to_release_tag() -> None:
     assert plan
     accepted_shas = {
         tool: images.accepted_publication_development_sha(tool)
-        for tool in ("ltx2", "wan2-2", "cosmos3-serving", "sonic-mujoco")
+        for tool in (
+            "ltx2",
+            "wan2-2",
+            "cosmos3-serving",
+            "cosmos3-ray-serve",
+            "sonic-mujoco",
+        )
     }
-    assert len(set(accepted_shas.values())) == 4
+    assert len(set(accepted_shas.values())) == 5
     for item in plan:
         source_image = item.source_ref.rsplit("/", 1)[-1]
         target_image = item.target_ref.rsplit("/", 1)[-1]
@@ -402,7 +410,13 @@ def test_accepted_images_use_distinct_exact_development_sources_and_digests() ->
     by_tool = {item.tool: item for item in plan}
     manifest = images.public_release_manifest()["releases"]
 
-    for tool in ("ltx2", "wan2-2", "cosmos3-serving", "sonic-mujoco"):
+    for tool in (
+        "ltx2",
+        "wan2-2",
+        "cosmos3-serving",
+        "cosmos3-ray-serve",
+        "sonic-mujoco",
+    ):
         entry = manifest[tool]
         assert by_tool[tool].source_ref.endswith(
             f":dev-{entry['development_sha']}"
@@ -814,7 +828,7 @@ def test_accepted_release_plan_partitions_published_and_pending_tools() -> None:
         target_registry="ghcr.io/nebius/nebius-physical-ai"
     )
 
-    assert len(plan) == 29
+    assert len(plan) == 30
     assert set(publicly_publishable_tools()) == (
         (set(manifest["releases"]) | set(manifest["publication_pending"]))
         - set(PUBLICATION_QUARANTINE_TOOLS)
