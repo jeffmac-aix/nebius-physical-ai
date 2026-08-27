@@ -199,7 +199,12 @@ def _camera_rgb(camera):
         return None
     if not np.issubdtype(frame.dtype, np.number) or not np.isfinite(frame).all():
         return None
-    rgb = frame[:, :, :3].astype(np.uint8, copy=False)
+    rgb_source = frame[:, :, :3]
+    if np.issubdtype(rgb_source.dtype, np.floating):
+        upper = float(rgb_source.max())
+        if upper <= 1.0:
+            rgb_source = rgb_source * 255.0
+    rgb = np.clip(rgb_source, 0, 255).astype(np.uint8, copy=False)
     luminance = np.mean(rgb, axis=2)
     if (
         float(luminance.mean()) <= MIN_CAMERA_LUMINANCE_MEAN

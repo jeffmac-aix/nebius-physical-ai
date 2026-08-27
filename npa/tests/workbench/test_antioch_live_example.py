@@ -227,6 +227,10 @@ def test_live_camera_rejects_black_or_flat_annotator_warmup(
     np.testing.assert_array_equal(
         scenario._camera_rgb(Camera(rendered)), rendered[:, :, :3]
     )
+    normalized = rendered.astype(np.float32) / 255.0
+    np.testing.assert_array_equal(
+        scenario._camera_rgb(Camera(normalized)), rendered[:, :, :3]
+    )
 
 
 def test_live_protocol_codec_round_trips_arrays_and_rejects_objects() -> None:

@@ -938,6 +938,8 @@ def test_source_uses_only_supported_antioch_live_commands() -> None:
     )
     assert "Rome" not in live
     assert "requests." not in live
+    assert "if cleanup_complete:" in live
+    assert "restartPolicy" in live
     for command in (
         "services_build",
         "services_up",

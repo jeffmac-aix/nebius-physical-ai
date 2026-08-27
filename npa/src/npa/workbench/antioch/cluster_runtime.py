@@ -475,9 +475,12 @@ def run_cluster(args: argparse.Namespace) -> int:
     cli = AntiochCli(cli_path, config_dir=str(private_root / "antioch-config"))
     vendor: VendorStreamProcess | None = None
     stopping = False
+    cleanup_complete = False
 
     def request_stop(_signum: int, _frame: object) -> None:
         nonlocal stopping
+        if cleanup_complete:
+            raise SystemExit(0)
         stopping = True
         stop_file.touch(mode=0o600, exist_ok=True)
         if vendor is not None and vendor.process.poll() is None:
@@ -765,7 +768,13 @@ def run_cluster(args: argparse.Namespace) -> int:
             scenario=args.scenario,
             heartbeat_unix=time.time(),
         )
-    return 0
+        # Keep the terminal evidence owned by this exact PID until the
+        # observer scales the Deployment.  Exiting here lets restartPolicy
+        # Always replace ``stopped`` with a fresh ``starting`` state before
+        # stop_cluster's next poll, wedging safe scale-down.
+        cleanup_complete = True
+        while True:
+            time.sleep(60)
 
 
 def probe(
