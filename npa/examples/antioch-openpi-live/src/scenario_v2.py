@@ -44,7 +44,6 @@ PICKUP_HOLD_SECONDS = 1.0
 GRIPPER_CONTACT_FORCE_NEWTONS = 0.1
 MIN_CAMERA_LUMINANCE_MEAN = 5.0
 MIN_CAMERA_LUMINANCE_VARIANCE = 25.0
-MIN_CAMERA_DYNAMIC_RANGE = 32.0
 MIN_CAMERA_PAIR_DIFFERENCE = 8.0
 MIN_EXTERIOR_RED_CUBE_PIXELS = 20
 EXTERIOR_CAMERA_PATH = "/World/PolicyExterior"
@@ -500,7 +499,7 @@ def _camera_frame(camera, *, view: str) -> CameraFrame:
     )
     if luminance_mean <= MIN_CAMERA_LUMINANCE_MEAN:
         return CameraFrame(
-            None,
+            rgb,
             "blank",
             luminance_mean,
             luminance_variance,
@@ -509,17 +508,8 @@ def _camera_frame(camera, *, view: str) -> CameraFrame:
         )
     if luminance_variance <= MIN_CAMERA_LUMINANCE_VARIANCE:
         return CameraFrame(
-            None,
+            rgb,
             "flat",
-            luminance_mean,
-            luminance_variance,
-            dynamic_range,
-            result.red_cube_pixels,
-        )
-    if dynamic_range <= MIN_CAMERA_DYNAMIC_RANGE:
-        return CameraFrame(
-            None,
-            "low_dynamic_range",
             luminance_mean,
             luminance_variance,
             dynamic_range,
@@ -527,7 +517,7 @@ def _camera_frame(camera, *, view: str) -> CameraFrame:
         )
     if view == "exterior" and result.red_cube_pixels < MIN_EXTERIOR_RED_CUBE_PIXELS:
         return CameraFrame(
-            None,
+            rgb,
             "cube_not_visible",
             luminance_mean,
             luminance_variance,
@@ -552,22 +542,38 @@ def _validate_camera_pair(
 
     exterior_frame = _camera_frame(exterior, view="exterior")
     wrist_frame = _camera_frame(wrist, view="wrist")
+    difference = 0.0
+    if exterior_frame.rgb is not None and wrist_frame.rgb is not None:
+        difference = float(
+            np.abs(
+                np.asarray(exterior_frame.rgb, dtype=np.float32)
+                - np.asarray(wrist_frame.rgb, dtype=np.float32)
+            ).mean()
+        )
     if exterior_frame.reason:
-        return CameraPair(False, exterior_frame, wrist_frame, "exterior", exterior_frame.reason)
+        return CameraPair(
+            False,
+            exterior_frame,
+            wrist_frame,
+            "exterior",
+            exterior_frame.reason,
+            difference,
+        )
     if wrist_frame.reason:
-        return CameraPair(False, exterior_frame, wrist_frame, "wrist", wrist_frame.reason)
+        return CameraPair(
+            False,
+            exterior_frame,
+            wrist_frame,
+            "wrist",
+            wrist_frame.reason,
+            difference,
+        )
     if render_sequence <= last_accepted_render_sequence:
         return CameraPair(False, exterior_frame, wrist_frame, "pair", "stale")
     if not exterior_cube_in_frame:
         return CameraPair(False, exterior_frame, wrist_frame, "exterior", "cube_out_of_frame")
     if not wrist_cube_in_frame:
         return CameraPair(False, exterior_frame, wrist_frame, "wrist", "cube_out_of_frame")
-    difference = float(
-        np.abs(
-            np.asarray(exterior_frame.rgb, dtype=np.float32)
-            - np.asarray(wrist_frame.rgb, dtype=np.float32)
-        ).mean()
-    )
     if difference < MIN_CAMERA_PAIR_DIFFERENCE:
         return CameraPair(
             False,
@@ -606,6 +612,78 @@ def _camera_blueprint(rrb):
             column_shares=[1.0, 1.0],
         ),
         auto_layout=False,
+    )
+
+
+def _log_camera_pair_for_rerun(logger, pair: CameraPair) -> tuple[str, ...]:
+    """Publish structurally valid pixels even when policy quality rejects them."""
+
+    logged: list[str] = []
+    for view, frame in (("exterior", pair.exterior), ("wrist", pair.wrist)):
+        if frame.rgb is None:
+            continue
+        logger.image(f"camera/{view}", frame.rgb)
+        logger.scalar(f"camera/{view}/luminance_mean", frame.luminance_mean)
+        logger.scalar(f"camera/{view}/luminance_variance", frame.luminance_variance)
+        logger.scalar(f"camera/{view}/dynamic_range", frame.dynamic_range)
+        if view == "exterior":
+            logger.scalar(
+                "camera/exterior/red_cube_pixels",
+                frame.red_cube_pixels,
+            )
+        logged.append(view)
+    if logged:
+        logger.scalar("camera/pair_mean_difference", pair.mean_difference)
+        logger.scalar("camera/policy_quality_accepted", int(pair.accepted))
+    return tuple(logged)
+
+
+def _camera_rejection_metrics_line(
+    *,
+    elapsed_seconds: float,
+    frames: int,
+    requests: int,
+    round_trips: int,
+    applied: int,
+    reconnects: int,
+    camera_rejected_pairs: int,
+    camera_validated_requests: int,
+    camera_pair_id: int,
+    request_camera_pair_id: int,
+    round_trip_camera_pair_id: int,
+    render_sequence: int,
+    request_render_sequence: int,
+    round_trip_render_sequence: int,
+    exterior_cube_in_frame: bool,
+    wrist_cube_in_frame: bool,
+    pair: CameraPair,
+) -> str:
+    """Expose current rejected-frame evidence before any policy round trip."""
+
+    return (
+        "NPA_OPENPI_METRICS "
+        f"elapsed_seconds={elapsed_seconds:.3f} "
+        f"frames={frames} requests={requests} round_trips={round_trips} "
+        f"applied={applied} reconnects={reconnects} "
+        "camera_quality_schema=3 "
+        f"camera_rejected_pairs={camera_rejected_pairs} "
+        f"camera_validated_requests={camera_validated_requests} "
+        f"camera_pair_id={camera_pair_id} "
+        f"request_camera_pair_id={request_camera_pair_id} "
+        f"round_trip_camera_pair_id={round_trip_camera_pair_id} "
+        f"camera_render_sequence={render_sequence} "
+        f"request_render_sequence={request_render_sequence} "
+        f"round_trip_render_sequence={round_trip_render_sequence} "
+        f"camera_pair_difference_current={pair.mean_difference:.3f} "
+        f"camera_exterior_red_cube_pixels_current={pair.exterior.red_cube_pixels} "
+        f"camera_exterior_cube_in_frame_current={int(exterior_cube_in_frame)} "
+        f"camera_wrist_cube_in_frame_current={int(wrist_cube_in_frame)} "
+        f"camera_exterior_luminance_mean_current={pair.exterior.luminance_mean:.3f} "
+        f"camera_exterior_luminance_variance_current={pair.exterior.luminance_variance:.3f} "
+        f"camera_exterior_dynamic_range_current={pair.exterior.dynamic_range:.3f} "
+        f"camera_wrist_luminance_mean_current={pair.wrist.luminance_mean:.3f} "
+        f"camera_wrist_luminance_variance_current={pair.wrist.luminance_variance:.3f} "
+        f"camera_wrist_dynamic_range_current={pair.wrist.dynamic_range:.3f}"
     )
 
 
@@ -1043,6 +1121,7 @@ def openpi_franka_mk8s_live_v2(
                 current_wrist_cube_in_frame = int(wrist_cube_in_frame)
                 current_exterior_red_cube_pixels = pair.exterior.red_cube_pixels
                 current_camera_pair_difference = pair.mean_difference
+                _log_camera_pair_for_rerun(logger, pair)
                 if not pair.accepted:
                     camera_rejected_pairs += 1
                     camera_rejections[f"{pair.rejected_view}_{pair.reason}"] += 1
@@ -1057,6 +1136,28 @@ def openpi_franka_mk8s_live_v2(
                         f"render_sequence={render_sequence} "
                         f"exterior_red_cube_pixels={pair.exterior.red_cube_pixels} "
                         f"pair_difference={pair.mean_difference:.3f}",
+                        flush=True,
+                    )
+                    print(
+                        _camera_rejection_metrics_line(
+                            elapsed_seconds=now - started,
+                            frames=observation_sequence,
+                            requests=requests,
+                            round_trips=round_trips,
+                            applied=applied,
+                            reconnects=client.reconnects,
+                            camera_rejected_pairs=camera_rejected_pairs,
+                            camera_validated_requests=camera_validated_requests,
+                            camera_pair_id=camera_pair_id,
+                            request_camera_pair_id=request_camera_pair_id,
+                            round_trip_camera_pair_id=round_trip_camera_pair_id,
+                            render_sequence=render_sequence,
+                            request_render_sequence=request_render_sequence,
+                            round_trip_render_sequence=round_trip_render_sequence,
+                            exterior_cube_in_frame=exterior_cube_in_frame,
+                            wrist_cube_in_frame=wrist_cube_in_frame,
+                            pair=pair,
+                        ),
                         flush=True,
                     )
                 else:
@@ -1102,45 +1203,14 @@ def openpi_franka_mk8s_live_v2(
                         flush=True,
                     )
                     logger.value("task/label", rr.TextLog(TASK_LABEL))
-                    logger.image("camera/exterior", exterior_rgb)
-                    logger.image("camera/wrist", wrist_rgb)
-                    logger.scalar(
-                        "camera/exterior/luminance_mean",
-                        pair.exterior.luminance_mean,
-                    )
-                    logger.scalar(
-                        "camera/exterior/luminance_variance",
-                        pair.exterior.luminance_variance,
-                    )
-                    logger.scalar(
-                        "camera/exterior/dynamic_range",
-                        pair.exterior.dynamic_range,
-                    )
-                    logger.scalar(
-                        "camera/exterior/red_cube_pixels",
-                        pair.exterior.red_cube_pixels,
-                    )
                     logger.scalar(
                         "camera/exterior/cube_in_frame",
                         int(exterior_cube_in_frame),
                     )
                     logger.scalar(
-                        "camera/wrist/luminance_mean",
-                        pair.wrist.luminance_mean,
-                    )
-                    logger.scalar(
-                        "camera/wrist/luminance_variance",
-                        pair.wrist.luminance_variance,
-                    )
-                    logger.scalar(
-                        "camera/wrist/dynamic_range",
-                        pair.wrist.dynamic_range,
-                    )
-                    logger.scalar(
                         "camera/wrist/cube_in_frame",
                         int(wrist_cube_in_frame),
                     )
-                    logger.scalar("camera/pair_mean_difference", pair.mean_difference)
                     logger.scalar("camera/pair_id", request_camera_pair_id)
                     logger.scalar("camera/render_sequence", request_render_sequence)
                     pending_observation = observation_sequence

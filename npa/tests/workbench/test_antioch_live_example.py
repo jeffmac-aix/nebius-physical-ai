@@ -112,8 +112,8 @@ def test_live_scenario_is_real_bounded_and_fail_closed() -> None:
         'CLIENT_ROOT = Path("/tmp/npa-live-client-current")',
         'return "wss://127.0.0.1:8444", token, context',
         '"X-NPA-Relay-Role": "simulation"',
-        'logger.image("camera/exterior"',
-        'logger.image("camera/wrist"',
+        "def _log_camera_pair_for_rerun(",
+        'logger.image(f"camera/{view}"',
         'logger.scalar("decision/observation_sequence"',
         'logger.scalar("decision/policy_requests"',
         'logger.scalar("decision/policy_in_flight"',
@@ -242,6 +242,10 @@ def test_live_camera_rejects_black_or_flat_annotator_warmup(
     assert scenario._camera_frame(
         Camera(np.full((224, 224, 4), 64, dtype=np.uint8)), view="wrist"
     ).reason == "flat"
+    flat = scenario._camera_frame(
+        Camera(np.full((224, 224, 4), 64, dtype=np.uint8)), view="wrist"
+    )
+    assert flat.rgb is not None
     rendered = np.zeros((224, 224, 4), dtype=np.uint8)
     rendered[:, 112:, :3] = 255
     rendered[:, :, 3] = 255
@@ -254,6 +258,92 @@ def test_live_camera_rejects_black_or_flat_annotator_warmup(
         scenario._camera_frame(Camera(normalized), view="wrist").rgb,
         rendered[:, :, :3],
     )
+
+    low_dynamic = np.full((224, 224, 4), 90, dtype=np.uint8)
+    low_dynamic[:, 112:, :3] = 110
+    low_dynamic[100:106, 100:106, :3] = [240, 5, 4]
+    low_dynamic[..., 3] = 255
+    classified = scenario._camera_frame(Camera(low_dynamic), view="exterior")
+    assert classified.dynamic_range < 32.0
+    assert classified.luminance_variance > scenario.MIN_CAMERA_LUMINANCE_VARIANCE
+    assert classified.red_cube_pixels >= scenario.MIN_EXTERIOR_RED_CUBE_PIXELS
+    assert classified.reason == ""
+
+
+def test_live_rejected_camera_pixels_are_logged_and_metrics_are_not_blank(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scenario = _load_live_scenario(monkeypatch, "antioch_live_rejected_visual_test")
+
+    class Camera:
+        def __init__(self, frame: np.ndarray) -> None:
+            self.frame = frame
+
+        def get_rgba(self) -> np.ndarray:
+            return self.frame
+
+    exterior = np.full((224, 224, 4), 64, dtype=np.uint8)
+    exterior[..., 3] = 255
+    rows, columns = np.indices((224, 224))
+    wrist = np.zeros((224, 224, 4), dtype=np.uint8)
+    wrist[..., :3] = ((rows * 2 + columns * 3) % 255)[..., None]
+    wrist[..., 3] = 255
+    pair = scenario._validate_camera_pair(
+        Camera(exterior),
+        Camera(wrist),
+        render_sequence=17,
+        last_accepted_render_sequence=0,
+        exterior_cube_in_frame=True,
+        wrist_cube_in_frame=True,
+    )
+    assert pair.accepted is False
+    assert pair.reason == "flat"
+    assert pair.exterior.rgb is not None
+    assert pair.wrist.rgb is not None
+
+    class Logger:
+        images: list[tuple[str, np.ndarray]] = []
+        scalars: list[tuple[str, float]] = []
+
+        def image(self, path: str, value: np.ndarray) -> None:
+            self.images.append((path, value))
+
+        def scalar(self, path: str, value: float) -> None:
+            self.scalars.append((path, value))
+
+    logger = Logger()
+    assert scenario._log_camera_pair_for_rerun(logger, pair) == (
+        "exterior",
+        "wrist",
+    )
+    assert [path for path, _value in logger.images] == [
+        "camera/exterior",
+        "camera/wrist",
+    ]
+    metrics = scenario._camera_rejection_metrics_line(
+        elapsed_seconds=2.5,
+        frames=0,
+        requests=0,
+        round_trips=0,
+        applied=0,
+        reconnects=1,
+        camera_rejected_pairs=3,
+        camera_validated_requests=0,
+        camera_pair_id=0,
+        request_camera_pair_id=0,
+        round_trip_camera_pair_id=0,
+        render_sequence=17,
+        request_render_sequence=0,
+        round_trip_render_sequence=0,
+        exterior_cube_in_frame=True,
+        wrist_cube_in_frame=True,
+        pair=pair,
+    )
+    assert metrics.startswith("NPA_OPENPI_METRICS ")
+    assert "frames=0 requests=0 round_trips=0" in metrics
+    assert "camera_rejected_pairs=3" in metrics
+    assert "camera_render_sequence=17" in metrics
+    assert "camera_exterior_dynamic_range_current=" in metrics
 
 
 def test_live_camera_optics_and_stock_franka_mount_are_explicit_and_rigid(
