@@ -28,6 +28,7 @@ from npa.orchestration.npa_workflow.runtime import (
     WaveAttempt,
     run_workflow_runtime,
     s3_trigger_waiter,
+    wave_key,
 )
 from npa.orchestration.npa_workflow.skypilot_render import SkypilotRenderOptions
 
@@ -1376,6 +1377,52 @@ def test_long_run_id_preserves_retry_attempt_suffix(tmp_path: Path) -> None:
     assert name.endswith("-a3")
 
 
+def test_parallel_job_name_fingerprints_exact_batch_membership(tmp_path: Path) -> None:
+    spec = load_spec(_write_spec(tmp_path, FANOUT_SPEC))
+    executor = _executor(spec, run_id="rt-batch-name")
+    steps = list(build_plan(spec, run_id="rt-batch-name").steps)[:3]
+    executor._sequence = 1
+
+    first_key = wave_key(steps[:2], group="shards", sequence_number=1)
+    full_key = wave_key(steps, group="shards", sequence_number=1)
+    first = executor._job_name(
+        steps[:2],
+        group="shards",
+        attempt=WaveAttempt(
+            key=first_key,
+            states=[step.state for step in steps[:2]],
+            kind="parallel",
+            attempt=1,
+        ),
+    )
+    full = executor._job_name(
+        steps,
+        group="shards",
+        attempt=WaveAttempt(
+            key=full_key,
+            states=[step.state for step in steps],
+            kind="parallel",
+            attempt=1,
+        ),
+    )
+    retried = executor._job_name(
+        steps[:2],
+        group="shards",
+        attempt=WaveAttempt(
+            key=first_key,
+            states=[step.state for step in steps[:2]],
+            kind="parallel",
+            attempt=2,
+        ),
+    )
+
+    assert first != full
+    assert "-m" in first
+    assert retried.startswith(first)
+    assert retried.endswith("-a2")
+    assert max(map(len, (first, full, retried))) <= 60
+
+
 def _canonical_sim2real_1x1():
     root = Path(__file__).resolve().parents[4]
     spec = load_spec(
@@ -1839,6 +1886,69 @@ def test_resume_attaches_to_an_in_flight_job_instead_of_resubmitting(
     assert [call["tasks"] for call in second_submitter.calls] == [["shard-c"], ["join"]]
 
 
+def test_resume_cancels_phantom_pending_record_before_new_attempt(
+    tmp_path: Path,
+) -> None:
+    from npa.orchestration.skypilot.workflow import ManagedJobEvidence
+
+    spec = load_spec(_write_spec(tmp_path, FANOUT_SPEC))
+    store = MemoryStore()
+    state = RuntimeRunState(workflow=spec.name, run_id="rt-phantom")
+    state.record_wave(
+        {
+            "key": "001|shards|shards:shard-a:-,shards:shard-b:-",
+            "status": "running",
+            "job_id": "125",
+            "job_name": "rt-phantom-01-shards",
+            "attempt": 1,
+            "sky_status": "PENDING",
+            "logical_launch_id": "logical-phantom",
+            "launch_sequence": 1,
+            "recovery_decision": "adopt_after_uncertain_launch",
+        }
+    )
+    store.write_runtime_state(state)
+    cancellations: list[dict[str, Any]] = []
+    submitter = FakeSubmitter()
+    options = RuntimeOptions(poll_seconds=0, max_wait_seconds=60, resume=True)
+    executor = _executor(
+        spec,
+        run_id="rt-phantom",
+        submitter=submitter,
+        status_fn=FakeStatus(["CANCELLED"]),
+        options=options,
+        store=store,
+        cancels=cancellations,
+        reconcile_fn=lambda *_args, **_kwargs: ManagedJobEvidence(
+            "found",
+            job_id="125",
+            status="PENDING",
+            workload_observable=False,
+        ),
+    )
+
+    report = run_workflow_runtime(
+        spec, run_id="rt-phantom", executor=executor, options=options
+    )
+
+    assert report.status == "succeeded"
+    assert cancellations == [
+        {"job_id": "125", "run_id": "rt-phantom-01-shards", "cluster": "rt-phantom-01-shards"}
+    ]
+    assert submitter.calls[0]["job_name"].endswith("-a2")
+    attempts = [
+        item
+        for item in store.read_runtime_state().waves
+        if item["key"] == "001|shards|shards:shard-a:-,shards:shard-b:-"
+    ]
+    assert [item["attempt"] for item in attempts[:2]] == [1, 2]
+    assert (
+        attempts[0]["recovery_decision"]
+        == "phantom_record_cancelled_verified_relaunch"
+    )
+    assert attempts[0]["cancellation"]["state"] == "verified"
+
+
 def test_resume_preserves_an_in_flight_job_that_actually_failed(tmp_path: Path) -> None:
     spec = load_spec(_write_spec(tmp_path, FANOUT_SPEC))
     store = MemoryStore()
@@ -1870,6 +1980,58 @@ def test_resume_preserves_an_in_flight_job_that_actually_failed(tmp_path: Path) 
 
     assert report.status == "failed"
     assert submitter.calls == []
+
+
+def test_resume_explicitly_retries_an_in_flight_job_proven_terminal(
+    tmp_path: Path,
+) -> None:
+    spec = load_spec(_write_spec(tmp_path, FANOUT_SPEC))
+    store = MemoryStore()
+    state = RuntimeRunState(workflow=spec.name, run_id="rt-adopt-failed-retry")
+    state.record_wave(
+        {
+            "key": "001|shards|shards:shard-a:-,shards:shard-b:-",
+            "status": "running",
+            "job_id": "77",
+            "job_name": "rt-adopt-failed-retry-01-shards",
+            "attempt": 1,
+        }
+    )
+    store.write_runtime_state(state)
+
+    options = RuntimeOptions(
+        poll_seconds=0,
+        max_wait_seconds=60,
+        resume=True,
+        retries=1,
+        retry_backoff_seconds=0,
+    )
+    submitter = FakeSubmitter()
+    executor = _executor(
+        spec,
+        run_id="rt-adopt-failed-retry",
+        submitter=submitter,
+        status_fn=FakeStatus(["FAILED"]),
+        options=options,
+        store=store,
+    )
+    report = run_workflow_runtime(
+        spec,
+        run_id="rt-adopt-failed-retry",
+        executor=executor,
+        options=options,
+    )
+
+    assert report.status == "succeeded"
+    assert [call["tasks"] for call in submitter.calls] == [
+        ["shard-a", "shard-b"],
+        ["shard-c"],
+        ["join"],
+    ]
+    assert submitter.calls[0]["job_name"].endswith("-a2")
+    retried = report.waves[0]
+    assert retried["attempt"] == 2
+    assert retried["status"] == "succeeded"
 
 
 def test_resume_relaunches_only_authoritatively_absent_transient_wave(

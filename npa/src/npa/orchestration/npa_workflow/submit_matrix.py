@@ -105,6 +105,21 @@ SUBMIT_LIVE_MATRIX: tuple[SubmitLiveCase, ...] = (
         requires_token_factory=True,
     ),
     SubmitLiveCase(
+        "token-factory-batch-generate.yaml",
+        "cpu",
+        secret_envs=(
+            "NEBIUS_TOKEN_FACTORY_KEY",
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+        ),
+        requires_token_factory=True,
+        notes=(
+            "Batch inference is a separate model entitlement from real-time chat, "
+            "and the stage waits out a completion window, so this case takes far "
+            "longer than the generate case it mirrors."
+        ),
+    ),
+    SubmitLiveCase(
         "token-factory-cosmos-reason.yaml",
         "cpu",
         secret_envs=(
@@ -248,6 +263,23 @@ SUBMIT_LIVE_MATRIX: tuple[SubmitLiveCase, ...] = (
             "Runs the real Cosmos 3 omni-model generate path in the npa-cosmos3 image. "
             "The image contains the framework but no weights. Cosmos3-Nano is public; "
             "HF_TOKEN is required here only because this workflow keeps gated guardrails on."
+        ),
+    ),
+    SubmitLiveCase(
+        "cosmos3-ray-batch.yaml",
+        "cpu",
+        secret_envs=(
+            "NPA_COSMOS3_RAY_TOKEN",
+            "HF_TOKEN",
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+        ),
+        image_tool="cosmos3-ray-serve",
+        notes=(
+            "Submits a real prepared batch to a separately deployed persistent "
+            "Cosmos3-Nano native Ray Serve service and publishes its structured "
+            "outputs and media through S3. The dedicated B200/RTX validation "
+            "starts the model-backed service before this client path runs."
         ),
     ),
     SubmitLiveCase(
