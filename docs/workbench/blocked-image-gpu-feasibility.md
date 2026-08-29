@@ -172,10 +172,17 @@ only `isaac-render` to RT-core GPUs. The published Kubernetes variant is already
 built for `sm80,sm90,sm100,sm103,sm120` and measures `2.9.0+cu130` with `sm_100`
 and `sm_120`.
 
-What blocks a headless datacenter cell is image resolution plus an unrelated bug.
-`sonic_image_manifest.json`'s `gpu_selection`, `sonic_image_variant_for_gpu()`,
-and `DEFAULT_GPU_TARGET` admit only RTX PRO 6000, so a datacenter target cannot
-resolve an image today. More importantly, SONIC's real fine-tune does not
+Image resolution used to block it in the worst possible way. `gpu_selection` maps
+a B200 target to the MuJoCo variant, and `sonic_image_variant_for_gpu()` keyed on
+the GPU alone, so asking for a fine-tune on B200 quietly resolved the *evaluation*
+runtime — a wrong image rather than a missing one. That is fixed here: every
+variant declares the workloads it serves, resolution intersects the GPU rule with
+the requested workload, and a fine-tune on a datacenter target now fails with a
+message naming the capability gap instead of substituting a different image.
+`DEFAULT_GPU_TARGET` stays on RTX PRO 6000, because no published variant can
+fine-tune on a datacenter part yet.
+
+What still blocks the cell is an unrelated bug. SONIC's real fine-tune does not
 currently pass anywhere: on RTX PRO 6000, cold and warm, it reaches Isaac
 environment construction and then fails in Isaac's runtime-fetched URDF
 extension while opening the temporary G1 pelvis USD layer, before a learning step
@@ -199,11 +206,24 @@ move.
 
 Rendering cannot. `workbench.isaac_lab.capture_frames` launches with
 `enable_cameras=True`, and the Sim2Real Isaac backend rasterizes; both need RT
-cores that datacenter Blackwell does not have. `ISAAC_LAB_RT_CORE_PLATFORMS` and
-the Sim2Real GPU fallback already encode this by admitting only L40S and
-RTX PRO 6000, and that is correct rather than conservative.
+cores that datacenter Blackwell does not have. The Sim2Real GPU fallback encodes
+this by admitting only L40S and RTX PRO 6000, and that is correct rather than
+conservative.
 
-Headless state-based RL training is a vendor and driver question. The manifest
+The CLI used to encode more than that. A single RT-core gate covered every Isaac
+Lab submit, so headless state-based training was refused on H100/H200/B200 even
+though nothing in it rasterizes. This change splits the gate by workload the way
+SONIC's routing already did: headless training may target a datacenter part,
+rendering may not, and a task id that declares camera or rendered observations
+(`Isaac-Cartpole-RGB-Camera-Direct-v0` and friends) is classified as rendering
+rather than trusted to a `--headless` argument. That last rule matters because
+NVIDIA's own B200 reports show the camera path deadlocking when the PhysX GPU
+pipeline falls back to software while the render pipeline still waits on
+GPU-backed physics. `npa workbench isaac-lab deploy` still requires RT cores,
+because a deployed workbench is the render surface.
+
+Whether headless RL then *works* on a datacenter part is still a vendor and
+driver question. The manifest
 attributes the block to the x86_64 CUDA 12.8 pin, and the measurements above
 show cu128 wheels are not the constraint — they carry `sm_100` and `sm_120`.
 NVIDIA's own forum thread records headless Isaac Lab 2.3 running on a B200 DGX
@@ -251,6 +271,11 @@ the real Material Agent, Physics Agent, OVRTX, and Validation Agent path on an
 L40S node. The hosted-VLM portion of the workflow is unaffected by GPU choice.
 
 ## What this evaluation does not change
+
+Two routing fixes land with this evaluation, because they were defects rather
+than judgments: SONIC image resolution no longer substitutes a variant with a
+different capability, and Isaac Lab no longer refuses headless training on a
+datacenter GPU. Neither claims a new GPU result.
 
 No cell moves on the strength of this evaluation, and no verdict in
 `npa/docker/workbench/blackwell-dc-images.json` changes. Wheel-arch measurement
