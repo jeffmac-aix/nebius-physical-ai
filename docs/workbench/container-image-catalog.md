@@ -42,10 +42,10 @@ The main-branch publishing plan was compared with GHCR without credentials. Its
   `sha256:82069eb74a18a88f77ad3149b6c5ed220c4eed33b1d550c26d361947805e8280`,
   rebuilt from main and full-layer scanned before publication.
 
-An independent anonymous verification then resolved all 26 exact plan tags.
-LTX-2.5 remains excluded because its required GPU validation is not complete;
-`cosmos3-serving` and `sonic-mujoco` remain excluded by the redistribution
-guard.
+An independent anonymous verification then resolved all 26 exact plan tags. At
+that date LTX-2.5 was excluded pending GPU validation, and `cosmos3-serving` and
+`sonic-mujoco` were excluded by the redistribution guard. All three have since
+been published and carry rows below; the plan is 31 tags as of 2026-08-29.
 
 ## 2026-08-22 Content Agents publication
 
@@ -120,16 +120,16 @@ this chart is generated from that table and the publishing plan:
 
 ![Published GHCR images against every Nebius GPU platform](../assets/image-gpu-coverage.svg)
 
-All 30 planned tags resolved anonymously on 2026-08-27, and they split four ways:
+All 31 planned tags resolved anonymously on 2026-08-29, and they split four ways:
 
-- **Fourteen GPU images have no blocked platform**: `npa-alpamayo2-super`,
-  `npa-cosmos3`, `npa-cosmos3-reason`, `npa-detection-training`, `npa-envgen`,
-  `npa-genesis`, `npa-lancedb`, `npa-lerobot`, `npa-lerobot-policy`,
-  `npa-lerobot-vlm-rl`, `npa-loop-eval`, `npa-reference-policy`,
-  `npa-sonic-mujoco`, and `npa-wan2-2`. Their cells still range from a real
-  capability run to toolchain-level support, and the `npa-wan2-2` Blackwell
-  cells carry historical evidence from an earlier candidate rather than the
-  current closure.
+- **Fifteen GPU images have no blocked platform**: `npa-alpamayo2-super`,
+  `npa-cosmos3`, `npa-cosmos3-ray-serve`, `npa-cosmos3-reason`,
+  `npa-detection-training`, `npa-envgen`, `npa-genesis`, `npa-lancedb`,
+  `npa-lerobot`, `npa-lerobot-policy`, `npa-lerobot-vlm-rl`, `npa-loop-eval`,
+  `npa-reference-policy`, `npa-sonic-mujoco`, and `npa-wan2-2`. Their cells
+  still range from a real capability run to toolchain-level support, and the
+  `npa-wan2-2` Blackwell cells carry historical evidence from an earlier
+  candidate rather than the current closure.
 - **Eight are blocked on at least one platform**, for four different reasons.
   Rendering needs RT cores, which only L40S and RTX PRO 6000 have, so
   `npa-content-agents` and `npa-leisaac` are blocked on all four non-RT parts.
@@ -166,9 +166,10 @@ RTX PRO 6000 that can render.
   `CONTAINER_IMAGE_NAMES` and is therefore outside `publicly_publishable_tools()`;
   anonymous resolution of `npa-sim2real-control:0.1.2` was denied during the
   2026-08-14 audit. Eligibility is not evidence of publication.
+
 `npa-cosmos3-serving` and `npa-sonic-mujoco` were listed here until the
 public-only migration. Both are now selected by `publicly_publishable_tools()`,
-both have rows above, and both resolved anonymously in the 2026-08-27 check:
+both have rows above, and both resolved anonymously in the 2026-08-29 check:
 the serving image as the zero-payload `0.2.0-oss` build that no longer carries
 the vLLM-Omni runtime, and the MuJoCo image as the runtime-fetch `0.2.0-runtime`
 build. See [Cosmos3-Super serving](cosmos3-super-serving.md) for the serving
