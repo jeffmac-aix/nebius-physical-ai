@@ -6,6 +6,7 @@ import json
 import re
 import subprocess
 import sys
+import threading
 import time
 import types
 from pathlib import Path
@@ -121,22 +122,25 @@ def test_live_scenario_is_real_bounded_and_fail_closed() -> None:
         "def _resolved_telemetry_entity(",
         "def _log_camera_pair_for_rerun(",
         "logger.image(entity, frame.rgb)",
-        'f"{DECISION_METRICS_ENTITY}/observation_sequence"',
-        'f"{DECISION_METRICS_ENTITY}/policy_requests"',
-        'f"{DECISION_METRICS_ENTITY}/policy_in_flight"',
-        'f"{DECISION_METRICS_ENTITY}/round_trips"',
-        'f"{DECISION_METRICS_ENTITY}/inference_latency_ms"',
-        'f"{DECISION_METRICS_ENTITY}/safe_hold"',
-        'f"{DECISION_METRICS_ENTITY}/reconnects"',
-        'f"{DECISION_METRICS_ENTITY}/safe_targets_applied"',
-        'f"{DECISION_METRICS_ENTITY}/raw_gripper_range_mismatches"',
-        'f"{DECISION_METRICS_ENTITY}/raw_joint_limit_mismatches"',
-        'f"{DECISION_METRICS_ENTITY}/joint_limit_projections"',
-        'f"{DECISION_METRICS_ENTITY}/joint_step_projections"',
-        'f"{GRASP_METRICS_ENTITY}/end_effector_cube_distance_m"',
-        'f"{GRASP_METRICS_ENTITY}/gripper_contact_force_n"',
-        'f"{GRASP_METRICS_ENTITY}/cube_lift_m"',
-        'f"{GRASP_METRICS_ENTITY}/pickup_success"',
+        "LiveTelemetryPublisher(logger)",
+        "LatestOnlyWorker(",
+        "TELEMETRY_DISPLAY_HZ = 5.0",
+        '"observation_sequence", observation_sequence',
+        '"policy_requests", requests',
+        '"policy_in_flight", int(pending is not None)',
+        '"round_trips", round_trips',
+        '"inference_latency_ms", last_latency * 1000.0',
+        '"safe_hold", int(safe_hold)',
+        '"reconnects", client.reconnects',
+        '"safe_targets_applied", applied',
+        '"raw_gripper_range_mismatches",',
+        '"raw_joint_limit_mismatches",',
+        '"joint_limit_projections", joint_limit_projections',
+        '"joint_step_projections", joint_step_projections',
+        '"end_effector_cube_distance_m", ee_distance',
+        '"gripper_contact_force_n", contact_force',
+        '"cube_lift_m", cube_lift',
+        '"pickup_success", int(pickup_success)',
         'f"{FRANKA_SCENE_ENTITY}/base"',
         'f"{FRANKA_SCENE_ENTITY}/links"',
         'f"{FRANKA_SCENE_ENTITY}/joints"',
@@ -160,6 +164,12 @@ def test_live_scenario_is_real_bounded_and_fail_closed() -> None:
         "NPA_OPENPI_REQUEST",
         "NPA_OPENPI_APPLIED",
         "NPA_OPENPI_CAMERA_REJECT",
+        "NPA_OPENPI_IMAGE_LOG_BEGIN",
+        "NPA_OPENPI_IMAGE_LOG_OK",
+        "NPA_OPENPI_DISPLAY_LOG_BEGIN",
+        "NPA_OPENPI_DISPLAY_LOG_OK",
+        "NPA_OPENPI_LOOP_HEARTBEAT",
+        "NPA_OPENPI_POLICY_STALL",
         'ThreadPoolExecutor(max_workers=1, thread_name_prefix="openpi-policy")',
     ):
         assert contract in source
@@ -351,6 +361,290 @@ def test_live_rejected_camera_pixels_are_logged_and_metrics_are_not_blank(
     assert "camera_rejected_pairs=3" in metrics
     assert "camera_render_sequence=17" in metrics
     assert "camera_exterior_dynamic_range_current=" in metrics
+
+
+def test_live_telemetry_is_latest_only_and_control_does_not_wait_for_slow_images(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scenario = _load_live_scenario(monkeypatch, "antioch_live_backpressure_test")
+    image_started = threading.Event()
+    release_images = threading.Event()
+    lock = threading.Lock()
+
+    class Logger:
+        def __init__(self) -> None:
+            self.images: list[tuple[str, int]] = []
+            self.values: list[tuple[str, object]] = []
+
+        def image(self, path: str, value: np.ndarray) -> None:
+            image_started.set()
+            assert release_images.wait(timeout=3.0)
+            with lock:
+                self.images.append((path, int(value[0, 0, 0])))
+
+        def scalar(self, path: str, value: float) -> None:
+            with lock:
+                self.values.append((path, value))
+
+        def value(self, path: str, value: object) -> None:
+            with lock:
+                self.values.append((path, value))
+
+    logger = Logger()
+    publisher = scenario.LiveTelemetryPublisher(logger)
+
+    def pair(sequence: int):  # noqa: ANN202
+        rgb = np.full((224, 224, 3), sequence, dtype=np.uint8)
+        frame = scenario.CameraFrame(rgb, "", 50.0, 100.0, 80.0, 25)
+        return scenario.CameraPair(True, frame, frame, mean_difference=12.0)
+
+    assert publisher.publish_camera_pair(pair(1), 1) == ("exterior", "wrist")
+    assert image_started.wait(timeout=1.0)
+    started = time.monotonic()
+    for sequence in range(2, 64):
+        publisher.publish_camera_pair(pair(sequence), sequence)
+        publisher.publish_display(
+            scenario.DisplayPublication(
+                render_sequence=sequence,
+                numeric_groups=(("decision", (("render_sequence", sequence),)),),
+                values=(),
+            )
+        )
+    assert time.monotonic() - started < 0.5
+    snapshot = publisher.snapshot()
+    assert snapshot["exterior"]["max_pending"] == 1
+    assert snapshot["wrist"]["max_pending"] == 1
+    assert snapshot["exterior"]["dropped"] > 0
+    assert snapshot["wrist"]["dropped"] > 0
+    assert snapshot["display"]["max_pending"] == 1
+
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        with lock:
+            if any(
+                path == "decision"
+                and isinstance(value, dict)
+                and value.get("render_sequence") == 63
+                for path, value in logger.values
+            ):
+                break
+        time.sleep(0.01)
+    else:
+        pytest.fail("display telemetry did not advance while image logging was blocked")
+
+    release_images.set()
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        with lock:
+            latest = dict(logger.images)
+        if latest.get("camera/exterior") == 63 and latest.get("camera/wrist") == 63:
+            break
+        time.sleep(0.01)
+    else:
+        pytest.fail("camera entities did not advance to the newest queued frame")
+
+    assert publisher.close() == {"exterior": True, "wrist": True, "display": True}
+    assert all(
+        not state["alive"] for state in publisher.snapshot().values()
+    )
+
+
+def test_live_display_rate_is_bounded_under_a_faster_physics_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scenario = _load_live_scenario(monkeypatch, "antioch_live_display_rate_test")
+    limiter = scenario.DisplayRateLimiter()
+    admitted = [step / 100.0 for step in range(1000) if limiter.due(step / 100.0)]
+
+    assert 49 <= len(admitted) <= 50
+    assert all(
+        right - left >= (1.0 / scenario.TELEMETRY_DISPLAY_HZ) - 1e-9
+        for left, right in zip(admitted, admitted[1:])
+    )
+
+
+def test_live_display_backpressure_is_bounded_and_does_not_block_cameras(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scenario = _load_live_scenario(monkeypatch, "antioch_live_display_stall_test")
+    display_started = threading.Event()
+    release_display = threading.Event()
+    lock = threading.Lock()
+
+    class Logger:
+        def __init__(self) -> None:
+            self.images: list[str] = []
+            self.display_sequences: list[int] = []
+
+        def image(self, path: str, _value: np.ndarray) -> None:
+            with lock:
+                self.images.append(path)
+
+        def scalar(self, _path: str, _value: float) -> None:
+            pass
+
+        def value(self, path: str, value: object) -> None:
+            if path != "decision" or not isinstance(value, dict):
+                return
+            display_started.set()
+            assert release_display.wait(timeout=3.0)
+            with lock:
+                self.display_sequences.append(int(value["render_sequence"]))
+
+    def publication(sequence: int):  # noqa: ANN202
+        return scenario.DisplayPublication(
+            render_sequence=sequence,
+            numeric_groups=(("decision", (("render_sequence", sequence),)),),
+            values=(),
+        )
+
+    rgb = np.full((224, 224, 3), 17, dtype=np.uint8)
+    frame = scenario.CameraFrame(rgb, "", 50.0, 100.0, 80.0, 25)
+    pair = scenario.CameraPair(True, frame, frame, mean_difference=12.0)
+    logger = Logger()
+    publisher = scenario.LiveTelemetryPublisher(logger)
+    publisher.publish_display(publication(1))
+    assert display_started.wait(timeout=1.0)
+
+    started = time.monotonic()
+    for sequence in range(2, 64):
+        publisher.publish_display(publication(sequence))
+    assert publisher.publish_camera_pair(pair, 64) == ("exterior", "wrist")
+    assert time.monotonic() - started < 0.5
+    snapshot = publisher.snapshot()
+    assert snapshot["display"]["max_pending"] == 1
+    assert snapshot["display"]["dropped"] > 0
+
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        with lock:
+            if set(logger.images) == {"camera/exterior", "camera/wrist"}:
+                break
+        time.sleep(0.01)
+    else:
+        pytest.fail("camera publication did not advance while display logging blocked")
+
+    release_display.set()
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        with lock:
+            if logger.display_sequences and logger.display_sequences[-1] == 63:
+                break
+        time.sleep(0.01)
+    else:
+        pytest.fail("display telemetry did not recover to its newest pending state")
+    assert publisher.close() == {"exterior": True, "wrist": True, "display": True}
+
+
+def test_live_telemetry_recovers_from_image_failure_with_supported_rgb_payload(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    scenario = _load_live_scenario(monkeypatch, "antioch_live_image_failure_test")
+    lock = threading.Lock()
+
+    class Logger:
+        def __init__(self) -> None:
+            self.fail_once = True
+            self.images: list[tuple[str, tuple[int, ...], str, bool]] = []
+
+        def image(self, path: str, value: np.ndarray) -> None:
+            if path == "camera/exterior" and self.fail_once:
+                self.fail_once = False
+                raise RuntimeError("injected image transport failure")
+            with lock:
+                self.images.append(
+                    (path, value.shape, str(value.dtype), value.flags.c_contiguous)
+                )
+
+        def scalar(self, _path: str, _value: float) -> None:
+            pass
+
+        def value(self, _path: str, _value: object) -> None:
+            pass
+
+    noncontiguous_rgba = np.zeros((224, 224, 4), dtype=np.uint8)
+    noncontiguous_rgba[..., :3] = [140, 30, 10]
+    noncontiguous_rgba[..., 3] = 255
+
+    class Camera:
+        def get_rgba(self) -> np.ndarray:
+            return noncontiguous_rgba
+
+    frame = scenario._camera_frame(Camera(), view="wrist")
+    assert frame.rgb is not None and frame.rgb.flags.c_contiguous
+    pair = scenario.CameraPair(True, frame, frame, mean_difference=10.0)
+    logger = Logger()
+    publisher = scenario.LiveTelemetryPublisher(logger)
+    publisher.publish_camera_pair(pair, 1)
+
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        if publisher.snapshot()["exterior"]["failures"] == 1:
+            break
+        time.sleep(0.01)
+    publisher.publish_camera_pair(pair, 2)
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        with lock:
+            paths = [item[0] for item in logger.images]
+        if "camera/exterior" in paths and "camera/wrist" in paths:
+            break
+        time.sleep(0.01)
+    else:
+        pytest.fail("camera publication did not recover after a typed logger failure")
+
+    with lock:
+        assert all(item[1:] == ((224, 224, 3), "uint8", True) for item in logger.images)
+    output = capsys.readouterr().out
+    assert (
+        "NPA_OPENPI_IMAGE_LOG_ERROR view=exterior render_sequence=1 "
+        "phase=logger_image_encode_or_transport error_type=RuntimeError"
+    ) in output
+    assert publisher.close() == {"exterior": True, "wrist": True, "display": True}
+
+
+def test_policy_future_blockage_does_not_suppress_viewer_updates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scenario = _load_live_scenario(monkeypatch, "antioch_live_policy_stall_test")
+    release_policy = threading.Event()
+    values: list[int] = []
+
+    class Logger:
+        def image(self, _path: str, _value: object) -> None:
+            pass
+
+        def scalar(self, _path: str, _value: float) -> None:
+            pass
+
+        def value(self, path: str, value: object) -> None:
+            if path == "decision" and isinstance(value, dict):
+                values.append(int(value["render_sequence"]))
+
+    executor = scenario.ThreadPoolExecutor(max_workers=1)
+    pending = executor.submit(release_policy.wait, 3.0)
+    publisher = scenario.LiveTelemetryPublisher(Logger())
+    for sequence in range(1, 21):
+        assert not pending.done()
+        publisher.publish_display(
+            scenario.DisplayPublication(
+                render_sequence=sequence,
+                numeric_groups=(("decision", (("render_sequence", sequence),)),),
+                values=(),
+            )
+        )
+        time.sleep(0.005)
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline and (not values or values[-1] != 20):
+        time.sleep(0.01)
+    assert values and values[-1] == 20
+    assert not pending.done()
+    assert publisher.snapshot()["display"]["max_pending"] == 1
+    release_policy.set()
+    assert pending.result(timeout=1.0) is True
+    executor.shutdown()
+    assert publisher.close() == {"exterior": True, "wrist": True, "display": True}
 
 
 def test_live_camera_optics_and_stock_franka_mount_are_explicit_and_rigid(

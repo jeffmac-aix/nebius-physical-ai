@@ -144,6 +144,15 @@ previously published definition from masking the schema-2 camera/action contract
 Its default dispatched instruction is `pick up the red cube`; public proof telemetry
 uses only the non-sensitive `red_cube_pickup` label.
 
+The scenario keeps safety calculations and durable acceptance counters at control
+cadence, but groups Rerun scalars and generated scene geometry at a documented
+5 Hz display cadence. Fixed latest-only exterior-image, wrist-image, and display
+publisher lanes each retain at most one replaceable pending sample. Slow JPEG
+encoding or viewer transport cannot block the simulation/control loop or a policy
+safe hold; image begin/ok/error markers and a separate loop heartbeat make a later
+stall boundary explicit. These are bounded observability semantics, not a hard
+real-time claim.
+
 The OpenPI bootstrap is publicly installed as `npa-openpi-live-deploy` (implemented
 by `npa.workflows.byof.openpi_live`): a single B200
 Deployment with readiness/liveness, `Recreate` rollout semantics, and a PVC-backed

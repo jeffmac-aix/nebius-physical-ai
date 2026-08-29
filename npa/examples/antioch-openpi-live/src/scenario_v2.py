@@ -9,6 +9,8 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
+from threading import Condition, Thread
+from typing import Callable
 
 import antioch
 
@@ -39,6 +41,8 @@ CLIENT_ROOT = Path("/tmp/npa-live-client-current")
 ACTION_SHAPE = (15, 8)
 CONTROL_HZ = 15.0
 TARGETS_PER_QUERY = 5
+TELEMETRY_DISPLAY_HZ = 5.0
+TELEMETRY_WORKER_JOIN_SECONDS = 0.5
 # A cold B200 model request can take tens of seconds even though warmed requests
 # are normally tens of milliseconds. This is a stale-response safety deadline,
 # not a real-time claim or a total run limit.
@@ -110,6 +114,251 @@ class WristCameraMount:
     eye_offset_tool: object
     look_direction_tool: object
     up_direction_tool: object
+
+
+@dataclass(frozen=True)
+class ImagePublication:
+    view: str
+    entity: str
+    rgb: object
+    render_sequence: int
+    luminance_mean: float
+    luminance_variance: float
+    dynamic_range: float
+    red_cube_pixels: int
+
+
+@dataclass(frozen=True)
+class DisplayPublication:
+    render_sequence: int
+    numeric_groups: tuple[tuple[str, tuple[tuple[str, float], ...]], ...]
+    values: tuple[tuple[str, object], ...]
+
+
+class LatestOnlyWorker:
+    """Run one potentially blocking publisher with one replaceable pending item."""
+
+    def __init__(self, name: str, publish: Callable[[object], None]) -> None:
+        self.name = name
+        self._publish = publish
+        self._condition = Condition()
+        self._pending: object | None = None
+        self._closed = False
+        self._publishing = False
+        self.submitted = 0
+        self.published = 0
+        self.dropped = 0
+        self.failures = 0
+        self.max_pending = 0
+        self._thread = Thread(
+            target=self._run,
+            name=f"openpi-{name}-telemetry",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def submit(self, item: object) -> bool:
+        """Replace an older pending sample without ever waiting for the sink."""
+
+        with self._condition:
+            if self._closed:
+                return False
+            self.submitted += 1
+            if self._pending is not None:
+                self.dropped += 1
+            self._pending = item
+            self.max_pending = max(self.max_pending, 1)
+            self._condition.notify()
+        return True
+
+    def snapshot(self) -> dict[str, int | bool]:
+        with self._condition:
+            return {
+                "submitted": self.submitted,
+                "published": self.published,
+                "dropped": self.dropped,
+                "failures": self.failures,
+                "pending": int(self._pending is not None),
+                "publishing": self._publishing,
+                "max_pending": self.max_pending,
+                "alive": self._thread.is_alive(),
+            }
+
+    def close(self) -> bool:
+        with self._condition:
+            self._closed = True
+            self._condition.notify()
+        self._thread.join(timeout=TELEMETRY_WORKER_JOIN_SECONDS)
+        return not self._thread.is_alive()
+
+    def _run(self) -> None:
+        while True:
+            with self._condition:
+                while self._pending is None and not self._closed:
+                    self._condition.wait()
+                if self._pending is None and self._closed:
+                    return
+                item = self._pending
+                self._pending = None
+                self._publishing = True
+            try:
+                self._publish(item)
+            except Exception as exc:  # noqa: BLE001 - telemetry cannot fail control
+                with self._condition:
+                    self.failures += 1
+                print(
+                    "NPA_OPENPI_TELEMETRY_ERROR "
+                    f"lane={self.name} error_type={type(exc).__name__}",
+                    flush=True,
+                )
+            else:
+                with self._condition:
+                    self.published += 1
+            finally:
+                with self._condition:
+                    self._publishing = False
+
+
+class DisplayRateLimiter:
+    """Admit viewer snapshots at a bounded display cadence."""
+
+    def __init__(self, rate_hz: float = TELEMETRY_DISPLAY_HZ) -> None:
+        if rate_hz <= 0.0:
+            raise ValueError("display rate must be positive")
+        self._interval = 1.0 / rate_hz
+        self._next_at = 0.0
+
+    def due(self, now: float) -> bool:
+        if now < self._next_at:
+            return False
+        self._next_at = now + self._interval
+        return True
+
+
+class LiveTelemetryPublisher:
+    """Keep Rerun transport and JPEG work outside the simulation/control thread."""
+
+    def __init__(self, logger) -> None:
+        self._logger = logger
+        self._workers = {
+            "exterior": LatestOnlyWorker(
+                "image-exterior", self._publish_image
+            ),
+            "wrist": LatestOnlyWorker("image-wrist", self._publish_image),
+            "display": LatestOnlyWorker("display", self._publish_display),
+        }
+
+    def publish_camera_pair(self, pair: CameraPair, render_sequence: int) -> tuple[str, ...]:
+        """Copy and enqueue only the newest valid RGB payload for each camera."""
+
+        import numpy as np
+
+        submitted: list[str] = []
+        for view, entity, frame in (
+            ("exterior", CAMERA_EXTERIOR_ENTITY, pair.exterior),
+            ("wrist", CAMERA_WRIST_ENTITY, pair.wrist),
+        ):
+            if frame.rgb is None:
+                continue
+            rgb = np.asarray(frame.rgb)
+            if rgb.shape != (224, 224, 3) or rgb.dtype != np.uint8:
+                print(
+                    "NPA_OPENPI_IMAGE_ENQUEUE_ERROR "
+                    f"view={view} render_sequence={render_sequence} reason=invalid_rgb",
+                    flush=True,
+                )
+                continue
+            publication = ImagePublication(
+                view=view,
+                entity=entity,
+                rgb=np.ascontiguousarray(rgb).copy(),
+                render_sequence=render_sequence,
+                luminance_mean=frame.luminance_mean,
+                luminance_variance=frame.luminance_variance,
+                dynamic_range=frame.dynamic_range,
+                red_cube_pixels=frame.red_cube_pixels,
+            )
+            if self._workers[view].submit(publication):
+                submitted.append(view)
+        return tuple(submitted)
+
+    def publish_display(self, publication: DisplayPublication) -> bool:
+        return self._workers["display"].submit(publication)
+
+    def snapshot(self) -> dict[str, dict[str, int | bool]]:
+        return {name: worker.snapshot() for name, worker in self._workers.items()}
+
+    def close(self) -> dict[str, bool]:
+        return {name: worker.close() for name, worker in self._workers.items()}
+
+    def _publish_image(self, item: object) -> None:
+        publication = item
+        if not isinstance(publication, ImagePublication):
+            raise TypeError("invalid image publication")
+        rgb = publication.rgb
+        print(
+            "NPA_OPENPI_IMAGE_LOG_BEGIN "
+            f"view={publication.view} render_sequence={publication.render_sequence} "
+            f"shape={getattr(rgb, 'shape', None)} dtype={getattr(rgb, 'dtype', None)} "
+            f"contiguous={int(bool(getattr(getattr(rgb, 'flags', None), 'c_contiguous', False)))}",
+            flush=True,
+        )
+        try:
+            self._logger.image(publication.entity, rgb)
+            self._logger.scalar(
+                f"{publication.entity}/render_sequence", publication.render_sequence
+            )
+            self._logger.scalar(
+                f"{publication.entity}/luminance_mean", publication.luminance_mean
+            )
+            self._logger.scalar(
+                f"{publication.entity}/luminance_variance",
+                publication.luminance_variance,
+            )
+            self._logger.scalar(
+                f"{publication.entity}/dynamic_range", publication.dynamic_range
+            )
+            if publication.view == "exterior":
+                self._logger.scalar(
+                    f"{publication.entity}/red_cube_pixels",
+                    publication.red_cube_pixels,
+                )
+        except Exception as exc:
+            print(
+                "NPA_OPENPI_IMAGE_LOG_ERROR "
+                f"view={publication.view} "
+                f"render_sequence={publication.render_sequence} "
+                "phase=logger_image_encode_or_transport "
+                f"error_type={type(exc).__name__}",
+                flush=True,
+            )
+            raise
+        print(
+            "NPA_OPENPI_IMAGE_LOG_OK "
+            f"view={publication.view} render_sequence={publication.render_sequence}",
+            flush=True,
+        )
+
+    def _publish_display(self, item: object) -> None:
+        publication = item
+        if not isinstance(publication, DisplayPublication):
+            raise TypeError("invalid display publication")
+        print(
+            "NPA_OPENPI_DISPLAY_LOG_BEGIN "
+            f"render_sequence={publication.render_sequence} "
+            f"numeric_groups={len(publication.numeric_groups)} "
+            f"values={len(publication.values)}",
+            flush=True,
+        )
+        for path, values in publication.numeric_groups:
+            self._logger.value(path, dict(values))
+        for path, value in publication.values:
+            self._logger.value(path, value)
+        print(
+            "NPA_OPENPI_DISPLAY_LOG_OK "
+            f"render_sequence={publication.render_sequence}",
+            flush=True,
+        )
 
 
 class ActionValidationError(ValueError):
@@ -500,7 +749,9 @@ def _camera_frame(camera, *, view: str) -> CameraFrame:
         upper = float(rgb_source.max())
         if upper <= 1.0:
             rgb_source = rgb_source * 255.0
-    rgb = np.clip(rgb_source, 0, 255).astype(np.uint8, copy=False)
+    rgb = np.ascontiguousarray(
+        np.clip(rgb_source, 0, 255).astype(np.uint8, copy=False)
+    )
     luminance = np.mean(rgb, axis=2)
     luminance_mean = float(luminance.mean())
     luminance_variance = float(luminance.var())
@@ -995,6 +1246,8 @@ def openpi_franka_mk8s_live_v2(
     current_exterior_luminance_variance = 0.0
     current_wrist_luminance_mean = 0.0
     current_wrist_luminance_variance = 0.0
+    current_exterior_dynamic_range = 0.0
+    current_wrist_dynamic_range = 0.0
     camera_pair_id = request_camera_pair_id = round_trip_camera_pair_id = 0
     render_sequence = request_render_sequence = round_trip_render_sequence = 0
     last_accepted_render_sequence = 0
@@ -1002,10 +1255,14 @@ def openpi_franka_mk8s_live_v2(
     current_exterior_red_cube_pixels = 0
     current_exterior_cube_in_frame = 0
     current_wrist_cube_in_frame = 0
+    current_camera_quality_accepted = 0
     pending = None
     pending_observation = 0
     pending_camera_pair_id = 0
     pending_joint_positions = None
+    pending_started_at = 0.0
+    pending_stall_reported = False
+    current_policy_error = ""
     cube_initial_height = float(cube.get_world_pose()[0][2])
     physics_dt = float(world.get_physics_dt())
     initial_ee_distance = None
@@ -1017,6 +1274,9 @@ def openpi_franka_mk8s_live_v2(
     pickup_hold_seconds = 0.0
     pickup_success = False
     executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="openpi-policy")
+    telemetry = LiveTelemetryPublisher(logger)
+    display_rate = DisplayRateLimiter()
+    next_loop_heartbeat_at = 0.0
 
     print("NPA_OPENPI_LOOP_READY", flush=True)
     try:
@@ -1025,6 +1285,25 @@ def openpi_franka_mk8s_live_v2(
             world.step(render=True)
             render_sequence += 1
             now = time.monotonic()
+
+            if pending is not None and not pending.done():
+                pending_age = now - pending_started_at
+                if (
+                    pending_age > MAX_RESPONSE_AGE_SECONDS
+                    and not pending_stall_reported
+                ):
+                    pending_stall_reported = True
+                    safe_holds += 1
+                    transport_failures["policy_future_timeout"] += 1
+                    client.close()
+                    pending.cancel()
+                    current_policy_error = "policy_future_timeout"
+                    print(
+                        "NPA_OPENPI_POLICY_STALL "
+                        f"observation={pending_observation} "
+                        f"age_seconds={pending_age:.3f} safe_hold=1",
+                        flush=True,
+                    )
 
             if pending is not None and pending.done():
                 try:
@@ -1054,6 +1333,7 @@ def openpi_franka_mk8s_live_v2(
                         "joint_limit_projections"
                     ]
                     joint_step_projections += action_evidence["joint_step_projections"]
+                    current_policy_error = ""
                     chunk_index = 0
                     round_trips += 1
                     round_trip_camera_pair_id = pending_camera_pair_id
@@ -1141,7 +1421,7 @@ def openpi_franka_mk8s_live_v2(
                         transport_failures[reason] += 1
                         client.close()
                         next_attempt = now + client.reconnect_delay()
-                    logger.value(POLICY_ERROR_ENTITY, rr.TextLog(reason))
+                    current_policy_error = reason
                     print(
                         "NPA_OPENPI_SAFE_HOLD "
                         f"observation={pending_observation} "
@@ -1152,6 +1432,8 @@ def openpi_franka_mk8s_live_v2(
                 finally:
                     pending = None
                     pending_joint_positions = None
+                    pending_started_at = 0.0
+                    pending_stall_reported = False
 
             if chunk is None and pending is None and now >= next_attempt:
                 joint_positions = np.asarray(
@@ -1186,7 +1468,21 @@ def openpi_franka_mk8s_live_v2(
                 current_wrist_cube_in_frame = int(wrist_cube_in_frame)
                 current_exterior_red_cube_pixels = pair.exterior.red_cube_pixels
                 current_camera_pair_difference = pair.mean_difference
-                _log_camera_pair_for_rerun(logger, pair)
+                current_exterior_luminance_mean = pair.exterior.luminance_mean
+                current_exterior_luminance_variance = pair.exterior.luminance_variance
+                current_wrist_luminance_mean = pair.wrist.luminance_mean
+                current_wrist_luminance_variance = pair.wrist.luminance_variance
+                current_exterior_dynamic_range = pair.exterior.dynamic_range
+                current_wrist_dynamic_range = pair.wrist.dynamic_range
+                current_camera_quality_accepted = int(pair.accepted)
+                published_views = telemetry.publish_camera_pair(pair, render_sequence)
+                if published_views:
+                    print(
+                        "NPA_OPENPI_IMAGE_ENQUEUED "
+                        f"render_sequence={render_sequence} "
+                        f"views={','.join(published_views)}",
+                        flush=True,
+                    )
                 if not pair.accepted:
                     camera_rejected_pairs += 1
                     camera_rejections[f"{pair.rejected_view}_{pair.reason}"] += 1
@@ -1267,25 +1563,11 @@ def openpi_franka_mk8s_live_v2(
                         f"task_label={TASK_LABEL}",
                         flush=True,
                     )
-                    logger.value(TASK_ENTITY, rr.TextLog(TASK_LABEL))
-                    logger.scalar(
-                        f"{CAMERA_EXTERIOR_ENTITY}/cube_in_frame",
-                        int(exterior_cube_in_frame),
-                    )
-                    logger.scalar(
-                        f"{CAMERA_WRIST_ENTITY}/cube_in_frame",
-                        int(wrist_cube_in_frame),
-                    )
-                    logger.scalar(
-                        f"{CAMERA_METRICS_ENTITY}/pair_id", request_camera_pair_id
-                    )
-                    logger.scalar(
-                        f"{CAMERA_METRICS_ENTITY}/render_sequence",
-                        request_render_sequence,
-                    )
                     pending_observation = observation_sequence
                     pending_camera_pair_id = request_camera_pair_id
                     pending_joint_positions = joint_positions.copy()
+                    pending_started_at = now
+                    pending_stall_reported = False
                     pending = executor.submit(
                         client.infer,
                         PolicyRequest(
@@ -1354,112 +1636,192 @@ def openpi_franka_mk8s_live_v2(
                     pickup_hold_seconds = 0.0
 
             safe_hold = chunk is None
-            logger.scalar(
-                f"{DECISION_METRICS_ENTITY}/observation_sequence", observation_sequence
-            )
-            logger.scalar(
-                f"{DECISION_METRICS_ENTITY}/observation_time_seconds", now - started
-            )
-            logger.scalar(f"{DECISION_METRICS_ENTITY}/policy_requests", requests)
-            logger.scalar(
-                f"{DECISION_METRICS_ENTITY}/policy_in_flight", int(pending is not None)
-            )
-            logger.scalar(f"{DECISION_METRICS_ENTITY}/round_trips", round_trips)
-            logger.scalar(
-                f"{DECISION_METRICS_ENTITY}/inference_latency_ms",
-                last_latency * 1000.0,
-            )
-            logger.scalar(f"{DECISION_METRICS_ENTITY}/action_horizon", ACTION_SHAPE[0])
-            logger.scalar(
-                f"{DECISION_METRICS_ENTITY}/action_dimension", ACTION_SHAPE[1]
-            )
-            logger.scalar(f"{DECISION_METRICS_ENTITY}/chunk_index", chunk_index)
-            logger.scalar(f"{DECISION_METRICS_ENTITY}/safe_hold", int(safe_hold))
-            logger.scalar(f"{DECISION_METRICS_ENTITY}/reconnects", client.reconnects)
-            logger.scalar(f"{DECISION_METRICS_ENTITY}/safe_targets_applied", applied)
-            logger.scalar(
-                f"{DECISION_METRICS_ENTITY}/raw_gripper_range_mismatches",
-                raw_gripper_range_mismatches,
-            )
-            logger.scalar(
-                f"{DECISION_METRICS_ENTITY}/rejected_actions",
-                sum(rejected_actions.values()),
-            )
-            logger.scalar(
-                f"{DECISION_METRICS_ENTITY}/raw_joint_limit_mismatches",
-                raw_joint_limit_mismatches,
-            )
-            logger.scalar(
-                f"{DECISION_METRICS_ENTITY}/joint_limit_projections",
-                joint_limit_projections,
-            )
-            logger.scalar(
-                f"{DECISION_METRICS_ENTITY}/joint_step_projections",
-                joint_step_projections,
-            )
-            logger.scalar(
-                f"{GRASP_METRICS_ENTITY}/end_effector_cube_distance_m", ee_distance
-            )
-            logger.scalar(
-                f"{GRASP_METRICS_ENTITY}/end_effector_cube_approach_m",
-                max(0.0, initial_ee_distance - minimum_ee_distance),
-            )
-            logger.scalar(
-                f"{GRASP_METRICS_ENTITY}/gripper_contact_force_n", contact_force
-            )
-            logger.scalar(
-                f"{GRASP_METRICS_ENTITY}/gripper_contact", int(in_gripper_contact)
-            )
-            logger.scalar(f"{GRASP_METRICS_ENTITY}/gripper_closed", int(gripper_closed))
-            logger.scalar(f"{GRASP_METRICS_ENTITY}/cube_lift_m", cube_lift)
-            logger.scalar(
-                f"{GRASP_METRICS_ENTITY}/pickup_hold_seconds", pickup_hold_seconds
-            )
-            logger.scalar(
-                f"{GRASP_METRICS_ENTITY}/pickup_success", int(pickup_success)
-            )
-            logger.scalar(
-                f"{DECISION_METRICS_ENTITY}/applied_target_rate_hz",
-                applied / max(now - started, 1e-6),
-            )
-            logger.value(
-                f"{SCENE_ENTITY}/cube",
-                rr.Boxes3D(
-                    centers=[cube_position.tolist()],
-                    sizes=[[CUBE_SIZE_METERS] * 3],
-                    colors=[[242, 8, 5, 255]],
-                ),
-            )
-            logger.value(
-                f"{SCENE_ENTITY}/table",
-                rr.Boxes3D(
-                    centers=[tabletop.get_world_pose()[0].tolist()],
-                    sizes=[[0.9, 0.7, 0.08]],
-                    colors=[[140, 92, 51, 255]],
-                ),
-            )
-            for index, value in enumerate(current_joint_positions[:9]):
-                logger.scalar(f"{FRANKA_ACTION_ENTITY}/joint_{index}", float(value))
-            link_points = _franka_link_points(world.stage)
-            proxy = _franka_proxy_geometry(link_points)
-            if proxy["base"] is not None:
-                logger.value(
-                    f"{FRANKA_SCENE_ENTITY}/base",
-                    rr.Boxes3D(**proxy["base"]),
+            if display_rate.due(now):
+                link_points = _franka_link_points(world.stage)
+                proxy = _franka_proxy_geometry(link_points)
+                values: list[tuple[str, object]] = [
+                    (TASK_ENTITY, rr.TextLog(TASK_LABEL)),
+                    (
+                        f"{SCENE_ENTITY}/cube",
+                        rr.Boxes3D(
+                            centers=[cube_position.tolist()],
+                            sizes=[[CUBE_SIZE_METERS] * 3],
+                            colors=[[242, 8, 5, 255]],
+                        ),
+                    ),
+                    (
+                        f"{SCENE_ENTITY}/table",
+                        rr.Boxes3D(
+                            centers=[tabletop.get_world_pose()[0].tolist()],
+                            sizes=[[0.9, 0.7, 0.08]],
+                            colors=[[140, 92, 51, 255]],
+                        ),
+                    ),
+                ]
+                if current_policy_error:
+                    values.append(
+                        (POLICY_ERROR_ENTITY, rr.TextLog(current_policy_error))
+                    )
+                if proxy["base"] is not None:
+                    values.append(
+                        (
+                            f"{FRANKA_SCENE_ENTITY}/base",
+                            rr.Boxes3D(**proxy["base"]),
+                        )
+                    )
+                if proxy["links"]["centers"]:
+                    values.append(
+                        (
+                            f"{FRANKA_SCENE_ENTITY}/links",
+                            rr.Boxes3D(**proxy["links"]),
+                        )
+                    )
+                if proxy["joints"] is not None:
+                    values.append(
+                        (
+                            f"{FRANKA_SCENE_ENTITY}/joints",
+                            rr.Ellipsoids3D(**proxy["joints"]),
+                        )
+                    )
+                if proxy["gripper"] is not None:
+                    values.append(
+                        (
+                            f"{FRANKA_SCENE_ENTITY}/gripper",
+                            rr.Boxes3D(**proxy["gripper"]),
+                        )
+                    )
+                telemetry.publish_display(
+                    DisplayPublication(
+                        render_sequence=render_sequence,
+                        numeric_groups=(
+                            (
+                                DECISION_METRICS_ENTITY,
+                                (
+                                    ("observation_sequence", observation_sequence),
+                                    ("observation_time_seconds", now - started),
+                                    ("policy_requests", requests),
+                                    ("policy_in_flight", int(pending is not None)),
+                                    ("round_trips", round_trips),
+                                    ("inference_latency_ms", last_latency * 1000.0),
+                                    ("action_horizon", ACTION_SHAPE[0]),
+                                    ("action_dimension", ACTION_SHAPE[1]),
+                                    ("chunk_index", chunk_index),
+                                    ("safe_hold", int(safe_hold)),
+                                    ("reconnects", client.reconnects),
+                                    ("safe_targets_applied", applied),
+                                    (
+                                        "raw_gripper_range_mismatches",
+                                        raw_gripper_range_mismatches,
+                                    ),
+                                    (
+                                        "rejected_actions",
+                                        sum(rejected_actions.values()),
+                                    ),
+                                    (
+                                        "raw_joint_limit_mismatches",
+                                        raw_joint_limit_mismatches,
+                                    ),
+                                    ("joint_limit_projections", joint_limit_projections),
+                                    ("joint_step_projections", joint_step_projections),
+                                    (
+                                        "applied_target_rate_hz",
+                                        applied / max(now - started, 1e-6),
+                                    ),
+                                ),
+                            ),
+                            (
+                                GRASP_METRICS_ENTITY,
+                                (
+                                    ("end_effector_cube_distance_m", ee_distance),
+                                    (
+                                        "end_effector_cube_approach_m",
+                                        max(
+                                            0.0,
+                                            initial_ee_distance
+                                            - minimum_ee_distance,
+                                        ),
+                                    ),
+                                    ("gripper_contact_force_n", contact_force),
+                                    ("gripper_contact", int(in_gripper_contact)),
+                                    ("gripper_closed", int(gripper_closed)),
+                                    ("cube_lift_m", cube_lift),
+                                    ("pickup_hold_seconds", pickup_hold_seconds),
+                                    ("pickup_success", int(pickup_success)),
+                                ),
+                            ),
+                            (
+                                CAMERA_METRICS_ENTITY,
+                                (
+                                    ("pair_id", request_camera_pair_id),
+                                    ("render_sequence", render_sequence),
+                                    (
+                                        "pair_mean_difference",
+                                        current_camera_pair_difference,
+                                    ),
+                                    (
+                                        "policy_quality_accepted",
+                                        current_camera_quality_accepted,
+                                    ),
+                                    (
+                                        "exterior_cube_in_frame",
+                                        current_exterior_cube_in_frame,
+                                    ),
+                                    (
+                                        "wrist_cube_in_frame",
+                                        current_wrist_cube_in_frame,
+                                    ),
+                                    (
+                                        "exterior_luminance_mean",
+                                        current_exterior_luminance_mean,
+                                    ),
+                                    (
+                                        "exterior_luminance_variance",
+                                        current_exterior_luminance_variance,
+                                    ),
+                                    (
+                                        "exterior_dynamic_range",
+                                        current_exterior_dynamic_range,
+                                    ),
+                                    (
+                                        "wrist_luminance_mean",
+                                        current_wrist_luminance_mean,
+                                    ),
+                                    (
+                                        "wrist_luminance_variance",
+                                        current_wrist_luminance_variance,
+                                    ),
+                                    (
+                                        "wrist_dynamic_range",
+                                        current_wrist_dynamic_range,
+                                    ),
+                                ),
+                            ),
+                            (
+                                FRANKA_ACTION_ENTITY,
+                                tuple(
+                                    (f"joint_{index}", float(value))
+                                    for index, value in enumerate(
+                                        current_joint_positions[:9]
+                                    )
+                                ),
+                            ),
+                        ),
+                        values=tuple(values),
+                    )
                 )
-            if proxy["links"]["centers"]:
-                logger.value(
-                    f"{FRANKA_SCENE_ENTITY}/links", rr.Boxes3D(**proxy["links"])
-                )
-            if proxy["joints"] is not None:
-                logger.value(
-                    f"{FRANKA_SCENE_ENTITY}/joints",
-                    rr.Ellipsoids3D(**proxy["joints"]),
-                )
-            if proxy["gripper"] is not None:
-                logger.value(
-                    f"{FRANKA_SCENE_ENTITY}/gripper",
-                    rr.Boxes3D(**proxy["gripper"]),
+
+            if now >= next_loop_heartbeat_at:
+                next_loop_heartbeat_at = now + 1.0
+                telemetry_state = telemetry.snapshot()
+                print(
+                    "NPA_OPENPI_LOOP_HEARTBEAT "
+                    f"elapsed_seconds={now - started:.3f} "
+                    f"render_sequence={render_sequence} "
+                    f"policy_in_flight={int(pending is not None)} "
+                    f"display_dropped={telemetry_state['display']['dropped']} "
+                    f"exterior_dropped={telemetry_state['exterior']['dropped']} "
+                    f"wrist_dropped={telemetry_state['wrist']['dropped']}",
+                    flush=True,
                 )
             overlay[2].text = (
                 "SAFE HOLD / reconnecting"
@@ -1476,6 +1838,13 @@ def openpi_franka_mk8s_live_v2(
     finally:
         client.shutdown()
         executor.shutdown(wait=False, cancel_futures=True)
+        telemetry_closed = telemetry.close()
+        telemetry_state = telemetry.snapshot()
+        print(
+            "NPA_OPENPI_TELEMETRY_STOP "
+            f"closed={telemetry_closed} state={telemetry_state}",
+            flush=True,
+        )
         run.add_result("observation_sequence", observation_sequence)
         run.add_result("policy_requests", requests)
         run.add_result("policy_round_trips", round_trips)

@@ -107,6 +107,15 @@ All scenario telemetry is organized under the single `openpi-live` Rerun entity
 root. Antioch's logger receives that root and resolves relative entities beneath
 it; every authored blueprint origin uses the same resolver for the camera panes,
 3D scene, camera/decision/grasp metrics, Franka joint plots, and policy errors.
+The control loop retains full-rate safety calculations and durable acceptance
+metrics, while viewer scalars and generated scene geometry are grouped at a
+5 Hz display cadence. Exterior images, wrist images, and non-image display data
+use three fixed latest-only publisher lanes with one replaceable pending sample
+per lane. JPEG encoding or Rerun transport can therefore delay or drop an older
+display sample without blocking simulation or control, growing memory, or hiding
+the newest current frame. Begin/ok/error markers and an independent loop
+heartbeat identify the exact encode/transport boundary in preserved logs. This
+is observability isolation, not a hard real-time guarantee.
 
 Pickup evidence is physical rather than inferred from action issuance: live Isaac
 poses report end-effector approach and distance, a tracked rigid-contact view reports
