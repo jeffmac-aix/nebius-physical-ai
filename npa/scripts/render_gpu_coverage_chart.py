@@ -89,10 +89,9 @@ def published_images() -> dict[str, str]:
     sys.path.insert(0, str(REPO_ROOT / "npa/src"))
     from npa.deploy import images as deploy_images
 
+    resolve = deploy_images.public_release_tag_for_tool
     return {
-        deploy_images.CONTAINER_IMAGE_NAMES[tool]: deploy_images.public_release_tag_for_tool(
-            tool
-        )
+        deploy_images.CONTAINER_IMAGE_NAMES[tool]: resolve(tool)
         for tool in deploy_images.publicly_publishable_tools()
     }
 
