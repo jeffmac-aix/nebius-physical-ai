@@ -115,6 +115,43 @@ def test_prepublication_gates_run_before_the_public_dev_push() -> None:
     assert "if matrix and head != sha" in text
 
 
+def test_public_base_pull_authentication_precedes_local_build() -> None:
+    spec = _spec(PUBLISH)
+    steps = spec["jobs"]["build-development"]["steps"]
+    names = [str(step.get("name") or "") for step in steps]
+    auth = names.index("Authenticate immutable public base pulls")
+    build = names.index("Build immutable development image locally")
+    push = names.index("Push only after every pre-publication gate passes")
+    assert steps[auth]["uses"] == "docker/login-action@v3"
+    assert auth < build < push
+
+
+def test_large_image_scan_reclaims_only_disposable_build_cache_and_tar() -> None:
+    spec = _spec(PUBLISH)
+    step = next(
+        item
+        for item in spec["jobs"]["build-development"]["steps"]
+        if item.get("name")
+        == "Enforce runtime, revision, bootstrap, config, and history contracts"
+    )
+    script = step["run"]
+    assert script.index("docker buildx prune --all --force") < script.index(
+        'docker save --output "$RUNNER_TEMP/${TOOL}.tar"'
+    )
+    assert 'rm -f "$RUNNER_TEMP/${TOOL}.tar"' in script
+
+
+def test_large_image_security_gates_have_no_early_scanner_deadline() -> None:
+    steps = _spec(PUBLISH)["jobs"]["build-development"]["steps"]
+    trivy_steps = [
+        step
+        for step in steps
+        if step.get("uses") == "aquasecurity/trivy-action@v0.36.0"
+    ]
+    assert len(trivy_steps) == 2
+    assert all(step["with"]["timeout"] == "6h0m0s" for step in trivy_steps)
+
+
 def test_public_image_workflow_preserves_large_image_security_scans() -> None:
     text = PUBLISH.read_text(encoding="utf-8")
     steps = _spec(PUBLISH)["jobs"]["build-development"]["steps"]
@@ -128,7 +165,7 @@ def test_public_image_workflow_preserves_large_image_security_scans() -> None:
     assert text.count("TMPDIR: /mnt/npa-trivy") == 2
     assert "scanners: vuln,secret,license" in text
     assert len(trivy_steps) == 2
-    assert all(step["with"]["timeout"] == "30m" for step in trivy_steps)
+    assert all(step["with"]["timeout"] == "6h0m0s" for step in trivy_steps)
 
 
 def test_post_push_and_promotion_gates_are_digest_bound() -> None:
