@@ -412,32 +412,30 @@ def test_live_telemetry_is_latest_only_and_control_does_not_wait_for_slow_images
         )
     assert time.monotonic() - started < 0.5
     snapshot = publisher.snapshot()
-    assert snapshot["exterior"]["max_pending"] == 1
-    assert snapshot["wrist"]["max_pending"] == 1
+    assert snapshot["exterior"] is snapshot["wrist"] is snapshot["display"]
+    assert snapshot["logger"]["max_pending"] <= 2
     assert snapshot["exterior"]["dropped"] > 0
     assert snapshot["wrist"]["dropped"] > 0
-    assert snapshot["display"]["max_pending"] == 1
-
-    deadline = time.monotonic() + 2.0
-    while time.monotonic() < deadline:
-        with lock:
-            if any(
-                path == "decision"
-                and isinstance(value, dict)
-                and value.get("render_sequence") == 63
-                for path, value in logger.values
-            ):
-                break
-        time.sleep(0.01)
-    else:
-        pytest.fail("display telemetry did not advance while image logging was blocked")
+    assert snapshot["display"]["max_pending"] <= 2
+    with lock:
+        assert not any(path == "decision" for path, _ in logger.values)
 
     release_images.set()
     deadline = time.monotonic() + 2.0
     while time.monotonic() < deadline:
         with lock:
             latest = dict(logger.images)
-        if latest.get("camera/exterior") == 63 and latest.get("camera/wrist") == 63:
+        display_latest = any(
+            path == "decision"
+            and isinstance(value, dict)
+            and value.get("render_sequence") == 63
+            for path, value in logger.values
+        )
+        if (
+            latest.get("camera/exterior") == 63
+            and latest.get("camera/wrist") == 63
+            and display_latest
+        ):
             break
         time.sleep(0.01)
     else:
@@ -447,6 +445,215 @@ def test_live_telemetry_is_latest_only_and_control_does_not_wait_for_slow_images
     assert all(
         not state["alive"] for state in publisher.snapshot().values()
     )
+
+
+def test_camera_producers_attach_and_warm_on_calling_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scenario = _load_live_scenario(monkeypatch, "antioch_camera_producer_test")
+    owner = threading.get_ident()
+
+    class Prim:
+        def IsValid(self) -> bool:
+            return True
+
+        def __bool__(self) -> bool:
+            return True
+
+    class Stage:
+        def GetPrimAtPath(self, _path: str) -> Prim:
+            return Prim()
+
+    class World:
+        stage = Stage()
+        steps = 0
+
+        def step(self, *, render: bool) -> None:
+            assert render and threading.get_ident() == owner
+            self.steps += 1
+
+    world = World()
+
+    class Camera:
+        def __init__(self, view: str) -> None:
+            self.view = view
+            self.attached = False
+
+        def initialize(self, *, attach_rgb_annotator: bool) -> None:
+            assert threading.get_ident() == owner
+            self.attached = attach_rgb_annotator
+
+        def get_render_product_path(self) -> str:
+            return f"/Render/{self.view}"
+
+        def get_rgba(self) -> np.ndarray | None:
+            if world.steps < 2:
+                return None
+            rgba = np.empty((224, 224, 4), dtype=np.uint8)
+            rgba[..., :3] = [140, 30, 10]
+            rgba[..., 3] = 255
+            return rgba
+
+        def get_current_frame(self, *, clone: bool) -> dict[str, float]:
+            assert clone
+            return {
+                "rendering_frame": world.steps,
+                "rendering_time": world.steps / 60.0,
+            }
+
+    exterior, wrist = Camera("exterior"), Camera("wrist")
+    products, markers = scenario._initialize_camera_producers(
+        world, (("exterior", exterior), ("wrist", wrist))
+    )
+    assert products == {"exterior": "/Render/exterior", "wrist": "/Render/wrist"}
+    assert exterior.attached and wrist.attached
+    assert world.steps == 3
+    assert markers["exterior"] == (3, 3 / 60.0)
+
+
+def test_camera_producer_fails_typed_after_prolonged_none_frames(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scenario = _load_live_scenario(monkeypatch, "antioch_camera_none_test")
+    monkeypatch.setattr(scenario, "CAMERA_WARMUP_RENDER_FRAMES", 3)
+
+    class Prim:
+        def IsValid(self) -> bool:
+            return True
+
+        def __bool__(self) -> bool:
+            return True
+
+    class World:
+        stage = SimpleNamespace(GetPrimAtPath=lambda _path: Prim())
+
+        def step(self, *, render: bool) -> None:
+            assert render
+
+    class Camera:
+        def initialize(self, *, attach_rgb_annotator: bool) -> None:
+            assert attach_rgb_annotator
+
+        def get_render_product_path(self) -> str:
+            return "/Render/rgb"
+
+        def get_rgba(self) -> None:
+            return None
+
+        def get_current_frame(self, *, clone: bool) -> dict[str, float]:
+            return {"rendering_frame": 1, "rendering_time": 0.1}
+
+    with pytest.raises(scenario.CameraReadinessError, match="warmup_exhausted:missing"):
+        scenario._initialize_camera_producers(
+            World(), (("exterior", Camera()), ("wrist", Camera()))
+        )
+
+    missing = scenario.CameraFrame(None, "missing")
+    pair = scenario.CameraPair(False, missing, missing, "exterior", "missing")
+    monitor = scenario.CameraReadinessMonitor(limit=3)
+    monitor.observe(pair)
+    monitor.observe(pair)
+    with pytest.raises(
+        scenario.CameraReadinessError, match="runtime_outage:missing"
+    ):
+        monitor.observe(pair)
+
+
+def test_camera_frame_advancement_uses_producer_marker_not_loop_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scenario = _load_live_scenario(monkeypatch, "antioch_camera_advancement_test")
+
+    class Camera:
+        def __init__(self, marker: int) -> None:
+            self.marker = marker
+
+        def get_current_frame(self, *, clone: bool) -> dict[str, float]:
+            return {"rendering_frame": self.marker, "rendering_time": self.marker / 60}
+
+    exterior, wrist = Camera(9), Camera(9)
+    cameras = (("exterior", exterior), ("wrist", wrist))
+    advanced, _, reason = scenario._camera_markers_advanced(
+        cameras, {"exterior": (9, 0.15), "wrist": (9, 0.15)}
+    )
+    assert not advanced and reason == "exterior_producer_stale"
+    exterior.marker = wrist.marker = 10
+    advanced, current, reason = scenario._camera_markers_advanced(
+        cameras, {"exterior": (9, 0.15), "wrist": (9, 0.15)}
+    )
+    assert advanced and not reason and current["wrist"] == (10, 10 / 60)
+
+
+def test_logger_first_use_is_on_owner_then_all_channels_share_one_writer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scenario = _load_live_scenario(monkeypatch, "antioch_logger_owner_test")
+    owner = threading.get_ident()
+    calls: list[tuple[str, int, object]] = []
+    complete = threading.Event()
+
+    class Logger:
+        def scalar(self, path: str, value: float) -> None:
+            calls.append((path, threading.get_ident(), value))
+
+        def image(self, path: str, value: np.ndarray) -> None:
+            calls.append((path, threading.get_ident(), int(value[0, 0, 0])))
+
+        def value(self, path: str, value: object) -> None:
+            calls.append((path, threading.get_ident(), value))
+            complete.set()
+
+    publisher = scenario.LiveTelemetryPublisher(Logger())
+    assert calls == [("telemetry/initialized", owner, 1.0)]
+    rgb = np.full((224, 224, 3), 42, dtype=np.uint8)
+    frame = scenario.CameraFrame(rgb, "", 50.0, 100.0, 80.0, 25)
+    publisher.publish_camera_pair(
+        scenario.CameraPair(True, frame, frame, mean_difference=12.0), 42
+    )
+    publisher.publish_display(
+        scenario.DisplayPublication(
+            render_sequence=42,
+            numeric_groups=(("decision", (("render_sequence", 42),)),),
+            values=(),
+        )
+    )
+    assert complete.wait(timeout=2.0)
+    assert publisher.close() == {"exterior": True, "wrist": True, "display": True}
+    worker_threads = {thread_id for _, thread_id, _ in calls[1:]}
+    assert len(worker_threads) == 1 and owner not in worker_threads
+    decision = next(value for path, _, value in calls if path == "decision")
+    assert decision == {"render_sequence": 42}
+
+
+def test_blocked_logger_teardown_is_detected_before_result_finalization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scenario = _load_live_scenario(monkeypatch, "antioch_logger_teardown_test")
+    started = threading.Event()
+    release = threading.Event()
+
+    class Logger:
+        def scalar(self, _path: str, _value: float) -> None:
+            pass
+
+        def image(self, _path: str, _value: np.ndarray) -> None:
+            started.set()
+            assert release.wait(timeout=3.0)
+
+        def value(self, _path: str, _value: object) -> None:
+            pass
+
+    publisher = scenario.LiveTelemetryPublisher(Logger())
+    rgb = np.full((224, 224, 3), 7, dtype=np.uint8)
+    frame = scenario.CameraFrame(rgb, "", 50.0, 100.0, 80.0, 25)
+    publisher.publish_camera_pair(
+        scenario.CameraPair(True, frame, frame, mean_difference=12.0), 7
+    )
+    assert started.wait(timeout=1.0)
+    assert publisher.close() == {"exterior": False, "wrist": False, "display": False}
+    assert publisher.snapshot()["logger"]["alive"]
+    release.set()
+    assert publisher.close() == {"exterior": True, "wrist": True, "display": True}
 
 
 def test_live_display_rate_is_bounded_under_a_faster_physics_loop(
@@ -512,17 +719,11 @@ def test_live_display_backpressure_is_bounded_and_does_not_block_cameras(
     assert publisher.publish_camera_pair(pair, 64) == ("exterior", "wrist")
     assert time.monotonic() - started < 0.5
     snapshot = publisher.snapshot()
-    assert snapshot["display"]["max_pending"] == 1
+    assert snapshot["display"]["max_pending"] <= 2
     assert snapshot["display"]["dropped"] > 0
 
-    deadline = time.monotonic() + 2.0
-    while time.monotonic() < deadline:
-        with lock:
-            if set(logger.images) == {"camera/exterior", "camera/wrist"}:
-                break
-        time.sleep(0.01)
-    else:
-        pytest.fail("camera publication did not advance while display logging blocked")
+    with lock:
+        assert logger.images == []
 
     release_display.set()
     deadline = time.monotonic() + 2.0

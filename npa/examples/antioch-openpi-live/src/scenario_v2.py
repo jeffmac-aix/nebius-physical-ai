@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import ssl
 import time
+import contextlib
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -43,6 +44,9 @@ CONTROL_HZ = 15.0
 TARGETS_PER_QUERY = 5
 TELEMETRY_DISPLAY_HZ = 5.0
 TELEMETRY_WORKER_JOIN_SECONDS = 0.5
+CAMERA_WARMUP_RENDER_FRAMES = 32
+CAMERA_READY_CONSECUTIVE_FRAMES = 2
+CAMERA_RUNTIME_FAILURE_FRAMES = 32
 # A cold B200 model request can take tens of seconds even though warmed requests
 # are normally tens of milliseconds. This is a stale-response safety deadline,
 # not a real-time claim or a total run limit.
@@ -135,14 +139,46 @@ class DisplayPublication:
     values: tuple[tuple[str, object], ...]
 
 
+class CameraReadinessError(RuntimeError):
+    """Typed failure for a camera that has no live RGB producer."""
+
+    def __init__(self, view: str, reason: str) -> None:
+        super().__init__(f"{view} camera readiness failed: {reason}")
+        self.view = view
+        self.reason = reason
+
+
+class TelemetryShutdownError(RuntimeError):
+    """Raised when the only logger writer cannot be joined safely."""
+
+
+class CameraReadinessMonitor:
+    """Fail a running producer after a bounded contiguous-frame outage."""
+
+    def __init__(self, limit: int = CAMERA_RUNTIME_FAILURE_FRAMES) -> None:
+        self._limit = limit
+        self._consecutive = 0
+
+    def observe(self, pair: CameraPair, producer_reason: str = "") -> None:
+        reason = producer_reason
+        view = "pair"
+        if not reason and pair.exterior.rgb is None:
+            view, reason = "exterior", pair.exterior.reason or "missing"
+        if not reason and pair.wrist.rgb is None:
+            view, reason = "wrist", pair.wrist.reason or "missing"
+        self._consecutive = self._consecutive + 1 if reason else 0
+        if self._consecutive >= self._limit:
+            raise CameraReadinessError(view, f"runtime_outage:{reason}")
+
+
 class LatestOnlyWorker:
-    """Run one potentially blocking publisher with one replaceable pending item."""
+    """Serialize keyed publications with one replaceable item per channel."""
 
     def __init__(self, name: str, publish: Callable[[object], None]) -> None:
         self.name = name
         self._publish = publish
         self._condition = Condition()
-        self._pending: object | None = None
+        self._pending: dict[str, object] = {}
         self._closed = False
         self._publishing = False
         self.submitted = 0
@@ -157,17 +193,17 @@ class LatestOnlyWorker:
         )
         self._thread.start()
 
-    def submit(self, item: object) -> bool:
+    def submit(self, channel: str, item: object) -> bool:
         """Replace an older pending sample without ever waiting for the sink."""
 
         with self._condition:
             if self._closed:
                 return False
             self.submitted += 1
-            if self._pending is not None:
+            if channel in self._pending:
                 self.dropped += 1
-            self._pending = item
-            self.max_pending = max(self.max_pending, 1)
+            self._pending[channel] = item
+            self.max_pending = max(self.max_pending, len(self._pending))
             self._condition.notify()
         return True
 
@@ -178,7 +214,7 @@ class LatestOnlyWorker:
                 "published": self.published,
                 "dropped": self.dropped,
                 "failures": self.failures,
-                "pending": int(self._pending is not None),
+                "pending": len(self._pending),
                 "publishing": self._publishing,
                 "max_pending": self.max_pending,
                 "alive": self._thread.is_alive(),
@@ -194,29 +230,32 @@ class LatestOnlyWorker:
     def _run(self) -> None:
         while True:
             with self._condition:
-                while self._pending is None and not self._closed:
+                while not self._pending and not self._closed:
                     self._condition.wait()
-                if self._pending is None and self._closed:
+                if not self._pending and self._closed:
                     return
-                item = self._pending
-                self._pending = None
+                pending = self._pending
+                self._pending = {}
                 self._publishing = True
-            try:
-                self._publish(item)
-            except Exception as exc:  # noqa: BLE001 - telemetry cannot fail control
-                with self._condition:
-                    self.failures += 1
-                print(
-                    "NPA_OPENPI_TELEMETRY_ERROR "
-                    f"lane={self.name} error_type={type(exc).__name__}",
-                    flush=True,
-                )
-            else:
-                with self._condition:
-                    self.published += 1
-            finally:
-                with self._condition:
-                    self._publishing = False
+            for channel in ("camera_pair", "display"):
+                if channel not in pending:
+                    continue
+                try:
+                    self._publish(pending[channel])
+                except Exception as exc:  # noqa: BLE001 - telemetry cannot fail control
+                    with self._condition:
+                        self.failures += 1
+                    print(
+                        "NPA_OPENPI_TELEMETRY_ERROR "
+                        f"lane={self.name} channel={channel} "
+                        f"error_type={type(exc).__name__}",
+                        flush=True,
+                    )
+                else:
+                    with self._condition:
+                        self.published += 1
+            with self._condition:
+                self._publishing = False
 
 
 class DisplayRateLimiter:
@@ -236,24 +275,21 @@ class DisplayRateLimiter:
 
 
 class LiveTelemetryPublisher:
-    """Keep Rerun transport and JPEG work outside the simulation/control thread."""
+    """Use one bounded writer for every call into the Antioch logger."""
 
     def __init__(self, logger) -> None:
         self._logger = logger
-        self._workers = {
-            "exterior": LatestOnlyWorker(
-                "image-exterior", self._publish_image
-            ),
-            "wrist": LatestOnlyWorker("image-wrist", self._publish_image),
-            "display": LatestOnlyWorker("display", self._publish_display),
-        }
+        # This first call deliberately occurs on the simulation thread. Antioch
+        # 0.3.63 attaches its Kit simulation clock on first recording use.
+        self._logger.scalar("telemetry/initialized", 1.0)
+        self._worker = LatestOnlyWorker("logger", self._publish)
 
     def publish_camera_pair(self, pair: CameraPair, render_sequence: int) -> tuple[str, ...]:
         """Copy and enqueue only the newest valid RGB payload for each camera."""
 
         import numpy as np
 
-        submitted: list[str] = []
+        publications: list[ImagePublication] = []
         for view, entity, frame in (
             ("exterior", CAMERA_EXTERIOR_ENTITY, pair.exterior),
             ("wrist", CAMERA_WRIST_ENTITY, pair.wrist),
@@ -278,18 +314,41 @@ class LiveTelemetryPublisher:
                 dynamic_range=frame.dynamic_range,
                 red_cube_pixels=frame.red_cube_pixels,
             )
-            if self._workers[view].submit(publication):
-                submitted.append(view)
-        return tuple(submitted)
+            publications.append(publication)
+        if publications and self._worker.submit("camera_pair", tuple(publications)):
+            return tuple(item.view for item in publications)
+        return ()
 
     def publish_display(self, publication: DisplayPublication) -> bool:
-        return self._workers["display"].submit(publication)
+        return self._worker.submit("display", publication)
 
     def snapshot(self) -> dict[str, dict[str, int | bool]]:
-        return {name: worker.snapshot() for name, worker in self._workers.items()}
+        state = self._worker.snapshot()
+        # Preserve the established per-channel diagnostics while proving that
+        # every channel is backed by the same serialized writer.
+        return {
+            "logger": state,
+            "exterior": state,
+            "wrist": state,
+            "display": state,
+        }
 
     def close(self) -> dict[str, bool]:
-        return {name: worker.close() for name, worker in self._workers.items()}
+        closed = self._worker.close()
+        return {"exterior": closed, "wrist": closed, "display": closed}
+
+    def _publish(self, item: object) -> None:
+        if isinstance(item, tuple):
+            failure: Exception | None = None
+            for publication in item:
+                try:
+                    self._publish_image(publication)
+                except Exception as exc:  # noqa: BLE001 - publish the paired view too
+                    failure = failure or exc
+            if failure is not None:
+                raise failure
+            return
+        self._publish_display(item)
 
     def _publish_image(self, item: object) -> None:
         publication = item
@@ -799,6 +858,71 @@ def _camera_frame(camera, *, view: str) -> CameraFrame:
     return result
 
 
+def _camera_render_marker(camera) -> tuple[int, float] | None:
+    """Return Isaac's producer-owned frame marker, never our loop counter."""
+
+    current = camera.get_current_frame(clone=True)
+    if not isinstance(current, dict):
+        return None
+    frame = current.get("rendering_frame")
+    timestamp = current.get("rendering_time")
+    if not isinstance(frame, (int, float)) or not isinstance(timestamp, (int, float)):
+        return None
+    return int(frame), float(timestamp)
+
+
+def _initialize_camera_producers(world, cameras: tuple[tuple[str, object], ...]):
+    """Attach RGB annotators and prove two advancing frames on the sim thread."""
+
+    render_products: dict[str, str] = {}
+    for view, camera in cameras:
+        camera.initialize(attach_rgb_annotator=True)
+        render_product = camera.get_render_product_path()
+        if not isinstance(render_product, str) or not render_product:
+            raise CameraReadinessError(view, "render_product_missing")
+        prim = world.stage.GetPrimAtPath(render_product)
+        if not prim or not prim.IsValid():
+            raise CameraReadinessError(view, "render_product_invalid")
+        render_products[view] = render_product
+
+    prior: dict[str, tuple[int, float] | None] = {view: None for view, _ in cameras}
+    consecutive = 0
+    last_reason = "missing"
+    for _ in range(CAMERA_WARMUP_RENDER_FRAMES):
+        world.step(render=True)
+        advanced = True
+        for view, camera in cameras:
+            frame = _camera_frame(camera, view=view)
+            marker = _camera_render_marker(camera)
+            if frame.rgb is None:
+                last_reason = frame.reason
+                advanced = False
+            elif marker is None:
+                last_reason = "producer_marker_missing"
+                advanced = False
+            elif prior[view] is not None and marker <= prior[view]:
+                last_reason = "producer_stale"
+                advanced = False
+            prior[view] = marker
+        consecutive = consecutive + 1 if advanced else 0
+        if consecutive >= CAMERA_READY_CONSECUTIVE_FRAMES:
+            return render_products, prior
+    raise CameraReadinessError("pair", f"warmup_exhausted:{last_reason}")
+
+
+def _camera_markers_advanced(
+    cameras: tuple[tuple[str, object], ...],
+    prior: dict[str, tuple[int, float] | None],
+) -> tuple[bool, dict[str, tuple[int, float] | None], str]:
+    current = {view: _camera_render_marker(camera) for view, camera in cameras}
+    for view, marker in current.items():
+        if marker is None:
+            return False, current, f"{view}_producer_marker_missing"
+        if prior.get(view) is not None and marker <= prior[view]:
+            return False, current, f"{view}_producer_stale"
+    return True, current, ""
+
+
 def _validate_camera_pair(
     exterior,
     wrist,
@@ -1198,8 +1322,6 @@ def openpi_franka_mk8s_live_v2(
     robot.set_joint_positions(
         np.asarray([*DROID_RESET_JOINTS, GRIPPER_JOINT_MAX, GRIPPER_JOINT_MAX])
     )
-    exterior.initialize()
-    wrist.initialize()
     _look_at(
         world.stage,
         EXTERIOR_CAMERA_PATH,
@@ -1213,6 +1335,14 @@ def openpi_franka_mk8s_live_v2(
     wrist_pose = _aim_wrist_camera(world.stage, wrist_mount)
     _configure_camera_optics(world.stage, EXTERIOR_CAMERA_PATH, "exterior")
     _configure_camera_optics(world.stage, WRIST_CAMERA_PATH, "wrist")
+    cameras = (("exterior", exterior), ("wrist", wrist))
+    render_products, camera_markers = _initialize_camera_producers(world, cameras)
+    print(
+        "NPA_OPENPI_CAMERAS_READY "
+        f"views={','.join(sorted(render_products))} "
+        f"warmup_frames={CAMERA_WARMUP_RENDER_FRAMES}",
+        flush=True,
+    )
     set_camera_view(
         eye=[1.35, -1.15, 0.9],
         target=[0.44, 0.02, 0.1],
@@ -1275,6 +1405,7 @@ def openpi_franka_mk8s_live_v2(
     pickup_success = False
     executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="openpi-policy")
     telemetry = LiveTelemetryPublisher(logger)
+    camera_readiness = CameraReadinessMonitor()
     display_rate = DisplayRateLimiter()
     next_loop_heartbeat_at = 0.0
 
@@ -1464,6 +1595,21 @@ def openpi_franka_mk8s_live_v2(
                     exterior_cube_in_frame=exterior_cube_in_frame,
                     wrist_cube_in_frame=wrist_cube_in_frame,
                 )
+                producers_advanced, current_markers, producer_reason = (
+                    _camera_markers_advanced(cameras, camera_markers)
+                )
+                if producers_advanced:
+                    camera_markers = current_markers
+                else:
+                    pair = CameraPair(
+                        False,
+                        pair.exterior,
+                        pair.wrist,
+                        "pair",
+                        producer_reason,
+                        pair.mean_difference,
+                    )
+                camera_readiness.observe(pair, producer_reason)
                 current_exterior_cube_in_frame = int(exterior_cube_in_frame)
                 current_wrist_cube_in_frame = int(wrist_cube_in_frame)
                 current_exterior_red_cube_pixels = pair.exterior.red_cube_pixels
@@ -1818,9 +1964,7 @@ def openpi_franka_mk8s_live_v2(
                     f"elapsed_seconds={now - started:.3f} "
                     f"render_sequence={render_sequence} "
                     f"policy_in_flight={int(pending is not None)} "
-                    f"display_dropped={telemetry_state['display']['dropped']} "
-                    f"exterior_dropped={telemetry_state['exterior']['dropped']} "
-                    f"wrist_dropped={telemetry_state['wrist']['dropped']}",
+                    f"logger_dropped={telemetry_state['logger']['dropped']}",
                     flush=True,
                 )
             overlay[2].text = (
@@ -1845,6 +1989,14 @@ def openpi_franka_mk8s_live_v2(
             f"closed={telemetry_closed} state={telemetry_state}",
             flush=True,
         )
+        with contextlib.suppress(Exception):
+            exterior.destroy()
+        with contextlib.suppress(Exception):
+            wrist.destroy()
+        if not all(telemetry_closed.values()):
+            raise TelemetryShutdownError(
+                "logger worker remained alive; refusing result finalization"
+            )
         run.add_result("observation_sequence", observation_sequence)
         run.add_result("policy_requests", requests)
         run.add_result("policy_round_trips", round_trips)
