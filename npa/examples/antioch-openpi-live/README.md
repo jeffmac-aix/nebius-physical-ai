@@ -103,6 +103,11 @@ recognizably Franka-shaped instead of a thick line strip. The actual Isaac rende
 remains visible in the exterior and wrist camera panes. No Isaac or Franka mesh
 bytes are copied into telemetry, source, or the image.
 
+All scenario telemetry is organized under the single `openpi-live` Rerun entity
+root. Antioch's logger receives that root and resolves relative entities beneath
+it; every authored blueprint origin uses the same resolver for the camera panes,
+3D scene, camera/decision/grasp metrics, Franka joint plots, and policy errors.
+
 Pickup evidence is physical rather than inferred from action issuance: live Isaac
 poses report end-effector approach and distance, a tracked rigid-contact view reports
 cube-to-finger contact force, and the cube pose reports lift relative to its initialized

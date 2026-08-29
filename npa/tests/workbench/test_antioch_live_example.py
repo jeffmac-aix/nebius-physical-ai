@@ -26,8 +26,12 @@ EXAMPLE = ROOT / "npa/examples/antioch-openpi-live"
 
 
 def _load_live_scenario(monkeypatch: pytest.MonkeyPatch, module_name: str):
+    class Logger:
+        def __init__(self, root: str) -> None:
+            self.root = root
+
     fake_antioch = types.ModuleType("antioch")
-    fake_antioch.Logger = lambda *_args, **_kwargs: object()
+    fake_antioch.Logger = Logger
     fake_antioch.param = lambda default, **_kwargs: default
     fake_antioch.scenario = lambda **_kwargs: lambda function: function
     monkeypatch.setitem(sys.modules, "antioch", fake_antioch)
@@ -112,28 +116,31 @@ def test_live_scenario_is_real_bounded_and_fail_closed() -> None:
         'CLIENT_ROOT = Path("/tmp/npa-live-client-current")',
         'return "wss://127.0.0.1:8444", token, context',
         '"X-NPA-Relay-Role": "simulation"',
+        'TELEMETRY_ROOT = "openpi-live"',
+        "logger = antioch.Logger(TELEMETRY_ROOT)",
+        "def _resolved_telemetry_entity(",
         "def _log_camera_pair_for_rerun(",
-        'logger.image(f"camera/{view}"',
-        'logger.scalar("decision/observation_sequence"',
-        'logger.scalar("decision/policy_requests"',
-        'logger.scalar("decision/policy_in_flight"',
-        'logger.scalar("decision/round_trips"',
-        'logger.scalar("decision/inference_latency_ms"',
-        'logger.scalar("decision/safe_hold"',
-        'logger.scalar("decision/reconnects"',
-        'logger.scalar("decision/safe_targets_applied"',
-        '"decision/raw_gripper_range_mismatches"',
-        '"decision/raw_joint_limit_mismatches"',
-        '"decision/joint_limit_projections"',
-        '"decision/joint_step_projections"',
-        'logger.scalar("grasp/end_effector_cube_distance_m"',
-        'logger.scalar("grasp/gripper_contact_force_n"',
-        'logger.scalar("grasp/cube_lift_m"',
-        'logger.scalar("grasp/pickup_success"',
-        '"scene/franka/base"',
-        '"scene/franka/links"',
-        '"scene/franka/joints"',
-        '"scene/franka/gripper"',
+        "logger.image(entity, frame.rgb)",
+        'f"{DECISION_METRICS_ENTITY}/observation_sequence"',
+        'f"{DECISION_METRICS_ENTITY}/policy_requests"',
+        'f"{DECISION_METRICS_ENTITY}/policy_in_flight"',
+        'f"{DECISION_METRICS_ENTITY}/round_trips"',
+        'f"{DECISION_METRICS_ENTITY}/inference_latency_ms"',
+        'f"{DECISION_METRICS_ENTITY}/safe_hold"',
+        'f"{DECISION_METRICS_ENTITY}/reconnects"',
+        'f"{DECISION_METRICS_ENTITY}/safe_targets_applied"',
+        'f"{DECISION_METRICS_ENTITY}/raw_gripper_range_mismatches"',
+        'f"{DECISION_METRICS_ENTITY}/raw_joint_limit_mismatches"',
+        'f"{DECISION_METRICS_ENTITY}/joint_limit_projections"',
+        'f"{DECISION_METRICS_ENTITY}/joint_step_projections"',
+        'f"{GRASP_METRICS_ENTITY}/end_effector_cube_distance_m"',
+        'f"{GRASP_METRICS_ENTITY}/gripper_contact_force_n"',
+        'f"{GRASP_METRICS_ENTITY}/cube_lift_m"',
+        'f"{GRASP_METRICS_ENTITY}/pickup_success"',
+        'f"{FRANKA_SCENE_ENTITY}/base"',
+        'f"{FRANKA_SCENE_ENTITY}/links"',
+        'f"{FRANKA_SCENE_ENTITY}/joints"',
+        'f"{FRANKA_SCENE_ENTITY}/gripper"',
         "rr.Boxes3D(**proxy",
         "rr.Ellipsoids3D(**proxy",
         "_franka_proxy_geometry(link_points)",
@@ -470,10 +477,11 @@ def test_live_camera_pair_classifies_each_view_freshness_semantics_and_distinctn
         assert (rejected.rejected_view, rejected.reason) == (view, reason)
 
 
-def test_live_observation_mapping_and_camera_blueprint_are_exact(
+def test_live_observation_mapping_and_telemetry_blueprint_are_exact(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     scenario = _load_live_scenario(monkeypatch, "antioch_live_mapping_blueprint_test")
+    assert scenario.logger.root == scenario.TELEMETRY_ROOT == "openpi-live"
     exterior = np.zeros((224, 224, 3), dtype=np.uint8)
     wrist = np.ones((224, 224, 3), dtype=np.uint8)
     joints = np.asarray([*scenario.DROID_RESET_JOINTS, 0.04, 0.04], dtype=np.float32)
@@ -493,20 +501,52 @@ def test_live_observation_mapping_and_camera_blueprint_are_exact(
         def Spatial2DView(self, **kwargs):  # noqa: N802, ANN202
             return {"kind": "2d", **kwargs}
 
+        def Spatial3DView(self, **kwargs):  # noqa: N802, ANN202
+            return {"kind": "3d", **kwargs}
+
+        def TimeSeriesView(self, **kwargs):  # noqa: N802, ANN202
+            return {"kind": "series", **kwargs}
+
+        def TextLogView(self, **kwargs):  # noqa: N802, ANN202
+            return {"kind": "text", **kwargs}
+
         def Horizontal(self, *views, **kwargs):  # noqa: N802, ANN202
             return {"kind": "horizontal", "views": views, **kwargs}
+
+        def Vertical(self, *views, **kwargs):  # noqa: N802, ANN202
+            return {"kind": "vertical", "views": views, **kwargs}
+
+        def Tabs(self, *views, **kwargs):  # noqa: N802, ANN202
+            return {"kind": "tabs", "views": views, **kwargs}
 
         def Blueprint(self, *children, **kwargs):  # noqa: N802, ANN202
             return {"kind": "blueprint", "children": children, **kwargs}
 
     blueprint = scenario._camera_blueprint(Blueprint())
-    horizontal = blueprint["children"][0]
-    assert [view["origin"] for view in horizontal["views"]] == [
-        "camera/exterior",
-        "camera/wrist",
+    vertical = blueprint["children"][0]
+    cameras, lower = vertical["views"]
+    scene, telemetry = lower["views"]
+    views = [*cameras["views"], scene, *telemetry["views"]]
+    assert [view["origin"] for view in views] == [
+        scenario._resolved_telemetry_entity(scenario.CAMERA_EXTERIOR_ENTITY),
+        scenario._resolved_telemetry_entity(scenario.CAMERA_WRIST_ENTITY),
+        scenario._resolved_telemetry_entity(scenario.SCENE_ENTITY),
+        scenario._resolved_telemetry_entity(scenario.DECISION_METRICS_ENTITY),
+        scenario._resolved_telemetry_entity(scenario.GRASP_METRICS_ENTITY),
+        scenario._resolved_telemetry_entity(scenario.FRANKA_ACTION_ENTITY),
+        scenario._resolved_telemetry_entity(scenario.CAMERA_METRICS_ENTITY),
+        scenario._resolved_telemetry_entity(scenario.POLICY_ERROR_ENTITY),
     ]
-    assert horizontal["column_shares"] == [1.0, 1.0]
+    assert all(origin.startswith(f"{scenario.TELEMETRY_ROOT}/") for origin in (
+        view["origin"] for view in views
+    ))
+    assert cameras["column_shares"] == [1.0, 1.0]
+    assert lower["column_shares"] == [1.0, 1.0]
+    assert vertical["row_shares"] == [1.0, 1.0]
     assert blueprint["auto_layout"] is False
+
+    rrb = pytest.importorskip("rerun.blueprint")
+    assert scenario._camera_blueprint(rrb) is not None
 
 
 def test_live_policy_request_round_trip_preserves_exact_camera_identity(

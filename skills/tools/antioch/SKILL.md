@@ -75,6 +75,9 @@ endpoints, print identity/config/environment data, or inspect unrelated runs.
 - A live policy loop must log current camera frames and decision counters from the
   executing scenario. Reject stale, malformed, non-finite, wrong-shaped, or unsafe
   actions and hold position while reconnecting. Do not claim hard real-time control.
+- Give live telemetry one explicit logger root and resolve every Rerun blueprint
+  origin through that same root; unprefixed view origins do not select entities
+  emitted by a named Antioch logger.
 - `npa/examples/antioch-openpi-live` is the public-source reference. Its checked-in
   project identity is intentionally unusable and is replaced only in private runtime
   state. The OpenPI gateway/controller lives in

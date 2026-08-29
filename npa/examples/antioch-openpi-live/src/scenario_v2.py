@@ -12,7 +12,28 @@ from pathlib import Path
 
 import antioch
 
-logger = antioch.Logger("openpi-live")
+TELEMETRY_ROOT = "openpi-live"
+CAMERA_EXTERIOR_ENTITY = "camera/exterior"
+CAMERA_WRIST_ENTITY = "camera/wrist"
+CAMERA_METRICS_ENTITY = "camera"
+SCENE_ENTITY = "scene"
+FRANKA_SCENE_ENTITY = "scene/franka"
+DECISION_METRICS_ENTITY = "decision"
+GRASP_METRICS_ENTITY = "grasp"
+FRANKA_ACTION_ENTITY = "robot/franka"
+POLICY_ERROR_ENTITY = "policy/error"
+TASK_ENTITY = "task/label"
+
+
+def _resolved_telemetry_entity(relative_entity: str) -> str:
+    """Resolve an Antioch Logger-relative entity to its Rerun catalog path."""
+
+    if not relative_entity or relative_entity.startswith("/") or relative_entity.endswith("/"):
+        raise ValueError(f"invalid telemetry entity: {relative_entity!r}")
+    return f"{TELEMETRY_ROOT}/{relative_entity}"
+
+
+logger = antioch.Logger(TELEMETRY_ROOT)
 
 CLIENT_ROOT = Path("/tmp/npa-live-client-current")
 ACTION_SHAPE = (15, 8)
@@ -603,13 +624,52 @@ def _build_policy_observation(exterior_rgb, wrist_rgb, joint_positions, prompt: 
 
 
 def _camera_blueprint(rrb):
-    """Keep both policy inputs simultaneously visible in the default Rerun layout."""
+    """Bind every authored view to the Logger-resolved Rerun entity catalog."""
 
     return rrb.Blueprint(
-        rrb.Horizontal(
-            rrb.Spatial2DView(origin="camera/exterior", name="Exterior policy input"),
-            rrb.Spatial2DView(origin="camera/wrist", name="Wrist policy input"),
-            column_shares=[1.0, 1.0],
+        rrb.Vertical(
+            rrb.Horizontal(
+                rrb.Spatial2DView(
+                    origin=_resolved_telemetry_entity(CAMERA_EXTERIOR_ENTITY),
+                    name="Exterior policy input",
+                ),
+                rrb.Spatial2DView(
+                    origin=_resolved_telemetry_entity(CAMERA_WRIST_ENTITY),
+                    name="Wrist policy input",
+                ),
+                column_shares=[1.0, 1.0],
+            ),
+            rrb.Horizontal(
+                rrb.Spatial3DView(
+                    origin=_resolved_telemetry_entity(SCENE_ENTITY),
+                    name="Franka scene",
+                ),
+                rrb.Tabs(
+                    rrb.TimeSeriesView(
+                        origin=_resolved_telemetry_entity(DECISION_METRICS_ENTITY),
+                        name="Policy decisions",
+                    ),
+                    rrb.TimeSeriesView(
+                        origin=_resolved_telemetry_entity(GRASP_METRICS_ENTITY),
+                        name="Physical pickup evidence",
+                    ),
+                    rrb.TimeSeriesView(
+                        origin=_resolved_telemetry_entity(FRANKA_ACTION_ENTITY),
+                        name="Franka joint targets",
+                    ),
+                    rrb.TimeSeriesView(
+                        origin=_resolved_telemetry_entity(CAMERA_METRICS_ENTITY),
+                        name="Camera quality",
+                    ),
+                    rrb.TextLogView(
+                        origin=_resolved_telemetry_entity(POLICY_ERROR_ENTITY),
+                        name="Policy errors",
+                    ),
+                    name="Telemetry",
+                ),
+                column_shares=[1.0, 1.0],
+            ),
+            row_shares=[1.0, 1.0],
         ),
         auto_layout=False,
     )
@@ -619,22 +679,27 @@ def _log_camera_pair_for_rerun(logger, pair: CameraPair) -> tuple[str, ...]:
     """Publish structurally valid pixels even when policy quality rejects them."""
 
     logged: list[str] = []
-    for view, frame in (("exterior", pair.exterior), ("wrist", pair.wrist)):
+    for view, entity, frame in (
+        ("exterior", CAMERA_EXTERIOR_ENTITY, pair.exterior),
+        ("wrist", CAMERA_WRIST_ENTITY, pair.wrist),
+    ):
         if frame.rgb is None:
             continue
-        logger.image(f"camera/{view}", frame.rgb)
-        logger.scalar(f"camera/{view}/luminance_mean", frame.luminance_mean)
-        logger.scalar(f"camera/{view}/luminance_variance", frame.luminance_variance)
-        logger.scalar(f"camera/{view}/dynamic_range", frame.dynamic_range)
+        logger.image(entity, frame.rgb)
+        logger.scalar(f"{entity}/luminance_mean", frame.luminance_mean)
+        logger.scalar(f"{entity}/luminance_variance", frame.luminance_variance)
+        logger.scalar(f"{entity}/dynamic_range", frame.dynamic_range)
         if view == "exterior":
             logger.scalar(
-                "camera/exterior/red_cube_pixels",
+                f"{CAMERA_EXTERIOR_ENTITY}/red_cube_pixels",
                 frame.red_cube_pixels,
             )
         logged.append(view)
     if logged:
-        logger.scalar("camera/pair_mean_difference", pair.mean_difference)
-        logger.scalar("camera/policy_quality_accepted", int(pair.accepted))
+        logger.scalar(f"{CAMERA_METRICS_ENTITY}/pair_mean_difference", pair.mean_difference)
+        logger.scalar(
+            f"{CAMERA_METRICS_ENTITY}/policy_quality_accepted", int(pair.accepted)
+        )
     return tuple(logged)
 
 
@@ -1076,7 +1141,7 @@ def openpi_franka_mk8s_live_v2(
                         transport_failures[reason] += 1
                         client.close()
                         next_attempt = now + client.reconnect_delay()
-                    logger.value("policy/error", rr.TextLog(reason))
+                    logger.value(POLICY_ERROR_ENTITY, rr.TextLog(reason))
                     print(
                         "NPA_OPENPI_SAFE_HOLD "
                         f"observation={pending_observation} "
@@ -1202,17 +1267,22 @@ def openpi_franka_mk8s_live_v2(
                         f"task_label={TASK_LABEL}",
                         flush=True,
                     )
-                    logger.value("task/label", rr.TextLog(TASK_LABEL))
+                    logger.value(TASK_ENTITY, rr.TextLog(TASK_LABEL))
                     logger.scalar(
-                        "camera/exterior/cube_in_frame",
+                        f"{CAMERA_EXTERIOR_ENTITY}/cube_in_frame",
                         int(exterior_cube_in_frame),
                     )
                     logger.scalar(
-                        "camera/wrist/cube_in_frame",
+                        f"{CAMERA_WRIST_ENTITY}/cube_in_frame",
                         int(wrist_cube_in_frame),
                     )
-                    logger.scalar("camera/pair_id", request_camera_pair_id)
-                    logger.scalar("camera/render_sequence", request_render_sequence)
+                    logger.scalar(
+                        f"{CAMERA_METRICS_ENTITY}/pair_id", request_camera_pair_id
+                    )
+                    logger.scalar(
+                        f"{CAMERA_METRICS_ENTITY}/render_sequence",
+                        request_render_sequence,
+                    )
                     pending_observation = observation_sequence
                     pending_camera_pair_id = request_camera_pair_id
                     pending_joint_positions = joint_positions.copy()
@@ -1284,46 +1354,76 @@ def openpi_franka_mk8s_live_v2(
                     pickup_hold_seconds = 0.0
 
             safe_hold = chunk is None
-            logger.scalar("decision/observation_sequence", observation_sequence)
-            logger.scalar("decision/observation_time_seconds", now - started)
-            logger.scalar("decision/policy_requests", requests)
-            logger.scalar("decision/policy_in_flight", int(pending is not None))
-            logger.scalar("decision/round_trips", round_trips)
-            logger.scalar("decision/inference_latency_ms", last_latency * 1000.0)
-            logger.scalar("decision/action_horizon", ACTION_SHAPE[0])
-            logger.scalar("decision/action_dimension", ACTION_SHAPE[1])
-            logger.scalar("decision/chunk_index", chunk_index)
-            logger.scalar("decision/safe_hold", int(safe_hold))
-            logger.scalar("decision/reconnects", client.reconnects)
-            logger.scalar("decision/safe_targets_applied", applied)
             logger.scalar(
-                "decision/raw_gripper_range_mismatches",
+                f"{DECISION_METRICS_ENTITY}/observation_sequence", observation_sequence
+            )
+            logger.scalar(
+                f"{DECISION_METRICS_ENTITY}/observation_time_seconds", now - started
+            )
+            logger.scalar(f"{DECISION_METRICS_ENTITY}/policy_requests", requests)
+            logger.scalar(
+                f"{DECISION_METRICS_ENTITY}/policy_in_flight", int(pending is not None)
+            )
+            logger.scalar(f"{DECISION_METRICS_ENTITY}/round_trips", round_trips)
+            logger.scalar(
+                f"{DECISION_METRICS_ENTITY}/inference_latency_ms",
+                last_latency * 1000.0,
+            )
+            logger.scalar(f"{DECISION_METRICS_ENTITY}/action_horizon", ACTION_SHAPE[0])
+            logger.scalar(
+                f"{DECISION_METRICS_ENTITY}/action_dimension", ACTION_SHAPE[1]
+            )
+            logger.scalar(f"{DECISION_METRICS_ENTITY}/chunk_index", chunk_index)
+            logger.scalar(f"{DECISION_METRICS_ENTITY}/safe_hold", int(safe_hold))
+            logger.scalar(f"{DECISION_METRICS_ENTITY}/reconnects", client.reconnects)
+            logger.scalar(f"{DECISION_METRICS_ENTITY}/safe_targets_applied", applied)
+            logger.scalar(
+                f"{DECISION_METRICS_ENTITY}/raw_gripper_range_mismatches",
                 raw_gripper_range_mismatches,
             )
-            logger.scalar("decision/rejected_actions", sum(rejected_actions.values()))
             logger.scalar(
-                "decision/raw_joint_limit_mismatches",
+                f"{DECISION_METRICS_ENTITY}/rejected_actions",
+                sum(rejected_actions.values()),
+            )
+            logger.scalar(
+                f"{DECISION_METRICS_ENTITY}/raw_joint_limit_mismatches",
                 raw_joint_limit_mismatches,
             )
-            logger.scalar("decision/joint_limit_projections", joint_limit_projections)
-            logger.scalar("decision/joint_step_projections", joint_step_projections)
-            logger.scalar("grasp/end_effector_cube_distance_m", ee_distance)
             logger.scalar(
-                "grasp/end_effector_cube_approach_m",
+                f"{DECISION_METRICS_ENTITY}/joint_limit_projections",
+                joint_limit_projections,
+            )
+            logger.scalar(
+                f"{DECISION_METRICS_ENTITY}/joint_step_projections",
+                joint_step_projections,
+            )
+            logger.scalar(
+                f"{GRASP_METRICS_ENTITY}/end_effector_cube_distance_m", ee_distance
+            )
+            logger.scalar(
+                f"{GRASP_METRICS_ENTITY}/end_effector_cube_approach_m",
                 max(0.0, initial_ee_distance - minimum_ee_distance),
             )
-            logger.scalar("grasp/gripper_contact_force_n", contact_force)
-            logger.scalar("grasp/gripper_contact", int(in_gripper_contact))
-            logger.scalar("grasp/gripper_closed", int(gripper_closed))
-            logger.scalar("grasp/cube_lift_m", cube_lift)
-            logger.scalar("grasp/pickup_hold_seconds", pickup_hold_seconds)
-            logger.scalar("grasp/pickup_success", int(pickup_success))
             logger.scalar(
-                "decision/applied_target_rate_hz",
+                f"{GRASP_METRICS_ENTITY}/gripper_contact_force_n", contact_force
+            )
+            logger.scalar(
+                f"{GRASP_METRICS_ENTITY}/gripper_contact", int(in_gripper_contact)
+            )
+            logger.scalar(f"{GRASP_METRICS_ENTITY}/gripper_closed", int(gripper_closed))
+            logger.scalar(f"{GRASP_METRICS_ENTITY}/cube_lift_m", cube_lift)
+            logger.scalar(
+                f"{GRASP_METRICS_ENTITY}/pickup_hold_seconds", pickup_hold_seconds
+            )
+            logger.scalar(
+                f"{GRASP_METRICS_ENTITY}/pickup_success", int(pickup_success)
+            )
+            logger.scalar(
+                f"{DECISION_METRICS_ENTITY}/applied_target_rate_hz",
                 applied / max(now - started, 1e-6),
             )
             logger.value(
-                "scene/cube",
+                f"{SCENE_ENTITY}/cube",
                 rr.Boxes3D(
                     centers=[cube_position.tolist()],
                     sizes=[[CUBE_SIZE_METERS] * 3],
@@ -1331,7 +1431,7 @@ def openpi_franka_mk8s_live_v2(
                 ),
             )
             logger.value(
-                "scene/table",
+                f"{SCENE_ENTITY}/table",
                 rr.Boxes3D(
                     centers=[tabletop.get_world_pose()[0].tolist()],
                     sizes=[[0.9, 0.7, 0.08]],
@@ -1339,24 +1439,26 @@ def openpi_franka_mk8s_live_v2(
                 ),
             )
             for index, value in enumerate(current_joint_positions[:9]):
-                logger.scalar(f"robot/franka/joint_{index}", float(value))
+                logger.scalar(f"{FRANKA_ACTION_ENTITY}/joint_{index}", float(value))
             link_points = _franka_link_points(world.stage)
             proxy = _franka_proxy_geometry(link_points)
             if proxy["base"] is not None:
                 logger.value(
-                    "scene/franka/base",
+                    f"{FRANKA_SCENE_ENTITY}/base",
                     rr.Boxes3D(**proxy["base"]),
                 )
             if proxy["links"]["centers"]:
-                logger.value("scene/franka/links", rr.Boxes3D(**proxy["links"]))
+                logger.value(
+                    f"{FRANKA_SCENE_ENTITY}/links", rr.Boxes3D(**proxy["links"])
+                )
             if proxy["joints"] is not None:
                 logger.value(
-                    "scene/franka/joints",
+                    f"{FRANKA_SCENE_ENTITY}/joints",
                     rr.Ellipsoids3D(**proxy["joints"]),
                 )
             if proxy["gripper"] is not None:
                 logger.value(
-                    "scene/franka/gripper",
+                    f"{FRANKA_SCENE_ENTITY}/gripper",
                     rr.Boxes3D(**proxy["gripper"]),
                 )
             overlay[2].text = (
