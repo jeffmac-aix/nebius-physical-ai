@@ -45,9 +45,8 @@ CONTROL_HZ = 15.0
 TARGETS_PER_QUERY = 5
 TELEMETRY_DISPLAY_HZ = 5.0
 TELEMETRY_WORKER_JOIN_SECONDS = 0.5
-CAMERA_WARMUP_RENDER_FRAMES = 32
 CAMERA_READY_CONSECUTIVE_FRAMES = 2
-CAMERA_RUNTIME_FAILURE_FRAMES = 32
+CAMERA_STATUS_INTERVAL_FRAMES = 120
 # A cold B200 model request can take tens of seconds even though warmed requests
 # are normally tens of milliseconds. This is a stale-response safety deadline,
 # not a real-time claim or a total run limit.
@@ -108,6 +107,16 @@ class CameraPair:
 
 
 @dataclass(frozen=True)
+class CameraReadinessDecision:
+    policy_eligible: bool
+    status: str
+    reason: str
+    consecutive_ready: int
+    unavailable_frames: int
+    emit_status: bool
+
+
+@dataclass(frozen=True)
 class PolicyRequest:
     observation: dict
     camera_pair_id: int
@@ -141,7 +150,7 @@ class DisplayPublication:
 
 
 class CameraReadinessError(RuntimeError):
-    """Typed failure for a camera that has no live RGB producer."""
+    """Typed failure for structurally invalid camera producer setup."""
 
     def __init__(self, view: str, reason: str) -> None:
         super().__init__(f"{view} camera readiness failed: {reason}")
@@ -154,22 +163,68 @@ class TelemetryShutdownError(RuntimeError):
 
 
 class CameraReadinessMonitor:
-    """Fail a running producer after a bounded contiguous-frame outage."""
+    """Gate policy control while a camera pair is unavailable or recovering."""
 
-    def __init__(self, limit: int = CAMERA_RUNTIME_FAILURE_FRAMES) -> None:
-        self._limit = limit
-        self._consecutive = 0
+    def __init__(
+        self,
+        *,
+        ready_frames: int = CAMERA_READY_CONSECUTIVE_FRAMES,
+        status_interval_frames: int = CAMERA_STATUS_INTERVAL_FRAMES,
+    ) -> None:
+        if ready_frames <= 0 or status_interval_frames <= 0:
+            raise ValueError("camera readiness intervals must be positive")
+        self._ready_frames = ready_frames
+        self._status_interval_frames = status_interval_frames
+        self._consecutive_ready = 0
+        self._unavailable_frames = 0
+        self._ever_ready = False
+        self._status = ""
+        self._last_status_frame = 0
+        self._observed_frames = 0
 
-    def observe(self, pair: CameraPair, producer_reason: str = "") -> None:
-        reason = producer_reason
-        view = "pair"
-        if not reason and pair.exterior.rgb is None:
-            view, reason = "exterior", pair.exterior.reason or "missing"
-        if not reason and pair.wrist.rgb is None:
-            view, reason = "wrist", pair.wrist.reason or "missing"
-        self._consecutive = self._consecutive + 1 if reason else 0
-        if self._consecutive >= self._limit:
-            raise CameraReadinessError(view, f"runtime_outage:{reason}")
+    def observe(
+        self, pair: CameraPair, producer_reason: str = ""
+    ) -> CameraReadinessDecision:
+        self._observed_frames += 1
+        accepted = pair.accepted and not producer_reason
+        if accepted:
+            self._consecutive_ready += 1
+            self._unavailable_frames = 0
+            policy_eligible = self._consecutive_ready >= self._ready_frames
+            if policy_eligible:
+                self._ever_ready = True
+                status = "ready"
+                reason = ""
+            else:
+                status = (
+                    "runtime_outage" if self._ever_ready else "waiting_for_camera"
+                )
+                reason = "confirming_advancement"
+        else:
+            self._consecutive_ready = 0
+            self._unavailable_frames += 1
+            policy_eligible = False
+            status = "runtime_outage" if self._ever_ready else "waiting_for_camera"
+            reason = producer_reason or pair.reason or "missing"
+
+        transitioned = status != self._status
+        periodic = (
+            not policy_eligible
+            and self._observed_frames - self._last_status_frame
+            >= self._status_interval_frames
+        )
+        emit_status = transitioned or periodic
+        if emit_status:
+            self._last_status_frame = self._observed_frames
+        self._status = status
+        return CameraReadinessDecision(
+            policy_eligible=policy_eligible,
+            status=status,
+            reason=reason,
+            consecutive_ready=self._consecutive_ready,
+            unavailable_frames=self._unavailable_frames,
+            emit_status=emit_status,
+        )
 
 
 class LatestOnlyWorker:
@@ -280,8 +335,8 @@ class LiveTelemetryPublisher:
 
     def __init__(self, logger) -> None:
         self._logger = logger
-        # This first call deliberately occurs on the simulation thread. Antioch
-        # 0.3.63 attaches its Kit simulation clock on first recording use.
+        # Keep initial telemetry and every later logger call serialized; this is
+        # status evidence, not a camera or viewer lifecycle activation signal.
         self._logger.scalar("telemetry/initialized", 1.0)
         self._worker = LatestOnlyWorker("logger", self._publish)
 
@@ -908,7 +963,7 @@ def _detach_reference_time_producers(
 
 
 def _initialize_camera_producers(world, cameras: tuple[tuple[str, object], ...]):
-    """Attach RGB annotators and prove two advancing frames on the sim thread."""
+    """Attach RGB annotators and fail closed on structural producer errors."""
 
     render_products: dict[str, str] = {}
     reference_times: dict[str, object] = {}
@@ -924,45 +979,15 @@ def _initialize_camera_producers(world, cameras: tuple[tuple[str, object], ...])
             render_products[view] = render_product
             reference_times[view] = _new_reference_time_annotator(render_product)
 
-        prior: dict[str, tuple[int, int] | None] = {
-            view: None for view, _ in cameras
-        }
-        consecutive = 0
-        last_reason = "missing"
-        for _ in range(CAMERA_WARMUP_RENDER_FRAMES):
-            world.step(render=True)
-            advanced = True
-            for view, camera in cameras:
-                frame = _camera_frame(camera, view=view)
-                marker = _reference_time_marker(reference_times[view])
-                if frame.rgb is None:
-                    last_reason = frame.reason
-                    advanced = False
-                elif marker is None:
-                    last_reason = "producer_marker_missing"
-                    advanced = False
-                elif prior[view] is not None and not _reference_time_advanced(
-                    marker, prior[view]
-                ):
-                    last_reason = "producer_stale"
-                    advanced = False
-                prior[view] = marker
-            consecutive = consecutive + 1 if advanced else 0
-            if consecutive >= CAMERA_READY_CONSECUTIVE_FRAMES:
-                return render_products, reference_times, prior
-        raise CameraReadinessError("pair", f"warmup_exhausted:{last_reason}")
+        markers = {view: None for view, _ in cameras}
+        return render_products, reference_times, markers
     except Exception:
         _detach_reference_time_producers(reference_times, render_products)
         raise
 
 
 def _initialize_live_capture(world, cameras, logger):
-    """Activate Antioch recording before warming its Kit render products."""
-
-    # Antioch 0.3.63 attaches the Kit simulation clock on the logger's first
-    # recording use. Camera annotators initialized before that lifecycle edge
-    # remain present but return no pixels, even while world.step(render=True)
-    # advances. Keep this owner-thread first use ahead of both RGB producers.
+    """Create serialized telemetry and structurally valid camera producers."""
     telemetry = LiveTelemetryPublisher(logger)
     try:
         render_products, reference_times, camera_markers = (
@@ -1412,9 +1437,8 @@ def openpi_franka_mk8s_live_v2(
         _initialize_live_capture(world, cameras, logger)
     )
     print(
-        "NPA_OPENPI_CAMERAS_READY "
-        f"views={','.join(sorted(render_products))} "
-        f"warmup_frames={CAMERA_WARMUP_RENDER_FRAMES}",
+        "NPA_OPENPI_CAMERAS_ATTACHED "
+        f"views={','.join(sorted(render_products))} safe_hold=1",
         flush=True,
     )
     set_camera_view(
@@ -1479,8 +1503,10 @@ def openpi_franka_mk8s_live_v2(
     pickup_success = False
     executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="openpi-policy")
     camera_readiness = CameraReadinessMonitor()
+    camera_policy_eligible = False
     display_rate = DisplayRateLimiter()
     next_loop_heartbeat_at = 0.0
+    next_camera_attempt = 0.0
 
     print("NPA_OPENPI_LOOP_READY", flush=True)
     try:
@@ -1639,7 +1665,8 @@ def openpi_franka_mk8s_live_v2(
                     pending_started_at = 0.0
                     pending_stall_reported = False
 
-            if chunk is None and pending is None and now >= next_attempt:
+            if now >= next_camera_attempt:
+                next_camera_attempt = now + 1.0 / CONTROL_HZ
                 joint_positions = np.asarray(
                     robot.get_joint_positions(), dtype=np.float32
                 )
@@ -1682,7 +1709,8 @@ def openpi_franka_mk8s_live_v2(
                         producer_reason,
                         pair.mean_difference,
                     )
-                camera_readiness.observe(pair, producer_reason)
+                readiness = camera_readiness.observe(pair, producer_reason)
+                camera_policy_eligible = readiness.policy_eligible
                 current_exterior_cube_in_frame = int(exterior_cube_in_frame)
                 current_wrist_cube_in_frame = int(wrist_cube_in_frame)
                 current_exterior_red_cube_pixels = pair.exterior.red_cube_pixels
@@ -1702,45 +1730,54 @@ def openpi_franka_mk8s_live_v2(
                         f"views={','.join(published_views)}",
                         flush=True,
                     )
-                if not pair.accepted:
-                    camera_rejected_pairs += 1
-                    camera_rejections[f"{pair.rejected_view}_{pair.reason}"] += 1
-                    safe_holds += 1
-                    next_attempt = now + 1.0 / CONTROL_HZ
-                    overlay[2].text = (
-                        f"SAFE HOLD / {pair.rejected_view} camera {pair.reason}"
-                    )
+                if readiness.emit_status:
                     print(
-                        "NPA_OPENPI_CAMERA_REJECT "
-                        f"view={pair.rejected_view} reason={pair.reason} "
+                        "NPA_OPENPI_CAMERA_STATUS "
+                        f"status={readiness.status} "
+                        f"reason={readiness.reason or 'none'} "
                         f"render_sequence={render_sequence} "
-                        f"exterior_red_cube_pixels={pair.exterior.red_cube_pixels} "
-                        f"pair_difference={pair.mean_difference:.3f}",
+                        f"consecutive_ready={readiness.consecutive_ready} "
+                        f"unavailable_frames={readiness.unavailable_frames} "
+                        f"safe_hold={int(not camera_policy_eligible)} "
+                        f"policy_eligible={int(camera_policy_eligible)}",
                         flush=True,
                     )
-                    print(
-                        _camera_rejection_metrics_line(
-                            elapsed_seconds=now - started,
-                            frames=observation_sequence,
-                            requests=requests,
-                            round_trips=round_trips,
-                            applied=applied,
-                            reconnects=client.reconnects,
-                            camera_rejected_pairs=camera_rejected_pairs,
-                            camera_validated_requests=camera_validated_requests,
-                            camera_pair_id=camera_pair_id,
-                            request_camera_pair_id=request_camera_pair_id,
-                            round_trip_camera_pair_id=round_trip_camera_pair_id,
-                            render_sequence=render_sequence,
-                            request_render_sequence=request_render_sequence,
-                            round_trip_render_sequence=round_trip_render_sequence,
-                            exterior_cube_in_frame=exterior_cube_in_frame,
-                            wrist_cube_in_frame=wrist_cube_in_frame,
-                            pair=pair,
-                        ),
-                        flush=True,
+                if not camera_policy_eligible:
+                    camera_rejected_pairs += 1
+                    rejection_view = pair.rejected_view or "pair"
+                    rejection_reason = pair.reason or readiness.reason
+                    camera_rejections[f"{rejection_view}_{rejection_reason}"] += 1
+                    safe_holds += 1
+                    overlay[2].text = (
+                        f"SAFE HOLD / {rejection_view} camera {rejection_reason}"
                     )
-                else:
+                    if chunk is not None:
+                        chunk = None
+                        chunk_index = 0
+                    if readiness.emit_status:
+                        print(
+                            _camera_rejection_metrics_line(
+                                elapsed_seconds=now - started,
+                                frames=observation_sequence,
+                                requests=requests,
+                                round_trips=round_trips,
+                                applied=applied,
+                                reconnects=client.reconnects,
+                                camera_rejected_pairs=camera_rejected_pairs,
+                                camera_validated_requests=camera_validated_requests,
+                                camera_pair_id=camera_pair_id,
+                                request_camera_pair_id=request_camera_pair_id,
+                                round_trip_camera_pair_id=round_trip_camera_pair_id,
+                                render_sequence=render_sequence,
+                                request_render_sequence=request_render_sequence,
+                                round_trip_render_sequence=round_trip_render_sequence,
+                                exterior_cube_in_frame=exterior_cube_in_frame,
+                                wrist_cube_in_frame=wrist_cube_in_frame,
+                                pair=pair,
+                            ),
+                            flush=True,
+                        )
+                elif chunk is None and pending is None and now >= next_attempt:
                     exterior_rgb = pair.exterior.rgb
                     wrist_rgb = pair.wrist.rgb
                     if first_frame:
@@ -1796,7 +1833,11 @@ def openpi_franka_mk8s_live_v2(
                         ),
                     )
 
-            if chunk is not None and now - last_apply >= 1.0 / CONTROL_HZ:
+            if (
+                chunk is not None
+                and camera_policy_eligible
+                and now - last_apply >= 1.0 / CONTROL_HZ
+            ):
                 target = chunk[chunk_index]
                 robot.apply_action(
                     ArticulationAction(

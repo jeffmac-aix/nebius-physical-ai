@@ -163,7 +163,7 @@ def test_live_scenario_is_real_bounded_and_fail_closed() -> None:
         "NPA_OPENPI_FIRST_FRAME",
         "NPA_OPENPI_REQUEST",
         "NPA_OPENPI_APPLIED",
-        "NPA_OPENPI_CAMERA_REJECT",
+        "NPA_OPENPI_CAMERA_STATUS",
         "NPA_OPENPI_IMAGE_LOG_BEGIN",
         "NPA_OPENPI_IMAGE_LOG_OK",
         "NPA_OPENPI_DISPLAY_LOG_BEGIN",
@@ -447,7 +447,7 @@ def test_live_telemetry_is_latest_only_and_control_does_not_wait_for_slow_images
     )
 
 
-def test_camera_producers_attach_and_warm_on_calling_thread(
+def test_camera_producers_attach_without_waiting_for_pixels_on_calling_thread(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     scenario = _load_live_scenario(monkeypatch, "antioch_camera_producer_test")
@@ -469,8 +469,7 @@ def test_camera_producers_attach_and_warm_on_calling_thread(
         steps = 0
 
         def step(self, *, render: bool) -> None:
-            assert render and threading.get_ident() == owner
-            self.steps += 1
+            raise AssertionError("structural initialization must not render")
 
     world = World()
 
@@ -482,10 +481,7 @@ def test_camera_producers_attach_and_warm_on_calling_thread(
             self.render_product = render_products[0]
 
         def get_data(self) -> dict[str, int]:
-            return {
-                "referenceTimeNumerator": world.steps,
-                "referenceTimeDenominator": 60,
-            }
+            raise AssertionError("structural initialization must not sample producers")
 
     reference_times: list[ReferenceTime] = []
 
@@ -511,19 +507,7 @@ def test_camera_producers_attach_and_warm_on_calling_thread(
             return f"/Render/{self.view}"
 
         def get_rgba(self) -> np.ndarray | None:
-            if world.steps < 2:
-                return None
-            rgba = np.empty((224, 224, 4), dtype=np.uint8)
-            rgba[..., :3] = [140, 30, 10]
-            rgba[..., 3] = 255
-            return rgba
-
-        def get_current_frame(self, *, clone: bool) -> dict[str, float]:
-            assert clone
-            return {
-                "rendering_frame": world.steps,
-                "rendering_time": world.steps / 60.0,
-            }
+            raise AssertionError("structural initialization must not sample pixels")
 
     exterior, wrist = Camera("exterior"), Camera("wrist")
     products, producers, markers = scenario._initialize_camera_producers(
@@ -532,23 +516,22 @@ def test_camera_producers_attach_and_warm_on_calling_thread(
     assert products == {"exterior": "/Render/exterior", "wrist": "/Render/wrist"}
     assert set(producers) == {"exterior", "wrist"}
     assert exterior.attached and wrist.attached
-    assert world.steps == 3
-    assert markers["exterior"] == (3, 60)
+    assert world.steps == 0
+    assert markers == {"exterior": None, "wrist": None}
 
 
-def test_live_capture_activates_recording_before_camera_warmup(
+def test_live_capture_does_not_fabricate_a_logger_driven_camera_lifecycle(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     scenario = _load_live_scenario(monkeypatch, "antioch_camera_lifecycle_test")
-    monkeypatch.setattr(scenario, "CAMERA_WARMUP_RENDER_FRAMES", 2)
     owner = threading.get_ident()
-    lifecycle = SimpleNamespace(recording_active=False, steps=0)
+    calls: list[tuple[str, float]] = []
 
     class Logger:
         def scalar(self, path: str, value: float) -> None:
             assert threading.get_ident() == owner
             assert path == "telemetry/initialized" and value == 1.0
-            lifecycle.recording_active = True
+            calls.append((path, value))
 
     class Prim:
         def IsValid(self) -> bool:
@@ -561,15 +544,11 @@ def test_live_capture_activates_recording_before_camera_warmup(
         stage = SimpleNamespace(GetPrimAtPath=lambda _path: Prim())
 
         def step(self, *, render: bool) -> None:
-            assert render and threading.get_ident() == owner
-            lifecycle.steps += 1
+            raise AssertionError("live capture setup must not warm render frames")
 
     class ReferenceTime:
         def get_data(self) -> dict[str, int]:
-            return {
-                "referenceTimeNumerator": lifecycle.steps,
-                "referenceTimeDenominator": 60,
-            }
+            raise AssertionError("live capture setup must not claim producer readiness")
 
     monkeypatch.setattr(
         scenario,
@@ -587,59 +566,40 @@ def test_live_capture_activates_recording_before_camera_warmup(
             return "/Render/rgb"
 
         def get_rgba(self) -> np.ndarray | None:
-            if not lifecycle.recording_active:
-                return None
-            rgba = np.empty((224, 224, 4), dtype=np.uint8)
-            rgba[..., :3] = [140, 30, 10]
-            rgba[..., 3] = 255
-            return rgba
+            raise AssertionError("live capture setup must not fabricate camera pixels")
 
         def destroy(self) -> None:
             self.destroyed = True
 
-    with pytest.raises(scenario.CameraReadinessError, match="warmup_exhausted:missing"):
-        scenario._initialize_camera_producers(
-            World(), (("exterior", Camera()), ("wrist", Camera()))
-        )
-    assert not lifecycle.recording_active and lifecycle.steps == 2
-
-    lifecycle.steps = 0
     exterior, wrist = Camera(), Camera()
     telemetry, products, producers, markers = scenario._initialize_live_capture(
         World(), (("exterior", exterior), ("wrist", wrist)), Logger()
     )
 
-    assert lifecycle.recording_active
-    assert lifecycle.steps == scenario.CAMERA_READY_CONSECUTIVE_FRAMES
+    assert calls == [("telemetry/initialized", 1.0)]
     assert products == {"exterior": "/Render/rgb", "wrist": "/Render/rgb"}
     assert set(producers) == {"exterior", "wrist"}
-    assert markers == {"exterior": (2, 60), "wrist": (2, 60)}
+    assert markers == {"exterior": None, "wrist": None}
     assert telemetry.close() == {"exterior": True, "wrist": True, "display": True}
     assert not exterior.destroyed and not wrist.destroyed
 
 
-def test_live_capture_cleans_up_when_rgb_warmup_exhausts(
+@pytest.mark.parametrize("render_product", [None, "", "/Render/invalid"])
+def test_camera_producer_structural_errors_still_fail_closed(
     monkeypatch: pytest.MonkeyPatch,
+    render_product: str | None,
 ) -> None:
     scenario = _load_live_scenario(monkeypatch, "antioch_camera_cleanup_test")
-    monkeypatch.setattr(scenario, "CAMERA_WARMUP_RENDER_FRAMES", 2)
-
-    class Logger:
-        def scalar(self, _path: str, _value: float) -> None:
-            pass
 
     class Prim:
         def IsValid(self) -> bool:
-            return True
+            return render_product != "/Render/invalid"
 
         def __bool__(self) -> bool:
-            return True
+            return self.IsValid()
 
     class World:
         stage = SimpleNamespace(GetPrimAtPath=lambda _path: Prim())
-
-        def step(self, *, render: bool) -> None:
-            assert render
 
     class ReferenceTime:
         detached = False
@@ -667,143 +627,74 @@ def test_live_capture_cleans_up_when_rgb_warmup_exhausts(
             assert attach_rgb_annotator
 
         def get_render_product_path(self) -> str:
-            return "/Render/rgb"
-
-        def get_rgba(self) -> None:
-            return None
+            return render_product  # type: ignore[return-value]
 
         def destroy(self) -> None:
             self.destroyed = True
 
     exterior, wrist = Camera(), Camera()
-    with pytest.raises(scenario.CameraReadinessError, match="warmup_exhausted:missing"):
-        scenario._initialize_live_capture(
-            World(), (("exterior", exterior), ("wrist", wrist)), Logger()
+    reason = "render_product_invalid" if render_product else "render_product_missing"
+    with pytest.raises(scenario.CameraReadinessError, match=reason):
+        scenario._initialize_camera_producers(
+            World(), (("exterior", exterior), ("wrist", wrist))
         )
 
-    assert exterior.destroyed and wrist.destroyed
-    assert len(producers) == 2 and all(item.detached for item in producers)
+    assert not producers or all(item.detached for item in producers)
 
 
-def test_camera_producer_clock_does_not_use_stale_camera_frame_cache(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    scenario = _load_live_scenario(monkeypatch, "antioch_camera_clock_test")
-
-    class Prim:
-        def IsValid(self) -> bool:
-            return True
-
-        def __bool__(self) -> bool:
-            return True
-
-    class World:
-        stage = SimpleNamespace(GetPrimAtPath=lambda _path: Prim())
-        steps = 0
-
-        def step(self, *, render: bool) -> None:
-            assert render
-            self.steps += 1
-
-    world = World()
-
-    class ReferenceTime:
-        def get_data(self) -> dict[str, int]:
-            return {
-                "referenceTimeNumerator": world.steps,
-                "referenceTimeDenominator": 60,
-            }
-
-    monkeypatch.setattr(
-        scenario,
-        "_new_reference_time_annotator",
-        lambda _render_product: ReferenceTime(),
-    )
-
-    class Camera:
-        def initialize(self, *, attach_rgb_annotator: bool) -> None:
-            assert attach_rgb_annotator
-
-        def get_render_product_path(self) -> str:
-            return "/Render/rgb"
-
-        def get_rgba(self) -> np.ndarray:
-            rgba = np.empty((224, 224, 4), dtype=np.uint8)
-            rgba[..., :3] = [140, 30, 10]
-            rgba[..., 3] = 255
-            return rgba
-
-        def get_current_frame(self, *, clone: bool) -> dict[str, float]:
-            assert clone
-            return {"rendering_frame": 1, "rendering_time": 0.1}
-
-    _, _, markers = scenario._initialize_camera_producers(
-        world, (("exterior", Camera()), ("wrist", Camera()))
-    )
-
-    assert world.steps == scenario.CAMERA_READY_CONSECUTIVE_FRAMES
-    assert markers == {"exterior": (2, 60), "wrist": (2, 60)}
-
-
-def test_camera_producer_fails_typed_after_prolonged_none_frames(
+def test_camera_readiness_waits_hundreds_of_frames_before_policy_eligibility(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     scenario = _load_live_scenario(monkeypatch, "antioch_camera_none_test")
-    monkeypatch.setattr(scenario, "CAMERA_WARMUP_RENDER_FRAMES", 3)
-
-    class Prim:
-        def IsValid(self) -> bool:
-            return True
-
-        def __bool__(self) -> bool:
-            return True
-
-    class World:
-        stage = SimpleNamespace(GetPrimAtPath=lambda _path: Prim())
-
-        def step(self, *, render: bool) -> None:
-            assert render
-
-    class Camera:
-        def initialize(self, *, attach_rgb_annotator: bool) -> None:
-            assert attach_rgb_annotator
-
-        def get_render_product_path(self) -> str:
-            return "/Render/rgb"
-
-        def get_rgba(self) -> None:
-            return None
-
-        def get_current_frame(self, *, clone: bool) -> dict[str, float]:
-            return {"rendering_frame": 1, "rendering_time": 0.1}
-
-    class ReferenceTime:
-        def get_data(self) -> dict[str, int]:
-            return {
-                "referenceTimeNumerator": 1,
-                "referenceTimeDenominator": 60,
-            }
-
-    monkeypatch.setattr(
-        scenario,
-        "_new_reference_time_annotator",
-        lambda _render_product: ReferenceTime(),
-    )
-
-    with pytest.raises(scenario.CameraReadinessError, match="warmup_exhausted:missing"):
-        scenario._initialize_camera_producers(
-            World(), (("exterior", Camera()), ("wrist", Camera()))
-        )
-
     missing = scenario.CameraFrame(None, "missing")
-    pair = scenario.CameraPair(False, missing, missing, "exterior", "missing")
-    monitor = scenario.CameraReadinessMonitor(limit=3)
-    monitor.observe(pair)
-    monitor.observe(pair)
-    with pytest.raises(
-        scenario.CameraReadinessError, match="runtime_outage:missing"
-    ):
-        monitor.observe(pair)
+    missing_pair = scenario.CameraPair(
+        False, missing, missing, "exterior", "missing"
+    )
+    monitor = scenario.CameraReadinessMonitor(status_interval_frames=100)
+    decisions = [monitor.observe(missing_pair) for _ in range(400)]
+
+    assert all(not item.policy_eligible for item in decisions)
+    assert all(item.status == "waiting_for_camera" for item in decisions)
+    assert [index for index, item in enumerate(decisions, 1) if item.emit_status] == [
+        1,
+        101,
+        201,
+        301,
+    ]
+
+
+def test_delayed_valid_pair_requires_advancement_then_enables_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scenario = _load_live_scenario(monkeypatch, "antioch_camera_delayed_test")
+    missing = scenario.CameraFrame(None, "missing")
+    missing_pair = scenario.CameraPair(
+        False, missing, missing, "exterior", "missing"
+    )
+    exterior = scenario.CameraFrame(object(), "", 50.0, 100.0, 80.0, 25)
+    wrist = scenario.CameraFrame(object(), "", 55.0, 110.0, 85.0, 0)
+    valid_pair = scenario.CameraPair(True, exterior, wrist, mean_difference=12.0)
+    monitor = scenario.CameraReadinessMonitor(status_interval_frames=50)
+    policy_requests = 0
+
+    for _ in range(350):
+        policy_requests += int(monitor.observe(missing_pair).policy_eligible)
+    first = monitor.observe(valid_pair)
+    policy_requests += int(first.policy_eligible)
+    second = monitor.observe(valid_pair)
+    policy_requests += int(second.policy_eligible)
+
+    assert not first.policy_eligible
+    assert first.reason == "confirming_advancement"
+    assert second.policy_eligible and second.status == "ready"
+    assert policy_requests == 1
+
+    outage = monitor.observe(missing_pair)
+    recovering = monitor.observe(valid_pair)
+    recovered = monitor.observe(valid_pair)
+    assert outage.status == "runtime_outage" and not outage.policy_eligible
+    assert recovering.status == "runtime_outage" and not recovering.policy_eligible
+    assert recovered.policy_eligible
 
 
 def test_camera_frame_advancement_uses_producer_marker_not_loop_count(
@@ -2122,6 +2013,13 @@ def test_live_metrics_bind_current_valid_camera_pair_to_policy_request() -> None
     assert source.index("observation = _build_policy_observation(") < source.index(
         "camera_validated_requests += 1"
     )
+    readiness = source.index("camera_policy_eligible = readiness.policy_eligible")
+    request_gate = source.index(
+        "elif chunk is None and pending is None and now >= next_attempt:"
+    )
+    request = source.index("requests += 1", request_gate)
+    assert readiness < request_gate < request
+    assert "chunk is not None\n                and camera_policy_eligible" in source
 
 
 def test_live_stop_cancels_scenario_before_service(
