@@ -105,10 +105,11 @@ class CameraSample:
 class RtxRgbCamera:
     """Own one Isaac Sim 6 RTX camera authoring/runtime pair."""
 
-    def __init__(self, authoring, sensor, producer_clock) -> None:
+    def __init__(self, authoring, sensor, producer_clock, output_buffer) -> None:
         self.authoring = authoring
         self.sensor = sensor
         self.producer_clock = producer_clock
+        self.output_buffer = output_buffer
 
     @property
     def render_product_path(self) -> str:
@@ -117,7 +118,7 @@ class RtxRgbCamera:
         return str(prim.GetPath()) if prim and prim.IsValid() else ""
 
     def sample(self, *, view: str) -> CameraSample:
-        data, info = self.sensor.get_data("rgb")
+        data, info = self.sensor.get_data("rgb", out=self.output_buffer)
         marker = _producer_marker_from_info(info)
         if marker is None:
             marker = _reference_time_marker(self.producer_clock)
@@ -1025,7 +1026,9 @@ def _reference_time_advanced(
     return current[0] * prior[1] > prior[0] * current[1]
 
 
-def _build_rtx_rgb_camera(RtxCamera, CameraSensor, *, path: str, position=None):
+def _build_rtx_rgb_camera(
+    RtxCamera, CameraSensor, *, path: str, position=None, output_buffer=None
+):
     """Construct one supported Isaac Sim 6 RTX camera and explicit RGB sensor."""
 
     kwargs = {"tick_rate": 0.0}
@@ -1033,6 +1036,10 @@ def _build_rtx_rgb_camera(RtxCamera, CameraSensor, *, path: str, position=None):
         kwargs["positions"] = [position]
     authoring = RtxCamera(path, **kwargs)
     sensor = CameraSensor(authoring, resolution=(224, 224), annotators=["rgb"])
+    if output_buffer is None:
+        import warp as wp
+
+        output_buffer = wp.empty((224, 224, 3), dtype=wp.uint8, device="cpu")
     render_product = sensor.render_product
     prim = render_product.GetPrim()
     render_product_path = str(prim.GetPath()) if prim and prim.IsValid() else ""
@@ -1041,7 +1048,10 @@ def _build_rtx_rgb_camera(RtxCamera, CameraSensor, *, path: str, position=None):
             sensor.detach_annotators("rgb")
         raise CameraReadinessError(path, "render_product_invalid")
     return RtxRgbCamera(
-        authoring, sensor, _new_reference_time_annotator(render_product_path)
+        authoring,
+        sensor,
+        _new_reference_time_annotator(render_product_path),
+        output_buffer,
     )
 
 

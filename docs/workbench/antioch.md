@@ -147,7 +147,8 @@ uses only the non-sensitive `red_cube_pickup` label.
 The two 224x224 policy cameras use Isaac Sim 6's supported
 `isaacsim.sensors.experimental.rtx` API: separate `RtxCamera` authoring objects
 and `CameraSensor` runtime objects with an explicit `rgb` annotator. The scenario
-reads `(data, info)` from `get_data("rgb")`, safely copies numpy/Warp buffers, and
+reads `(data, info)` from `get_data("rgb", out=<cpu-warp-buffer>)`, safely copies
+the reusable host buffer before publication, and
 uses sensor metadata or the public exact render-product clock for advancement.
 Policy remains in safe hold until both independent views are valid, distinct,
 and advancing; viewer state and control-loop iterations are not producer clocks.

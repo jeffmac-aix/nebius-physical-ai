@@ -23,7 +23,10 @@ The manipulation scene is a lit tabletop with a reachable red cube and an open
 Franka in the DROID reset posture. Both policy views use Isaac Sim 6's supported
 `isaacsim.sensors.experimental.rtx` authoring/runtime split: an independent
 `RtxCamera` and `CameraSensor(annotators=["rgb"])` per view. Acquisition consumes
-the copied numpy/Warp result and producer metadata from `get_data("rgb")`; a
+the copied numpy/Warp result and producer metadata from `get_data("rgb")`. Each
+sensor owns a reusable CPU Warp output buffer passed through the public `out=`
+parameter, so acquisition copies directly from the annotator into host memory
+instead of exposing a CUDA-backed view to downstream code; a
 public clock attached to that sensor's render product supplies the exact marker
 when the RGB annotator omits it. The wide exterior camera has explicit optics
 and frames the complete tabletop manipulation region. The wide wrist camera is

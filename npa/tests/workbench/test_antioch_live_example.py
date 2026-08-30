@@ -500,7 +500,11 @@ def test_rtx_camera_construction_wires_public_rgb_render_product(
     clock = Clock()
     monkeypatch.setattr(scenario, "_new_reference_time_annotator", lambda _path: clock)
     camera = scenario._build_rtx_rgb_camera(
-        Authoring, Sensor, path=scenario.EXTERIOR_CAMERA_PATH, position=(1.0, 2.0, 3.0)
+        Authoring,
+        Sensor,
+        path=scenario.EXTERIOR_CAMERA_PATH,
+        position=(1.0, 2.0, 3.0),
+        output_buffer=object(),
     )
 
     assert calls[0] == (
@@ -536,15 +540,19 @@ def test_rtx_camera_samples_delayed_numpy_and_warp_without_aliasing(
             (Warp(), {"referenceTimeNumerator": 2, "referenceTimeDenominator": 60}),
         ]
 
-        def get_data(self, annotator: str):
+        def get_data(self, annotator: str, *, out):
             assert annotator == "rgb"
+            assert out is output_buffer
             return self.samples.pop(0)
 
     clock = SimpleNamespace(
         get_data=lambda: {},
         detach=lambda _products: None,
     )
-    camera = scenario.RtxRgbCamera(SimpleNamespace(destroy=lambda: None), Sensor(), clock)
+    output_buffer = object()
+    camera = scenario.RtxRgbCamera(
+        SimpleNamespace(destroy=lambda: None), Sensor(), clock, output_buffer
+    )
     assert camera.sample(view="wrist").frame.reason == "missing"
     sample = camera.sample(view="wrist")
     assert sample.producer_marker == (2, 60)
