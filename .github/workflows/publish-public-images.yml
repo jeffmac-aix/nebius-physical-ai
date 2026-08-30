@@ -31,6 +31,10 @@ on:
         description: "Comma/space-separated public tools to build and push as dev-<sha>"
         required: false
         default: ""
+      build_runner_label:
+        description: "Runner label for public development image builds"
+        required: false
+        default: "ubuntu-latest"
       cleanup_development_tools:
         description: "Exact failed/superseded dev tags to delete without promotion"
         required: false
@@ -146,7 +150,7 @@ jobs:
       fail-fast: false
       matrix:
         include: ${{ fromJSON(needs.resolve.outputs.build_matrix) }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.build_runner_label || 'ubuntu-latest' }}
     env:
       IMAGE: ${{ matrix.image }}
       TOOL: ${{ matrix.tool }}
@@ -244,6 +248,17 @@ jobs:
 
       - uses: imjasonh/setup-crane@v0.4
 
+      # Some public workbench Dockerfiles inherit other immutable public NPA
+      # packages. Authenticate pulls here because setup-crane installs an
+      # intentionally invalid placeholder credential; no registry write occurs
+      # until the separately gated push step below.
+      - name: Authenticate immutable public base pulls
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       # Build locally first. Every gate below inspects these exact bytes; no registry write
       # occurs until the final explicit docker push.
       - name: Build immutable development image locally
@@ -286,6 +301,11 @@ jobs:
           if any(value in history for value in forbidden):
               raise SystemExit("cached EULA acceptance found in layer history")
           PY
+          # The loaded runtime image remains in Docker's image store. BuildKit's
+          # disposable construction cache can be larger than the image itself and
+          # otherwise leaves insufficient space to serialize large GPU images for
+          # the mandatory layer-by-layer payload scan.
+          docker buildx prune --all --force
           docker save --output "$RUNNER_TEMP/${TOOL}.tar" "$IMAGE"
           npa/.venv/bin/python npa/scripts/scan_image_omniverse_payload.py \
             --tarball "$RUNNER_TEMP/${TOOL}.tar" \
@@ -319,6 +339,7 @@ jobs:
             docker run --rm --entrypoint /opt/npa/venv/bin/python "$IMAGE" \
               /opt/npa/docker/workbench/sonic/verify_mujoco_image.py
           fi
+          rm -f "$RUNNER_TEMP/${TOOL}.tar"
 
       # CUDA/AI images can exceed 25 GB. Once the exact loaded image passes its
       # contract, BuildKit's duplicate cache is no longer evidence and can be
@@ -340,6 +361,10 @@ jobs:
           exit-code: "1"
           ignore-unfixed: true
           format: table
+          # Trivy otherwise imposes its own five-minute deadline. Match the
+          # hosted runner's outer six-hour job ceiling so this gate adds no
+          # earlier time limit for large GPU images.
+          timeout: 6h0m0s
 
       - name: Generate pre-publication SBOM
         uses: aquasecurity/trivy-action@v0.36.0
@@ -350,6 +375,7 @@ jobs:
           scanners: vuln
           format: spdx-json
           output: ${{ runner.temp }}/${{ matrix.tool }}-sbom.spdx.json
+          timeout: 6h0m0s
 
       - uses: docker/login-action@v3
         with:

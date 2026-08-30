@@ -83,8 +83,8 @@ def test_canonical_is_one_standard_compositional_workflow() -> None:
     viewer = payload["resources"]["viewer-cpu"]["kubernetes"]["pod_config"]["spec"][
         "containers"
     ][0]["resources"]
-    assert viewer["requests"]["ephemeral-storage"] == "8Gi"
-    assert viewer["limits"]["ephemeral-storage"] == "16Gi"
+    assert viewer["requests"]["ephemeral-storage"] == "24Gi"
+    assert viewer["limits"]["ephemeral-storage"] == "48Gi"
     cosmos3 = payload["states"]["stage-08-cosmos3"]
     assert cosmos3["resources"] == "stage8-cpu"
     assert "accelerators" not in payload["resources"]["stage8-cpu"]
@@ -261,6 +261,15 @@ def test_stage9_rejects_inexact_single_evaluator_coverage(
 def test_stage_adapters_do_not_submit_hidden_kubernetes_jobs() -> None:
     source = (
         ROOT / "npa" / "src" / "npa" / "workflows" / "sim2real" / "workflow_stage.py"
+    ).read_text()
+    source += (
+        ROOT
+        / "npa"
+        / "src"
+        / "npa"
+        / "workflows"
+        / "sim2real"
+        / "isaac_stage_contract.py"
     ).read_text()
     assert "KubernetesJobClient" not in source
     assert "run_gpu_job_with_fallback" not in source

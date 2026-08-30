@@ -56,6 +56,24 @@ def test_public_publisher_builds_only_immutable_public_development_refs() -> Non
         assert stale_variable not in text
 
 
+def test_public_development_build_runner_is_dispatch_scoped_and_defaults_hosted() -> None:
+    spec = _spec(PUBLISH)
+    triggers = spec.get("on") or spec[True]
+    inputs = triggers["workflow_dispatch"]["inputs"]
+
+    assert inputs["build_runner_label"] == {
+        "description": "Runner label for public development image builds",
+        "required": False,
+        "default": "ubuntu-latest",
+    }
+    assert spec["jobs"]["build-development"]["runs-on"] == (
+        "${{ inputs.build_runner_label || 'ubuntu-latest' }}"
+    )
+    for name, job in spec["jobs"].items():
+        if name != "build-development":
+            assert job["runs-on"] == "ubuntu-latest"
+
+
 def test_public_channel_workflows_do_not_restore_retired_channel_language() -> None:
     combined = "\n".join(
         path.read_text(encoding="utf-8").lower()
@@ -97,11 +115,57 @@ def test_prepublication_gates_run_before_the_public_dev_push() -> None:
     assert "if matrix and head != sha" in text
 
 
+def test_public_base_pull_authentication_precedes_local_build() -> None:
+    spec = _spec(PUBLISH)
+    steps = spec["jobs"]["build-development"]["steps"]
+    names = [str(step.get("name") or "") for step in steps]
+    auth = names.index("Authenticate immutable public base pulls")
+    build = names.index("Build immutable development image locally")
+    push = names.index("Push only after every pre-publication gate passes")
+    assert steps[auth]["uses"] == "docker/login-action@v3"
+    assert auth < build < push
+
+
+def test_large_image_scan_reclaims_only_disposable_build_cache_and_tar() -> None:
+    spec = _spec(PUBLISH)
+    step = next(
+        item
+        for item in spec["jobs"]["build-development"]["steps"]
+        if item.get("name")
+        == "Enforce runtime, revision, bootstrap, config, and history contracts"
+    )
+    script = step["run"]
+    assert script.index("docker buildx prune --all --force") < script.index(
+        'docker save --output "$RUNNER_TEMP/${TOOL}.tar"'
+    )
+    assert 'rm -f "$RUNNER_TEMP/${TOOL}.tar"' in script
+
+
+def test_large_image_security_gates_have_no_early_scanner_deadline() -> None:
+    steps = _spec(PUBLISH)["jobs"]["build-development"]["steps"]
+    trivy_steps = [
+        step
+        for step in steps
+        if step.get("uses") == "aquasecurity/trivy-action@v0.36.0"
+    ]
+    assert len(trivy_steps) == 2
+    assert all(step["with"]["timeout"] == "6h0m0s" for step in trivy_steps)
+
+
 def test_public_image_workflow_preserves_large_image_security_scans() -> None:
     text = PUBLISH.read_text(encoding="utf-8")
+    steps = _spec(PUBLISH)["jobs"]["build-development"]["steps"]
+    trivy_steps = [
+        step
+        for step in steps
+        if step.get("uses") == "aquasecurity/trivy-action@v0.36.0"
+    ]
+
     assert "docker buildx prune --all --force" in text
     assert text.count("TMPDIR: /mnt/npa-trivy") == 2
     assert "scanners: vuln,secret,license" in text
+    assert len(trivy_steps) == 2
+    assert all(step["with"]["timeout"] == "6h0m0s" for step in trivy_steps)
 
 
 def test_post_push_and_promotion_gates_are_digest_bound() -> None:

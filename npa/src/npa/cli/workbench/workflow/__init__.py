@@ -54,7 +54,9 @@ class ControllerBackendOption(str, Enum):
     nebius = "nebius"
 
 
-def _bounded_log_text(text: str, max_output_chars: int) -> tuple[str, dict[str, object]]:
+def _bounded_log_text(
+    text: str, max_output_chars: int
+) -> tuple[str, dict[str, object]]:
     """Return the diagnostic tail and a machine-readable truncation contract."""
 
     if not 1 <= max_output_chars <= MAX_LOG_OUTPUT_CHARS:
@@ -868,6 +870,21 @@ def submit_cmd(
         return
     s3_endpoint = submit_credentials.endpoint_url
     extra_env: dict[str, str] = dict(submit_credentials.secret_values)
+    # Storage is an intrinsic runtime dependency for npa.workflow specs, not an
+    # optional user-requested secret.  The writable-storage preflight already
+    # uses these project-scoped values; keep the local ledger and every runtime
+    # wave on that same credential boundary without requiring callers to repeat
+    # AWS credential names via --secret-env.
+    resolved_access_key = str(getattr(submit_credentials, "access_key_id", "") or "")
+    resolved_secret_key = str(
+        getattr(submit_credentials, "secret_access_key", "") or ""
+    )
+    if resolved_access_key:
+        extra_env.setdefault("AWS_ACCESS_KEY_ID", resolved_access_key)
+    if resolved_secret_key:
+        extra_env.setdefault(
+            "AWS_SECRET_ACCESS_KEY", resolved_secret_key
+        )
     missing_secrets = list(submit_credentials.missing)
     if checkpoint_access_required and "HF_TOKEN" in missing_secrets:
         missing_secrets.remove("HF_TOKEN")
@@ -1302,20 +1319,18 @@ def submit_cmd(
             )
             return
         if infra_context and not plan_only:
-            from npa.controller_ownership import (
-                ClusterOwnerIdentityMismatchError,
-                bind_controller_owner,
-                resolve_controller_candidate,
-                verify_controller_owner,
-            )
+            from npa.controller_ownership import ClusterOwnerIdentityMismatchError
+            from npa.orchestration.skypilot._bin import resolve_isolated_config_dir
 
             try:
-                if bind_controller is True:
-                    bind_controller_owner(
-                        resolve_controller_candidate(project, infra_context)
-                    )
-                verify_controller_owner(project, infra_context)
-            except ClusterOwnerIdentityMismatchError as exc:
+                isolated_config_dir = resolve_isolated_config_dir(isolated_config_dir)
+                _verify_submit_controller_owner(
+                    project=project,
+                    context=infra_context,
+                    bind_controller=bind_controller is True,
+                    isolated_config_dir=isolated_config_dir,
+                )
+            except (ClusterOwnerIdentityMismatchError, OSError, RuntimeError, ValueError) as exc:
                 _fail(str(exc))
                 return
 
@@ -1543,6 +1558,8 @@ def submit_cmd(
                 sky_bin=sky_bin,
                 assume_decision=assume_decision,
                 enabled=resolve_accelerators and not plan_only,
+                config_path=config_path,
+                isolated_config_dir=isolated_config_dir,
                 readiness_timeout=gpu_readiness_timeout,
                 readiness_poll_interval=gpu_readiness_poll_interval,
             ),
@@ -2803,6 +2820,8 @@ def _resolve_submit_accelerators(
     sky_bin: str,
     assume_decision: str = "",
     enabled: bool,
+    config_path: Path | None = None,
+    isolated_config_dir: Path | None = None,
     readiness_timeout: float = 600.0,
     readiness_poll_interval: float = 10.0,
 ) -> dict[str, str]:
@@ -2831,6 +2850,10 @@ def _resolve_submit_accelerators(
         spec_accelerators,
         wait_for_kubernetes_accelerators,
     )
+    from npa.orchestration.skypilot.workflow import (
+        SkyPilotSubmitError,
+        ensure_local_api_daemon_health,
+    )
 
     try:
         resolved_spec = spec or load_spec(yaml_path)
@@ -2848,6 +2871,16 @@ def _resolve_submit_accelerators(
     except NpaWorkflowError:
         return {}
     if not requested:
+        return {}
+
+    try:
+        ensure_local_api_daemon_health(
+            sky_bin=sky_bin or None,
+            isolated_config_dir=isolated_config_dir,
+            config_path=config_path,
+        )
+    except (SkyPilotSubmitError, SkyPilotNotInstalledError, ValueError) as exc:
+        _fail(f"SkyPilot API daemon preflight failed: {exc}")
         return {}
 
     context = context_from_infra(infra) or os.environ.get("KUBECONTEXT", "").strip()
@@ -2875,6 +2908,34 @@ def _resolve_submit_accelerators(
             overrides[accelerator] = resolution.resolved
         typer.echo(f"accelerator-resolve: {resolution.describe()}", err=True)
     return overrides
+
+
+def _verify_submit_controller_owner(
+    *,
+    project: str,
+    context: str,
+    bind_controller: bool,
+    isolated_config_dir: Path | None,
+) -> None:
+    """Verify shared ownership only when the submit uses shared SkyPilot state."""
+
+    if isolated_config_dir is not None:
+        if bind_controller:
+            raise ValueError(
+                "--bind-controller cannot be combined with --isolated-config-dir; "
+                "the isolated SkyPilot state derives its own stable controller identity"
+            )
+        return
+
+    from npa.controller_ownership import (
+        bind_controller_owner,
+        resolve_controller_candidate,
+        verify_controller_owner,
+    )
+
+    if bind_controller:
+        bind_controller_owner(resolve_controller_candidate(project, context))
+    verify_controller_owner(project, context)
 
 
 def _preflight_submit_gang_capacity(
@@ -5244,9 +5305,7 @@ def logs_cmd(
                                 "stage": str(state_name),
                                 "attempt": int(wave.get("attempt") or 1),
                                 "managed_job_id": str(wave.get("job_id") or ""),
-                                "logical_state": str(
-                                    wave.get("status") or "unknown"
-                                ),
+                                "logical_state": str(wave.get("status") or "unknown"),
                                 "provenance": "legacy_runtime_wave_reconstruction",
                             }
                             if len(wave_tasks) == len(wave_states):
@@ -5291,14 +5350,9 @@ def logs_cmd(
                         for wave in resolution.runtime_state.get("waves") or []
                         if isinstance(wave, dict)
                         and selected_stage in list(wave.get("states") or [])
-                        and (
-                            not job_id
-                            or str(wave.get("job_id") or "") == job_id
-                        )
+                        and (not job_id or str(wave.get("job_id") or "") == job_id)
                     ]
-                    matching_waves.sort(
-                        key=lambda wave: int(wave.get("attempt") or 1)
-                    )
+                    matching_waves.sort(key=lambda wave: int(wave.get("attempt") or 1))
                     if matching_waves:
                         selected_wave = matching_waves[-1]
                         wave_states = list(selected_wave.get("states") or [])
@@ -5563,9 +5617,7 @@ def logs_cmd(
 
     from npa.orchestration.skypilot.workflow_state import redact_text
 
-    bounded_logs, log_metadata = _bounded_log_text(
-        redact_text(logs), max_output_chars
-    )
+    bounded_logs, log_metadata = _bounded_log_text(redact_text(logs), max_output_chars)
     typer.echo(bounded_logs)
     _emit_log_truncation(log_metadata)
 
@@ -6744,9 +6796,13 @@ def preflight_images_cmd(
         spec, plan.steps, run_id=run_id, options=options
     )
     if image_pull_secret:
-        explicit = tuple(dict.fromkeys(item.strip() for item in image_pull_secret if item.strip()))
+        explicit = tuple(
+            dict.fromkeys(item.strip() for item in image_pull_secret if item.strip())
+        )
         pull_secrets_by_image = {
-            selected: tuple(dict.fromkeys((*pull_secrets_by_image.get(selected, ()), *explicit)))
+            selected: tuple(
+                dict.fromkeys((*pull_secrets_by_image.get(selected, ()), *explicit))
+            )
             for selected in images
         }
     if not images:
@@ -6831,6 +6887,14 @@ def gpus_cmd(
         "--sky-bin",
         help="SkyPilot executable path. Defaults to NPA_SKYPILOT_BIN or PATH resolution.",
     ),
+    isolated_config_dir: Path | None = typer.Option(
+        None,
+        "--isolated-config-dir",
+        help=(
+            "Task-scoped SkyPilot state. When set, discovery does not require the "
+            "global shared-controller owner to match this context."
+        ),
+    ),
     spec: Path | None = typer.Option(
         None,
         "--spec",
@@ -6854,8 +6918,11 @@ def gpus_cmd(
         spec_accelerators,
     )
 
+    # An explicit NPA cluster selects both its dedicated kubeconfig and its
+    # identically named context.  An unrelated ambient KUBECONTEXT must not
+    # redirect discovery after the operator supplied --cluster.
     resolved_context = (
-        context.strip() or os.environ.get("KUBECONTEXT", "").strip() or cluster.strip()
+        context.strip() or cluster.strip() or os.environ.get("KUBECONTEXT", "").strip()
     )
     env_backup: str | None = None
     if cluster.strip():
@@ -6871,19 +6938,25 @@ def gpus_cmd(
     sky_error = ""
     if resolved_context:
         try:
+            from npa.orchestration.skypilot._bin import resolve_config as resolve_sky_config
             from npa.controller_ownership import (
                 verify_controller_owner,
                 verify_recorded_controller_owner,
             )
 
-            if isinstance(project, str) and project.strip():
-                verify_controller_owner(project, resolved_context)
-            else:
-                owner = verify_recorded_controller_owner()
-                if owner is not None and owner.context != resolved_context:
-                    raise RuntimeError(
-                        "Shared controller owner context does not match requested GPU context."
-                    )
+            effective_isolated_dir = resolve_sky_config(
+                sky_bin=sky_bin or None,
+                isolated_config_dir=isolated_config_dir,
+            ).isolated_config_dir
+            if effective_isolated_dir is None:
+                if isinstance(project, str) and project.strip():
+                    verify_controller_owner(project, resolved_context)
+                else:
+                    owner = verify_recorded_controller_owner()
+                    if owner is not None and owner.context != resolved_context:
+                        raise RuntimeError(
+                            "Shared controller owner context does not match requested GPU context."
+                        )
         except (OSError, RuntimeError, ValueError) as exc:
             sky_error = str(exc)
     try:
@@ -6906,7 +6979,19 @@ def gpus_cmd(
 
     resolutions: list[dict[str, object]] = []
     if spec is not None:
-        for accelerator in spec_accelerators(_load_npa_workflow(spec).resources):
+        from npa.orchestration.npa_workflow import build_plan
+        from npa.orchestration.npa_workflow.submit import load_spec_for_submit
+
+        resolved_spec = load_spec_for_submit(spec)
+        plan = build_plan(
+            resolved_spec,
+            run_id=f"{resolved_spec.name}-gpu-discovery",
+        )
+        planned_resources = {
+            f"step-{index}": step.resources_profile
+            for index, step in enumerate(plan.steps)
+        }
+        for accelerator in spec_accelerators(planned_resources):
             try:
                 resolution = resolve_kubernetes_accelerator(
                     accelerator, catalog=catalog

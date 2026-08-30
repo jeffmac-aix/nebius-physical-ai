@@ -217,7 +217,7 @@ def test_publication_accepts_exact_digest_bootstrap_attestation(monkeypatch) -> 
     assert digest in detail
 
 
-@pytest.mark.parametrize("tool", ["cosmos", "groot"])
+@pytest.mark.parametrize("tool", ["cosmos"])
 def test_preflight_skips_bootstrap_gate_for_uncontracted_image(
     monkeypatch, tool: str
 ) -> None:
@@ -242,13 +242,16 @@ def test_preflight_skips_bootstrap_gate_for_uncontracted_image(
     assert publish_public.preflight_sources([item]) == []
 
 
-def test_preflight_runs_bootstrap_gate_for_contracted_image(monkeypatch) -> None:
+@pytest.mark.parametrize("tool", ["fiftyone", "groot"])
+def test_preflight_runs_bootstrap_gate_for_contracted_image(
+    monkeypatch, tool: str
+) -> None:
     from npa.deploy import publish_public
 
     item = PublishItem(
-        tool="fiftyone",
-        source_ref="source.example/npa-fiftyone@sha256:" + "a" * 64,
-        target_ref="target.example/npa-fiftyone:release",
+        tool=tool,
+        source_ref=f"source.example/npa-{tool}@sha256:" + "a" * 64,
+        target_ref=f"target.example/npa-{tool}:release",
     )
     monkeypatch.setattr(
         publish_public, "_crane_manifest_readable", lambda ref, **_: (True, "ok")
@@ -361,7 +364,20 @@ def test_publish_plan_still_refuses_a_restricted_image(monkeypatch) -> None:
     refusal and the whole plan raised. A defence-in-depth check holding a stale copy of the
     thing it defends is worse than no check.
     """
+    manifest = images.public_release_manifest()
     monkeypatch.setattr(images, "RESTRICTED_PUBLICATION_TOOLS", frozenset({"genesis"}))
+    monkeypatch.setattr(
+        images,
+        "public_release_manifest",
+        lambda: {
+            **manifest,
+            "releases": {
+                tool: entry
+                for tool, entry in manifest["releases"].items()
+                if tool != "genesis"
+            },
+        },
+    )
     plan = build_publish_plan(target_registry="ghcr.io/example/workbench")
     names = {item.source_ref.rsplit("/", 1)[-1].split(":", 1)[0] for item in plan}
     assert "npa-genesis" not in names
@@ -828,7 +844,7 @@ def test_accepted_release_plan_partitions_published_and_pending_tools() -> None:
         target_registry="ghcr.io/nebius/nebius-physical-ai"
     )
 
-    assert len(plan) == 30
+    assert len(plan) == 31
     assert set(publicly_publishable_tools()) == (
         (set(manifest["releases"]) | set(manifest["publication_pending"]))
         - set(PUBLICATION_QUARANTINE_TOOLS)
@@ -836,7 +852,7 @@ def test_accepted_release_plan_partitions_published_and_pending_tools() -> None:
     assert set(manifest["releases"]) | set(manifest["publication_pending"]) == (
         set(CONTAINER_IMAGE_NAMES) - set(RESTRICTED_PUBLICATION_TOOLS)
     )
-    assert set(manifest["publication_pending"]) == {"antioch", "leisaac"}
+    assert set(manifest["publication_pending"]) == {"antioch"}
     for item in plan:
         recorded = manifest["releases"][item.tool]["published_digest"]
         assert item.source_ref.endswith(f"@{recorded}")

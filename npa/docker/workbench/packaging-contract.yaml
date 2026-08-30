@@ -368,6 +368,7 @@ images:
     tier: job
     passwordless_root_exemption: "SkyPilot Kubernetes bootstrap only; non-root runtime user, no default sshd service, and no baked credentials."
     redistribution: public
+    skypilot_bootstrap_contract: skypilot-0.12.2-v1
   cosmos-curate:
     dockerfile: cosmos-curate/Dockerfile
     tier: job
@@ -403,6 +404,7 @@ images:
       that installs the Python environment. Isaac Sim/Lab and task assets remain
       cryptographically verified runtime fetches after EULA preflight.
     redistribution: public
+    skypilot_bootstrap_contract: skypilot-0.12.2-v1
   leisaac:
     dockerfile: leisaac/Dockerfile
     isaac_runtime_fetch: true
@@ -442,6 +444,7 @@ images:
     redistribution: public
   groot:
     dockerfile: groot/Dockerfile
+    skypilot_bootstrap_contract: skypilot-0.12.2-v1
     isaac_runtime_fetch: true
     tier: interactive
     ports: [8080]
@@ -456,6 +459,8 @@ images:
         - common/install_isaac_runtime_base.sh
         - groot/Dockerfile.k8s-prereqs
       grants:
+        - source: groot/Dockerfile
+          sudoers_entry: "ubuntu ALL=(ALL) NOPASSWD:ALL"
         - source: common/install_isaac_runtime_base.sh
           sudoers_entry: "ubuntu ALL=(ALL) NOPASSWD:ALL"
         - source: groot/Dockerfile.k8s-prereqs
@@ -466,10 +471,12 @@ images:
       verification: runtime_probe_required
     notes: >-
       EXPOSE 8080 without default server CMD. The canonical build supplies the
-      ubuntu user and passwordless sudo but not the complete SkyPilot contract;
-      the derived repair source supplies sshd, runtime host keys, and argument
-      forwarding. Its label is never trusted by itself: submit requires an exact-
-      digest runtime capability probe. Promote to service when ready.
+      complete SkyPilot contract: a non-root ubuntu user with passwordless sudo,
+      sshd with per-pod host keys, rsync, and argument forwarding. The derived
+      repair source remains available for historical canonical images. Because
+      both forms share one image repository, a label is never trusted by itself:
+      submit requires an exact-digest runtime capability probe. Promote to service
+      when ready.
     redistribution: public
   retargeting:
     dockerfile: retargeting/Dockerfile
@@ -485,10 +492,11 @@ images:
     ports: [9090]
     final_user: ubuntu
     notes: >-
-      Purpose-built standard-workflow Stage 14 image with exact NPA source,
-      resolver-closed Rerun/MCAP dependencies, and SkyPilot Kubernetes bootstrap
-      prerequisites. Its command-passthrough entrypoint preserves orchestrator
-      argv, while an empty argv starts the interactive Rerun server.
+      Command-passthrough entrypoint supports SkyPilot Kubernetes setup as the
+      non-root ubuntu user; an empty argv starts the interactive Rerun server.
+      The image also bakes the exact NPA source revision and resolver-closed
+      Stage 14 S3/MCAP dependencies so the canonical no-overlay workflow can
+      finalize Rerun and MCAP artifacts with source attestation.
     passwordless_root_exemption: >-
       SkyPilot's Kubernetes bootstrap installs and starts its in-pod SSH runtime
       as the non-root ubuntu user. The image deletes all build-time SSH host keys,

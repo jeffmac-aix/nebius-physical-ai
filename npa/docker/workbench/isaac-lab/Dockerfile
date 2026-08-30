@@ -43,7 +43,8 @@ LABEL npa.tool="isaac-lab" \
       npa.isaac_sim_version="${ISAAC_SIM_VERSION}" \
       npa.isaac_provisioning="runtime-fetch" \
       npa.architecture="no-baked-omniverse-kit" \
-      org.opencontainers.image.revision="${NPA_SOURCE_SHA}"
+      org.opencontainers.image.revision="${NPA_SOURCE_SHA}" \
+      org.nebius.npa.skypilot-bootstrap-contract="skypilot-0.12.2-v1"
 
 # NOTE the absence of ACCEPT_EULA / ISAACSIM_ACCEPT_EULA / OMNI_KIT_ACCEPT_EULA /
 # PRIVACY_CONSENT. Every one of those used to be baked here. They are now the operator's
@@ -67,6 +68,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     OMNI_LOG_DIR=/tmp/isaac-sim-cache/logs \
     XDG_RUNTIME_DIR=/tmp/xdg-runtime \
     NVIDIA_DRIVER_CAPABILITIES=all \
+    IMAGEIO_FFMPEG_EXE=/usr/bin/ffmpeg \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/opt/npa/src
 
@@ -132,7 +134,7 @@ RUN find /opt/npa/src /opt/npa/workflows -type d -exec chmod a+rx {} + \
     && /opt/npa/sim/venv/bin/python -c \
       "import site; from pathlib import Path; Path(site.getsitepackages()[0], 'npa-exact-source.pth').write_text('/opt/npa/src\\n', encoding='utf-8')" \
     && env -u PYTHONPATH /opt/npa/sim/venv/bin/python -c \
-      'import boto3, kubernetes, mcap, npa.workflows.sim2real.runtime_attestation'
+      'import boto3, kubernetes, mcap, npa.workflows.sim2real.runtime_attestation, npa.workflows.sim2real.workflow_stage'
 
 RUN /opt/npa/sim/venv/bin/python -m \
       npa.workflows.sim2real.install_isaac_runtime /opt/npa/isaac-runtime \

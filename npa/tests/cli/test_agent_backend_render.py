@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ast
 import builtins
+import hashlib
 import json
 import re
 import secrets
@@ -21,6 +22,23 @@ from types import SimpleNamespace
 import pytest
 
 from npa.cli.agent_embed import embedded_python_source
+from npa.cli.agent_viewer_runtime import _sha256_file
+
+
+def test_sha256_file_streams_recording_without_read_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recording = tmp_path / "large.rrd"
+    payload = (b"RRF2" + b"recording-block") * 1000
+    recording.write_bytes(payload)
+
+    monkeypatch.setattr(
+        Path,
+        "read_bytes",
+        lambda _path: (_ for _ in ()).throw(AssertionError("must stream file")),
+    )
+
+    assert _sha256_file(recording, chunk_size=31) == hashlib.sha256(payload).hexdigest()
 
 
 def _clear_rendered_agent_backend_modules() -> None:
@@ -1726,8 +1744,14 @@ def test_source_qualified_rrd_loads_keep_independent_history(
         assert snapshots[ref_one]["served_recording_sha256"] == (
             hashlib.sha256(selections["npa1_source_one"][2]).hexdigest()
         )
+        assert snapshots[ref_one]["served_recording_size_bytes"] == len(
+            selections["npa1_source_one"][2]
+        )
         assert snapshots[ref_two]["served_recording_sha256"] == (
             hashlib.sha256(selections["npa1_source_two"][2]).hexdigest()
+        )
+        assert snapshots[ref_two]["served_recording_size_bytes"] == len(
+            selections["npa1_source_two"][2]
         )
         assert (
             snapshots[ref_one]["served_recording_sha256"]
@@ -1832,6 +1856,38 @@ def test_rerun_self_heal_preserves_same_run_canonical_mcap(
         assert repaired["foxglove_url"] == current["foxglove_url"]
         assert state["sim_viz"] == repaired
         assert state["sim_viz_runs"][run_id]["canonical_mcap_sha256"] == "a" * 64
+    finally:
+        sys.modules.pop(module_name, None)
+
+
+def test_active_run_recording_does_not_republish_on_page_refresh(
+    monkeypatch, tmp_path
+) -> None:
+    """Selection/status refreshes must remain metadata-only for a bound RRD."""
+    import sys
+
+    module_name = "npa_rendered_bound_rrd_refresh_backend"
+    module = _import_rendered_backend(monkeypatch, tmp_path, module_name=module_name)
+    recording = tmp_path / "sim2real.rrd"
+    recording.write_bytes(b"RRF2run-specific-recording")
+    module.RECORDING_PATH = recording
+    run_id = "run-already-loaded"
+    current = {
+        "run_id": run_id,
+        "rrd_uri": f"file://{recording}",
+        "served_recording_sha256": hashlib.sha256(recording.read_bytes()).hexdigest(),
+        "served_recording_size_bytes": recording.stat().st_size,
+    }
+    state = {"sim_viz": current, "latest_submit": {"run_id": run_id}}
+    monkeypatch.setattr(module, "_load_state", lambda: state)
+    monkeypatch.setattr(
+        module,
+        "_publish_rrd_recording",
+        lambda _source: (_ for _ in ()).throw(AssertionError("must not republish")),
+    )
+
+    try:
+        assert module._wire_active_sim2real_recording(state) is current
     finally:
         sys.modules.pop(module_name, None)
 
@@ -2008,6 +2064,9 @@ def test_rendered_artifact_routes_reject_foreign_buckets_and_malformed_keys(
                 module._safe_artifact_key(key)
             assert exc_info.value.status_code == 400
 
+        # /artifacts/download is served by the embedded secure module, whose
+        # handler takes the request. Every rejection below happens before any S3
+        # call, so the stubbed client is never touched.
         request = module.Request(
             {"type": "http", "method": "GET", "path": "/artifacts/download", "headers": []}
         )
@@ -2023,6 +2082,17 @@ def test_rendered_artifact_routes_reject_foreign_buckets_and_malformed_keys(
                 request, s3_uri="s3://configured-bucket/../secret.bin"
             )
         assert exc_info.value.status_code == 400
+
+        # A run_id alone is not enough: the object must still be named, and a
+        # caller cannot smuggle a second bucket/key past the one in the URI.
+        for kwargs in (
+            {"run_id": "run-one"},
+            {"run_id": "run-one", "s3_uri": "s3://b/k", "key": "other"},
+            {"run_id": "run-one", "s3_uri": "s3://b/k", "resource_bucket": "other"},
+        ):
+            with pytest.raises(module.HTTPException) as exc_info:
+                module.artifacts_download(request, **kwargs)
+            assert exc_info.value.status_code == 400
 
         allowed_key = "nested/root/category/run-one/reports/run.rrd"
         allowed_artifact = module.Artifact(
@@ -2067,6 +2137,54 @@ def test_rendered_artifact_routes_reject_foreign_buckets_and_malformed_keys(
                 }
             )
         assert exc_info.value.status_code == 400
+    finally:
+        sys.modules.pop(module_name, None)
+
+
+def test_rendered_backend_registers_no_shadowed_routes(monkeypatch, tmp_path) -> None:
+    """No method+path may be registered twice in the emitted backend.
+
+    Starlette resolves the first matching route, so a second registration of the
+    same method+path is unreachable code that still reads as authoritative. That
+    is how ``/artifacts/file`` and ``/artifacts/download`` ended up with copies in
+    agent.py shadowed by the hardened versions in the embedded artifact-content
+    module: the copies lacked the ``Content-Disposition``/``nosniff`` headers and
+    the inventory authorization, so whichever one won changed the security
+    posture of the deployment.
+    """
+    import sys
+    from collections import Counter
+
+    module_name = "npa_rendered_route_uniqueness_backend"
+    module = _import_rendered_backend(monkeypatch, tmp_path, module_name=module_name)
+
+    def registered_methods(app) -> Counter:
+        return Counter(
+            (method, getattr(route, "path", ""))
+            for route in app.routes
+            for method in sorted(getattr(route, "methods", None) or ())
+        )
+
+    try:
+        registered = registered_methods(module.app)
+        # Without this the assertion below passes vacuously if `app.routes` ever
+        # stops yielding what this reads -- an empty counter has no duplicates.
+        assert ("GET", "/health") in registered, (
+            "route inventory did not include a known route, so this guard would "
+            f"pass without inspecting anything: {len(registered)} entries"
+        )
+        shadowed = {key: count for key, count in registered.items() if count > 1}
+        assert not shadowed, (
+            "these method+path pairs are registered more than once; every "
+            f"registration after the first is unreachable: {sorted(shadowed)}"
+        )
+
+        # Prove the detector is sensitive: re-registering a live path must be
+        # caught. Otherwise "no duplicates" only means "nothing was measured".
+        module.app.add_api_route("/health", lambda: {}, methods=["GET"])
+        assert ("GET", "/health") in {
+            key for key, count in registered_methods(module.app).items() if count > 1
+        }
     finally:
         sys.modules.pop(module_name, None)
 
