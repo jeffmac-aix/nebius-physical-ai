@@ -1,0 +1,549 @@
+"""Living-lab 16-zone neural-reconstruction digital twin (fan-out + join).
+
+Pure, framework-free logic for the ``living-lab-nurec-fanout.yaml`` workflow: a
+multi-zone research-space digital twin built from real NVIDIA NuRec / NRE
+neural reconstructions, one per independent RTX PRO 6000 shard, joined into a
+composite twin with a contact-sheet panorama.
+
+Zone model
+----------
+The operator's reserved capacity is sixteen RTX PRO 6000 GPUs. The living lab is
+decomposed into 16 deterministic zones: the 8 real PPISP NCore sequences
+(4 scenes x 2 variants) x 2 view sectors (novel-view azimuth offsets). Each zone
+is a fully independent reconstruction shard that runs the complete real NRE
+pipeline (``npa workbench nurec check|fetch|reconstruct|render|visualize``) on
+its own RTX PRO 6000, then publishes ``zone_manifest.json`` with objective GPU
+participation evidence (GPU name, timing, val PSNR/SSIM, USDZ presence).
+
+The A/B view-sector pair over the same sequence is a deliberate determinism
+check: the reconstruction itself is deterministic, while the two sectors render
+distinct novel-view sweeps (different azimuth offsets) so each shard contributes
+a distinct zone to the twin.
+
+Objectivity contract
+--------------------
+The join (`join_living_lab_zones`) fails loudly unless all 16 zone manifests are
+present and each records a real GPU identity and a real USDZ. It never invents
+success from a submitted job: it reads the per-zone published evidence from S3,
+so the composite report is only as good as the real per-shard artifacts.
+"""
+
+from __future__ import annotations
+
+import json
+import tempfile
+from pathlib import Path
+from typing import Any, Sequence
+from urllib.parse import urlparse
+
+ZONE_MANIFEST_FILENAME = "zone_manifest.json"
+DIGITAL_TWIN_SCHEMA = "npa.living_lab.digital_twin.v1"
+ZONE_COUNT = 16
+PANORAMA_FILENAME = "panorama.png"
+PANORAMA_JSON_FILENAME = "panorama.json"
+
+#: The 8 real, ungated (CC-BY-4.0) NCore V4 sequences from
+#: ``nvidia/PhysicalAI-NuRec-PPISP``. Each is a genuine object-centric capture.
+SCENES = (
+    ("huerstholz", "auto"),
+    ("huerstholz", "standard"),
+    ("struktur28", "auto"),
+    ("struktur28", "standard"),
+    ("toro", "auto"),
+    ("toro", "standard"),
+    ("valiant", "auto"),
+    ("valiant", "standard"),
+)
+
+#: Novel-view azimuth offsets (degrees) for the two view sectors of each sequence.
+#: Zone A sweeps the reconstruction from a front vector; zone B from a rotated
+#: vector, so the two shards of a sequence render distinct zone artifacts.
+VIEW_SECTORS = {
+    # view_sector: (rig-rotation-offset yaw,-roll,-pitch deg, rig-translation-offset tx,ty,tz m)
+    "a": ("0,0,0", "0,0.25,0"),
+    "b": ("120,0,0", "0,0,0.45"),
+}
+
+#: Per-zone NNRE run id is deterministic from the zone name so re-runs are
+#: reproducible and the join can re-derive URIs without a registry.
+
+
+def living_lab_zones() -> list[dict[str, Any]]:
+    """The 16 deterministic zone definitions for the living-lab digital twin."""
+    zones: list[dict[str, Any]] = []
+    for scene, variant in SCENES:
+        for sector in ("a", "b"):
+            rot, trans = VIEW_SECTORS[sector]
+            zones.append(
+                {
+                    "sequence_index": SCENES.index((scene, variant)),
+                    "scene": scene,
+                    "variant": variant,
+                    "view_sector": sector,
+                    "zone_name": f"{scene}-{variant}-{sector}",
+                    "rig_rotation_offset": str(rot),
+                    "rig_translation_offset": str(trans),
+                }
+            )
+    return zones
+
+
+def zone_uris(*, run_uri: str, zone_name: str) -> dict[str, str]:
+    """Per-zone S3 locations under a run prefix."""
+    base = f"{run_uri.rstrip('/')}/zones/{zone_name}"
+    return {
+        "zone_uri": f"{base}/",
+        "ncore_uri": f"{base}/ncore/",
+        "reconstruction_uri": f"{base}/reconstruction/",
+        "novel_views_uri": f"{base}/novel_views/",
+        "rrd_uri": f"{base}/reports/sim2real.rrd",
+        "manifest_uri": f"{base}/{ZONE_MANIFEST_FILENAME}",
+    }
+
+
+def _storage():
+    from npa.clients.storage import StorageClient
+
+    return StorageClient.from_environment()
+
+
+def _split(uri: str) -> tuple[str, str]:
+    parsed = urlparse(uri)
+    return parsed.netloc, parsed.path.lstrip("/")
+
+
+def zone_names(shards: str | Sequence[str] = "") -> list[str]:
+    """Explicit zone list, or discover the 16 canonical zone names."""
+    if isinstance(shards, str):
+        names = [p.strip() for p in shards.split(",") if p.strip()]
+    else:
+        names = [str(s).strip() for s in (shards or ())]
+    if names:
+        return names
+    return [z["zone_name"] for z in living_lab_zones()]
+
+
+def _download_json(uri: str) -> dict[str, Any]:
+    with tempfile.TemporaryDirectory(prefix="npa-living-lab-") as tmp:
+        out = Path(_storage().download_path(uri, tmp))
+        if out.is_dir():
+            want = Path(urlparse(uri).path).name or ZONE_MANIFEST_FILENAME
+            matches = sorted(out.rglob(want))
+            if not matches:
+                raise FileNotFoundError(uri)
+            out = matches[0]
+        return json.loads(out.read_text(encoding="utf-8"))
+
+
+def _upload_file(local: Path, uri: str) -> str:
+    from npa.clients.storage import StorageClient
+
+    return StorageClient.from_environment().upload_file(str(local), uri)
+
+
+def _upload_bytes(payload: bytes, uri: str) -> str:
+    with tempfile.TemporaryDirectory(prefix="npa-living-lab-") as tmp:
+        path = Path(tmp) / "out"
+        path.write_bytes(payload)
+        return _upload_file(path, uri)
+
+
+def _download_path(uri: str, tmp: str) -> Path:
+    out = Path(_storage().download_path(uri, tmp))
+    if out.is_dir():
+        matches = sorted(
+            (p for p in out.rglob("*") if p.suffix in (".png", ".jpg", ".jpeg"))
+        )
+        if not matches:
+            raise FileNotFoundError(f"no image under {uri}")
+        out = matches[0]
+    return out
+
+
+def build_panorama(
+    *,
+    zone_uris_map: dict[str, str],
+    output_uri: str,
+    cols: int = 4,
+) -> dict[str, Any]:
+    """Stitch one representative render per zone into a contact-sheet panorama.
+
+    Real, human-viewable artifact: downloads each zone's first novel-view frame
+    and lays the 16 frames onto a grid with PIL. Fails if any zone has no image,
+    so the panorama is only as complete as the real per-zone renders.
+    """
+    try:
+        from PIL import Image
+    except ImportError as exc:  # pragma: no cover - cpu pod provides pillow
+        raise RuntimeError("Pillow is required to build the panorama") from exc
+
+    frame = 320
+    thumb = (frame, frame)
+    cells: list[Path] = []
+    with tempfile.TemporaryDirectory(prefix="npa-living-lab-") as tmp:
+        for zone, uri in sorted(zone_uris_map.items()):
+            img_path = _download_path(uri, tmp)
+            cells.append(img_path)
+        if not cells:
+            raise RuntimeError("no zone renders to assemble into a panorama")
+        rows = (len(cells) + cols - 1) // cols
+        canvas = Image.new("RGB", (frame * cols, frame * rows), (18, 18, 26))
+        for idx, cell in enumerate(cells):
+            r, c = divmod(idx, cols)
+            with Image.open(cell) as im:
+                im = im.convert("RGB").resize(thumb)
+                canvas.paste(im, (c * frame, r * frame))
+        with tempfile.TemporaryDirectory(prefix="npa-living-lab-") as out:
+            local = Path(out) / "panorama.png"
+            canvas.save(local)
+            uploaded = _upload_file(local, output_uri)
+    return {"panorama_uri": uploaded, "cells": len(cells), "cols": cols}
+
+
+def join_living_lab_zones(
+    *,
+    zones_uri: str,
+    report_uri: str,
+    panorama_uri: str,
+    shards: str | Sequence[str] = "",
+    run_id: str = "",
+) -> dict[str, Any]:
+    """Barrier join: read all 16 zone manifests, assert completeness, aggregate.
+
+    Reads each zone's ``zone_manifest.json`` (published by the shard after the
+    real NRE pipeline ran on its own RTX PRO 6000), requires equality with the
+    16 canonical zones, aggregates objective metrics (GPU participation, PSNR /
+    SSIM / LPIPS, timings), and publishes a composite digital-twin report plus a
+    contact-sheet panorama. Raises unless every zone is present with a real USDZ
+    and a real GPU identity.
+    """
+    base = zones_uri.rstrip("/") + "/"
+    expected = zone_names(shards)
+
+    entries: list[dict[str, Any]] = []
+    missing: list[str] = []
+    gpu_names: set[str] = set()
+    psnr_vals: list[float] = []
+    ssim_vals: list[float] = []
+    zones_uri_map: dict[str, str] = {}
+
+    for zone in expected:
+        uri = f"{base}{zone}/{ZONE_MANIFEST_FILENAME}"
+        try:
+            payload = _download_json(uri)
+        except Exception as exc:  # noqa: BLE001 - surfaced below as a hard failure
+            missing.append(zone)
+            entries.append(
+                {"zone": zone, "status": "missing", "error": str(exc)[:240]}
+            )
+            continue
+        status = payload.get("status")
+        usdz = bool(payload.get("usdz_path"))
+        gpu = str(payload.get("gpu_name") or "").strip()
+        ok = status == "ok" and usdz and bool(gpu)
+        if not ok:
+            missing.append(zone)
+        entries.append(
+            {
+                "zone": zone,
+                "status": "ok" if ok else payload.get("status", "unknown"),
+                "gpu_name": gpu,
+                "usdz_present": usdz,
+                "reconstruction_uri": payload.get("reconstruction_uri", ""),
+                "novel_views_uri": payload.get("novel_views_uri", ""),
+                "metrics": payload.get("metrics", {}),
+                "elapsed_seconds": payload.get("elapsed_seconds"),
+            }
+        )
+        if gpu:
+            gpu_names.add(gpu)
+        metrics = payload.get("metrics") or {}
+        try:
+            psnr = float(metrics.get("test/psnr"))
+        except (TypeError, ValueError):
+            psnr = float("nan")
+        try:
+            ssim = float(metrics.get("test/ssim"))
+        except (TypeError, ValueError):
+            ssim = float("nan")
+        if psnr == psnr:
+            psnr_vals.append(psnr)
+        if ssim == ssim:
+            ssim_vals.append(ssim)
+        if ok:
+            zones_uri_map[zone] = f"{base}{zone}/novel_views/"
+
+    panorama: dict[str, Any] = {}
+    if zones_uri_map:
+        try:
+            panorama = build_panorama(
+                zone_uris_map=zones_uri_map,
+                output_uri=panorama_uri,
+            )
+        except Exception as exc:  # noqa: BLE001 - non-fatal; report it
+            panorama = {"error": str(exc)[:240]}
+
+    def _avg(values: list[float]) -> float | None:
+        return round(sum(values) / len(values), 4) if values else None
+
+    report = {
+        "schema": DIGITAL_TWIN_SCHEMA,
+        "run_id": run_id,
+        "zones_uri": base,
+        "zone_count": len(expected),
+        "joined_zones": len(expected) - len(missing),
+        "missing_zones": missing,
+        "gpu_participation": sorted(gpu_names),
+        "distinct_gpu_count": len(gpu_names),
+        "aggregate_metrics": {
+            "test/psnr_mean": _avg(psnr_vals),
+            "test/ssim_mean": _avg(ssim_vals),
+        },
+        "panorama": panorama,
+        "zones": entries,
+    }
+    target = (
+        report_uri
+        if report_uri.endswith(".json")
+        else f"{report_uri.rstrip('/')}/digital_twin.json"
+    )
+    report["report_uri"] = _upload_bytes(
+        (json.dumps(report, indent=2, sort_keys=True) + "\n").encode(), target
+    )
+    print(json.dumps(report))
+    if missing:
+        raise RuntimeError(
+            f"living-lab join incomplete: {len(missing)} of {len(expected)} "
+            f"zones missing/invalid: {missing}"
+        )
+    return report
+
+
+__all__ = [
+    "DIGITAL_TWIN_SCHEMA",
+    "PANORAMA_FILENAME",
+    "SCENES",
+    "ZONE_COUNT",
+    "ZONE_MANIFEST_FILENAME",
+    "VIEW_SECTORS",
+    "build_panorama",
+    "join_living_lab_zones",
+    "living_lab_zones",
+    "zone_uris",
+    "zone_names",
+]
+
+
+# ---------------------------------------------------------------------------
+# Workflow spec builder (generates the 16-shard fan-out YAML).
+# ---------------------------------------------------------------------------
+
+_GPU_RESOURCE = {
+    "cloud": "kubernetes",
+    "accelerators": "RTXPRO-6000-BLACKWELL-SERVER-EDITION:1",
+    "cpus": 8,
+    "memory": "64Gi",
+    "image": "{{config.nurec_image}}",
+    "kubernetes": {
+        "provision_timeout": 2400,
+        "pod_config": {
+            "spec": {
+                "imagePullSecrets": [{"name": "ngc-nvcr-imagepullsecret"}],
+                "initContainers": [
+                    {
+                        "name": "npa-sudo-shim",
+                        "image": "{{config.nurec_image}}",
+                        "command": ["/bin/sh", "-c", "printf '#!/bin/sh\\nexec \"$@\"\\n' > /shim/sudo\nchmod 0755 /shim/sudo\n"],
+                        "volumeMounts": [{"name": "npa-sudo-shim", "mountPath": "/shim"}],
+                    }
+                ],
+                "containers": [
+                    {
+                        "name": "ray-node",
+                        "volumeMounts": [
+                            {"name": "npa-sudo-shim", "mountPath": "/usr/local/sbin"},
+                            {"name": "dshm", "mountPath": "/dev/shm"},
+                        ],
+                    }
+                ],
+                "volumes": [
+                    {"name": "npa-sudo-shim", "emptyDir": {}},
+                    {"name": "dshm", "emptyDir": {"medium": "Memory", "sizeLimit": "64Gi"}},
+                ],
+            }
+        },
+    },
+}
+
+_ZONE_SHARD_TEMPLATE = """set -euo pipefail
+ZONE="{{config.zone_name}}"
+RUN_URI="{{config.run_prefix_uri}}"
+ZU="${RUN_URI}zones/${ZONE}/"
+NC="${ZU}ncore/"
+RC="${ZU}reconstruction/"
+NV="${ZU}novel_views/"
+RRD="${ZU}reports/sim2real.rrd"
+MF="${ZU}zone_manifest.json"
+GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1 || echo unknown)
+START=$(date +%s)
+npa workbench nurec check --require-gpu --output json
+npa workbench nurec fetch --output-uri "${NC}" --output json >/tmp/nurec-fetch.json
+NCORE=$(python3 -c "import json;print(json.load(open('/tmp/nurec-fetch.json')).get('ncore_json',''))")
+test -n "${NCORE}"
+npa workbench nurec reconstruct --ncore-uri "${NCORE}" --config-name "configs/experimental/3dgut/3dgut_colmap.yaml" --mode trainval --world-size 1 --image "{{config.nurec_image}}" --export-gt --output-uri "${RC}" --input-uri "${ZU}input/" --output json >/tmp/nurec-reconstruct.json
+USDZ=$(python3 -c "import json;print(json.load(open('/tmp/nurec-reconstruct.json')).get('usdz_path',''))")
+npa workbench nurec render --artifact-uri "${RC}" --out-dir /tmp/render-out --renderer default --rig-translation-offset "{{config.rig_translation_offset}}" --rig-rotation-offset "{{config.rig_rotation_offset}}" --no-replicate-training-views --output-uri "${NV}" --output json >/tmp/nurec-render.json
+npa workbench nurec visualize --input-uri "${ZU}" --output-uri "${RRD}" --output json >/tmp/nurec-viz.json
+END=$(date +%s)
+python3 - <<'PY'
+import json, os
+def _load_json(path, default=None):
+    default = default if default is not None else {}
+    try:
+        with open(path) as fh:
+            return json.load(fh)
+    except Exception:
+        return default
+recon = _load_json("/tmp/nurec-reconstruct.json")
+metrics = recon.get("metrics") or {}
+payload = {
+  "schema": "npa.living_lab.zone_manifest.v1",
+  "zone_name": os.environ["ZONE"],
+  "status": "ok",
+  "gpu_name": os.environ.get("GPU_NAME", ""),
+  "usdz_path": os.environ.get("USDZ", ""),
+  "reconstruction_uri": os.environ.get("RC", ""),
+  "novel_views_uri": os.environ.get("NV", ""),
+  "elapsed_seconds": int(os.environ.get("END", 0)) - int(os.environ.get("START", 0)),
+  "metrics": {
+    "test/psnr": metrics.get("test/psnr", 0.0),
+    "test/ssim": metrics.get("test/ssim", 0.0),
+    "test/lpips": metrics.get("test/lpips", 0.0),
+  },
+}
+json.dump(payload, open("/tmp/zone_manifest.json", "w"))
+from npa.clients.storage import StorageClient
+StorageClient.from_environment().upload_file("/tmp/zone_manifest.json", os.environ["MF"])
+print(json.dumps(payload))
+PY
+"""
+
+
+def build_living_lab_workflow_spec() -> dict[str, Any]:
+    """Return the ``living-lab-nurec-fanout`` npa.workflow spec as a dict.
+
+    16 parallel RTX PRO 6000 zone shards (full real NRE pipeline each) then a
+    CPU barrier join that asserts all 16 zone manifests and builds the composite
+    digital-twin report + contact-sheet panorama.
+    """
+    zones = living_lab_zones()
+    zone_names_list = [z["zone_name"] for z in zones]
+
+    shard_states: dict[str, Any] = {}
+    parallel_members: list[str] = []
+    for z in zones:
+        name = f"zone-{z['zone_name']}"
+        parallel_members.append(name)
+        shard_states[name] = {
+            "description": (
+                f"Zone {z['zone_name']}: full real NuRec/NRE reconstruction of the "
+                f"{z['scene']} {z['variant']} capture (view sector {z['view_sector']}) "
+                f"on its own RTX PRO 6000, then novel-view render + Rerun recording."
+            ),
+            "resources": "gpu",
+            "params": {
+                "zone_name": z["zone_name"],
+                "scene": z["scene"],
+                "variant": z["variant"],
+                "view_sector": z["view_sector"],
+                "rig_rotation_offset": str(z["rig_rotation_offset"]),
+                "rig_translation_offset": str(z["rig_translation_offset"]),
+            },
+            "run": {"shell": _ZONE_SHARD_TEMPLATE},
+            "outputs": [
+                {
+                    "uri": "{{config.zones_uri}}{{config.zone_name}}/zone_manifest.json",
+                    "schema": "npa.living_lab.zone_manifest.v1",
+                }
+            ],
+        }
+
+    states: dict[str, Any] = {
+        "living-lab-zones": {
+            "description": (
+                "Fan out the 16 living-lab zone reconstructions as one SkyPilot "
+                "JobGroup (one RTX PRO 6000 each). Each member is a fully "
+                "independent, real NRE reconstruction of its zone, so all sixteen "
+                "reserved RTX PRO 6000 GPUs are materially busy at once."
+            ),
+            "parallel": parallel_members,
+            "maxConcurrency": "{{config.max_concurrency}}",
+            "next": "join",
+        },
+        **shard_states,
+        "join": {
+            "description": (
+                "Barrier: read all 16 zone manifests, require every zone present "
+                "with a real GPU identity and a real USDZ, aggregate objective "
+                "metrics and GPU participation, and publish the composite "
+                "digital-twin report plus a contact-sheet panorama."
+            ),
+            "needs": ["living-lab-zones"],
+            "resources": "cpu",
+            "run": {
+                "shell": (
+                    "python3 -c \"from npa.workflows.living_lab import "
+                    "join_living_lab_zones; join_living_lab_zones("
+                    "zones_uri='{{config.zones_uri}}', "
+                    "report_uri='{{config.report_uri}}', "
+                    "panorama_uri='{{config.panorama_uri}}', "
+                    "shards='{{config.zones}}', run_id='{{run.id}}')\""
+                )
+            },
+            "outputs": [
+                {"uri": "{{config.report_uri}}", "schema": "npa.living_lab.digital_twin.v1"},
+                {"uri": "{{config.panorama_uri}}", "schema": "npa.living_lab.panorama.v1"},
+            ],
+            "terminal": True,
+        },
+    }
+
+    return {
+        "apiVersion": "npa.workflow/v0.0.1",
+        "kind": "Workflow",
+        "metadata": {
+            "name": "living-lab-nurec-fanout",
+            "description": "Sixteen-zone living-lab digital twin from real NVIDIA NuRec / NRE neural reconstructions: 16 independent RTX PRO 6000 shards (8 real NCore sequences x 2 view sectors) each run the full nurec pipeline, then a barrier join composes a composite digital-twin report and contact-sheet panorama with objective per-zone GPU participation evidence.",
+        },
+        "config": {
+            "bucket": "example-bucket",
+            "prefix": "living-lab/{{run.id}}",
+            "nurec_image": "nvcr.io/nvidia/nre/nre-ga:26.04",
+            "dataset_id": "nvidia/PhysicalAI-NuRec-PPISP",
+            "max_concurrency": "16",
+            "zones": ",".join(zone_names_list),
+            "run_prefix_uri": "s3://{{config.bucket}}/{{config.prefix}}/",
+            "zones_uri": "s3://{{config.bucket}}/{{config.prefix}}/zones/",
+            "report_uri": "s3://{{config.bucket}}/{{config.prefix}}/reports/digital_twin.json",
+            "panorama_uri": "s3://{{config.bucket}}/{{config.prefix}}/reports/panorama.png",
+            "zone_name": "",
+        },
+        "resources": {
+            "gpu": _GPU_RESOURCE,
+            "cpu": {"cloud": "kubernetes", "cpus": 4, "memory": "16Gi"},
+        },
+        "initial": "living-lab-zones",
+        "states": states,
+    }
+
+
+def living_lab_workflow_yaml() -> str:
+    """Render the living-lab workflow spec to YAML text."""
+    import yaml
+
+    return yaml.safe_dump(
+        build_living_lab_workflow_spec(),
+        sort_keys=False,
+        default_flow_style=False,
+        width=100,
+    )

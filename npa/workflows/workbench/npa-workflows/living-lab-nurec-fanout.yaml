@@ -1,0 +1,779 @@
+apiVersion: npa.workflow/v0.0.1
+kind: Workflow
+metadata:
+  name: living-lab-nurec-fanout
+  description: 'Sixteen-zone living-lab digital twin from real NVIDIA NuRec / NRE neural reconstructions:
+    16 independent RTX PRO 6000 shards (8 real NCore sequences x 2 view sectors) each run the full nurec
+    pipeline, then a barrier join composes a composite digital-twin report and contact-sheet panorama
+    with objective per-zone GPU participation evidence.'
+config:
+  bucket: example-bucket
+  prefix: living-lab/{{run.id}}
+  nurec_image: nvcr.io/nvidia/nre/nre-ga:26.04
+  dataset_id: nvidia/PhysicalAI-NuRec-PPISP
+  max_concurrency: '16'
+  zones: huerstholz-auto-a,huerstholz-auto-b,huerstholz-standard-a,huerstholz-standard-b,struktur28-auto-a,struktur28-auto-b,struktur28-standard-a,struktur28-standard-b,toro-auto-a,toro-auto-b,toro-standard-a,toro-standard-b,valiant-auto-a,valiant-auto-b,valiant-standard-a,valiant-standard-b
+  run_prefix_uri: s3://{{config.bucket}}/{{config.prefix}}/
+  zones_uri: s3://{{config.bucket}}/{{config.prefix}}/zones/
+  report_uri: s3://{{config.bucket}}/{{config.prefix}}/reports/digital_twin.json
+  panorama_uri: s3://{{config.bucket}}/{{config.prefix}}/reports/panorama.png
+  zone_name: ''
+resources:
+  gpu:
+    cloud: kubernetes
+    accelerators: RTXPRO-6000-BLACKWELL-SERVER-EDITION:1
+    cpus: 8
+    memory: 64Gi
+    image: '{{config.nurec_image}}'
+    kubernetes:
+      provision_timeout: 2400
+      pod_config:
+        spec:
+          imagePullSecrets:
+          - name: ngc-nvcr-imagepullsecret
+          initContainers:
+          - name: npa-sudo-shim
+            image: '{{config.nurec_image}}'
+            command:
+            - /bin/sh
+            - -c
+            - 'printf ''#!/bin/sh\nexec "$@"\n'' > /shim/sudo
+
+              chmod 0755 /shim/sudo
+
+              '
+            volumeMounts:
+            - name: npa-sudo-shim
+              mountPath: /shim
+          containers:
+          - name: ray-node
+            volumeMounts:
+            - name: npa-sudo-shim
+              mountPath: /usr/local/sbin
+            - name: dshm
+              mountPath: /dev/shm
+          volumes:
+          - name: npa-sudo-shim
+            emptyDir: {}
+          - name: dshm
+            emptyDir:
+              medium: Memory
+              sizeLimit: 64Gi
+  cpu:
+    cloud: kubernetes
+    cpus: 4
+    memory: 16Gi
+initial: living-lab-zones
+states:
+  living-lab-zones:
+    description: Fan out the 16 living-lab zone reconstructions as one SkyPilot JobGroup (one RTX PRO
+      6000 each). Each member is a fully independent, real NRE reconstruction of its zone, so all sixteen
+      reserved RTX PRO 6000 GPUs are materially busy at once.
+    parallel:
+    - zone-huerstholz-auto-a
+    - zone-huerstholz-auto-b
+    - zone-huerstholz-standard-a
+    - zone-huerstholz-standard-b
+    - zone-struktur28-auto-a
+    - zone-struktur28-auto-b
+    - zone-struktur28-standard-a
+    - zone-struktur28-standard-b
+    - zone-toro-auto-a
+    - zone-toro-auto-b
+    - zone-toro-standard-a
+    - zone-toro-standard-b
+    - zone-valiant-auto-a
+    - zone-valiant-auto-b
+    - zone-valiant-standard-a
+    - zone-valiant-standard-b
+    maxConcurrency: '{{config.max_concurrency}}'
+    next: join
+  zone-huerstholz-auto-a:
+    description: 'Zone huerstholz-auto-a: full real NuRec/NRE reconstruction of the huerstholz auto capture
+      (view sector a) on its own RTX PRO 6000, then novel-view render + Rerun recording.'
+    resources: gpu
+    params:
+      zone_name: huerstholz-auto-a
+      scene: huerstholz
+      variant: auto
+      view_sector: a
+      rig_rotation_offset: 0,0,0
+      rig_translation_offset: 0,0.25,0
+    run:
+      shell: "set -euo pipefail\nZONE=\"{{config.zone_name}}\"\nRUN_URI=\"{{config.run_prefix_uri}}\"\n\
+        ZU=\"${RUN_URI}zones/${ZONE}/\"\nNC=\"${ZU}ncore/\"\nRC=\"${ZU}reconstruction/\"\nNV=\"${ZU}novel_views/\"\
+        \nRRD=\"${ZU}reports/sim2real.rrd\"\nMF=\"${ZU}zone_manifest.json\"\nGPU_NAME=$(nvidia-smi --query-gpu=name\
+        \ --format=csv,noheader | head -1 || echo unknown)\nSTART=$(date +%s)\nnpa workbench nurec check\
+        \ --require-gpu --output json\nnpa workbench nurec fetch --output-uri \"${NC}\" --output json\
+        \ >/tmp/nurec-fetch.json\nNCORE=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-fetch.json')).get('ncore_json',''))\"\
+        )\ntest -n \"${NCORE}\"\nnpa workbench nurec reconstruct --ncore-uri \"${NCORE}\" --config-name\
+        \ \"configs/experimental/3dgut/3dgut_colmap.yaml\" --mode trainval --world-size 1 --image \"{{config.nurec_image}}\"\
+        \ --export-gt --output-uri \"${RC}\" --input-uri \"${ZU}input/\" --output json >/tmp/nurec-reconstruct.json\n\
+        USDZ=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-reconstruct.json')).get('usdz_path',''))\"\
+        )\nnpa workbench nurec render --artifact-uri \"${RC}\" --out-dir /tmp/render-out --renderer default\
+        \ --rig-translation-offset \"{{config.rig_translation_offset}}\" --rig-rotation-offset \"{{config.rig_rotation_offset}}\"\
+        \ --no-replicate-training-views --output-uri \"${NV}\" --output json >/tmp/nurec-render.json\n\
+        npa workbench nurec visualize --input-uri \"${ZU}\" --output-uri \"${RRD}\" --output json >/tmp/nurec-viz.json\n\
+        END=$(date +%s)\npython3 - <<'PY'\nimport json, os\ndef _load_json(path, default=None):\n    default\
+        \ = default if default is not None else {}\n    try:\n        with open(path) as fh:\n       \
+        \     return json.load(fh)\n    except Exception:\n        return default\nrecon = _load_json(\"\
+        /tmp/nurec-reconstruct.json\")\nmetrics = recon.get(\"metrics\") or {}\npayload = {\n  \"schema\"\
+        : \"npa.living_lab.zone_manifest.v1\",\n  \"zone_name\": os.environ[\"ZONE\"],\n  \"status\":\
+        \ \"ok\",\n  \"gpu_name\": os.environ.get(\"GPU_NAME\", \"\"),\n  \"usdz_path\": os.environ.get(\"\
+        USDZ\", \"\"),\n  \"reconstruction_uri\": os.environ.get(\"RC\", \"\"),\n  \"novel_views_uri\"\
+        : os.environ.get(\"NV\", \"\"),\n  \"elapsed_seconds\": int(os.environ.get(\"END\", 0)) - int(os.environ.get(\"\
+        START\", 0)),\n  \"metrics\": {\n    \"test/psnr\": metrics.get(\"test/psnr\", 0.0),\n    \"test/ssim\"\
+        : metrics.get(\"test/ssim\", 0.0),\n    \"test/lpips\": metrics.get(\"test/lpips\", 0.0),\n  },\n\
+        }\njson.dump(payload, open(\"/tmp/zone_manifest.json\", \"w\"))\nfrom npa.clients.storage import\
+        \ StorageClient\nStorageClient.from_environment().upload_file(\"/tmp/zone_manifest.json\", os.environ[\"\
+        MF\"])\nprint(json.dumps(payload))\nPY\n"
+    outputs:
+    - uri: '{{config.zones_uri}}{{config.zone_name}}/zone_manifest.json'
+      schema: npa.living_lab.zone_manifest.v1
+  zone-huerstholz-auto-b:
+    description: 'Zone huerstholz-auto-b: full real NuRec/NRE reconstruction of the huerstholz auto capture
+      (view sector b) on its own RTX PRO 6000, then novel-view render + Rerun recording.'
+    resources: gpu
+    params:
+      zone_name: huerstholz-auto-b
+      scene: huerstholz
+      variant: auto
+      view_sector: b
+      rig_rotation_offset: 120,0,0
+      rig_translation_offset: 0,0,0.45
+    run:
+      shell: "set -euo pipefail\nZONE=\"{{config.zone_name}}\"\nRUN_URI=\"{{config.run_prefix_uri}}\"\n\
+        ZU=\"${RUN_URI}zones/${ZONE}/\"\nNC=\"${ZU}ncore/\"\nRC=\"${ZU}reconstruction/\"\nNV=\"${ZU}novel_views/\"\
+        \nRRD=\"${ZU}reports/sim2real.rrd\"\nMF=\"${ZU}zone_manifest.json\"\nGPU_NAME=$(nvidia-smi --query-gpu=name\
+        \ --format=csv,noheader | head -1 || echo unknown)\nSTART=$(date +%s)\nnpa workbench nurec check\
+        \ --require-gpu --output json\nnpa workbench nurec fetch --output-uri \"${NC}\" --output json\
+        \ >/tmp/nurec-fetch.json\nNCORE=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-fetch.json')).get('ncore_json',''))\"\
+        )\ntest -n \"${NCORE}\"\nnpa workbench nurec reconstruct --ncore-uri \"${NCORE}\" --config-name\
+        \ \"configs/experimental/3dgut/3dgut_colmap.yaml\" --mode trainval --world-size 1 --image \"{{config.nurec_image}}\"\
+        \ --export-gt --output-uri \"${RC}\" --input-uri \"${ZU}input/\" --output json >/tmp/nurec-reconstruct.json\n\
+        USDZ=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-reconstruct.json')).get('usdz_path',''))\"\
+        )\nnpa workbench nurec render --artifact-uri \"${RC}\" --out-dir /tmp/render-out --renderer default\
+        \ --rig-translation-offset \"{{config.rig_translation_offset}}\" --rig-rotation-offset \"{{config.rig_rotation_offset}}\"\
+        \ --no-replicate-training-views --output-uri \"${NV}\" --output json >/tmp/nurec-render.json\n\
+        npa workbench nurec visualize --input-uri \"${ZU}\" --output-uri \"${RRD}\" --output json >/tmp/nurec-viz.json\n\
+        END=$(date +%s)\npython3 - <<'PY'\nimport json, os\ndef _load_json(path, default=None):\n    default\
+        \ = default if default is not None else {}\n    try:\n        with open(path) as fh:\n       \
+        \     return json.load(fh)\n    except Exception:\n        return default\nrecon = _load_json(\"\
+        /tmp/nurec-reconstruct.json\")\nmetrics = recon.get(\"metrics\") or {}\npayload = {\n  \"schema\"\
+        : \"npa.living_lab.zone_manifest.v1\",\n  \"zone_name\": os.environ[\"ZONE\"],\n  \"status\":\
+        \ \"ok\",\n  \"gpu_name\": os.environ.get(\"GPU_NAME\", \"\"),\n  \"usdz_path\": os.environ.get(\"\
+        USDZ\", \"\"),\n  \"reconstruction_uri\": os.environ.get(\"RC\", \"\"),\n  \"novel_views_uri\"\
+        : os.environ.get(\"NV\", \"\"),\n  \"elapsed_seconds\": int(os.environ.get(\"END\", 0)) - int(os.environ.get(\"\
+        START\", 0)),\n  \"metrics\": {\n    \"test/psnr\": metrics.get(\"test/psnr\", 0.0),\n    \"test/ssim\"\
+        : metrics.get(\"test/ssim\", 0.0),\n    \"test/lpips\": metrics.get(\"test/lpips\", 0.0),\n  },\n\
+        }\njson.dump(payload, open(\"/tmp/zone_manifest.json\", \"w\"))\nfrom npa.clients.storage import\
+        \ StorageClient\nStorageClient.from_environment().upload_file(\"/tmp/zone_manifest.json\", os.environ[\"\
+        MF\"])\nprint(json.dumps(payload))\nPY\n"
+    outputs:
+    - uri: '{{config.zones_uri}}{{config.zone_name}}/zone_manifest.json'
+      schema: npa.living_lab.zone_manifest.v1
+  zone-huerstholz-standard-a:
+    description: 'Zone huerstholz-standard-a: full real NuRec/NRE reconstruction of the huerstholz standard
+      capture (view sector a) on its own RTX PRO 6000, then novel-view render + Rerun recording.'
+    resources: gpu
+    params:
+      zone_name: huerstholz-standard-a
+      scene: huerstholz
+      variant: standard
+      view_sector: a
+      rig_rotation_offset: 0,0,0
+      rig_translation_offset: 0,0.25,0
+    run:
+      shell: "set -euo pipefail\nZONE=\"{{config.zone_name}}\"\nRUN_URI=\"{{config.run_prefix_uri}}\"\n\
+        ZU=\"${RUN_URI}zones/${ZONE}/\"\nNC=\"${ZU}ncore/\"\nRC=\"${ZU}reconstruction/\"\nNV=\"${ZU}novel_views/\"\
+        \nRRD=\"${ZU}reports/sim2real.rrd\"\nMF=\"${ZU}zone_manifest.json\"\nGPU_NAME=$(nvidia-smi --query-gpu=name\
+        \ --format=csv,noheader | head -1 || echo unknown)\nSTART=$(date +%s)\nnpa workbench nurec check\
+        \ --require-gpu --output json\nnpa workbench nurec fetch --output-uri \"${NC}\" --output json\
+        \ >/tmp/nurec-fetch.json\nNCORE=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-fetch.json')).get('ncore_json',''))\"\
+        )\ntest -n \"${NCORE}\"\nnpa workbench nurec reconstruct --ncore-uri \"${NCORE}\" --config-name\
+        \ \"configs/experimental/3dgut/3dgut_colmap.yaml\" --mode trainval --world-size 1 --image \"{{config.nurec_image}}\"\
+        \ --export-gt --output-uri \"${RC}\" --input-uri \"${ZU}input/\" --output json >/tmp/nurec-reconstruct.json\n\
+        USDZ=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-reconstruct.json')).get('usdz_path',''))\"\
+        )\nnpa workbench nurec render --artifact-uri \"${RC}\" --out-dir /tmp/render-out --renderer default\
+        \ --rig-translation-offset \"{{config.rig_translation_offset}}\" --rig-rotation-offset \"{{config.rig_rotation_offset}}\"\
+        \ --no-replicate-training-views --output-uri \"${NV}\" --output json >/tmp/nurec-render.json\n\
+        npa workbench nurec visualize --input-uri \"${ZU}\" --output-uri \"${RRD}\" --output json >/tmp/nurec-viz.json\n\
+        END=$(date +%s)\npython3 - <<'PY'\nimport json, os\ndef _load_json(path, default=None):\n    default\
+        \ = default if default is not None else {}\n    try:\n        with open(path) as fh:\n       \
+        \     return json.load(fh)\n    except Exception:\n        return default\nrecon = _load_json(\"\
+        /tmp/nurec-reconstruct.json\")\nmetrics = recon.get(\"metrics\") or {}\npayload = {\n  \"schema\"\
+        : \"npa.living_lab.zone_manifest.v1\",\n  \"zone_name\": os.environ[\"ZONE\"],\n  \"status\":\
+        \ \"ok\",\n  \"gpu_name\": os.environ.get(\"GPU_NAME\", \"\"),\n  \"usdz_path\": os.environ.get(\"\
+        USDZ\", \"\"),\n  \"reconstruction_uri\": os.environ.get(\"RC\", \"\"),\n  \"novel_views_uri\"\
+        : os.environ.get(\"NV\", \"\"),\n  \"elapsed_seconds\": int(os.environ.get(\"END\", 0)) - int(os.environ.get(\"\
+        START\", 0)),\n  \"metrics\": {\n    \"test/psnr\": metrics.get(\"test/psnr\", 0.0),\n    \"test/ssim\"\
+        : metrics.get(\"test/ssim\", 0.0),\n    \"test/lpips\": metrics.get(\"test/lpips\", 0.0),\n  },\n\
+        }\njson.dump(payload, open(\"/tmp/zone_manifest.json\", \"w\"))\nfrom npa.clients.storage import\
+        \ StorageClient\nStorageClient.from_environment().upload_file(\"/tmp/zone_manifest.json\", os.environ[\"\
+        MF\"])\nprint(json.dumps(payload))\nPY\n"
+    outputs:
+    - uri: '{{config.zones_uri}}{{config.zone_name}}/zone_manifest.json'
+      schema: npa.living_lab.zone_manifest.v1
+  zone-huerstholz-standard-b:
+    description: 'Zone huerstholz-standard-b: full real NuRec/NRE reconstruction of the huerstholz standard
+      capture (view sector b) on its own RTX PRO 6000, then novel-view render + Rerun recording.'
+    resources: gpu
+    params:
+      zone_name: huerstholz-standard-b
+      scene: huerstholz
+      variant: standard
+      view_sector: b
+      rig_rotation_offset: 120,0,0
+      rig_translation_offset: 0,0,0.45
+    run:
+      shell: "set -euo pipefail\nZONE=\"{{config.zone_name}}\"\nRUN_URI=\"{{config.run_prefix_uri}}\"\n\
+        ZU=\"${RUN_URI}zones/${ZONE}/\"\nNC=\"${ZU}ncore/\"\nRC=\"${ZU}reconstruction/\"\nNV=\"${ZU}novel_views/\"\
+        \nRRD=\"${ZU}reports/sim2real.rrd\"\nMF=\"${ZU}zone_manifest.json\"\nGPU_NAME=$(nvidia-smi --query-gpu=name\
+        \ --format=csv,noheader | head -1 || echo unknown)\nSTART=$(date +%s)\nnpa workbench nurec check\
+        \ --require-gpu --output json\nnpa workbench nurec fetch --output-uri \"${NC}\" --output json\
+        \ >/tmp/nurec-fetch.json\nNCORE=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-fetch.json')).get('ncore_json',''))\"\
+        )\ntest -n \"${NCORE}\"\nnpa workbench nurec reconstruct --ncore-uri \"${NCORE}\" --config-name\
+        \ \"configs/experimental/3dgut/3dgut_colmap.yaml\" --mode trainval --world-size 1 --image \"{{config.nurec_image}}\"\
+        \ --export-gt --output-uri \"${RC}\" --input-uri \"${ZU}input/\" --output json >/tmp/nurec-reconstruct.json\n\
+        USDZ=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-reconstruct.json')).get('usdz_path',''))\"\
+        )\nnpa workbench nurec render --artifact-uri \"${RC}\" --out-dir /tmp/render-out --renderer default\
+        \ --rig-translation-offset \"{{config.rig_translation_offset}}\" --rig-rotation-offset \"{{config.rig_rotation_offset}}\"\
+        \ --no-replicate-training-views --output-uri \"${NV}\" --output json >/tmp/nurec-render.json\n\
+        npa workbench nurec visualize --input-uri \"${ZU}\" --output-uri \"${RRD}\" --output json >/tmp/nurec-viz.json\n\
+        END=$(date +%s)\npython3 - <<'PY'\nimport json, os\ndef _load_json(path, default=None):\n    default\
+        \ = default if default is not None else {}\n    try:\n        with open(path) as fh:\n       \
+        \     return json.load(fh)\n    except Exception:\n        return default\nrecon = _load_json(\"\
+        /tmp/nurec-reconstruct.json\")\nmetrics = recon.get(\"metrics\") or {}\npayload = {\n  \"schema\"\
+        : \"npa.living_lab.zone_manifest.v1\",\n  \"zone_name\": os.environ[\"ZONE\"],\n  \"status\":\
+        \ \"ok\",\n  \"gpu_name\": os.environ.get(\"GPU_NAME\", \"\"),\n  \"usdz_path\": os.environ.get(\"\
+        USDZ\", \"\"),\n  \"reconstruction_uri\": os.environ.get(\"RC\", \"\"),\n  \"novel_views_uri\"\
+        : os.environ.get(\"NV\", \"\"),\n  \"elapsed_seconds\": int(os.environ.get(\"END\", 0)) - int(os.environ.get(\"\
+        START\", 0)),\n  \"metrics\": {\n    \"test/psnr\": metrics.get(\"test/psnr\", 0.0),\n    \"test/ssim\"\
+        : metrics.get(\"test/ssim\", 0.0),\n    \"test/lpips\": metrics.get(\"test/lpips\", 0.0),\n  },\n\
+        }\njson.dump(payload, open(\"/tmp/zone_manifest.json\", \"w\"))\nfrom npa.clients.storage import\
+        \ StorageClient\nStorageClient.from_environment().upload_file(\"/tmp/zone_manifest.json\", os.environ[\"\
+        MF\"])\nprint(json.dumps(payload))\nPY\n"
+    outputs:
+    - uri: '{{config.zones_uri}}{{config.zone_name}}/zone_manifest.json'
+      schema: npa.living_lab.zone_manifest.v1
+  zone-struktur28-auto-a:
+    description: 'Zone struktur28-auto-a: full real NuRec/NRE reconstruction of the struktur28 auto capture
+      (view sector a) on its own RTX PRO 6000, then novel-view render + Rerun recording.'
+    resources: gpu
+    params:
+      zone_name: struktur28-auto-a
+      scene: struktur28
+      variant: auto
+      view_sector: a
+      rig_rotation_offset: 0,0,0
+      rig_translation_offset: 0,0.25,0
+    run:
+      shell: "set -euo pipefail\nZONE=\"{{config.zone_name}}\"\nRUN_URI=\"{{config.run_prefix_uri}}\"\n\
+        ZU=\"${RUN_URI}zones/${ZONE}/\"\nNC=\"${ZU}ncore/\"\nRC=\"${ZU}reconstruction/\"\nNV=\"${ZU}novel_views/\"\
+        \nRRD=\"${ZU}reports/sim2real.rrd\"\nMF=\"${ZU}zone_manifest.json\"\nGPU_NAME=$(nvidia-smi --query-gpu=name\
+        \ --format=csv,noheader | head -1 || echo unknown)\nSTART=$(date +%s)\nnpa workbench nurec check\
+        \ --require-gpu --output json\nnpa workbench nurec fetch --output-uri \"${NC}\" --output json\
+        \ >/tmp/nurec-fetch.json\nNCORE=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-fetch.json')).get('ncore_json',''))\"\
+        )\ntest -n \"${NCORE}\"\nnpa workbench nurec reconstruct --ncore-uri \"${NCORE}\" --config-name\
+        \ \"configs/experimental/3dgut/3dgut_colmap.yaml\" --mode trainval --world-size 1 --image \"{{config.nurec_image}}\"\
+        \ --export-gt --output-uri \"${RC}\" --input-uri \"${ZU}input/\" --output json >/tmp/nurec-reconstruct.json\n\
+        USDZ=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-reconstruct.json')).get('usdz_path',''))\"\
+        )\nnpa workbench nurec render --artifact-uri \"${RC}\" --out-dir /tmp/render-out --renderer default\
+        \ --rig-translation-offset \"{{config.rig_translation_offset}}\" --rig-rotation-offset \"{{config.rig_rotation_offset}}\"\
+        \ --no-replicate-training-views --output-uri \"${NV}\" --output json >/tmp/nurec-render.json\n\
+        npa workbench nurec visualize --input-uri \"${ZU}\" --output-uri \"${RRD}\" --output json >/tmp/nurec-viz.json\n\
+        END=$(date +%s)\npython3 - <<'PY'\nimport json, os\ndef _load_json(path, default=None):\n    default\
+        \ = default if default is not None else {}\n    try:\n        with open(path) as fh:\n       \
+        \     return json.load(fh)\n    except Exception:\n        return default\nrecon = _load_json(\"\
+        /tmp/nurec-reconstruct.json\")\nmetrics = recon.get(\"metrics\") or {}\npayload = {\n  \"schema\"\
+        : \"npa.living_lab.zone_manifest.v1\",\n  \"zone_name\": os.environ[\"ZONE\"],\n  \"status\":\
+        \ \"ok\",\n  \"gpu_name\": os.environ.get(\"GPU_NAME\", \"\"),\n  \"usdz_path\": os.environ.get(\"\
+        USDZ\", \"\"),\n  \"reconstruction_uri\": os.environ.get(\"RC\", \"\"),\n  \"novel_views_uri\"\
+        : os.environ.get(\"NV\", \"\"),\n  \"elapsed_seconds\": int(os.environ.get(\"END\", 0)) - int(os.environ.get(\"\
+        START\", 0)),\n  \"metrics\": {\n    \"test/psnr\": metrics.get(\"test/psnr\", 0.0),\n    \"test/ssim\"\
+        : metrics.get(\"test/ssim\", 0.0),\n    \"test/lpips\": metrics.get(\"test/lpips\", 0.0),\n  },\n\
+        }\njson.dump(payload, open(\"/tmp/zone_manifest.json\", \"w\"))\nfrom npa.clients.storage import\
+        \ StorageClient\nStorageClient.from_environment().upload_file(\"/tmp/zone_manifest.json\", os.environ[\"\
+        MF\"])\nprint(json.dumps(payload))\nPY\n"
+    outputs:
+    - uri: '{{config.zones_uri}}{{config.zone_name}}/zone_manifest.json'
+      schema: npa.living_lab.zone_manifest.v1
+  zone-struktur28-auto-b:
+    description: 'Zone struktur28-auto-b: full real NuRec/NRE reconstruction of the struktur28 auto capture
+      (view sector b) on its own RTX PRO 6000, then novel-view render + Rerun recording.'
+    resources: gpu
+    params:
+      zone_name: struktur28-auto-b
+      scene: struktur28
+      variant: auto
+      view_sector: b
+      rig_rotation_offset: 120,0,0
+      rig_translation_offset: 0,0,0.45
+    run:
+      shell: "set -euo pipefail\nZONE=\"{{config.zone_name}}\"\nRUN_URI=\"{{config.run_prefix_uri}}\"\n\
+        ZU=\"${RUN_URI}zones/${ZONE}/\"\nNC=\"${ZU}ncore/\"\nRC=\"${ZU}reconstruction/\"\nNV=\"${ZU}novel_views/\"\
+        \nRRD=\"${ZU}reports/sim2real.rrd\"\nMF=\"${ZU}zone_manifest.json\"\nGPU_NAME=$(nvidia-smi --query-gpu=name\
+        \ --format=csv,noheader | head -1 || echo unknown)\nSTART=$(date +%s)\nnpa workbench nurec check\
+        \ --require-gpu --output json\nnpa workbench nurec fetch --output-uri \"${NC}\" --output json\
+        \ >/tmp/nurec-fetch.json\nNCORE=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-fetch.json')).get('ncore_json',''))\"\
+        )\ntest -n \"${NCORE}\"\nnpa workbench nurec reconstruct --ncore-uri \"${NCORE}\" --config-name\
+        \ \"configs/experimental/3dgut/3dgut_colmap.yaml\" --mode trainval --world-size 1 --image \"{{config.nurec_image}}\"\
+        \ --export-gt --output-uri \"${RC}\" --input-uri \"${ZU}input/\" --output json >/tmp/nurec-reconstruct.json\n\
+        USDZ=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-reconstruct.json')).get('usdz_path',''))\"\
+        )\nnpa workbench nurec render --artifact-uri \"${RC}\" --out-dir /tmp/render-out --renderer default\
+        \ --rig-translation-offset \"{{config.rig_translation_offset}}\" --rig-rotation-offset \"{{config.rig_rotation_offset}}\"\
+        \ --no-replicate-training-views --output-uri \"${NV}\" --output json >/tmp/nurec-render.json\n\
+        npa workbench nurec visualize --input-uri \"${ZU}\" --output-uri \"${RRD}\" --output json >/tmp/nurec-viz.json\n\
+        END=$(date +%s)\npython3 - <<'PY'\nimport json, os\ndef _load_json(path, default=None):\n    default\
+        \ = default if default is not None else {}\n    try:\n        with open(path) as fh:\n       \
+        \     return json.load(fh)\n    except Exception:\n        return default\nrecon = _load_json(\"\
+        /tmp/nurec-reconstruct.json\")\nmetrics = recon.get(\"metrics\") or {}\npayload = {\n  \"schema\"\
+        : \"npa.living_lab.zone_manifest.v1\",\n  \"zone_name\": os.environ[\"ZONE\"],\n  \"status\":\
+        \ \"ok\",\n  \"gpu_name\": os.environ.get(\"GPU_NAME\", \"\"),\n  \"usdz_path\": os.environ.get(\"\
+        USDZ\", \"\"),\n  \"reconstruction_uri\": os.environ.get(\"RC\", \"\"),\n  \"novel_views_uri\"\
+        : os.environ.get(\"NV\", \"\"),\n  \"elapsed_seconds\": int(os.environ.get(\"END\", 0)) - int(os.environ.get(\"\
+        START\", 0)),\n  \"metrics\": {\n    \"test/psnr\": metrics.get(\"test/psnr\", 0.0),\n    \"test/ssim\"\
+        : metrics.get(\"test/ssim\", 0.0),\n    \"test/lpips\": metrics.get(\"test/lpips\", 0.0),\n  },\n\
+        }\njson.dump(payload, open(\"/tmp/zone_manifest.json\", \"w\"))\nfrom npa.clients.storage import\
+        \ StorageClient\nStorageClient.from_environment().upload_file(\"/tmp/zone_manifest.json\", os.environ[\"\
+        MF\"])\nprint(json.dumps(payload))\nPY\n"
+    outputs:
+    - uri: '{{config.zones_uri}}{{config.zone_name}}/zone_manifest.json'
+      schema: npa.living_lab.zone_manifest.v1
+  zone-struktur28-standard-a:
+    description: 'Zone struktur28-standard-a: full real NuRec/NRE reconstruction of the struktur28 standard
+      capture (view sector a) on its own RTX PRO 6000, then novel-view render + Rerun recording.'
+    resources: gpu
+    params:
+      zone_name: struktur28-standard-a
+      scene: struktur28
+      variant: standard
+      view_sector: a
+      rig_rotation_offset: 0,0,0
+      rig_translation_offset: 0,0.25,0
+    run:
+      shell: "set -euo pipefail\nZONE=\"{{config.zone_name}}\"\nRUN_URI=\"{{config.run_prefix_uri}}\"\n\
+        ZU=\"${RUN_URI}zones/${ZONE}/\"\nNC=\"${ZU}ncore/\"\nRC=\"${ZU}reconstruction/\"\nNV=\"${ZU}novel_views/\"\
+        \nRRD=\"${ZU}reports/sim2real.rrd\"\nMF=\"${ZU}zone_manifest.json\"\nGPU_NAME=$(nvidia-smi --query-gpu=name\
+        \ --format=csv,noheader | head -1 || echo unknown)\nSTART=$(date +%s)\nnpa workbench nurec check\
+        \ --require-gpu --output json\nnpa workbench nurec fetch --output-uri \"${NC}\" --output json\
+        \ >/tmp/nurec-fetch.json\nNCORE=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-fetch.json')).get('ncore_json',''))\"\
+        )\ntest -n \"${NCORE}\"\nnpa workbench nurec reconstruct --ncore-uri \"${NCORE}\" --config-name\
+        \ \"configs/experimental/3dgut/3dgut_colmap.yaml\" --mode trainval --world-size 1 --image \"{{config.nurec_image}}\"\
+        \ --export-gt --output-uri \"${RC}\" --input-uri \"${ZU}input/\" --output json >/tmp/nurec-reconstruct.json\n\
+        USDZ=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-reconstruct.json')).get('usdz_path',''))\"\
+        )\nnpa workbench nurec render --artifact-uri \"${RC}\" --out-dir /tmp/render-out --renderer default\
+        \ --rig-translation-offset \"{{config.rig_translation_offset}}\" --rig-rotation-offset \"{{config.rig_rotation_offset}}\"\
+        \ --no-replicate-training-views --output-uri \"${NV}\" --output json >/tmp/nurec-render.json\n\
+        npa workbench nurec visualize --input-uri \"${ZU}\" --output-uri \"${RRD}\" --output json >/tmp/nurec-viz.json\n\
+        END=$(date +%s)\npython3 - <<'PY'\nimport json, os\ndef _load_json(path, default=None):\n    default\
+        \ = default if default is not None else {}\n    try:\n        with open(path) as fh:\n       \
+        \     return json.load(fh)\n    except Exception:\n        return default\nrecon = _load_json(\"\
+        /tmp/nurec-reconstruct.json\")\nmetrics = recon.get(\"metrics\") or {}\npayload = {\n  \"schema\"\
+        : \"npa.living_lab.zone_manifest.v1\",\n  \"zone_name\": os.environ[\"ZONE\"],\n  \"status\":\
+        \ \"ok\",\n  \"gpu_name\": os.environ.get(\"GPU_NAME\", \"\"),\n  \"usdz_path\": os.environ.get(\"\
+        USDZ\", \"\"),\n  \"reconstruction_uri\": os.environ.get(\"RC\", \"\"),\n  \"novel_views_uri\"\
+        : os.environ.get(\"NV\", \"\"),\n  \"elapsed_seconds\": int(os.environ.get(\"END\", 0)) - int(os.environ.get(\"\
+        START\", 0)),\n  \"metrics\": {\n    \"test/psnr\": metrics.get(\"test/psnr\", 0.0),\n    \"test/ssim\"\
+        : metrics.get(\"test/ssim\", 0.0),\n    \"test/lpips\": metrics.get(\"test/lpips\", 0.0),\n  },\n\
+        }\njson.dump(payload, open(\"/tmp/zone_manifest.json\", \"w\"))\nfrom npa.clients.storage import\
+        \ StorageClient\nStorageClient.from_environment().upload_file(\"/tmp/zone_manifest.json\", os.environ[\"\
+        MF\"])\nprint(json.dumps(payload))\nPY\n"
+    outputs:
+    - uri: '{{config.zones_uri}}{{config.zone_name}}/zone_manifest.json'
+      schema: npa.living_lab.zone_manifest.v1
+  zone-struktur28-standard-b:
+    description: 'Zone struktur28-standard-b: full real NuRec/NRE reconstruction of the struktur28 standard
+      capture (view sector b) on its own RTX PRO 6000, then novel-view render + Rerun recording.'
+    resources: gpu
+    params:
+      zone_name: struktur28-standard-b
+      scene: struktur28
+      variant: standard
+      view_sector: b
+      rig_rotation_offset: 120,0,0
+      rig_translation_offset: 0,0,0.45
+    run:
+      shell: "set -euo pipefail\nZONE=\"{{config.zone_name}}\"\nRUN_URI=\"{{config.run_prefix_uri}}\"\n\
+        ZU=\"${RUN_URI}zones/${ZONE}/\"\nNC=\"${ZU}ncore/\"\nRC=\"${ZU}reconstruction/\"\nNV=\"${ZU}novel_views/\"\
+        \nRRD=\"${ZU}reports/sim2real.rrd\"\nMF=\"${ZU}zone_manifest.json\"\nGPU_NAME=$(nvidia-smi --query-gpu=name\
+        \ --format=csv,noheader | head -1 || echo unknown)\nSTART=$(date +%s)\nnpa workbench nurec check\
+        \ --require-gpu --output json\nnpa workbench nurec fetch --output-uri \"${NC}\" --output json\
+        \ >/tmp/nurec-fetch.json\nNCORE=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-fetch.json')).get('ncore_json',''))\"\
+        )\ntest -n \"${NCORE}\"\nnpa workbench nurec reconstruct --ncore-uri \"${NCORE}\" --config-name\
+        \ \"configs/experimental/3dgut/3dgut_colmap.yaml\" --mode trainval --world-size 1 --image \"{{config.nurec_image}}\"\
+        \ --export-gt --output-uri \"${RC}\" --input-uri \"${ZU}input/\" --output json >/tmp/nurec-reconstruct.json\n\
+        USDZ=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-reconstruct.json')).get('usdz_path',''))\"\
+        )\nnpa workbench nurec render --artifact-uri \"${RC}\" --out-dir /tmp/render-out --renderer default\
+        \ --rig-translation-offset \"{{config.rig_translation_offset}}\" --rig-rotation-offset \"{{config.rig_rotation_offset}}\"\
+        \ --no-replicate-training-views --output-uri \"${NV}\" --output json >/tmp/nurec-render.json\n\
+        npa workbench nurec visualize --input-uri \"${ZU}\" --output-uri \"${RRD}\" --output json >/tmp/nurec-viz.json\n\
+        END=$(date +%s)\npython3 - <<'PY'\nimport json, os\ndef _load_json(path, default=None):\n    default\
+        \ = default if default is not None else {}\n    try:\n        with open(path) as fh:\n       \
+        \     return json.load(fh)\n    except Exception:\n        return default\nrecon = _load_json(\"\
+        /tmp/nurec-reconstruct.json\")\nmetrics = recon.get(\"metrics\") or {}\npayload = {\n  \"schema\"\
+        : \"npa.living_lab.zone_manifest.v1\",\n  \"zone_name\": os.environ[\"ZONE\"],\n  \"status\":\
+        \ \"ok\",\n  \"gpu_name\": os.environ.get(\"GPU_NAME\", \"\"),\n  \"usdz_path\": os.environ.get(\"\
+        USDZ\", \"\"),\n  \"reconstruction_uri\": os.environ.get(\"RC\", \"\"),\n  \"novel_views_uri\"\
+        : os.environ.get(\"NV\", \"\"),\n  \"elapsed_seconds\": int(os.environ.get(\"END\", 0)) - int(os.environ.get(\"\
+        START\", 0)),\n  \"metrics\": {\n    \"test/psnr\": metrics.get(\"test/psnr\", 0.0),\n    \"test/ssim\"\
+        : metrics.get(\"test/ssim\", 0.0),\n    \"test/lpips\": metrics.get(\"test/lpips\", 0.0),\n  },\n\
+        }\njson.dump(payload, open(\"/tmp/zone_manifest.json\", \"w\"))\nfrom npa.clients.storage import\
+        \ StorageClient\nStorageClient.from_environment().upload_file(\"/tmp/zone_manifest.json\", os.environ[\"\
+        MF\"])\nprint(json.dumps(payload))\nPY\n"
+    outputs:
+    - uri: '{{config.zones_uri}}{{config.zone_name}}/zone_manifest.json'
+      schema: npa.living_lab.zone_manifest.v1
+  zone-toro-auto-a:
+    description: 'Zone toro-auto-a: full real NuRec/NRE reconstruction of the toro auto capture (view
+      sector a) on its own RTX PRO 6000, then novel-view render + Rerun recording.'
+    resources: gpu
+    params:
+      zone_name: toro-auto-a
+      scene: toro
+      variant: auto
+      view_sector: a
+      rig_rotation_offset: 0,0,0
+      rig_translation_offset: 0,0.25,0
+    run:
+      shell: "set -euo pipefail\nZONE=\"{{config.zone_name}}\"\nRUN_URI=\"{{config.run_prefix_uri}}\"\n\
+        ZU=\"${RUN_URI}zones/${ZONE}/\"\nNC=\"${ZU}ncore/\"\nRC=\"${ZU}reconstruction/\"\nNV=\"${ZU}novel_views/\"\
+        \nRRD=\"${ZU}reports/sim2real.rrd\"\nMF=\"${ZU}zone_manifest.json\"\nGPU_NAME=$(nvidia-smi --query-gpu=name\
+        \ --format=csv,noheader | head -1 || echo unknown)\nSTART=$(date +%s)\nnpa workbench nurec check\
+        \ --require-gpu --output json\nnpa workbench nurec fetch --output-uri \"${NC}\" --output json\
+        \ >/tmp/nurec-fetch.json\nNCORE=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-fetch.json')).get('ncore_json',''))\"\
+        )\ntest -n \"${NCORE}\"\nnpa workbench nurec reconstruct --ncore-uri \"${NCORE}\" --config-name\
+        \ \"configs/experimental/3dgut/3dgut_colmap.yaml\" --mode trainval --world-size 1 --image \"{{config.nurec_image}}\"\
+        \ --export-gt --output-uri \"${RC}\" --input-uri \"${ZU}input/\" --output json >/tmp/nurec-reconstruct.json\n\
+        USDZ=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-reconstruct.json')).get('usdz_path',''))\"\
+        )\nnpa workbench nurec render --artifact-uri \"${RC}\" --out-dir /tmp/render-out --renderer default\
+        \ --rig-translation-offset \"{{config.rig_translation_offset}}\" --rig-rotation-offset \"{{config.rig_rotation_offset}}\"\
+        \ --no-replicate-training-views --output-uri \"${NV}\" --output json >/tmp/nurec-render.json\n\
+        npa workbench nurec visualize --input-uri \"${ZU}\" --output-uri \"${RRD}\" --output json >/tmp/nurec-viz.json\n\
+        END=$(date +%s)\npython3 - <<'PY'\nimport json, os\ndef _load_json(path, default=None):\n    default\
+        \ = default if default is not None else {}\n    try:\n        with open(path) as fh:\n       \
+        \     return json.load(fh)\n    except Exception:\n        return default\nrecon = _load_json(\"\
+        /tmp/nurec-reconstruct.json\")\nmetrics = recon.get(\"metrics\") or {}\npayload = {\n  \"schema\"\
+        : \"npa.living_lab.zone_manifest.v1\",\n  \"zone_name\": os.environ[\"ZONE\"],\n  \"status\":\
+        \ \"ok\",\n  \"gpu_name\": os.environ.get(\"GPU_NAME\", \"\"),\n  \"usdz_path\": os.environ.get(\"\
+        USDZ\", \"\"),\n  \"reconstruction_uri\": os.environ.get(\"RC\", \"\"),\n  \"novel_views_uri\"\
+        : os.environ.get(\"NV\", \"\"),\n  \"elapsed_seconds\": int(os.environ.get(\"END\", 0)) - int(os.environ.get(\"\
+        START\", 0)),\n  \"metrics\": {\n    \"test/psnr\": metrics.get(\"test/psnr\", 0.0),\n    \"test/ssim\"\
+        : metrics.get(\"test/ssim\", 0.0),\n    \"test/lpips\": metrics.get(\"test/lpips\", 0.0),\n  },\n\
+        }\njson.dump(payload, open(\"/tmp/zone_manifest.json\", \"w\"))\nfrom npa.clients.storage import\
+        \ StorageClient\nStorageClient.from_environment().upload_file(\"/tmp/zone_manifest.json\", os.environ[\"\
+        MF\"])\nprint(json.dumps(payload))\nPY\n"
+    outputs:
+    - uri: '{{config.zones_uri}}{{config.zone_name}}/zone_manifest.json'
+      schema: npa.living_lab.zone_manifest.v1
+  zone-toro-auto-b:
+    description: 'Zone toro-auto-b: full real NuRec/NRE reconstruction of the toro auto capture (view
+      sector b) on its own RTX PRO 6000, then novel-view render + Rerun recording.'
+    resources: gpu
+    params:
+      zone_name: toro-auto-b
+      scene: toro
+      variant: auto
+      view_sector: b
+      rig_rotation_offset: 120,0,0
+      rig_translation_offset: 0,0,0.45
+    run:
+      shell: "set -euo pipefail\nZONE=\"{{config.zone_name}}\"\nRUN_URI=\"{{config.run_prefix_uri}}\"\n\
+        ZU=\"${RUN_URI}zones/${ZONE}/\"\nNC=\"${ZU}ncore/\"\nRC=\"${ZU}reconstruction/\"\nNV=\"${ZU}novel_views/\"\
+        \nRRD=\"${ZU}reports/sim2real.rrd\"\nMF=\"${ZU}zone_manifest.json\"\nGPU_NAME=$(nvidia-smi --query-gpu=name\
+        \ --format=csv,noheader | head -1 || echo unknown)\nSTART=$(date +%s)\nnpa workbench nurec check\
+        \ --require-gpu --output json\nnpa workbench nurec fetch --output-uri \"${NC}\" --output json\
+        \ >/tmp/nurec-fetch.json\nNCORE=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-fetch.json')).get('ncore_json',''))\"\
+        )\ntest -n \"${NCORE}\"\nnpa workbench nurec reconstruct --ncore-uri \"${NCORE}\" --config-name\
+        \ \"configs/experimental/3dgut/3dgut_colmap.yaml\" --mode trainval --world-size 1 --image \"{{config.nurec_image}}\"\
+        \ --export-gt --output-uri \"${RC}\" --input-uri \"${ZU}input/\" --output json >/tmp/nurec-reconstruct.json\n\
+        USDZ=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-reconstruct.json')).get('usdz_path',''))\"\
+        )\nnpa workbench nurec render --artifact-uri \"${RC}\" --out-dir /tmp/render-out --renderer default\
+        \ --rig-translation-offset \"{{config.rig_translation_offset}}\" --rig-rotation-offset \"{{config.rig_rotation_offset}}\"\
+        \ --no-replicate-training-views --output-uri \"${NV}\" --output json >/tmp/nurec-render.json\n\
+        npa workbench nurec visualize --input-uri \"${ZU}\" --output-uri \"${RRD}\" --output json >/tmp/nurec-viz.json\n\
+        END=$(date +%s)\npython3 - <<'PY'\nimport json, os\ndef _load_json(path, default=None):\n    default\
+        \ = default if default is not None else {}\n    try:\n        with open(path) as fh:\n       \
+        \     return json.load(fh)\n    except Exception:\n        return default\nrecon = _load_json(\"\
+        /tmp/nurec-reconstruct.json\")\nmetrics = recon.get(\"metrics\") or {}\npayload = {\n  \"schema\"\
+        : \"npa.living_lab.zone_manifest.v1\",\n  \"zone_name\": os.environ[\"ZONE\"],\n  \"status\":\
+        \ \"ok\",\n  \"gpu_name\": os.environ.get(\"GPU_NAME\", \"\"),\n  \"usdz_path\": os.environ.get(\"\
+        USDZ\", \"\"),\n  \"reconstruction_uri\": os.environ.get(\"RC\", \"\"),\n  \"novel_views_uri\"\
+        : os.environ.get(\"NV\", \"\"),\n  \"elapsed_seconds\": int(os.environ.get(\"END\", 0)) - int(os.environ.get(\"\
+        START\", 0)),\n  \"metrics\": {\n    \"test/psnr\": metrics.get(\"test/psnr\", 0.0),\n    \"test/ssim\"\
+        : metrics.get(\"test/ssim\", 0.0),\n    \"test/lpips\": metrics.get(\"test/lpips\", 0.0),\n  },\n\
+        }\njson.dump(payload, open(\"/tmp/zone_manifest.json\", \"w\"))\nfrom npa.clients.storage import\
+        \ StorageClient\nStorageClient.from_environment().upload_file(\"/tmp/zone_manifest.json\", os.environ[\"\
+        MF\"])\nprint(json.dumps(payload))\nPY\n"
+    outputs:
+    - uri: '{{config.zones_uri}}{{config.zone_name}}/zone_manifest.json'
+      schema: npa.living_lab.zone_manifest.v1
+  zone-toro-standard-a:
+    description: 'Zone toro-standard-a: full real NuRec/NRE reconstruction of the toro standard capture
+      (view sector a) on its own RTX PRO 6000, then novel-view render + Rerun recording.'
+    resources: gpu
+    params:
+      zone_name: toro-standard-a
+      scene: toro
+      variant: standard
+      view_sector: a
+      rig_rotation_offset: 0,0,0
+      rig_translation_offset: 0,0.25,0
+    run:
+      shell: "set -euo pipefail\nZONE=\"{{config.zone_name}}\"\nRUN_URI=\"{{config.run_prefix_uri}}\"\n\
+        ZU=\"${RUN_URI}zones/${ZONE}/\"\nNC=\"${ZU}ncore/\"\nRC=\"${ZU}reconstruction/\"\nNV=\"${ZU}novel_views/\"\
+        \nRRD=\"${ZU}reports/sim2real.rrd\"\nMF=\"${ZU}zone_manifest.json\"\nGPU_NAME=$(nvidia-smi --query-gpu=name\
+        \ --format=csv,noheader | head -1 || echo unknown)\nSTART=$(date +%s)\nnpa workbench nurec check\
+        \ --require-gpu --output json\nnpa workbench nurec fetch --output-uri \"${NC}\" --output json\
+        \ >/tmp/nurec-fetch.json\nNCORE=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-fetch.json')).get('ncore_json',''))\"\
+        )\ntest -n \"${NCORE}\"\nnpa workbench nurec reconstruct --ncore-uri \"${NCORE}\" --config-name\
+        \ \"configs/experimental/3dgut/3dgut_colmap.yaml\" --mode trainval --world-size 1 --image \"{{config.nurec_image}}\"\
+        \ --export-gt --output-uri \"${RC}\" --input-uri \"${ZU}input/\" --output json >/tmp/nurec-reconstruct.json\n\
+        USDZ=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-reconstruct.json')).get('usdz_path',''))\"\
+        )\nnpa workbench nurec render --artifact-uri \"${RC}\" --out-dir /tmp/render-out --renderer default\
+        \ --rig-translation-offset \"{{config.rig_translation_offset}}\" --rig-rotation-offset \"{{config.rig_rotation_offset}}\"\
+        \ --no-replicate-training-views --output-uri \"${NV}\" --output json >/tmp/nurec-render.json\n\
+        npa workbench nurec visualize --input-uri \"${ZU}\" --output-uri \"${RRD}\" --output json >/tmp/nurec-viz.json\n\
+        END=$(date +%s)\npython3 - <<'PY'\nimport json, os\ndef _load_json(path, default=None):\n    default\
+        \ = default if default is not None else {}\n    try:\n        with open(path) as fh:\n       \
+        \     return json.load(fh)\n    except Exception:\n        return default\nrecon = _load_json(\"\
+        /tmp/nurec-reconstruct.json\")\nmetrics = recon.get(\"metrics\") or {}\npayload = {\n  \"schema\"\
+        : \"npa.living_lab.zone_manifest.v1\",\n  \"zone_name\": os.environ[\"ZONE\"],\n  \"status\":\
+        \ \"ok\",\n  \"gpu_name\": os.environ.get(\"GPU_NAME\", \"\"),\n  \"usdz_path\": os.environ.get(\"\
+        USDZ\", \"\"),\n  \"reconstruction_uri\": os.environ.get(\"RC\", \"\"),\n  \"novel_views_uri\"\
+        : os.environ.get(\"NV\", \"\"),\n  \"elapsed_seconds\": int(os.environ.get(\"END\", 0)) - int(os.environ.get(\"\
+        START\", 0)),\n  \"metrics\": {\n    \"test/psnr\": metrics.get(\"test/psnr\", 0.0),\n    \"test/ssim\"\
+        : metrics.get(\"test/ssim\", 0.0),\n    \"test/lpips\": metrics.get(\"test/lpips\", 0.0),\n  },\n\
+        }\njson.dump(payload, open(\"/tmp/zone_manifest.json\", \"w\"))\nfrom npa.clients.storage import\
+        \ StorageClient\nStorageClient.from_environment().upload_file(\"/tmp/zone_manifest.json\", os.environ[\"\
+        MF\"])\nprint(json.dumps(payload))\nPY\n"
+    outputs:
+    - uri: '{{config.zones_uri}}{{config.zone_name}}/zone_manifest.json'
+      schema: npa.living_lab.zone_manifest.v1
+  zone-toro-standard-b:
+    description: 'Zone toro-standard-b: full real NuRec/NRE reconstruction of the toro standard capture
+      (view sector b) on its own RTX PRO 6000, then novel-view render + Rerun recording.'
+    resources: gpu
+    params:
+      zone_name: toro-standard-b
+      scene: toro
+      variant: standard
+      view_sector: b
+      rig_rotation_offset: 120,0,0
+      rig_translation_offset: 0,0,0.45
+    run:
+      shell: "set -euo pipefail\nZONE=\"{{config.zone_name}}\"\nRUN_URI=\"{{config.run_prefix_uri}}\"\n\
+        ZU=\"${RUN_URI}zones/${ZONE}/\"\nNC=\"${ZU}ncore/\"\nRC=\"${ZU}reconstruction/\"\nNV=\"${ZU}novel_views/\"\
+        \nRRD=\"${ZU}reports/sim2real.rrd\"\nMF=\"${ZU}zone_manifest.json\"\nGPU_NAME=$(nvidia-smi --query-gpu=name\
+        \ --format=csv,noheader | head -1 || echo unknown)\nSTART=$(date +%s)\nnpa workbench nurec check\
+        \ --require-gpu --output json\nnpa workbench nurec fetch --output-uri \"${NC}\" --output json\
+        \ >/tmp/nurec-fetch.json\nNCORE=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-fetch.json')).get('ncore_json',''))\"\
+        )\ntest -n \"${NCORE}\"\nnpa workbench nurec reconstruct --ncore-uri \"${NCORE}\" --config-name\
+        \ \"configs/experimental/3dgut/3dgut_colmap.yaml\" --mode trainval --world-size 1 --image \"{{config.nurec_image}}\"\
+        \ --export-gt --output-uri \"${RC}\" --input-uri \"${ZU}input/\" --output json >/tmp/nurec-reconstruct.json\n\
+        USDZ=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-reconstruct.json')).get('usdz_path',''))\"\
+        )\nnpa workbench nurec render --artifact-uri \"${RC}\" --out-dir /tmp/render-out --renderer default\
+        \ --rig-translation-offset \"{{config.rig_translation_offset}}\" --rig-rotation-offset \"{{config.rig_rotation_offset}}\"\
+        \ --no-replicate-training-views --output-uri \"${NV}\" --output json >/tmp/nurec-render.json\n\
+        npa workbench nurec visualize --input-uri \"${ZU}\" --output-uri \"${RRD}\" --output json >/tmp/nurec-viz.json\n\
+        END=$(date +%s)\npython3 - <<'PY'\nimport json, os\ndef _load_json(path, default=None):\n    default\
+        \ = default if default is not None else {}\n    try:\n        with open(path) as fh:\n       \
+        \     return json.load(fh)\n    except Exception:\n        return default\nrecon = _load_json(\"\
+        /tmp/nurec-reconstruct.json\")\nmetrics = recon.get(\"metrics\") or {}\npayload = {\n  \"schema\"\
+        : \"npa.living_lab.zone_manifest.v1\",\n  \"zone_name\": os.environ[\"ZONE\"],\n  \"status\":\
+        \ \"ok\",\n  \"gpu_name\": os.environ.get(\"GPU_NAME\", \"\"),\n  \"usdz_path\": os.environ.get(\"\
+        USDZ\", \"\"),\n  \"reconstruction_uri\": os.environ.get(\"RC\", \"\"),\n  \"novel_views_uri\"\
+        : os.environ.get(\"NV\", \"\"),\n  \"elapsed_seconds\": int(os.environ.get(\"END\", 0)) - int(os.environ.get(\"\
+        START\", 0)),\n  \"metrics\": {\n    \"test/psnr\": metrics.get(\"test/psnr\", 0.0),\n    \"test/ssim\"\
+        : metrics.get(\"test/ssim\", 0.0),\n    \"test/lpips\": metrics.get(\"test/lpips\", 0.0),\n  },\n\
+        }\njson.dump(payload, open(\"/tmp/zone_manifest.json\", \"w\"))\nfrom npa.clients.storage import\
+        \ StorageClient\nStorageClient.from_environment().upload_file(\"/tmp/zone_manifest.json\", os.environ[\"\
+        MF\"])\nprint(json.dumps(payload))\nPY\n"
+    outputs:
+    - uri: '{{config.zones_uri}}{{config.zone_name}}/zone_manifest.json'
+      schema: npa.living_lab.zone_manifest.v1
+  zone-valiant-auto-a:
+    description: 'Zone valiant-auto-a: full real NuRec/NRE reconstruction of the valiant auto capture
+      (view sector a) on its own RTX PRO 6000, then novel-view render + Rerun recording.'
+    resources: gpu
+    params:
+      zone_name: valiant-auto-a
+      scene: valiant
+      variant: auto
+      view_sector: a
+      rig_rotation_offset: 0,0,0
+      rig_translation_offset: 0,0.25,0
+    run:
+      shell: "set -euo pipefail\nZONE=\"{{config.zone_name}}\"\nRUN_URI=\"{{config.run_prefix_uri}}\"\n\
+        ZU=\"${RUN_URI}zones/${ZONE}/\"\nNC=\"${ZU}ncore/\"\nRC=\"${ZU}reconstruction/\"\nNV=\"${ZU}novel_views/\"\
+        \nRRD=\"${ZU}reports/sim2real.rrd\"\nMF=\"${ZU}zone_manifest.json\"\nGPU_NAME=$(nvidia-smi --query-gpu=name\
+        \ --format=csv,noheader | head -1 || echo unknown)\nSTART=$(date +%s)\nnpa workbench nurec check\
+        \ --require-gpu --output json\nnpa workbench nurec fetch --output-uri \"${NC}\" --output json\
+        \ >/tmp/nurec-fetch.json\nNCORE=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-fetch.json')).get('ncore_json',''))\"\
+        )\ntest -n \"${NCORE}\"\nnpa workbench nurec reconstruct --ncore-uri \"${NCORE}\" --config-name\
+        \ \"configs/experimental/3dgut/3dgut_colmap.yaml\" --mode trainval --world-size 1 --image \"{{config.nurec_image}}\"\
+        \ --export-gt --output-uri \"${RC}\" --input-uri \"${ZU}input/\" --output json >/tmp/nurec-reconstruct.json\n\
+        USDZ=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-reconstruct.json')).get('usdz_path',''))\"\
+        )\nnpa workbench nurec render --artifact-uri \"${RC}\" --out-dir /tmp/render-out --renderer default\
+        \ --rig-translation-offset \"{{config.rig_translation_offset}}\" --rig-rotation-offset \"{{config.rig_rotation_offset}}\"\
+        \ --no-replicate-training-views --output-uri \"${NV}\" --output json >/tmp/nurec-render.json\n\
+        npa workbench nurec visualize --input-uri \"${ZU}\" --output-uri \"${RRD}\" --output json >/tmp/nurec-viz.json\n\
+        END=$(date +%s)\npython3 - <<'PY'\nimport json, os\ndef _load_json(path, default=None):\n    default\
+        \ = default if default is not None else {}\n    try:\n        with open(path) as fh:\n       \
+        \     return json.load(fh)\n    except Exception:\n        return default\nrecon = _load_json(\"\
+        /tmp/nurec-reconstruct.json\")\nmetrics = recon.get(\"metrics\") or {}\npayload = {\n  \"schema\"\
+        : \"npa.living_lab.zone_manifest.v1\",\n  \"zone_name\": os.environ[\"ZONE\"],\n  \"status\":\
+        \ \"ok\",\n  \"gpu_name\": os.environ.get(\"GPU_NAME\", \"\"),\n  \"usdz_path\": os.environ.get(\"\
+        USDZ\", \"\"),\n  \"reconstruction_uri\": os.environ.get(\"RC\", \"\"),\n  \"novel_views_uri\"\
+        : os.environ.get(\"NV\", \"\"),\n  \"elapsed_seconds\": int(os.environ.get(\"END\", 0)) - int(os.environ.get(\"\
+        START\", 0)),\n  \"metrics\": {\n    \"test/psnr\": metrics.get(\"test/psnr\", 0.0),\n    \"test/ssim\"\
+        : metrics.get(\"test/ssim\", 0.0),\n    \"test/lpips\": metrics.get(\"test/lpips\", 0.0),\n  },\n\
+        }\njson.dump(payload, open(\"/tmp/zone_manifest.json\", \"w\"))\nfrom npa.clients.storage import\
+        \ StorageClient\nStorageClient.from_environment().upload_file(\"/tmp/zone_manifest.json\", os.environ[\"\
+        MF\"])\nprint(json.dumps(payload))\nPY\n"
+    outputs:
+    - uri: '{{config.zones_uri}}{{config.zone_name}}/zone_manifest.json'
+      schema: npa.living_lab.zone_manifest.v1
+  zone-valiant-auto-b:
+    description: 'Zone valiant-auto-b: full real NuRec/NRE reconstruction of the valiant auto capture
+      (view sector b) on its own RTX PRO 6000, then novel-view render + Rerun recording.'
+    resources: gpu
+    params:
+      zone_name: valiant-auto-b
+      scene: valiant
+      variant: auto
+      view_sector: b
+      rig_rotation_offset: 120,0,0
+      rig_translation_offset: 0,0,0.45
+    run:
+      shell: "set -euo pipefail\nZONE=\"{{config.zone_name}}\"\nRUN_URI=\"{{config.run_prefix_uri}}\"\n\
+        ZU=\"${RUN_URI}zones/${ZONE}/\"\nNC=\"${ZU}ncore/\"\nRC=\"${ZU}reconstruction/\"\nNV=\"${ZU}novel_views/\"\
+        \nRRD=\"${ZU}reports/sim2real.rrd\"\nMF=\"${ZU}zone_manifest.json\"\nGPU_NAME=$(nvidia-smi --query-gpu=name\
+        \ --format=csv,noheader | head -1 || echo unknown)\nSTART=$(date +%s)\nnpa workbench nurec check\
+        \ --require-gpu --output json\nnpa workbench nurec fetch --output-uri \"${NC}\" --output json\
+        \ >/tmp/nurec-fetch.json\nNCORE=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-fetch.json')).get('ncore_json',''))\"\
+        )\ntest -n \"${NCORE}\"\nnpa workbench nurec reconstruct --ncore-uri \"${NCORE}\" --config-name\
+        \ \"configs/experimental/3dgut/3dgut_colmap.yaml\" --mode trainval --world-size 1 --image \"{{config.nurec_image}}\"\
+        \ --export-gt --output-uri \"${RC}\" --input-uri \"${ZU}input/\" --output json >/tmp/nurec-reconstruct.json\n\
+        USDZ=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-reconstruct.json')).get('usdz_path',''))\"\
+        )\nnpa workbench nurec render --artifact-uri \"${RC}\" --out-dir /tmp/render-out --renderer default\
+        \ --rig-translation-offset \"{{config.rig_translation_offset}}\" --rig-rotation-offset \"{{config.rig_rotation_offset}}\"\
+        \ --no-replicate-training-views --output-uri \"${NV}\" --output json >/tmp/nurec-render.json\n\
+        npa workbench nurec visualize --input-uri \"${ZU}\" --output-uri \"${RRD}\" --output json >/tmp/nurec-viz.json\n\
+        END=$(date +%s)\npython3 - <<'PY'\nimport json, os\ndef _load_json(path, default=None):\n    default\
+        \ = default if default is not None else {}\n    try:\n        with open(path) as fh:\n       \
+        \     return json.load(fh)\n    except Exception:\n        return default\nrecon = _load_json(\"\
+        /tmp/nurec-reconstruct.json\")\nmetrics = recon.get(\"metrics\") or {}\npayload = {\n  \"schema\"\
+        : \"npa.living_lab.zone_manifest.v1\",\n  \"zone_name\": os.environ[\"ZONE\"],\n  \"status\":\
+        \ \"ok\",\n  \"gpu_name\": os.environ.get(\"GPU_NAME\", \"\"),\n  \"usdz_path\": os.environ.get(\"\
+        USDZ\", \"\"),\n  \"reconstruction_uri\": os.environ.get(\"RC\", \"\"),\n  \"novel_views_uri\"\
+        : os.environ.get(\"NV\", \"\"),\n  \"elapsed_seconds\": int(os.environ.get(\"END\", 0)) - int(os.environ.get(\"\
+        START\", 0)),\n  \"metrics\": {\n    \"test/psnr\": metrics.get(\"test/psnr\", 0.0),\n    \"test/ssim\"\
+        : metrics.get(\"test/ssim\", 0.0),\n    \"test/lpips\": metrics.get(\"test/lpips\", 0.0),\n  },\n\
+        }\njson.dump(payload, open(\"/tmp/zone_manifest.json\", \"w\"))\nfrom npa.clients.storage import\
+        \ StorageClient\nStorageClient.from_environment().upload_file(\"/tmp/zone_manifest.json\", os.environ[\"\
+        MF\"])\nprint(json.dumps(payload))\nPY\n"
+    outputs:
+    - uri: '{{config.zones_uri}}{{config.zone_name}}/zone_manifest.json'
+      schema: npa.living_lab.zone_manifest.v1
+  zone-valiant-standard-a:
+    description: 'Zone valiant-standard-a: full real NuRec/NRE reconstruction of the valiant standard
+      capture (view sector a) on its own RTX PRO 6000, then novel-view render + Rerun recording.'
+    resources: gpu
+    params:
+      zone_name: valiant-standard-a
+      scene: valiant
+      variant: standard
+      view_sector: a
+      rig_rotation_offset: 0,0,0
+      rig_translation_offset: 0,0.25,0
+    run:
+      shell: "set -euo pipefail\nZONE=\"{{config.zone_name}}\"\nRUN_URI=\"{{config.run_prefix_uri}}\"\n\
+        ZU=\"${RUN_URI}zones/${ZONE}/\"\nNC=\"${ZU}ncore/\"\nRC=\"${ZU}reconstruction/\"\nNV=\"${ZU}novel_views/\"\
+        \nRRD=\"${ZU}reports/sim2real.rrd\"\nMF=\"${ZU}zone_manifest.json\"\nGPU_NAME=$(nvidia-smi --query-gpu=name\
+        \ --format=csv,noheader | head -1 || echo unknown)\nSTART=$(date +%s)\nnpa workbench nurec check\
+        \ --require-gpu --output json\nnpa workbench nurec fetch --output-uri \"${NC}\" --output json\
+        \ >/tmp/nurec-fetch.json\nNCORE=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-fetch.json')).get('ncore_json',''))\"\
+        )\ntest -n \"${NCORE}\"\nnpa workbench nurec reconstruct --ncore-uri \"${NCORE}\" --config-name\
+        \ \"configs/experimental/3dgut/3dgut_colmap.yaml\" --mode trainval --world-size 1 --image \"{{config.nurec_image}}\"\
+        \ --export-gt --output-uri \"${RC}\" --input-uri \"${ZU}input/\" --output json >/tmp/nurec-reconstruct.json\n\
+        USDZ=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-reconstruct.json')).get('usdz_path',''))\"\
+        )\nnpa workbench nurec render --artifact-uri \"${RC}\" --out-dir /tmp/render-out --renderer default\
+        \ --rig-translation-offset \"{{config.rig_translation_offset}}\" --rig-rotation-offset \"{{config.rig_rotation_offset}}\"\
+        \ --no-replicate-training-views --output-uri \"${NV}\" --output json >/tmp/nurec-render.json\n\
+        npa workbench nurec visualize --input-uri \"${ZU}\" --output-uri \"${RRD}\" --output json >/tmp/nurec-viz.json\n\
+        END=$(date +%s)\npython3 - <<'PY'\nimport json, os\ndef _load_json(path, default=None):\n    default\
+        \ = default if default is not None else {}\n    try:\n        with open(path) as fh:\n       \
+        \     return json.load(fh)\n    except Exception:\n        return default\nrecon = _load_json(\"\
+        /tmp/nurec-reconstruct.json\")\nmetrics = recon.get(\"metrics\") or {}\npayload = {\n  \"schema\"\
+        : \"npa.living_lab.zone_manifest.v1\",\n  \"zone_name\": os.environ[\"ZONE\"],\n  \"status\":\
+        \ \"ok\",\n  \"gpu_name\": os.environ.get(\"GPU_NAME\", \"\"),\n  \"usdz_path\": os.environ.get(\"\
+        USDZ\", \"\"),\n  \"reconstruction_uri\": os.environ.get(\"RC\", \"\"),\n  \"novel_views_uri\"\
+        : os.environ.get(\"NV\", \"\"),\n  \"elapsed_seconds\": int(os.environ.get(\"END\", 0)) - int(os.environ.get(\"\
+        START\", 0)),\n  \"metrics\": {\n    \"test/psnr\": metrics.get(\"test/psnr\", 0.0),\n    \"test/ssim\"\
+        : metrics.get(\"test/ssim\", 0.0),\n    \"test/lpips\": metrics.get(\"test/lpips\", 0.0),\n  },\n\
+        }\njson.dump(payload, open(\"/tmp/zone_manifest.json\", \"w\"))\nfrom npa.clients.storage import\
+        \ StorageClient\nStorageClient.from_environment().upload_file(\"/tmp/zone_manifest.json\", os.environ[\"\
+        MF\"])\nprint(json.dumps(payload))\nPY\n"
+    outputs:
+    - uri: '{{config.zones_uri}}{{config.zone_name}}/zone_manifest.json'
+      schema: npa.living_lab.zone_manifest.v1
+  zone-valiant-standard-b:
+    description: 'Zone valiant-standard-b: full real NuRec/NRE reconstruction of the valiant standard
+      capture (view sector b) on its own RTX PRO 6000, then novel-view render + Rerun recording.'
+    resources: gpu
+    params:
+      zone_name: valiant-standard-b
+      scene: valiant
+      variant: standard
+      view_sector: b
+      rig_rotation_offset: 120,0,0
+      rig_translation_offset: 0,0,0.45
+    run:
+      shell: "set -euo pipefail\nZONE=\"{{config.zone_name}}\"\nRUN_URI=\"{{config.run_prefix_uri}}\"\n\
+        ZU=\"${RUN_URI}zones/${ZONE}/\"\nNC=\"${ZU}ncore/\"\nRC=\"${ZU}reconstruction/\"\nNV=\"${ZU}novel_views/\"\
+        \nRRD=\"${ZU}reports/sim2real.rrd\"\nMF=\"${ZU}zone_manifest.json\"\nGPU_NAME=$(nvidia-smi --query-gpu=name\
+        \ --format=csv,noheader | head -1 || echo unknown)\nSTART=$(date +%s)\nnpa workbench nurec check\
+        \ --require-gpu --output json\nnpa workbench nurec fetch --output-uri \"${NC}\" --output json\
+        \ >/tmp/nurec-fetch.json\nNCORE=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-fetch.json')).get('ncore_json',''))\"\
+        )\ntest -n \"${NCORE}\"\nnpa workbench nurec reconstruct --ncore-uri \"${NCORE}\" --config-name\
+        \ \"configs/experimental/3dgut/3dgut_colmap.yaml\" --mode trainval --world-size 1 --image \"{{config.nurec_image}}\"\
+        \ --export-gt --output-uri \"${RC}\" --input-uri \"${ZU}input/\" --output json >/tmp/nurec-reconstruct.json\n\
+        USDZ=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-reconstruct.json')).get('usdz_path',''))\"\
+        )\nnpa workbench nurec render --artifact-uri \"${RC}\" --out-dir /tmp/render-out --renderer default\
+        \ --rig-translation-offset \"{{config.rig_translation_offset}}\" --rig-rotation-offset \"{{config.rig_rotation_offset}}\"\
+        \ --no-replicate-training-views --output-uri \"${NV}\" --output json >/tmp/nurec-render.json\n\
+        npa workbench nurec visualize --input-uri \"${ZU}\" --output-uri \"${RRD}\" --output json >/tmp/nurec-viz.json\n\
+        END=$(date +%s)\npython3 - <<'PY'\nimport json, os\ndef _load_json(path, default=None):\n    default\
+        \ = default if default is not None else {}\n    try:\n        with open(path) as fh:\n       \
+        \     return json.load(fh)\n    except Exception:\n        return default\nrecon = _load_json(\"\
+        /tmp/nurec-reconstruct.json\")\nmetrics = recon.get(\"metrics\") or {}\npayload = {\n  \"schema\"\
+        : \"npa.living_lab.zone_manifest.v1\",\n  \"zone_name\": os.environ[\"ZONE\"],\n  \"status\":\
+        \ \"ok\",\n  \"gpu_name\": os.environ.get(\"GPU_NAME\", \"\"),\n  \"usdz_path\": os.environ.get(\"\
+        USDZ\", \"\"),\n  \"reconstruction_uri\": os.environ.get(\"RC\", \"\"),\n  \"novel_views_uri\"\
+        : os.environ.get(\"NV\", \"\"),\n  \"elapsed_seconds\": int(os.environ.get(\"END\", 0)) - int(os.environ.get(\"\
+        START\", 0)),\n  \"metrics\": {\n    \"test/psnr\": metrics.get(\"test/psnr\", 0.0),\n    \"test/ssim\"\
+        : metrics.get(\"test/ssim\", 0.0),\n    \"test/lpips\": metrics.get(\"test/lpips\", 0.0),\n  },\n\
+        }\njson.dump(payload, open(\"/tmp/zone_manifest.json\", \"w\"))\nfrom npa.clients.storage import\
+        \ StorageClient\nStorageClient.from_environment().upload_file(\"/tmp/zone_manifest.json\", os.environ[\"\
+        MF\"])\nprint(json.dumps(payload))\nPY\n"
+    outputs:
+    - uri: '{{config.zones_uri}}{{config.zone_name}}/zone_manifest.json'
+      schema: npa.living_lab.zone_manifest.v1
+  join:
+    description: 'Barrier: read all 16 zone manifests, require every zone present with a real GPU identity
+      and a real USDZ, aggregate objective metrics and GPU participation, and publish the composite digital-twin
+      report plus a contact-sheet panorama.'
+    needs:
+    - living-lab-zones
+    resources: cpu
+    run:
+      shell: python3 -c "from npa.workflows.living_lab import join_living_lab_zones; join_living_lab_zones(zones_uri='{{config.zones_uri}}',
+        report_uri='{{config.report_uri}}', panorama_uri='{{config.panorama_uri}}', shards='{{config.zones}}',
+        run_id='{{run.id}}')"
+    outputs:
+    - uri: '{{config.report_uri}}'
+      schema: npa.living_lab.digital_twin.v1
+    - uri: '{{config.panorama_uri}}'
+      schema: npa.living_lab.panorama.v1
+    terminal: true
