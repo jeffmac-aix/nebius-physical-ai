@@ -956,6 +956,27 @@ def _initialize_camera_producers(world, cameras: tuple[tuple[str, object], ...])
         raise
 
 
+def _initialize_live_capture(world, cameras, logger):
+    """Activate Antioch recording before warming its Kit render products."""
+
+    # Antioch 0.3.63 attaches the Kit simulation clock on the logger's first
+    # recording use. Camera annotators initialized before that lifecycle edge
+    # remain present but return no pixels, even while world.step(render=True)
+    # advances. Keep this owner-thread first use ahead of both RGB producers.
+    telemetry = LiveTelemetryPublisher(logger)
+    try:
+        render_products, reference_times, camera_markers = (
+            _initialize_camera_producers(world, cameras)
+        )
+    except BaseException:
+        telemetry.close()
+        for _view, camera in cameras:
+            with contextlib.suppress(Exception):
+                camera.destroy()
+        raise
+    return telemetry, render_products, reference_times, camera_markers
+
+
 def _camera_markers_advanced(
     reference_times: dict[str, object],
     prior: dict[str, tuple[int, int] | None],
@@ -1387,8 +1408,8 @@ def openpi_franka_mk8s_live_v2(
     _configure_camera_optics(world.stage, EXTERIOR_CAMERA_PATH, "exterior")
     _configure_camera_optics(world.stage, WRIST_CAMERA_PATH, "wrist")
     cameras = (("exterior", exterior), ("wrist", wrist))
-    render_products, reference_times, camera_markers = _initialize_camera_producers(
-        world, cameras
+    telemetry, render_products, reference_times, camera_markers = (
+        _initialize_live_capture(world, cameras, logger)
     )
     print(
         "NPA_OPENPI_CAMERAS_READY "
@@ -1457,7 +1478,6 @@ def openpi_franka_mk8s_live_v2(
     pickup_hold_seconds = 0.0
     pickup_success = False
     executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="openpi-policy")
-    telemetry = LiveTelemetryPublisher(logger)
     camera_readiness = CameraReadinessMonitor()
     display_rate = DisplayRateLimiter()
     next_loop_heartbeat_at = 0.0

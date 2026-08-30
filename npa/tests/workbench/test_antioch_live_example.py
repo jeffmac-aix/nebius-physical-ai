@@ -536,6 +536,155 @@ def test_camera_producers_attach_and_warm_on_calling_thread(
     assert markers["exterior"] == (3, 60)
 
 
+def test_live_capture_activates_recording_before_camera_warmup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scenario = _load_live_scenario(monkeypatch, "antioch_camera_lifecycle_test")
+    monkeypatch.setattr(scenario, "CAMERA_WARMUP_RENDER_FRAMES", 2)
+    owner = threading.get_ident()
+    lifecycle = SimpleNamespace(recording_active=False, steps=0)
+
+    class Logger:
+        def scalar(self, path: str, value: float) -> None:
+            assert threading.get_ident() == owner
+            assert path == "telemetry/initialized" and value == 1.0
+            lifecycle.recording_active = True
+
+    class Prim:
+        def IsValid(self) -> bool:
+            return True
+
+        def __bool__(self) -> bool:
+            return True
+
+    class World:
+        stage = SimpleNamespace(GetPrimAtPath=lambda _path: Prim())
+
+        def step(self, *, render: bool) -> None:
+            assert render and threading.get_ident() == owner
+            lifecycle.steps += 1
+
+    class ReferenceTime:
+        def get_data(self) -> dict[str, int]:
+            return {
+                "referenceTimeNumerator": lifecycle.steps,
+                "referenceTimeDenominator": 60,
+            }
+
+    monkeypatch.setattr(
+        scenario,
+        "_new_reference_time_annotator",
+        lambda _render_product: ReferenceTime(),
+    )
+
+    class Camera:
+        destroyed = False
+
+        def initialize(self, *, attach_rgb_annotator: bool) -> None:
+            assert attach_rgb_annotator
+
+        def get_render_product_path(self) -> str:
+            return "/Render/rgb"
+
+        def get_rgba(self) -> np.ndarray | None:
+            if not lifecycle.recording_active:
+                return None
+            rgba = np.empty((224, 224, 4), dtype=np.uint8)
+            rgba[..., :3] = [140, 30, 10]
+            rgba[..., 3] = 255
+            return rgba
+
+        def destroy(self) -> None:
+            self.destroyed = True
+
+    with pytest.raises(scenario.CameraReadinessError, match="warmup_exhausted:missing"):
+        scenario._initialize_camera_producers(
+            World(), (("exterior", Camera()), ("wrist", Camera()))
+        )
+    assert not lifecycle.recording_active and lifecycle.steps == 2
+
+    lifecycle.steps = 0
+    exterior, wrist = Camera(), Camera()
+    telemetry, products, producers, markers = scenario._initialize_live_capture(
+        World(), (("exterior", exterior), ("wrist", wrist)), Logger()
+    )
+
+    assert lifecycle.recording_active
+    assert lifecycle.steps == scenario.CAMERA_READY_CONSECUTIVE_FRAMES
+    assert products == {"exterior": "/Render/rgb", "wrist": "/Render/rgb"}
+    assert set(producers) == {"exterior", "wrist"}
+    assert markers == {"exterior": (2, 60), "wrist": (2, 60)}
+    assert telemetry.close() == {"exterior": True, "wrist": True, "display": True}
+    assert not exterior.destroyed and not wrist.destroyed
+
+
+def test_live_capture_cleans_up_when_rgb_warmup_exhausts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scenario = _load_live_scenario(monkeypatch, "antioch_camera_cleanup_test")
+    monkeypatch.setattr(scenario, "CAMERA_WARMUP_RENDER_FRAMES", 2)
+
+    class Logger:
+        def scalar(self, _path: str, _value: float) -> None:
+            pass
+
+    class Prim:
+        def IsValid(self) -> bool:
+            return True
+
+        def __bool__(self) -> bool:
+            return True
+
+    class World:
+        stage = SimpleNamespace(GetPrimAtPath=lambda _path: Prim())
+
+        def step(self, *, render: bool) -> None:
+            assert render
+
+    class ReferenceTime:
+        detached = False
+
+        def get_data(self) -> dict[str, int]:
+            return {"referenceTimeNumerator": 1, "referenceTimeDenominator": 60}
+
+        def detach(self, _render_products: list[str]) -> None:
+            self.detached = True
+
+    producers: list[ReferenceTime] = []
+
+    def new_reference_time(_render_product: str) -> ReferenceTime:
+        producer = ReferenceTime()
+        producers.append(producer)
+        return producer
+
+    monkeypatch.setattr(scenario, "_new_reference_time_annotator", new_reference_time)
+
+    class Camera:
+        def __init__(self) -> None:
+            self.destroyed = False
+
+        def initialize(self, *, attach_rgb_annotator: bool) -> None:
+            assert attach_rgb_annotator
+
+        def get_render_product_path(self) -> str:
+            return "/Render/rgb"
+
+        def get_rgba(self) -> None:
+            return None
+
+        def destroy(self) -> None:
+            self.destroyed = True
+
+    exterior, wrist = Camera(), Camera()
+    with pytest.raises(scenario.CameraReadinessError, match="warmup_exhausted:missing"):
+        scenario._initialize_live_capture(
+            World(), (("exterior", exterior), ("wrist", wrist)), Logger()
+        )
+
+    assert exterior.destroyed and wrist.destroyed
+    assert len(producers) == 2 and all(item.detached for item in producers)
+
+
 def test_camera_producer_clock_does_not_use_stale_camera_frame_cache(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
