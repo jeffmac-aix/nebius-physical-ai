@@ -401,6 +401,7 @@ def test_publish_plan_promotes_dev_sha_to_release_tag() -> None:
     accepted_shas = {
         tool: images.accepted_publication_development_sha(tool)
         for tool in (
+            "isaac-lab",
             "ltx2",
             "wan2-2",
             "cosmos3-serving",
@@ -408,7 +409,7 @@ def test_publish_plan_promotes_dev_sha_to_release_tag() -> None:
             "sonic-mujoco",
         )
     }
-    assert len(set(accepted_shas.values())) == 5
+    assert len(set(accepted_shas.values())) == 6
     for item in plan:
         source_image = item.source_ref.rsplit("/", 1)[-1]
         target_image = item.target_ref.rsplit("/", 1)[-1]
