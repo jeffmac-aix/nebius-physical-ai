@@ -382,19 +382,64 @@ ZU="${RUN_URI}zones/${ZONE}/"
 NC="${ZU}ncore/"
 RC="${ZU}reconstruction/"
 NV="${ZU}novel_views/"
+INPUT="${ZU}input/"
 RRD="${ZU}reports/sim2real.rrd"
+FINAL="${ZU}reports/final.json"
 MF="${ZU}zone_manifest.json"
+
+# ---- runtime setup inside the NRE container --------------------------------
+# The NGC NRE image ships no npa, no ffmpeg, and none of the workbench's Python
+# deps. The runtime setup installs npa from $NPA_SRC_S3_URI; this step fills in
+# the NRE-runtime Python deps (nvidia-ncore for fetch, rerun-sdk for the Rerun
+# recording, pillow/pyyaml for the join inputs) and ffmpeg (backs render
+# --export-video). It is idempotent and matches the shipped single-pod reference.
+export DEBIAN_FRONTEND=noninteractive
+if ! command -v ffmpeg >/dev/null 2>&1; then
+  apt-get update -qq || true
+  apt-get install -y -qq --no-install-recommends ffmpeg || true
+fi
+npa_pip() {
+  python3 -m pip install -q "$@" --break-system-packages || python3 -m pip install -q "$@" --user
+}
+npa_pip "boto3>=1.34" "awscli>=1.32" "huggingface_hub>=0.30" "nvidia-ncore" "rerun-sdk" "pillow>=10.0" "pyyaml>=6.0"
+command -v npa >/dev/null 2>&1 || { echo "npa not found; set NPA_SRC_S3_URI" >&2; exit 1; }
+
+# Export the shell vars the manifest writer (a child python process) needs.
+export ZONE RUN_URI ZU NC RC NV INPUT RRD FINAL MF
 GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1 || echo unknown)
+export GPU_NAME
 START=$(date +%s)
+export START
+
+echo "=== zone $ZONE: check (container + dataset rights + RT-core GPU) ==="
 npa workbench nurec check --require-gpu --output json
+
+echo "=== zone $ZONE: fetch real NCore V4 shards + derived rig pose edge ==="
 npa workbench nurec fetch --output-uri "${NC}" --output json >/tmp/nurec-fetch.json
-NCORE=$(python3 -c "import json;print(json.load(open('/tmp/nurec-fetch.json')).get('ncore_json',''))")
-test -n "${NCORE}"
-npa workbench nurec reconstruct --ncore-uri "${NCORE}" --config-name "configs/experimental/3dgut/3dgut_colmap.yaml" --mode trainval --world-size 1 --image "{{config.nurec_image}}" --export-gt --output-uri "${RC}" --input-uri "${ZU}input/" --output json >/tmp/nurec-reconstruct.json
-USDZ=$(python3 -c "import json;print(json.load(open('/tmp/nurec-reconstruct.json')).get('usdz_path',''))")
-npa workbench nurec render --artifact-uri "${RC}" --out-dir /tmp/render-out --renderer default --rig-translation-offset "{{config.rig_translation_offset}}" --rig-rotation-offset "{{config.rig_rotation_offset}}" --no-replicate-training-views --output-uri "${NV}" --output json >/tmp/nurec-render.json
+NCORE_JSON=$(python3 -c "import json;print(json.load(open('/tmp/nurec-fetch.json'))['ncore_json'])")
+POSES_GROUP=$(python3 -c "import json;print(json.load(open('/tmp/nurec-fetch.json'))['poses_component_group'])")
+CAMERA=$(python3 -c "import json;print(json.load(open('/tmp/nurec-fetch.json'))['reference_camera'])")
+test -n "${NCORE_JSON}" && test -n "${POSES_GROUP}" && test -n "${CAMERA}"
+export NCORE_JSON POSES_GROUP CAMERA
+
+echo "=== zone $ZONE: reconstruct (3DGUT Gaussians -> renderable USDZ) ==="
+npa workbench nurec reconstruct --ncore-json "${NCORE_JSON}" --poses-component-group "${POSES_GROUP}" --camera-id "${CAMERA}" --world-size 1 --export-gt --output-uri "${RC}" --input-uri "${INPUT}" --output json >/tmp/nurec-reconstruct.json
+USDZ=$(python3 -c "import json;print(json.load(open('/tmp/nurec-reconstruct.json'))['usdz_path'])")
+test -n "${USDZ}"
+export USDZ
+
+echo "=== zone $ZONE: render novel views (rig-offset, not training views) ==="
+npa workbench nurec render --artifact-path "${USDZ}" --output-dir /tmp/render-out --camera-id "${CAMERA}" --renderer default --rig-translation-offset "{{config.rig_translation_offset}}" --rig-rotation-offset "{{config.rig_rotation_offset}}" --no-replicate-training-views --output-uri "${NV}" --output json >/tmp/nurec-render.json
+
+echo "=== zone $ZONE: visualize (reports/sim2real.rrd for the agent panel) ==="
 npa workbench nurec visualize --input-uri "${ZU}" --output-uri "${RRD}" --output json >/tmp/nurec-viz.json
+
+echo "=== zone $ZONE: finalize (reports/final.json) ==="
+npa workbench nurec finalize --input-uri "${ZU}" --output-uri "${FINAL}" --run-id "${ZONE}" --output json >/tmp/nurec-final.json
+
 END=$(date +%s)
+export END
+
 python3 - <<'PY'
 import json, os
 def _load_json(path, default=None):
@@ -405,6 +450,7 @@ def _load_json(path, default=None):
     except Exception:
         return default
 recon = _load_json("/tmp/nurec-reconstruct.json")
+final = _load_json("/tmp/nurec-final.json")
 metrics = recon.get("metrics") or {}
 payload = {
   "schema": "npa.living_lab.zone_manifest.v1",
@@ -414,11 +460,19 @@ payload = {
   "usdz_path": os.environ.get("USDZ", ""),
   "reconstruction_uri": os.environ.get("RC", ""),
   "novel_views_uri": os.environ.get("NV", ""),
+  "rrd_uri": os.environ.get("RRD", ""),
+  "final_report_uri": os.environ.get("FINAL", ""),
   "elapsed_seconds": int(os.environ.get("END", 0)) - int(os.environ.get("START", 0)),
   "metrics": {
     "test/psnr": metrics.get("test/psnr", 0.0),
     "test/ssim": metrics.get("test/ssim", 0.0),
     "test/lpips": metrics.get("test/lpips", 0.0),
+  },
+  "finalize": {
+    "status": final.get("status", ""),
+    "has_usdz": bool(final.get("has_usdz", False)),
+    "has_rrd": bool(final.get("has_rrd", False)),
+    "artifact_count": final.get("artifact_count", 0),
   },
 }
 json.dump(payload, open("/tmp/zone_manifest.json", "w"))

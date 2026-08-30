@@ -514,10 +514,18 @@ def test_living_lab_every_shard_is_real_nurec_work_on_rtx_gpu() -> None:
         assert "npa workbench nurec reconstruct" in shell
         assert "npa workbench nurec render" in shell
         assert "npa workbench nurec visualize" in shell
+        assert "npa workbench nurec finalize" in shell
         # One GPU per shard: never a disguised single-GPU program.
         assert "--world-size 1" in shell
         # Novel view requires a non-zero rig offset.
         assert "--rig-translation-offset" in shell and "--rig-rotation-offset" in shell
+        # --- flag-level correctness (validates cleanly, crashes on submit if
+        # drifted from the real nurec CLI) ----------------------------------
+        assert "--ncore-json" in shell and "--ncore-uri" not in shell
+        assert "--poses-component-group" in shell
+        assert shell.count("--camera-id") == 2  # reconstruct + render require it
+        assert "--artifact-path" in shell
+        assert 'visualize --input-uri "${ZU}"' in shell
 
 
 def test_living_lab_join_runs_the_real_module_and_publishes_a_twin() -> None:

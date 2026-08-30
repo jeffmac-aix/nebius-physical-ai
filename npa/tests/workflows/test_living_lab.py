@@ -211,9 +211,51 @@ def test_every_shard_is_real_nurec_work_on_rtx_gpu() -> None:
             continue
         assert state["resources"] == "gpu"
         shell = state["run"]["shell"]
+        # Every shard runs the full real single-pod NRE pipeline inside the
+        # NRE container: check -> fetch -> reconstruct -> render -> visualize
+        # -> finalize, exactly like the validated reference
+        # (npa/src/npa/workbench/nurec/examples/nurec-reconstruct.yaml).
         assert "npa workbench nurec check" in shell
+        assert "npa workbench nurec fetch" in shell
         assert "npa workbench nurec reconstruct" in shell
         assert "npa workbench nurec render" in shell
+        assert "npa workbench nurec visualize" in shell
+        assert "npa workbench nurec finalize" in shell
+        # One GPU per shard: never a disguised single-GPU-unaware program.
+        assert "--world-size 1" in shell
+        # Novel-view rendering requires a real non-zero rig offset.
+        assert "--rig-translation-offset" in shell and "--rig-rotation-offset" in shell
+
+        # --- flag-level correctness (catches CLI-flag drift that validates
+        # but crashes on real submit) -------------------------------------
+        # fetch -> reconstruct handoff: same pod, so --ncore-json points at the
+        # local meta-file the fetch stage unpacked (never --ncore-uri, which
+        # expects an S3 *published sequence* that fetch --publish-sequence writes).
+        assert "--ncore-json" in shell and "--ncore-uri" not in shell
+        # reconstruct needs the derived rig pose group + reference camera.
+        assert "--poses-component-group" in shell
+        assert "--camera-id" in shell
+        # render must target the trained .usdz artifact, not an S3 dir, and
+        # must pass --camera-id (required by `nre render`).
+        assert "--artifact-path" in shell
+        assert shell.count("--camera-id") == 2  # reconstruct + render require it
+
+        # The zone run root must expose input/, reconstruction/, novel_views/
+        # for visualize, so it uses the zone prefix ""+ ZU, not a sub-dir.
+        assert 'visualize --input-uri "${ZU}"' in shell
+
+        # The NRE container ships no npa/ffmpeg/runtime deps: the shard must
+        # install them (ffmpeg + nvidia-ncore + rerun-sdk + npa guard).
+        assert "ffmpeg" in shell
+        assert "nvidia-ncore" in shell
+        assert "rerun-sdk" in shell
+        assert "command -v npa" in shell
+
+        # Manifest writer is a child python process: the shell vars it reads
+        # must be exported.
+        assert "export ZONE" in shell
+        assert "export GPU_NAME" in shell
+        assert "export USDZ" in shell
     assert gpu["accelerators"] == "RTXPRO-6000-BLACKWELL-SERVER-EDITION:1", (
         "shard must route to RTX PRO 6000"
     )
