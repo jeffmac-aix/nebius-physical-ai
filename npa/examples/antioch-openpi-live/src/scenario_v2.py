@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import operator
 import ssl
 import time
 import contextlib
@@ -858,67 +859,117 @@ def _camera_frame(camera, *, view: str) -> CameraFrame:
     return result
 
 
-def _camera_render_marker(camera) -> tuple[int, float] | None:
-    """Return Isaac's producer-owned frame marker, never our loop counter."""
+def _new_reference_time_annotator(render_product: str):
+    """Attach Isaac's public producer clock directly to one render product."""
 
-    current = camera.get_current_frame(clone=True)
+    import omni.replicator.core as rep
+
+    annotator = rep.AnnotatorRegistry.get_annotator("ReferenceTime")
+    annotator.attach([render_product])
+    return annotator
+
+
+def _reference_time_marker(annotator) -> tuple[int, int] | None:
+    """Return the render product's exact producer-owned reference time."""
+
+    current = annotator.get_data()
     if not isinstance(current, dict):
         return None
-    frame = current.get("rendering_frame")
-    timestamp = current.get("rendering_time")
-    if not isinstance(frame, (int, float)) or not isinstance(timestamp, (int, float)):
+    raw_numerator = current.get("referenceTimeNumerator")
+    raw_denominator = current.get("referenceTimeDenominator")
+    if isinstance(raw_numerator, bool) or isinstance(raw_denominator, bool):
         return None
-    return int(frame), float(timestamp)
+    try:
+        numerator = operator.index(raw_numerator)
+        denominator = operator.index(raw_denominator)
+    except TypeError:
+        return None
+    if denominator <= 0:
+        return None
+    return numerator, denominator
+
+
+def _reference_time_advanced(
+    current: tuple[int, int], prior: tuple[int, int]
+) -> bool:
+    """Compare exact reference-time fractions without float precision loss."""
+
+    return current[0] * prior[1] > prior[0] * current[1]
+
+
+def _detach_reference_time_producers(
+    annotators: dict[str, object], render_products: dict[str, str]
+) -> None:
+    """Best-effort detach producer clocks from their exact render products."""
+
+    for view, annotator in annotators.items():
+        with contextlib.suppress(Exception):
+            annotator.detach([render_products[view]])
 
 
 def _initialize_camera_producers(world, cameras: tuple[tuple[str, object], ...]):
     """Attach RGB annotators and prove two advancing frames on the sim thread."""
 
     render_products: dict[str, str] = {}
-    for view, camera in cameras:
-        camera.initialize(attach_rgb_annotator=True)
-        render_product = camera.get_render_product_path()
-        if not isinstance(render_product, str) or not render_product:
-            raise CameraReadinessError(view, "render_product_missing")
-        prim = world.stage.GetPrimAtPath(render_product)
-        if not prim or not prim.IsValid():
-            raise CameraReadinessError(view, "render_product_invalid")
-        render_products[view] = render_product
-
-    prior: dict[str, tuple[int, float] | None] = {view: None for view, _ in cameras}
-    consecutive = 0
-    last_reason = "missing"
-    for _ in range(CAMERA_WARMUP_RENDER_FRAMES):
-        world.step(render=True)
-        advanced = True
+    reference_times: dict[str, object] = {}
+    try:
         for view, camera in cameras:
-            frame = _camera_frame(camera, view=view)
-            marker = _camera_render_marker(camera)
-            if frame.rgb is None:
-                last_reason = frame.reason
-                advanced = False
-            elif marker is None:
-                last_reason = "producer_marker_missing"
-                advanced = False
-            elif prior[view] is not None and marker <= prior[view]:
-                last_reason = "producer_stale"
-                advanced = False
-            prior[view] = marker
-        consecutive = consecutive + 1 if advanced else 0
-        if consecutive >= CAMERA_READY_CONSECUTIVE_FRAMES:
-            return render_products, prior
-    raise CameraReadinessError("pair", f"warmup_exhausted:{last_reason}")
+            camera.initialize(attach_rgb_annotator=True)
+            render_product = camera.get_render_product_path()
+            if not isinstance(render_product, str) or not render_product:
+                raise CameraReadinessError(view, "render_product_missing")
+            prim = world.stage.GetPrimAtPath(render_product)
+            if not prim or not prim.IsValid():
+                raise CameraReadinessError(view, "render_product_invalid")
+            render_products[view] = render_product
+            reference_times[view] = _new_reference_time_annotator(render_product)
+
+        prior: dict[str, tuple[int, int] | None] = {
+            view: None for view, _ in cameras
+        }
+        consecutive = 0
+        last_reason = "missing"
+        for _ in range(CAMERA_WARMUP_RENDER_FRAMES):
+            world.step(render=True)
+            advanced = True
+            for view, camera in cameras:
+                frame = _camera_frame(camera, view=view)
+                marker = _reference_time_marker(reference_times[view])
+                if frame.rgb is None:
+                    last_reason = frame.reason
+                    advanced = False
+                elif marker is None:
+                    last_reason = "producer_marker_missing"
+                    advanced = False
+                elif prior[view] is not None and not _reference_time_advanced(
+                    marker, prior[view]
+                ):
+                    last_reason = "producer_stale"
+                    advanced = False
+                prior[view] = marker
+            consecutive = consecutive + 1 if advanced else 0
+            if consecutive >= CAMERA_READY_CONSECUTIVE_FRAMES:
+                return render_products, reference_times, prior
+        raise CameraReadinessError("pair", f"warmup_exhausted:{last_reason}")
+    except Exception:
+        _detach_reference_time_producers(reference_times, render_products)
+        raise
 
 
 def _camera_markers_advanced(
-    cameras: tuple[tuple[str, object], ...],
-    prior: dict[str, tuple[int, float] | None],
-) -> tuple[bool, dict[str, tuple[int, float] | None], str]:
-    current = {view: _camera_render_marker(camera) for view, camera in cameras}
+    reference_times: dict[str, object],
+    prior: dict[str, tuple[int, int] | None],
+) -> tuple[bool, dict[str, tuple[int, int] | None], str]:
+    current = {
+        view: _reference_time_marker(annotator)
+        for view, annotator in reference_times.items()
+    }
     for view, marker in current.items():
         if marker is None:
             return False, current, f"{view}_producer_marker_missing"
-        if prior.get(view) is not None and marker <= prior[view]:
+        if prior.get(view) is not None and not _reference_time_advanced(
+            marker, prior[view]
+        ):
             return False, current, f"{view}_producer_stale"
     return True, current, ""
 
@@ -1336,7 +1387,9 @@ def openpi_franka_mk8s_live_v2(
     _configure_camera_optics(world.stage, EXTERIOR_CAMERA_PATH, "exterior")
     _configure_camera_optics(world.stage, WRIST_CAMERA_PATH, "wrist")
     cameras = (("exterior", exterior), ("wrist", wrist))
-    render_products, camera_markers = _initialize_camera_producers(world, cameras)
+    render_products, reference_times, camera_markers = _initialize_camera_producers(
+        world, cameras
+    )
     print(
         "NPA_OPENPI_CAMERAS_READY "
         f"views={','.join(sorted(render_products))} "
@@ -1596,7 +1649,7 @@ def openpi_franka_mk8s_live_v2(
                     wrist_cube_in_frame=wrist_cube_in_frame,
                 )
                 producers_advanced, current_markers, producer_reason = (
-                    _camera_markers_advanced(cameras, camera_markers)
+                    _camera_markers_advanced(reference_times, camera_markers)
                 )
                 if producers_advanced:
                     camera_markers = current_markers
@@ -1989,6 +2042,8 @@ def openpi_franka_mk8s_live_v2(
             f"closed={telemetry_closed} state={telemetry_state}",
             flush=True,
         )
+        with contextlib.suppress(Exception):
+            _detach_reference_time_producers(reference_times, render_products)
         with contextlib.suppress(Exception):
             exterior.destroy()
         with contextlib.suppress(Exception):

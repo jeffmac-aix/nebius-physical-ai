@@ -474,6 +474,30 @@ def test_camera_producers_attach_and_warm_on_calling_thread(
 
     world = World()
 
+    class ReferenceTime:
+        def __init__(self) -> None:
+            self.render_product = ""
+
+        def attach(self, render_products: list[str]) -> None:
+            self.render_product = render_products[0]
+
+        def get_data(self) -> dict[str, int]:
+            return {
+                "referenceTimeNumerator": world.steps,
+                "referenceTimeDenominator": 60,
+            }
+
+    reference_times: list[ReferenceTime] = []
+
+    def new_reference_time(_render_product: str) -> ReferenceTime:
+        reference_time = ReferenceTime()
+        reference_times.append(reference_time)
+        return reference_time
+
+    monkeypatch.setattr(
+        scenario, "_new_reference_time_annotator", new_reference_time
+    )
+
     class Camera:
         def __init__(self, view: str) -> None:
             self.view = view
@@ -502,13 +526,74 @@ def test_camera_producers_attach_and_warm_on_calling_thread(
             }
 
     exterior, wrist = Camera("exterior"), Camera("wrist")
-    products, markers = scenario._initialize_camera_producers(
+    products, producers, markers = scenario._initialize_camera_producers(
         world, (("exterior", exterior), ("wrist", wrist))
     )
     assert products == {"exterior": "/Render/exterior", "wrist": "/Render/wrist"}
+    assert set(producers) == {"exterior", "wrist"}
     assert exterior.attached and wrist.attached
     assert world.steps == 3
-    assert markers["exterior"] == (3, 3 / 60.0)
+    assert markers["exterior"] == (3, 60)
+
+
+def test_camera_producer_clock_does_not_use_stale_camera_frame_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scenario = _load_live_scenario(monkeypatch, "antioch_camera_clock_test")
+
+    class Prim:
+        def IsValid(self) -> bool:
+            return True
+
+        def __bool__(self) -> bool:
+            return True
+
+    class World:
+        stage = SimpleNamespace(GetPrimAtPath=lambda _path: Prim())
+        steps = 0
+
+        def step(self, *, render: bool) -> None:
+            assert render
+            self.steps += 1
+
+    world = World()
+
+    class ReferenceTime:
+        def get_data(self) -> dict[str, int]:
+            return {
+                "referenceTimeNumerator": world.steps,
+                "referenceTimeDenominator": 60,
+            }
+
+    monkeypatch.setattr(
+        scenario,
+        "_new_reference_time_annotator",
+        lambda _render_product: ReferenceTime(),
+    )
+
+    class Camera:
+        def initialize(self, *, attach_rgb_annotator: bool) -> None:
+            assert attach_rgb_annotator
+
+        def get_render_product_path(self) -> str:
+            return "/Render/rgb"
+
+        def get_rgba(self) -> np.ndarray:
+            rgba = np.empty((224, 224, 4), dtype=np.uint8)
+            rgba[..., :3] = [140, 30, 10]
+            rgba[..., 3] = 255
+            return rgba
+
+        def get_current_frame(self, *, clone: bool) -> dict[str, float]:
+            assert clone
+            return {"rendering_frame": 1, "rendering_time": 0.1}
+
+    _, _, markers = scenario._initialize_camera_producers(
+        world, (("exterior", Camera()), ("wrist", Camera()))
+    )
+
+    assert world.steps == scenario.CAMERA_READY_CONSECUTIVE_FRAMES
+    assert markers == {"exterior": (2, 60), "wrist": (2, 60)}
 
 
 def test_camera_producer_fails_typed_after_prolonged_none_frames(
@@ -543,6 +628,19 @@ def test_camera_producer_fails_typed_after_prolonged_none_frames(
         def get_current_frame(self, *, clone: bool) -> dict[str, float]:
             return {"rendering_frame": 1, "rendering_time": 0.1}
 
+    class ReferenceTime:
+        def get_data(self) -> dict[str, int]:
+            return {
+                "referenceTimeNumerator": 1,
+                "referenceTimeDenominator": 60,
+            }
+
+    monkeypatch.setattr(
+        scenario,
+        "_new_reference_time_annotator",
+        lambda _render_product: ReferenceTime(),
+    )
+
     with pytest.raises(scenario.CameraReadinessError, match="warmup_exhausted:missing"):
         scenario._initialize_camera_producers(
             World(), (("exterior", Camera()), ("wrist", Camera()))
@@ -564,24 +662,27 @@ def test_camera_frame_advancement_uses_producer_marker_not_loop_count(
 ) -> None:
     scenario = _load_live_scenario(monkeypatch, "antioch_camera_advancement_test")
 
-    class Camera:
+    class ReferenceTime:
         def __init__(self, marker: int) -> None:
             self.marker = marker
 
-        def get_current_frame(self, *, clone: bool) -> dict[str, float]:
-            return {"rendering_frame": self.marker, "rendering_time": self.marker / 60}
+        def get_data(self) -> dict[str, int]:
+            return {
+                "referenceTimeNumerator": self.marker,
+                "referenceTimeDenominator": 60,
+            }
 
-    exterior, wrist = Camera(9), Camera(9)
-    cameras = (("exterior", exterior), ("wrist", wrist))
+    exterior, wrist = ReferenceTime(9), ReferenceTime(9)
+    producers = {"exterior": exterior, "wrist": wrist}
     advanced, _, reason = scenario._camera_markers_advanced(
-        cameras, {"exterior": (9, 0.15), "wrist": (9, 0.15)}
+        producers, {"exterior": (9, 60), "wrist": (9, 60)}
     )
     assert not advanced and reason == "exterior_producer_stale"
     exterior.marker = wrist.marker = 10
     advanced, current, reason = scenario._camera_markers_advanced(
-        cameras, {"exterior": (9, 0.15), "wrist": (9, 0.15)}
+        producers, {"exterior": (9, 60), "wrist": (9, 60)}
     )
-    assert advanced and not reason and current["wrist"] == (10, 10 / 60)
+    assert advanced and not reason and current["wrist"] == (10, 60)
 
 
 def test_logger_first_use_is_on_owner_then_all_channels_share_one_writer(
