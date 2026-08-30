@@ -399,7 +399,7 @@ if ! command -v ffmpeg >/dev/null 2>&1; then
   apt-get install -y -qq --no-install-recommends ffmpeg || true
 fi
 npa_pip() {
-  python3 -m pip install -q "$@" --break-system-packages || python3 -m pip install -q "$@" --user
+  python3 -m pip install -q "$@" || python3 -m pip install -q "$@" --break-system-packages || python3 -m pip install -q "$@" --user
 }
 npa_pip "boto3>=1.34" "awscli>=1.32" "huggingface_hub>=0.30" "nvidia-ncore" "rerun-sdk" "pillow>=10.0" "pyyaml>=6.0"
 command -v npa >/dev/null 2>&1 || { echo "npa not found; set NPA_SRC_S3_URI" >&2; exit 1; }

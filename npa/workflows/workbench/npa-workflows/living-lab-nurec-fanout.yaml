@@ -110,17 +110,18 @@ states:
         \ (backs render\n# --export-video). It is idempotent and matches the shipped single-pod reference.\n\
         export DEBIAN_FRONTEND=noninteractive\nif ! command -v ffmpeg >/dev/null 2>&1; then\n  apt-get\
         \ update -qq || true\n  apt-get install -y -qq --no-install-recommends ffmpeg || true\nfi\nnpa_pip()\
-        \ {\n  python3 -m pip install -q \"$@\" --break-system-packages || python3 -m pip install -q \"\
-        $@\" --user\n}\nnpa_pip \"boto3>=1.34\" \"awscli>=1.32\" \"huggingface_hub>=0.30\" \"nvidia-ncore\"\
-        \ \"rerun-sdk\" \"pillow>=10.0\" \"pyyaml>=6.0\"\ncommand -v npa >/dev/null 2>&1 || { echo \"\
-        npa not found; set NPA_SRC_S3_URI\" >&2; exit 1; }\n\n# Export the shell vars the manifest writer\
-        \ (a child python process) needs.\nexport ZONE RUN_URI ZU NC RC NV INPUT RRD FINAL MF\nGPU_NAME=$(nvidia-smi\
-        \ --query-gpu=name --format=csv,noheader | head -1 || echo unknown)\nexport GPU_NAME\nSTART=$(date\
-        \ +%s)\nexport START\n\necho \"=== zone $ZONE: check (container + dataset rights + RT-core GPU)\
-        \ ===\"\nnpa workbench nurec check --require-gpu --output json\n\necho \"=== zone $ZONE: fetch\
-        \ real NCore V4 shards + derived rig pose edge ===\"\nnpa workbench nurec fetch --output-uri \"\
-        ${NC}\" --output json >/tmp/nurec-fetch.json\nNCORE_JSON=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['ncore_json'])\"\
-        )\nPOSES_GROUP=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['poses_component_group'])\"\
+        \ {\n  python3 -m pip install -q \"$@\" || python3 -m pip install -q \"$@\" --break-system-packages\
+        \ || python3 -m pip install -q \"$@\" --user\n}\nnpa_pip \"boto3>=1.34\" \"awscli>=1.32\" \"huggingface_hub>=0.30\"\
+        \ \"nvidia-ncore\" \"rerun-sdk\" \"pillow>=10.0\" \"pyyaml>=6.0\"\ncommand -v npa >/dev/null 2>&1\
+        \ || { echo \"npa not found; set NPA_SRC_S3_URI\" >&2; exit 1; }\n\n# Export the shell vars the\
+        \ manifest writer (a child python process) needs.\nexport ZONE RUN_URI ZU NC RC NV INPUT RRD FINAL\
+        \ MF\nGPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1 || echo unknown)\n\
+        export GPU_NAME\nSTART=$(date +%s)\nexport START\n\necho \"=== zone $ZONE: check (container +\
+        \ dataset rights + RT-core GPU) ===\"\nnpa workbench nurec check --require-gpu --output json\n\
+        \necho \"=== zone $ZONE: fetch real NCore V4 shards + derived rig pose edge ===\"\nnpa workbench\
+        \ nurec fetch --output-uri \"${NC}\" --output json >/tmp/nurec-fetch.json\nNCORE_JSON=$(python3\
+        \ -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['ncore_json'])\")\nPOSES_GROUP=$(python3\
+        \ -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['poses_component_group'])\"\
         )\nCAMERA=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['reference_camera'])\"\
         )\ntest -n \"${NCORE_JSON}\" && test -n \"${POSES_GROUP}\" && test -n \"${CAMERA}\"\nexport NCORE_JSON\
         \ POSES_GROUP CAMERA\n\necho \"=== zone $ZONE: reconstruct (3DGUT Gaussians -> renderable USDZ)\
@@ -178,17 +179,18 @@ states:
         \ (backs render\n# --export-video). It is idempotent and matches the shipped single-pod reference.\n\
         export DEBIAN_FRONTEND=noninteractive\nif ! command -v ffmpeg >/dev/null 2>&1; then\n  apt-get\
         \ update -qq || true\n  apt-get install -y -qq --no-install-recommends ffmpeg || true\nfi\nnpa_pip()\
-        \ {\n  python3 -m pip install -q \"$@\" --break-system-packages || python3 -m pip install -q \"\
-        $@\" --user\n}\nnpa_pip \"boto3>=1.34\" \"awscli>=1.32\" \"huggingface_hub>=0.30\" \"nvidia-ncore\"\
-        \ \"rerun-sdk\" \"pillow>=10.0\" \"pyyaml>=6.0\"\ncommand -v npa >/dev/null 2>&1 || { echo \"\
-        npa not found; set NPA_SRC_S3_URI\" >&2; exit 1; }\n\n# Export the shell vars the manifest writer\
-        \ (a child python process) needs.\nexport ZONE RUN_URI ZU NC RC NV INPUT RRD FINAL MF\nGPU_NAME=$(nvidia-smi\
-        \ --query-gpu=name --format=csv,noheader | head -1 || echo unknown)\nexport GPU_NAME\nSTART=$(date\
-        \ +%s)\nexport START\n\necho \"=== zone $ZONE: check (container + dataset rights + RT-core GPU)\
-        \ ===\"\nnpa workbench nurec check --require-gpu --output json\n\necho \"=== zone $ZONE: fetch\
-        \ real NCore V4 shards + derived rig pose edge ===\"\nnpa workbench nurec fetch --output-uri \"\
-        ${NC}\" --output json >/tmp/nurec-fetch.json\nNCORE_JSON=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['ncore_json'])\"\
-        )\nPOSES_GROUP=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['poses_component_group'])\"\
+        \ {\n  python3 -m pip install -q \"$@\" || python3 -m pip install -q \"$@\" --break-system-packages\
+        \ || python3 -m pip install -q \"$@\" --user\n}\nnpa_pip \"boto3>=1.34\" \"awscli>=1.32\" \"huggingface_hub>=0.30\"\
+        \ \"nvidia-ncore\" \"rerun-sdk\" \"pillow>=10.0\" \"pyyaml>=6.0\"\ncommand -v npa >/dev/null 2>&1\
+        \ || { echo \"npa not found; set NPA_SRC_S3_URI\" >&2; exit 1; }\n\n# Export the shell vars the\
+        \ manifest writer (a child python process) needs.\nexport ZONE RUN_URI ZU NC RC NV INPUT RRD FINAL\
+        \ MF\nGPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1 || echo unknown)\n\
+        export GPU_NAME\nSTART=$(date +%s)\nexport START\n\necho \"=== zone $ZONE: check (container +\
+        \ dataset rights + RT-core GPU) ===\"\nnpa workbench nurec check --require-gpu --output json\n\
+        \necho \"=== zone $ZONE: fetch real NCore V4 shards + derived rig pose edge ===\"\nnpa workbench\
+        \ nurec fetch --output-uri \"${NC}\" --output json >/tmp/nurec-fetch.json\nNCORE_JSON=$(python3\
+        \ -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['ncore_json'])\")\nPOSES_GROUP=$(python3\
+        \ -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['poses_component_group'])\"\
         )\nCAMERA=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['reference_camera'])\"\
         )\ntest -n \"${NCORE_JSON}\" && test -n \"${POSES_GROUP}\" && test -n \"${CAMERA}\"\nexport NCORE_JSON\
         \ POSES_GROUP CAMERA\n\necho \"=== zone $ZONE: reconstruct (3DGUT Gaussians -> renderable USDZ)\
@@ -246,17 +248,18 @@ states:
         \ (backs render\n# --export-video). It is idempotent and matches the shipped single-pod reference.\n\
         export DEBIAN_FRONTEND=noninteractive\nif ! command -v ffmpeg >/dev/null 2>&1; then\n  apt-get\
         \ update -qq || true\n  apt-get install -y -qq --no-install-recommends ffmpeg || true\nfi\nnpa_pip()\
-        \ {\n  python3 -m pip install -q \"$@\" --break-system-packages || python3 -m pip install -q \"\
-        $@\" --user\n}\nnpa_pip \"boto3>=1.34\" \"awscli>=1.32\" \"huggingface_hub>=0.30\" \"nvidia-ncore\"\
-        \ \"rerun-sdk\" \"pillow>=10.0\" \"pyyaml>=6.0\"\ncommand -v npa >/dev/null 2>&1 || { echo \"\
-        npa not found; set NPA_SRC_S3_URI\" >&2; exit 1; }\n\n# Export the shell vars the manifest writer\
-        \ (a child python process) needs.\nexport ZONE RUN_URI ZU NC RC NV INPUT RRD FINAL MF\nGPU_NAME=$(nvidia-smi\
-        \ --query-gpu=name --format=csv,noheader | head -1 || echo unknown)\nexport GPU_NAME\nSTART=$(date\
-        \ +%s)\nexport START\n\necho \"=== zone $ZONE: check (container + dataset rights + RT-core GPU)\
-        \ ===\"\nnpa workbench nurec check --require-gpu --output json\n\necho \"=== zone $ZONE: fetch\
-        \ real NCore V4 shards + derived rig pose edge ===\"\nnpa workbench nurec fetch --output-uri \"\
-        ${NC}\" --output json >/tmp/nurec-fetch.json\nNCORE_JSON=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['ncore_json'])\"\
-        )\nPOSES_GROUP=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['poses_component_group'])\"\
+        \ {\n  python3 -m pip install -q \"$@\" || python3 -m pip install -q \"$@\" --break-system-packages\
+        \ || python3 -m pip install -q \"$@\" --user\n}\nnpa_pip \"boto3>=1.34\" \"awscli>=1.32\" \"huggingface_hub>=0.30\"\
+        \ \"nvidia-ncore\" \"rerun-sdk\" \"pillow>=10.0\" \"pyyaml>=6.0\"\ncommand -v npa >/dev/null 2>&1\
+        \ || { echo \"npa not found; set NPA_SRC_S3_URI\" >&2; exit 1; }\n\n# Export the shell vars the\
+        \ manifest writer (a child python process) needs.\nexport ZONE RUN_URI ZU NC RC NV INPUT RRD FINAL\
+        \ MF\nGPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1 || echo unknown)\n\
+        export GPU_NAME\nSTART=$(date +%s)\nexport START\n\necho \"=== zone $ZONE: check (container +\
+        \ dataset rights + RT-core GPU) ===\"\nnpa workbench nurec check --require-gpu --output json\n\
+        \necho \"=== zone $ZONE: fetch real NCore V4 shards + derived rig pose edge ===\"\nnpa workbench\
+        \ nurec fetch --output-uri \"${NC}\" --output json >/tmp/nurec-fetch.json\nNCORE_JSON=$(python3\
+        \ -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['ncore_json'])\")\nPOSES_GROUP=$(python3\
+        \ -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['poses_component_group'])\"\
         )\nCAMERA=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['reference_camera'])\"\
         )\ntest -n \"${NCORE_JSON}\" && test -n \"${POSES_GROUP}\" && test -n \"${CAMERA}\"\nexport NCORE_JSON\
         \ POSES_GROUP CAMERA\n\necho \"=== zone $ZONE: reconstruct (3DGUT Gaussians -> renderable USDZ)\
@@ -314,17 +317,18 @@ states:
         \ (backs render\n# --export-video). It is idempotent and matches the shipped single-pod reference.\n\
         export DEBIAN_FRONTEND=noninteractive\nif ! command -v ffmpeg >/dev/null 2>&1; then\n  apt-get\
         \ update -qq || true\n  apt-get install -y -qq --no-install-recommends ffmpeg || true\nfi\nnpa_pip()\
-        \ {\n  python3 -m pip install -q \"$@\" --break-system-packages || python3 -m pip install -q \"\
-        $@\" --user\n}\nnpa_pip \"boto3>=1.34\" \"awscli>=1.32\" \"huggingface_hub>=0.30\" \"nvidia-ncore\"\
-        \ \"rerun-sdk\" \"pillow>=10.0\" \"pyyaml>=6.0\"\ncommand -v npa >/dev/null 2>&1 || { echo \"\
-        npa not found; set NPA_SRC_S3_URI\" >&2; exit 1; }\n\n# Export the shell vars the manifest writer\
-        \ (a child python process) needs.\nexport ZONE RUN_URI ZU NC RC NV INPUT RRD FINAL MF\nGPU_NAME=$(nvidia-smi\
-        \ --query-gpu=name --format=csv,noheader | head -1 || echo unknown)\nexport GPU_NAME\nSTART=$(date\
-        \ +%s)\nexport START\n\necho \"=== zone $ZONE: check (container + dataset rights + RT-core GPU)\
-        \ ===\"\nnpa workbench nurec check --require-gpu --output json\n\necho \"=== zone $ZONE: fetch\
-        \ real NCore V4 shards + derived rig pose edge ===\"\nnpa workbench nurec fetch --output-uri \"\
-        ${NC}\" --output json >/tmp/nurec-fetch.json\nNCORE_JSON=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['ncore_json'])\"\
-        )\nPOSES_GROUP=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['poses_component_group'])\"\
+        \ {\n  python3 -m pip install -q \"$@\" || python3 -m pip install -q \"$@\" --break-system-packages\
+        \ || python3 -m pip install -q \"$@\" --user\n}\nnpa_pip \"boto3>=1.34\" \"awscli>=1.32\" \"huggingface_hub>=0.30\"\
+        \ \"nvidia-ncore\" \"rerun-sdk\" \"pillow>=10.0\" \"pyyaml>=6.0\"\ncommand -v npa >/dev/null 2>&1\
+        \ || { echo \"npa not found; set NPA_SRC_S3_URI\" >&2; exit 1; }\n\n# Export the shell vars the\
+        \ manifest writer (a child python process) needs.\nexport ZONE RUN_URI ZU NC RC NV INPUT RRD FINAL\
+        \ MF\nGPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1 || echo unknown)\n\
+        export GPU_NAME\nSTART=$(date +%s)\nexport START\n\necho \"=== zone $ZONE: check (container +\
+        \ dataset rights + RT-core GPU) ===\"\nnpa workbench nurec check --require-gpu --output json\n\
+        \necho \"=== zone $ZONE: fetch real NCore V4 shards + derived rig pose edge ===\"\nnpa workbench\
+        \ nurec fetch --output-uri \"${NC}\" --output json >/tmp/nurec-fetch.json\nNCORE_JSON=$(python3\
+        \ -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['ncore_json'])\")\nPOSES_GROUP=$(python3\
+        \ -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['poses_component_group'])\"\
         )\nCAMERA=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['reference_camera'])\"\
         )\ntest -n \"${NCORE_JSON}\" && test -n \"${POSES_GROUP}\" && test -n \"${CAMERA}\"\nexport NCORE_JSON\
         \ POSES_GROUP CAMERA\n\necho \"=== zone $ZONE: reconstruct (3DGUT Gaussians -> renderable USDZ)\
@@ -382,17 +386,18 @@ states:
         \ (backs render\n# --export-video). It is idempotent and matches the shipped single-pod reference.\n\
         export DEBIAN_FRONTEND=noninteractive\nif ! command -v ffmpeg >/dev/null 2>&1; then\n  apt-get\
         \ update -qq || true\n  apt-get install -y -qq --no-install-recommends ffmpeg || true\nfi\nnpa_pip()\
-        \ {\n  python3 -m pip install -q \"$@\" --break-system-packages || python3 -m pip install -q \"\
-        $@\" --user\n}\nnpa_pip \"boto3>=1.34\" \"awscli>=1.32\" \"huggingface_hub>=0.30\" \"nvidia-ncore\"\
-        \ \"rerun-sdk\" \"pillow>=10.0\" \"pyyaml>=6.0\"\ncommand -v npa >/dev/null 2>&1 || { echo \"\
-        npa not found; set NPA_SRC_S3_URI\" >&2; exit 1; }\n\n# Export the shell vars the manifest writer\
-        \ (a child python process) needs.\nexport ZONE RUN_URI ZU NC RC NV INPUT RRD FINAL MF\nGPU_NAME=$(nvidia-smi\
-        \ --query-gpu=name --format=csv,noheader | head -1 || echo unknown)\nexport GPU_NAME\nSTART=$(date\
-        \ +%s)\nexport START\n\necho \"=== zone $ZONE: check (container + dataset rights + RT-core GPU)\
-        \ ===\"\nnpa workbench nurec check --require-gpu --output json\n\necho \"=== zone $ZONE: fetch\
-        \ real NCore V4 shards + derived rig pose edge ===\"\nnpa workbench nurec fetch --output-uri \"\
-        ${NC}\" --output json >/tmp/nurec-fetch.json\nNCORE_JSON=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['ncore_json'])\"\
-        )\nPOSES_GROUP=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['poses_component_group'])\"\
+        \ {\n  python3 -m pip install -q \"$@\" || python3 -m pip install -q \"$@\" --break-system-packages\
+        \ || python3 -m pip install -q \"$@\" --user\n}\nnpa_pip \"boto3>=1.34\" \"awscli>=1.32\" \"huggingface_hub>=0.30\"\
+        \ \"nvidia-ncore\" \"rerun-sdk\" \"pillow>=10.0\" \"pyyaml>=6.0\"\ncommand -v npa >/dev/null 2>&1\
+        \ || { echo \"npa not found; set NPA_SRC_S3_URI\" >&2; exit 1; }\n\n# Export the shell vars the\
+        \ manifest writer (a child python process) needs.\nexport ZONE RUN_URI ZU NC RC NV INPUT RRD FINAL\
+        \ MF\nGPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1 || echo unknown)\n\
+        export GPU_NAME\nSTART=$(date +%s)\nexport START\n\necho \"=== zone $ZONE: check (container +\
+        \ dataset rights + RT-core GPU) ===\"\nnpa workbench nurec check --require-gpu --output json\n\
+        \necho \"=== zone $ZONE: fetch real NCore V4 shards + derived rig pose edge ===\"\nnpa workbench\
+        \ nurec fetch --output-uri \"${NC}\" --output json >/tmp/nurec-fetch.json\nNCORE_JSON=$(python3\
+        \ -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['ncore_json'])\")\nPOSES_GROUP=$(python3\
+        \ -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['poses_component_group'])\"\
         )\nCAMERA=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['reference_camera'])\"\
         )\ntest -n \"${NCORE_JSON}\" && test -n \"${POSES_GROUP}\" && test -n \"${CAMERA}\"\nexport NCORE_JSON\
         \ POSES_GROUP CAMERA\n\necho \"=== zone $ZONE: reconstruct (3DGUT Gaussians -> renderable USDZ)\
@@ -450,17 +455,18 @@ states:
         \ (backs render\n# --export-video). It is idempotent and matches the shipped single-pod reference.\n\
         export DEBIAN_FRONTEND=noninteractive\nif ! command -v ffmpeg >/dev/null 2>&1; then\n  apt-get\
         \ update -qq || true\n  apt-get install -y -qq --no-install-recommends ffmpeg || true\nfi\nnpa_pip()\
-        \ {\n  python3 -m pip install -q \"$@\" --break-system-packages || python3 -m pip install -q \"\
-        $@\" --user\n}\nnpa_pip \"boto3>=1.34\" \"awscli>=1.32\" \"huggingface_hub>=0.30\" \"nvidia-ncore\"\
-        \ \"rerun-sdk\" \"pillow>=10.0\" \"pyyaml>=6.0\"\ncommand -v npa >/dev/null 2>&1 || { echo \"\
-        npa not found; set NPA_SRC_S3_URI\" >&2; exit 1; }\n\n# Export the shell vars the manifest writer\
-        \ (a child python process) needs.\nexport ZONE RUN_URI ZU NC RC NV INPUT RRD FINAL MF\nGPU_NAME=$(nvidia-smi\
-        \ --query-gpu=name --format=csv,noheader | head -1 || echo unknown)\nexport GPU_NAME\nSTART=$(date\
-        \ +%s)\nexport START\n\necho \"=== zone $ZONE: check (container + dataset rights + RT-core GPU)\
-        \ ===\"\nnpa workbench nurec check --require-gpu --output json\n\necho \"=== zone $ZONE: fetch\
-        \ real NCore V4 shards + derived rig pose edge ===\"\nnpa workbench nurec fetch --output-uri \"\
-        ${NC}\" --output json >/tmp/nurec-fetch.json\nNCORE_JSON=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['ncore_json'])\"\
-        )\nPOSES_GROUP=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['poses_component_group'])\"\
+        \ {\n  python3 -m pip install -q \"$@\" || python3 -m pip install -q \"$@\" --break-system-packages\
+        \ || python3 -m pip install -q \"$@\" --user\n}\nnpa_pip \"boto3>=1.34\" \"awscli>=1.32\" \"huggingface_hub>=0.30\"\
+        \ \"nvidia-ncore\" \"rerun-sdk\" \"pillow>=10.0\" \"pyyaml>=6.0\"\ncommand -v npa >/dev/null 2>&1\
+        \ || { echo \"npa not found; set NPA_SRC_S3_URI\" >&2; exit 1; }\n\n# Export the shell vars the\
+        \ manifest writer (a child python process) needs.\nexport ZONE RUN_URI ZU NC RC NV INPUT RRD FINAL\
+        \ MF\nGPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1 || echo unknown)\n\
+        export GPU_NAME\nSTART=$(date +%s)\nexport START\n\necho \"=== zone $ZONE: check (container +\
+        \ dataset rights + RT-core GPU) ===\"\nnpa workbench nurec check --require-gpu --output json\n\
+        \necho \"=== zone $ZONE: fetch real NCore V4 shards + derived rig pose edge ===\"\nnpa workbench\
+        \ nurec fetch --output-uri \"${NC}\" --output json >/tmp/nurec-fetch.json\nNCORE_JSON=$(python3\
+        \ -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['ncore_json'])\")\nPOSES_GROUP=$(python3\
+        \ -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['poses_component_group'])\"\
         )\nCAMERA=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['reference_camera'])\"\
         )\ntest -n \"${NCORE_JSON}\" && test -n \"${POSES_GROUP}\" && test -n \"${CAMERA}\"\nexport NCORE_JSON\
         \ POSES_GROUP CAMERA\n\necho \"=== zone $ZONE: reconstruct (3DGUT Gaussians -> renderable USDZ)\
@@ -518,17 +524,18 @@ states:
         \ (backs render\n# --export-video). It is idempotent and matches the shipped single-pod reference.\n\
         export DEBIAN_FRONTEND=noninteractive\nif ! command -v ffmpeg >/dev/null 2>&1; then\n  apt-get\
         \ update -qq || true\n  apt-get install -y -qq --no-install-recommends ffmpeg || true\nfi\nnpa_pip()\
-        \ {\n  python3 -m pip install -q \"$@\" --break-system-packages || python3 -m pip install -q \"\
-        $@\" --user\n}\nnpa_pip \"boto3>=1.34\" \"awscli>=1.32\" \"huggingface_hub>=0.30\" \"nvidia-ncore\"\
-        \ \"rerun-sdk\" \"pillow>=10.0\" \"pyyaml>=6.0\"\ncommand -v npa >/dev/null 2>&1 || { echo \"\
-        npa not found; set NPA_SRC_S3_URI\" >&2; exit 1; }\n\n# Export the shell vars the manifest writer\
-        \ (a child python process) needs.\nexport ZONE RUN_URI ZU NC RC NV INPUT RRD FINAL MF\nGPU_NAME=$(nvidia-smi\
-        \ --query-gpu=name --format=csv,noheader | head -1 || echo unknown)\nexport GPU_NAME\nSTART=$(date\
-        \ +%s)\nexport START\n\necho \"=== zone $ZONE: check (container + dataset rights + RT-core GPU)\
-        \ ===\"\nnpa workbench nurec check --require-gpu --output json\n\necho \"=== zone $ZONE: fetch\
-        \ real NCore V4 shards + derived rig pose edge ===\"\nnpa workbench nurec fetch --output-uri \"\
-        ${NC}\" --output json >/tmp/nurec-fetch.json\nNCORE_JSON=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['ncore_json'])\"\
-        )\nPOSES_GROUP=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['poses_component_group'])\"\
+        \ {\n  python3 -m pip install -q \"$@\" || python3 -m pip install -q \"$@\" --break-system-packages\
+        \ || python3 -m pip install -q \"$@\" --user\n}\nnpa_pip \"boto3>=1.34\" \"awscli>=1.32\" \"huggingface_hub>=0.30\"\
+        \ \"nvidia-ncore\" \"rerun-sdk\" \"pillow>=10.0\" \"pyyaml>=6.0\"\ncommand -v npa >/dev/null 2>&1\
+        \ || { echo \"npa not found; set NPA_SRC_S3_URI\" >&2; exit 1; }\n\n# Export the shell vars the\
+        \ manifest writer (a child python process) needs.\nexport ZONE RUN_URI ZU NC RC NV INPUT RRD FINAL\
+        \ MF\nGPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1 || echo unknown)\n\
+        export GPU_NAME\nSTART=$(date +%s)\nexport START\n\necho \"=== zone $ZONE: check (container +\
+        \ dataset rights + RT-core GPU) ===\"\nnpa workbench nurec check --require-gpu --output json\n\
+        \necho \"=== zone $ZONE: fetch real NCore V4 shards + derived rig pose edge ===\"\nnpa workbench\
+        \ nurec fetch --output-uri \"${NC}\" --output json >/tmp/nurec-fetch.json\nNCORE_JSON=$(python3\
+        \ -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['ncore_json'])\")\nPOSES_GROUP=$(python3\
+        \ -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['poses_component_group'])\"\
         )\nCAMERA=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['reference_camera'])\"\
         )\ntest -n \"${NCORE_JSON}\" && test -n \"${POSES_GROUP}\" && test -n \"${CAMERA}\"\nexport NCORE_JSON\
         \ POSES_GROUP CAMERA\n\necho \"=== zone $ZONE: reconstruct (3DGUT Gaussians -> renderable USDZ)\
@@ -586,17 +593,18 @@ states:
         \ (backs render\n# --export-video). It is idempotent and matches the shipped single-pod reference.\n\
         export DEBIAN_FRONTEND=noninteractive\nif ! command -v ffmpeg >/dev/null 2>&1; then\n  apt-get\
         \ update -qq || true\n  apt-get install -y -qq --no-install-recommends ffmpeg || true\nfi\nnpa_pip()\
-        \ {\n  python3 -m pip install -q \"$@\" --break-system-packages || python3 -m pip install -q \"\
-        $@\" --user\n}\nnpa_pip \"boto3>=1.34\" \"awscli>=1.32\" \"huggingface_hub>=0.30\" \"nvidia-ncore\"\
-        \ \"rerun-sdk\" \"pillow>=10.0\" \"pyyaml>=6.0\"\ncommand -v npa >/dev/null 2>&1 || { echo \"\
-        npa not found; set NPA_SRC_S3_URI\" >&2; exit 1; }\n\n# Export the shell vars the manifest writer\
-        \ (a child python process) needs.\nexport ZONE RUN_URI ZU NC RC NV INPUT RRD FINAL MF\nGPU_NAME=$(nvidia-smi\
-        \ --query-gpu=name --format=csv,noheader | head -1 || echo unknown)\nexport GPU_NAME\nSTART=$(date\
-        \ +%s)\nexport START\n\necho \"=== zone $ZONE: check (container + dataset rights + RT-core GPU)\
-        \ ===\"\nnpa workbench nurec check --require-gpu --output json\n\necho \"=== zone $ZONE: fetch\
-        \ real NCore V4 shards + derived rig pose edge ===\"\nnpa workbench nurec fetch --output-uri \"\
-        ${NC}\" --output json >/tmp/nurec-fetch.json\nNCORE_JSON=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['ncore_json'])\"\
-        )\nPOSES_GROUP=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['poses_component_group'])\"\
+        \ {\n  python3 -m pip install -q \"$@\" || python3 -m pip install -q \"$@\" --break-system-packages\
+        \ || python3 -m pip install -q \"$@\" --user\n}\nnpa_pip \"boto3>=1.34\" \"awscli>=1.32\" \"huggingface_hub>=0.30\"\
+        \ \"nvidia-ncore\" \"rerun-sdk\" \"pillow>=10.0\" \"pyyaml>=6.0\"\ncommand -v npa >/dev/null 2>&1\
+        \ || { echo \"npa not found; set NPA_SRC_S3_URI\" >&2; exit 1; }\n\n# Export the shell vars the\
+        \ manifest writer (a child python process) needs.\nexport ZONE RUN_URI ZU NC RC NV INPUT RRD FINAL\
+        \ MF\nGPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1 || echo unknown)\n\
+        export GPU_NAME\nSTART=$(date +%s)\nexport START\n\necho \"=== zone $ZONE: check (container +\
+        \ dataset rights + RT-core GPU) ===\"\nnpa workbench nurec check --require-gpu --output json\n\
+        \necho \"=== zone $ZONE: fetch real NCore V4 shards + derived rig pose edge ===\"\nnpa workbench\
+        \ nurec fetch --output-uri \"${NC}\" --output json >/tmp/nurec-fetch.json\nNCORE_JSON=$(python3\
+        \ -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['ncore_json'])\")\nPOSES_GROUP=$(python3\
+        \ -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['poses_component_group'])\"\
         )\nCAMERA=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['reference_camera'])\"\
         )\ntest -n \"${NCORE_JSON}\" && test -n \"${POSES_GROUP}\" && test -n \"${CAMERA}\"\nexport NCORE_JSON\
         \ POSES_GROUP CAMERA\n\necho \"=== zone $ZONE: reconstruct (3DGUT Gaussians -> renderable USDZ)\
@@ -654,17 +662,18 @@ states:
         \ (backs render\n# --export-video). It is idempotent and matches the shipped single-pod reference.\n\
         export DEBIAN_FRONTEND=noninteractive\nif ! command -v ffmpeg >/dev/null 2>&1; then\n  apt-get\
         \ update -qq || true\n  apt-get install -y -qq --no-install-recommends ffmpeg || true\nfi\nnpa_pip()\
-        \ {\n  python3 -m pip install -q \"$@\" --break-system-packages || python3 -m pip install -q \"\
-        $@\" --user\n}\nnpa_pip \"boto3>=1.34\" \"awscli>=1.32\" \"huggingface_hub>=0.30\" \"nvidia-ncore\"\
-        \ \"rerun-sdk\" \"pillow>=10.0\" \"pyyaml>=6.0\"\ncommand -v npa >/dev/null 2>&1 || { echo \"\
-        npa not found; set NPA_SRC_S3_URI\" >&2; exit 1; }\n\n# Export the shell vars the manifest writer\
-        \ (a child python process) needs.\nexport ZONE RUN_URI ZU NC RC NV INPUT RRD FINAL MF\nGPU_NAME=$(nvidia-smi\
-        \ --query-gpu=name --format=csv,noheader | head -1 || echo unknown)\nexport GPU_NAME\nSTART=$(date\
-        \ +%s)\nexport START\n\necho \"=== zone $ZONE: check (container + dataset rights + RT-core GPU)\
-        \ ===\"\nnpa workbench nurec check --require-gpu --output json\n\necho \"=== zone $ZONE: fetch\
-        \ real NCore V4 shards + derived rig pose edge ===\"\nnpa workbench nurec fetch --output-uri \"\
-        ${NC}\" --output json >/tmp/nurec-fetch.json\nNCORE_JSON=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['ncore_json'])\"\
-        )\nPOSES_GROUP=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['poses_component_group'])\"\
+        \ {\n  python3 -m pip install -q \"$@\" || python3 -m pip install -q \"$@\" --break-system-packages\
+        \ || python3 -m pip install -q \"$@\" --user\n}\nnpa_pip \"boto3>=1.34\" \"awscli>=1.32\" \"huggingface_hub>=0.30\"\
+        \ \"nvidia-ncore\" \"rerun-sdk\" \"pillow>=10.0\" \"pyyaml>=6.0\"\ncommand -v npa >/dev/null 2>&1\
+        \ || { echo \"npa not found; set NPA_SRC_S3_URI\" >&2; exit 1; }\n\n# Export the shell vars the\
+        \ manifest writer (a child python process) needs.\nexport ZONE RUN_URI ZU NC RC NV INPUT RRD FINAL\
+        \ MF\nGPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1 || echo unknown)\n\
+        export GPU_NAME\nSTART=$(date +%s)\nexport START\n\necho \"=== zone $ZONE: check (container +\
+        \ dataset rights + RT-core GPU) ===\"\nnpa workbench nurec check --require-gpu --output json\n\
+        \necho \"=== zone $ZONE: fetch real NCore V4 shards + derived rig pose edge ===\"\nnpa workbench\
+        \ nurec fetch --output-uri \"${NC}\" --output json >/tmp/nurec-fetch.json\nNCORE_JSON=$(python3\
+        \ -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['ncore_json'])\")\nPOSES_GROUP=$(python3\
+        \ -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['poses_component_group'])\"\
         )\nCAMERA=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['reference_camera'])\"\
         )\ntest -n \"${NCORE_JSON}\" && test -n \"${POSES_GROUP}\" && test -n \"${CAMERA}\"\nexport NCORE_JSON\
         \ POSES_GROUP CAMERA\n\necho \"=== zone $ZONE: reconstruct (3DGUT Gaussians -> renderable USDZ)\
@@ -722,17 +731,18 @@ states:
         \ (backs render\n# --export-video). It is idempotent and matches the shipped single-pod reference.\n\
         export DEBIAN_FRONTEND=noninteractive\nif ! command -v ffmpeg >/dev/null 2>&1; then\n  apt-get\
         \ update -qq || true\n  apt-get install -y -qq --no-install-recommends ffmpeg || true\nfi\nnpa_pip()\
-        \ {\n  python3 -m pip install -q \"$@\" --break-system-packages || python3 -m pip install -q \"\
-        $@\" --user\n}\nnpa_pip \"boto3>=1.34\" \"awscli>=1.32\" \"huggingface_hub>=0.30\" \"nvidia-ncore\"\
-        \ \"rerun-sdk\" \"pillow>=10.0\" \"pyyaml>=6.0\"\ncommand -v npa >/dev/null 2>&1 || { echo \"\
-        npa not found; set NPA_SRC_S3_URI\" >&2; exit 1; }\n\n# Export the shell vars the manifest writer\
-        \ (a child python process) needs.\nexport ZONE RUN_URI ZU NC RC NV INPUT RRD FINAL MF\nGPU_NAME=$(nvidia-smi\
-        \ --query-gpu=name --format=csv,noheader | head -1 || echo unknown)\nexport GPU_NAME\nSTART=$(date\
-        \ +%s)\nexport START\n\necho \"=== zone $ZONE: check (container + dataset rights + RT-core GPU)\
-        \ ===\"\nnpa workbench nurec check --require-gpu --output json\n\necho \"=== zone $ZONE: fetch\
-        \ real NCore V4 shards + derived rig pose edge ===\"\nnpa workbench nurec fetch --output-uri \"\
-        ${NC}\" --output json >/tmp/nurec-fetch.json\nNCORE_JSON=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['ncore_json'])\"\
-        )\nPOSES_GROUP=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['poses_component_group'])\"\
+        \ {\n  python3 -m pip install -q \"$@\" || python3 -m pip install -q \"$@\" --break-system-packages\
+        \ || python3 -m pip install -q \"$@\" --user\n}\nnpa_pip \"boto3>=1.34\" \"awscli>=1.32\" \"huggingface_hub>=0.30\"\
+        \ \"nvidia-ncore\" \"rerun-sdk\" \"pillow>=10.0\" \"pyyaml>=6.0\"\ncommand -v npa >/dev/null 2>&1\
+        \ || { echo \"npa not found; set NPA_SRC_S3_URI\" >&2; exit 1; }\n\n# Export the shell vars the\
+        \ manifest writer (a child python process) needs.\nexport ZONE RUN_URI ZU NC RC NV INPUT RRD FINAL\
+        \ MF\nGPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1 || echo unknown)\n\
+        export GPU_NAME\nSTART=$(date +%s)\nexport START\n\necho \"=== zone $ZONE: check (container +\
+        \ dataset rights + RT-core GPU) ===\"\nnpa workbench nurec check --require-gpu --output json\n\
+        \necho \"=== zone $ZONE: fetch real NCore V4 shards + derived rig pose edge ===\"\nnpa workbench\
+        \ nurec fetch --output-uri \"${NC}\" --output json >/tmp/nurec-fetch.json\nNCORE_JSON=$(python3\
+        \ -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['ncore_json'])\")\nPOSES_GROUP=$(python3\
+        \ -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['poses_component_group'])\"\
         )\nCAMERA=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['reference_camera'])\"\
         )\ntest -n \"${NCORE_JSON}\" && test -n \"${POSES_GROUP}\" && test -n \"${CAMERA}\"\nexport NCORE_JSON\
         \ POSES_GROUP CAMERA\n\necho \"=== zone $ZONE: reconstruct (3DGUT Gaussians -> renderable USDZ)\
@@ -790,17 +800,18 @@ states:
         \ (backs render\n# --export-video). It is idempotent and matches the shipped single-pod reference.\n\
         export DEBIAN_FRONTEND=noninteractive\nif ! command -v ffmpeg >/dev/null 2>&1; then\n  apt-get\
         \ update -qq || true\n  apt-get install -y -qq --no-install-recommends ffmpeg || true\nfi\nnpa_pip()\
-        \ {\n  python3 -m pip install -q \"$@\" --break-system-packages || python3 -m pip install -q \"\
-        $@\" --user\n}\nnpa_pip \"boto3>=1.34\" \"awscli>=1.32\" \"huggingface_hub>=0.30\" \"nvidia-ncore\"\
-        \ \"rerun-sdk\" \"pillow>=10.0\" \"pyyaml>=6.0\"\ncommand -v npa >/dev/null 2>&1 || { echo \"\
-        npa not found; set NPA_SRC_S3_URI\" >&2; exit 1; }\n\n# Export the shell vars the manifest writer\
-        \ (a child python process) needs.\nexport ZONE RUN_URI ZU NC RC NV INPUT RRD FINAL MF\nGPU_NAME=$(nvidia-smi\
-        \ --query-gpu=name --format=csv,noheader | head -1 || echo unknown)\nexport GPU_NAME\nSTART=$(date\
-        \ +%s)\nexport START\n\necho \"=== zone $ZONE: check (container + dataset rights + RT-core GPU)\
-        \ ===\"\nnpa workbench nurec check --require-gpu --output json\n\necho \"=== zone $ZONE: fetch\
-        \ real NCore V4 shards + derived rig pose edge ===\"\nnpa workbench nurec fetch --output-uri \"\
-        ${NC}\" --output json >/tmp/nurec-fetch.json\nNCORE_JSON=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['ncore_json'])\"\
-        )\nPOSES_GROUP=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['poses_component_group'])\"\
+        \ {\n  python3 -m pip install -q \"$@\" || python3 -m pip install -q \"$@\" --break-system-packages\
+        \ || python3 -m pip install -q \"$@\" --user\n}\nnpa_pip \"boto3>=1.34\" \"awscli>=1.32\" \"huggingface_hub>=0.30\"\
+        \ \"nvidia-ncore\" \"rerun-sdk\" \"pillow>=10.0\" \"pyyaml>=6.0\"\ncommand -v npa >/dev/null 2>&1\
+        \ || { echo \"npa not found; set NPA_SRC_S3_URI\" >&2; exit 1; }\n\n# Export the shell vars the\
+        \ manifest writer (a child python process) needs.\nexport ZONE RUN_URI ZU NC RC NV INPUT RRD FINAL\
+        \ MF\nGPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1 || echo unknown)\n\
+        export GPU_NAME\nSTART=$(date +%s)\nexport START\n\necho \"=== zone $ZONE: check (container +\
+        \ dataset rights + RT-core GPU) ===\"\nnpa workbench nurec check --require-gpu --output json\n\
+        \necho \"=== zone $ZONE: fetch real NCore V4 shards + derived rig pose edge ===\"\nnpa workbench\
+        \ nurec fetch --output-uri \"${NC}\" --output json >/tmp/nurec-fetch.json\nNCORE_JSON=$(python3\
+        \ -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['ncore_json'])\")\nPOSES_GROUP=$(python3\
+        \ -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['poses_component_group'])\"\
         )\nCAMERA=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['reference_camera'])\"\
         )\ntest -n \"${NCORE_JSON}\" && test -n \"${POSES_GROUP}\" && test -n \"${CAMERA}\"\nexport NCORE_JSON\
         \ POSES_GROUP CAMERA\n\necho \"=== zone $ZONE: reconstruct (3DGUT Gaussians -> renderable USDZ)\
@@ -858,17 +869,18 @@ states:
         \ (backs render\n# --export-video). It is idempotent and matches the shipped single-pod reference.\n\
         export DEBIAN_FRONTEND=noninteractive\nif ! command -v ffmpeg >/dev/null 2>&1; then\n  apt-get\
         \ update -qq || true\n  apt-get install -y -qq --no-install-recommends ffmpeg || true\nfi\nnpa_pip()\
-        \ {\n  python3 -m pip install -q \"$@\" --break-system-packages || python3 -m pip install -q \"\
-        $@\" --user\n}\nnpa_pip \"boto3>=1.34\" \"awscli>=1.32\" \"huggingface_hub>=0.30\" \"nvidia-ncore\"\
-        \ \"rerun-sdk\" \"pillow>=10.0\" \"pyyaml>=6.0\"\ncommand -v npa >/dev/null 2>&1 || { echo \"\
-        npa not found; set NPA_SRC_S3_URI\" >&2; exit 1; }\n\n# Export the shell vars the manifest writer\
-        \ (a child python process) needs.\nexport ZONE RUN_URI ZU NC RC NV INPUT RRD FINAL MF\nGPU_NAME=$(nvidia-smi\
-        \ --query-gpu=name --format=csv,noheader | head -1 || echo unknown)\nexport GPU_NAME\nSTART=$(date\
-        \ +%s)\nexport START\n\necho \"=== zone $ZONE: check (container + dataset rights + RT-core GPU)\
-        \ ===\"\nnpa workbench nurec check --require-gpu --output json\n\necho \"=== zone $ZONE: fetch\
-        \ real NCore V4 shards + derived rig pose edge ===\"\nnpa workbench nurec fetch --output-uri \"\
-        ${NC}\" --output json >/tmp/nurec-fetch.json\nNCORE_JSON=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['ncore_json'])\"\
-        )\nPOSES_GROUP=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['poses_component_group'])\"\
+        \ {\n  python3 -m pip install -q \"$@\" || python3 -m pip install -q \"$@\" --break-system-packages\
+        \ || python3 -m pip install -q \"$@\" --user\n}\nnpa_pip \"boto3>=1.34\" \"awscli>=1.32\" \"huggingface_hub>=0.30\"\
+        \ \"nvidia-ncore\" \"rerun-sdk\" \"pillow>=10.0\" \"pyyaml>=6.0\"\ncommand -v npa >/dev/null 2>&1\
+        \ || { echo \"npa not found; set NPA_SRC_S3_URI\" >&2; exit 1; }\n\n# Export the shell vars the\
+        \ manifest writer (a child python process) needs.\nexport ZONE RUN_URI ZU NC RC NV INPUT RRD FINAL\
+        \ MF\nGPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1 || echo unknown)\n\
+        export GPU_NAME\nSTART=$(date +%s)\nexport START\n\necho \"=== zone $ZONE: check (container +\
+        \ dataset rights + RT-core GPU) ===\"\nnpa workbench nurec check --require-gpu --output json\n\
+        \necho \"=== zone $ZONE: fetch real NCore V4 shards + derived rig pose edge ===\"\nnpa workbench\
+        \ nurec fetch --output-uri \"${NC}\" --output json >/tmp/nurec-fetch.json\nNCORE_JSON=$(python3\
+        \ -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['ncore_json'])\")\nPOSES_GROUP=$(python3\
+        \ -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['poses_component_group'])\"\
         )\nCAMERA=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['reference_camera'])\"\
         )\ntest -n \"${NCORE_JSON}\" && test -n \"${POSES_GROUP}\" && test -n \"${CAMERA}\"\nexport NCORE_JSON\
         \ POSES_GROUP CAMERA\n\necho \"=== zone $ZONE: reconstruct (3DGUT Gaussians -> renderable USDZ)\
@@ -926,17 +938,18 @@ states:
         \ (backs render\n# --export-video). It is idempotent and matches the shipped single-pod reference.\n\
         export DEBIAN_FRONTEND=noninteractive\nif ! command -v ffmpeg >/dev/null 2>&1; then\n  apt-get\
         \ update -qq || true\n  apt-get install -y -qq --no-install-recommends ffmpeg || true\nfi\nnpa_pip()\
-        \ {\n  python3 -m pip install -q \"$@\" --break-system-packages || python3 -m pip install -q \"\
-        $@\" --user\n}\nnpa_pip \"boto3>=1.34\" \"awscli>=1.32\" \"huggingface_hub>=0.30\" \"nvidia-ncore\"\
-        \ \"rerun-sdk\" \"pillow>=10.0\" \"pyyaml>=6.0\"\ncommand -v npa >/dev/null 2>&1 || { echo \"\
-        npa not found; set NPA_SRC_S3_URI\" >&2; exit 1; }\n\n# Export the shell vars the manifest writer\
-        \ (a child python process) needs.\nexport ZONE RUN_URI ZU NC RC NV INPUT RRD FINAL MF\nGPU_NAME=$(nvidia-smi\
-        \ --query-gpu=name --format=csv,noheader | head -1 || echo unknown)\nexport GPU_NAME\nSTART=$(date\
-        \ +%s)\nexport START\n\necho \"=== zone $ZONE: check (container + dataset rights + RT-core GPU)\
-        \ ===\"\nnpa workbench nurec check --require-gpu --output json\n\necho \"=== zone $ZONE: fetch\
-        \ real NCore V4 shards + derived rig pose edge ===\"\nnpa workbench nurec fetch --output-uri \"\
-        ${NC}\" --output json >/tmp/nurec-fetch.json\nNCORE_JSON=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['ncore_json'])\"\
-        )\nPOSES_GROUP=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['poses_component_group'])\"\
+        \ {\n  python3 -m pip install -q \"$@\" || python3 -m pip install -q \"$@\" --break-system-packages\
+        \ || python3 -m pip install -q \"$@\" --user\n}\nnpa_pip \"boto3>=1.34\" \"awscli>=1.32\" \"huggingface_hub>=0.30\"\
+        \ \"nvidia-ncore\" \"rerun-sdk\" \"pillow>=10.0\" \"pyyaml>=6.0\"\ncommand -v npa >/dev/null 2>&1\
+        \ || { echo \"npa not found; set NPA_SRC_S3_URI\" >&2; exit 1; }\n\n# Export the shell vars the\
+        \ manifest writer (a child python process) needs.\nexport ZONE RUN_URI ZU NC RC NV INPUT RRD FINAL\
+        \ MF\nGPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1 || echo unknown)\n\
+        export GPU_NAME\nSTART=$(date +%s)\nexport START\n\necho \"=== zone $ZONE: check (container +\
+        \ dataset rights + RT-core GPU) ===\"\nnpa workbench nurec check --require-gpu --output json\n\
+        \necho \"=== zone $ZONE: fetch real NCore V4 shards + derived rig pose edge ===\"\nnpa workbench\
+        \ nurec fetch --output-uri \"${NC}\" --output json >/tmp/nurec-fetch.json\nNCORE_JSON=$(python3\
+        \ -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['ncore_json'])\")\nPOSES_GROUP=$(python3\
+        \ -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['poses_component_group'])\"\
         )\nCAMERA=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['reference_camera'])\"\
         )\ntest -n \"${NCORE_JSON}\" && test -n \"${POSES_GROUP}\" && test -n \"${CAMERA}\"\nexport NCORE_JSON\
         \ POSES_GROUP CAMERA\n\necho \"=== zone $ZONE: reconstruct (3DGUT Gaussians -> renderable USDZ)\
@@ -994,17 +1007,18 @@ states:
         \ (backs render\n# --export-video). It is idempotent and matches the shipped single-pod reference.\n\
         export DEBIAN_FRONTEND=noninteractive\nif ! command -v ffmpeg >/dev/null 2>&1; then\n  apt-get\
         \ update -qq || true\n  apt-get install -y -qq --no-install-recommends ffmpeg || true\nfi\nnpa_pip()\
-        \ {\n  python3 -m pip install -q \"$@\" --break-system-packages || python3 -m pip install -q \"\
-        $@\" --user\n}\nnpa_pip \"boto3>=1.34\" \"awscli>=1.32\" \"huggingface_hub>=0.30\" \"nvidia-ncore\"\
-        \ \"rerun-sdk\" \"pillow>=10.0\" \"pyyaml>=6.0\"\ncommand -v npa >/dev/null 2>&1 || { echo \"\
-        npa not found; set NPA_SRC_S3_URI\" >&2; exit 1; }\n\n# Export the shell vars the manifest writer\
-        \ (a child python process) needs.\nexport ZONE RUN_URI ZU NC RC NV INPUT RRD FINAL MF\nGPU_NAME=$(nvidia-smi\
-        \ --query-gpu=name --format=csv,noheader | head -1 || echo unknown)\nexport GPU_NAME\nSTART=$(date\
-        \ +%s)\nexport START\n\necho \"=== zone $ZONE: check (container + dataset rights + RT-core GPU)\
-        \ ===\"\nnpa workbench nurec check --require-gpu --output json\n\necho \"=== zone $ZONE: fetch\
-        \ real NCore V4 shards + derived rig pose edge ===\"\nnpa workbench nurec fetch --output-uri \"\
-        ${NC}\" --output json >/tmp/nurec-fetch.json\nNCORE_JSON=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['ncore_json'])\"\
-        )\nPOSES_GROUP=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['poses_component_group'])\"\
+        \ {\n  python3 -m pip install -q \"$@\" || python3 -m pip install -q \"$@\" --break-system-packages\
+        \ || python3 -m pip install -q \"$@\" --user\n}\nnpa_pip \"boto3>=1.34\" \"awscli>=1.32\" \"huggingface_hub>=0.30\"\
+        \ \"nvidia-ncore\" \"rerun-sdk\" \"pillow>=10.0\" \"pyyaml>=6.0\"\ncommand -v npa >/dev/null 2>&1\
+        \ || { echo \"npa not found; set NPA_SRC_S3_URI\" >&2; exit 1; }\n\n# Export the shell vars the\
+        \ manifest writer (a child python process) needs.\nexport ZONE RUN_URI ZU NC RC NV INPUT RRD FINAL\
+        \ MF\nGPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1 || echo unknown)\n\
+        export GPU_NAME\nSTART=$(date +%s)\nexport START\n\necho \"=== zone $ZONE: check (container +\
+        \ dataset rights + RT-core GPU) ===\"\nnpa workbench nurec check --require-gpu --output json\n\
+        \necho \"=== zone $ZONE: fetch real NCore V4 shards + derived rig pose edge ===\"\nnpa workbench\
+        \ nurec fetch --output-uri \"${NC}\" --output json >/tmp/nurec-fetch.json\nNCORE_JSON=$(python3\
+        \ -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['ncore_json'])\")\nPOSES_GROUP=$(python3\
+        \ -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['poses_component_group'])\"\
         )\nCAMERA=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['reference_camera'])\"\
         )\ntest -n \"${NCORE_JSON}\" && test -n \"${POSES_GROUP}\" && test -n \"${CAMERA}\"\nexport NCORE_JSON\
         \ POSES_GROUP CAMERA\n\necho \"=== zone $ZONE: reconstruct (3DGUT Gaussians -> renderable USDZ)\
@@ -1062,17 +1076,18 @@ states:
         \ (backs render\n# --export-video). It is idempotent and matches the shipped single-pod reference.\n\
         export DEBIAN_FRONTEND=noninteractive\nif ! command -v ffmpeg >/dev/null 2>&1; then\n  apt-get\
         \ update -qq || true\n  apt-get install -y -qq --no-install-recommends ffmpeg || true\nfi\nnpa_pip()\
-        \ {\n  python3 -m pip install -q \"$@\" --break-system-packages || python3 -m pip install -q \"\
-        $@\" --user\n}\nnpa_pip \"boto3>=1.34\" \"awscli>=1.32\" \"huggingface_hub>=0.30\" \"nvidia-ncore\"\
-        \ \"rerun-sdk\" \"pillow>=10.0\" \"pyyaml>=6.0\"\ncommand -v npa >/dev/null 2>&1 || { echo \"\
-        npa not found; set NPA_SRC_S3_URI\" >&2; exit 1; }\n\n# Export the shell vars the manifest writer\
-        \ (a child python process) needs.\nexport ZONE RUN_URI ZU NC RC NV INPUT RRD FINAL MF\nGPU_NAME=$(nvidia-smi\
-        \ --query-gpu=name --format=csv,noheader | head -1 || echo unknown)\nexport GPU_NAME\nSTART=$(date\
-        \ +%s)\nexport START\n\necho \"=== zone $ZONE: check (container + dataset rights + RT-core GPU)\
-        \ ===\"\nnpa workbench nurec check --require-gpu --output json\n\necho \"=== zone $ZONE: fetch\
-        \ real NCore V4 shards + derived rig pose edge ===\"\nnpa workbench nurec fetch --output-uri \"\
-        ${NC}\" --output json >/tmp/nurec-fetch.json\nNCORE_JSON=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['ncore_json'])\"\
-        )\nPOSES_GROUP=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['poses_component_group'])\"\
+        \ {\n  python3 -m pip install -q \"$@\" || python3 -m pip install -q \"$@\" --break-system-packages\
+        \ || python3 -m pip install -q \"$@\" --user\n}\nnpa_pip \"boto3>=1.34\" \"awscli>=1.32\" \"huggingface_hub>=0.30\"\
+        \ \"nvidia-ncore\" \"rerun-sdk\" \"pillow>=10.0\" \"pyyaml>=6.0\"\ncommand -v npa >/dev/null 2>&1\
+        \ || { echo \"npa not found; set NPA_SRC_S3_URI\" >&2; exit 1; }\n\n# Export the shell vars the\
+        \ manifest writer (a child python process) needs.\nexport ZONE RUN_URI ZU NC RC NV INPUT RRD FINAL\
+        \ MF\nGPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1 || echo unknown)\n\
+        export GPU_NAME\nSTART=$(date +%s)\nexport START\n\necho \"=== zone $ZONE: check (container +\
+        \ dataset rights + RT-core GPU) ===\"\nnpa workbench nurec check --require-gpu --output json\n\
+        \necho \"=== zone $ZONE: fetch real NCore V4 shards + derived rig pose edge ===\"\nnpa workbench\
+        \ nurec fetch --output-uri \"${NC}\" --output json >/tmp/nurec-fetch.json\nNCORE_JSON=$(python3\
+        \ -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['ncore_json'])\")\nPOSES_GROUP=$(python3\
+        \ -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['poses_component_group'])\"\
         )\nCAMERA=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['reference_camera'])\"\
         )\ntest -n \"${NCORE_JSON}\" && test -n \"${POSES_GROUP}\" && test -n \"${CAMERA}\"\nexport NCORE_JSON\
         \ POSES_GROUP CAMERA\n\necho \"=== zone $ZONE: reconstruct (3DGUT Gaussians -> renderable USDZ)\
@@ -1130,17 +1145,18 @@ states:
         \ (backs render\n# --export-video). It is idempotent and matches the shipped single-pod reference.\n\
         export DEBIAN_FRONTEND=noninteractive\nif ! command -v ffmpeg >/dev/null 2>&1; then\n  apt-get\
         \ update -qq || true\n  apt-get install -y -qq --no-install-recommends ffmpeg || true\nfi\nnpa_pip()\
-        \ {\n  python3 -m pip install -q \"$@\" --break-system-packages || python3 -m pip install -q \"\
-        $@\" --user\n}\nnpa_pip \"boto3>=1.34\" \"awscli>=1.32\" \"huggingface_hub>=0.30\" \"nvidia-ncore\"\
-        \ \"rerun-sdk\" \"pillow>=10.0\" \"pyyaml>=6.0\"\ncommand -v npa >/dev/null 2>&1 || { echo \"\
-        npa not found; set NPA_SRC_S3_URI\" >&2; exit 1; }\n\n# Export the shell vars the manifest writer\
-        \ (a child python process) needs.\nexport ZONE RUN_URI ZU NC RC NV INPUT RRD FINAL MF\nGPU_NAME=$(nvidia-smi\
-        \ --query-gpu=name --format=csv,noheader | head -1 || echo unknown)\nexport GPU_NAME\nSTART=$(date\
-        \ +%s)\nexport START\n\necho \"=== zone $ZONE: check (container + dataset rights + RT-core GPU)\
-        \ ===\"\nnpa workbench nurec check --require-gpu --output json\n\necho \"=== zone $ZONE: fetch\
-        \ real NCore V4 shards + derived rig pose edge ===\"\nnpa workbench nurec fetch --output-uri \"\
-        ${NC}\" --output json >/tmp/nurec-fetch.json\nNCORE_JSON=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['ncore_json'])\"\
-        )\nPOSES_GROUP=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['poses_component_group'])\"\
+        \ {\n  python3 -m pip install -q \"$@\" || python3 -m pip install -q \"$@\" --break-system-packages\
+        \ || python3 -m pip install -q \"$@\" --user\n}\nnpa_pip \"boto3>=1.34\" \"awscli>=1.32\" \"huggingface_hub>=0.30\"\
+        \ \"nvidia-ncore\" \"rerun-sdk\" \"pillow>=10.0\" \"pyyaml>=6.0\"\ncommand -v npa >/dev/null 2>&1\
+        \ || { echo \"npa not found; set NPA_SRC_S3_URI\" >&2; exit 1; }\n\n# Export the shell vars the\
+        \ manifest writer (a child python process) needs.\nexport ZONE RUN_URI ZU NC RC NV INPUT RRD FINAL\
+        \ MF\nGPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1 || echo unknown)\n\
+        export GPU_NAME\nSTART=$(date +%s)\nexport START\n\necho \"=== zone $ZONE: check (container +\
+        \ dataset rights + RT-core GPU) ===\"\nnpa workbench nurec check --require-gpu --output json\n\
+        \necho \"=== zone $ZONE: fetch real NCore V4 shards + derived rig pose edge ===\"\nnpa workbench\
+        \ nurec fetch --output-uri \"${NC}\" --output json >/tmp/nurec-fetch.json\nNCORE_JSON=$(python3\
+        \ -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['ncore_json'])\")\nPOSES_GROUP=$(python3\
+        \ -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['poses_component_group'])\"\
         )\nCAMERA=$(python3 -c \"import json;print(json.load(open('/tmp/nurec-fetch.json'))['reference_camera'])\"\
         )\ntest -n \"${NCORE_JSON}\" && test -n \"${POSES_GROUP}\" && test -n \"${CAMERA}\"\nexport NCORE_JSON\
         \ POSES_GROUP CAMERA\n\necho \"=== zone $ZONE: reconstruct (3DGUT Gaussians -> renderable USDZ)\

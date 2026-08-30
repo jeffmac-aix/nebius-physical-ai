@@ -281,3 +281,106 @@ def test_no_stub_toolrefs_and_all_shells_are_real() -> None:
 
 def test_committed_yaml_matches_generator() -> None:
     assert SPEC_PATH.read_text() == living_lab.living_lab_workflow_yaml()
+
+
+def test_shard_shell_runs_full_pipeline_and_writes_manifest(tmp_path) -> None:
+    """Execute a resolved zone shard shell end-to-end with stubbed tools.
+
+    Guards the *operational* correctness the flag checks cannot: the shard must
+    actually install + guard runtime deps, run every real nurec verb in order,
+    export the shell vars a child python process reads, and publish a
+    load-bearing zone_manifest.json — not crash on os.environ KeyError.
+    """
+    import os
+    import subprocess
+    import sys
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    boost = tmp_path / "py"
+
+    def write(name: str, content: str) -> None:
+        p = bin_dir / name
+        p.write_text(content, encoding="utf-8")
+        p.chmod(0o755)
+
+    write(
+        "nvidia-smi",
+        "#!/bin/sh\necho 'NVIDIA RTX PRO 6000 Blackwell'\n",
+    )
+    write("ffmpeg", "#!/bin/sh\nexit 0\n")
+    write(
+        "npa",
+        """#!/bin/sh
+case "$*" in
+  *"nurec check"*) echo '{"status":"ok","has_rt_cores":true}' ;;
+  *"nurec fetch"*) echo '{"status":"ok","ncore_json":"/tmp/n.json","poses_component_group":"npa_rig","reference_camera":"cam1"}' ;;
+  *"nurec reconstruct"*) echo '{"status":"ok","usdz_path":"/tmp/last.usdz","metrics":{"test/psnr":31.19,"test/ssim":0.833,"test/lpips":0.267}}' ;;
+  *"nurec render"*) echo '{"status":"ok"}' ;;
+  *"nurec visualize"*) echo '{"status":"completed"}' ;;
+  *"nurec finalize"*) echo '{"status":"ok","has_usdz":true,"has_rrd":true,"artifact_count":42}' ;;
+  *) echo '{}' ;;
+esac
+""",
+    )
+    # Intercept only `python3 -m pip ...` (a no-op) so the setup's dep install
+    # passes through; everything else runs the real interpreter.
+    real_py = sys.executable
+    write(
+        "python3",
+        '#!/bin/sh\nif [ "$1" = "-m" ] && [ "$2" = "pip" ]; then exit 0; fi\n'
+        f'exec "{real_py}" "$@"\n',
+    )
+
+    (boost / "npa").mkdir(parents=True)
+    (boost / "npa" / "clients").mkdir(parents=True)
+    (boost / "npa" / "__init__.py").write_text("", encoding="utf-8")
+    (boost / "npa" / "clients" / "__init__.py").write_text("", encoding="utf-8")
+    (boost / "npa" / "clients" / "storage.py").write_text(
+        "class StorageClient:\n"
+        "    @staticmethod\n"
+        "    def from_environment():\n"
+        "        return StorageClient()\n"
+        "    def upload_file(self, local, uri):\n"
+        "        print(f'UPLOAD {local} -> {uri}')\n"
+        "        return uri\n",
+        encoding="utf-8",
+    )
+
+    shell = living_lab.build_living_lab_workflow_spec()["states"][
+        "zone-toro-standard-b"
+    ]["run"]["shell"]
+    zone_cfg = {
+        "config.zone_name": "toro-standard-b",
+        "config.run_prefix_uri": "s3://bucket/prefix/",
+        "config.nurec_image": "nvcr.io/nvidia/nre/nre-ga:26.04",
+        "config.rig_translation_offset": "0,0.25,0",
+        "config.rig_rotation_offset": "0,0,0",
+    }
+    for tok, val in zone_cfg.items():
+        shell = shell.replace("{{" + tok + "}}", val)
+    script = tmp_path / "shard.sh"
+    script.write_text(shell, encoding="utf-8")
+
+    env = dict(os.environ)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["PYTHONPATH"] = str(boost)
+    env["AWS_ACCESS_KEY_ID"] = "TESTKEY"
+    env["AWS_SECRET_ACCESS_KEY"] = "TESTSECRET"
+    proc = subprocess.run(
+        ["bash", str(script)],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "UPLOAD" in proc.stdout
+    payload = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert payload["zone_name"] == "toro-standard-b"
+    assert payload["status"] == "ok"
+    assert "RTX PRO 6000" in payload["gpu_name"]
+    assert payload["usdz_path"] == "/tmp/last.usdz"
+    assert payload["finalize"]["has_usdz"] is True
+    assert payload["finalize"]["artifact_count"] == 42
+    assert payload["metrics"]["test/ssim"] == 0.833
