@@ -34,6 +34,11 @@ WORKDIR /opt/lerobot
 
 COPY --chown=ubuntu:ubuntu docker/workbench/lerobot-policy/requirements.txt /tmp/npa-lerobot-policy-requirements.txt
 
+# LeRobot 0.5.1 pulls torchcodec<0.11.0 which ships libraries linked against
+# FFmpeg 4-7 sonames.  Ubuntu 22.04 provides only FFmpeg 4, and torchcodec's
+# FFmpeg-4 variant crashes with torch 2.12 (ABI mismatch).  Install FFmpeg 8
+# shared libraries from the official BtbN build so torchcodec 0.16.0 can find
+# its matching shared libraries.
 RUN python3.12 -m venv /opt/lerobot/venv \
     && /opt/lerobot/venv/bin/python -m pip install --upgrade pip setuptools wheel \
     && /opt/lerobot/venv/bin/pip install --no-cache-dir -r /tmp/npa-lerobot-policy-requirements.txt \
@@ -41,11 +46,28 @@ RUN python3.12 -m venv /opt/lerobot/venv \
       "torch==2.12.1" \
       "torchvision==0.27.1" \
       "diffusers>=0.38.0" \
+      "torchcodec>=0.16.0" \
     && /opt/lerobot/venv/bin/pip uninstall -y wandb
 
 USER root
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# FFmpeg 8 shared libraries from BtbN official build.  torchcodec 0.16.0 ships
+# libtorchcodec_core8.so linked against libavutil.so.61 / libavcodec.so.63 etc.
+# The BtbN master shared build provides these exact sonames.  Add them to the
+# system linker path and purge the download tools afterward.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends wget xz-utils \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /opt/ffmpeg8 \
+    && cd /opt/ffmpeg8 \
+    && wget -q 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl-shared.tar.xz' \
+    && tar -xf ffmpeg-master-latest-linux64-gpl-shared.tar.xz --strip-components=1 \
+    && rm ffmpeg-master-latest-linux64-gpl-shared.tar.xz \
+    && echo /opt/ffmpeg8/lib > /etc/ld.so.conf.d/ffmpeg8.conf \
+    && ldconfig
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
       ffmpeg \
     && apt-get install -y --no-install-recommends --only-upgrade gpgv openssl libssl3 \
     && apt-get purge -y --auto-remove \
@@ -56,6 +78,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       gpg \
       gpg-agent \
       software-properties-common \
+      wget \
+      xz-utils \
     && dpkg --purge --force-depends linux-libc-dev \
     && rm -rf /var/lib/apt/lists/*
 
