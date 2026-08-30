@@ -122,6 +122,13 @@ redistribution eligibility are not evidence of publication.
 
 ## Intentionally not published as separate images
 
+- **`npa-robocasa`** is a validation candidate, not yet in the public publishing
+  plan. It is licence-eligible for public redistribution (Apache-2.0 RoboCasa and
+  robosuite), but its built-image payload scan and real GPU capability validation
+  have not yet been recorded, so it is quarantined from `publicly_publishable_tools()`
+  via `VALIDATION_CANDIDATE_TOOLS`. It will gain a public row only when its accepted
+  digest and GPU evidence are recorded.
+
 - **`npa-sim2real-control`** is an internal workflow artifact, not a public-mirror
   tool. Its packaging contract permits redistribution, but it has no entry in
   `CONTAINER_IMAGE_NAMES` and is therefore outside `publicly_publishable_tools()`;
