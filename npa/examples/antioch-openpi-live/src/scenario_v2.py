@@ -97,6 +97,42 @@ class CameraFrame:
 
 
 @dataclass(frozen=True)
+class CameraSample:
+    frame: CameraFrame
+    producer_marker: tuple[int, int] | None
+
+
+class RtxRgbCamera:
+    """Own one Isaac Sim 6 RTX camera authoring/runtime pair."""
+
+    def __init__(self, authoring, sensor, producer_clock) -> None:
+        self.authoring = authoring
+        self.sensor = sensor
+        self.producer_clock = producer_clock
+
+    @property
+    def render_product_path(self) -> str:
+        render_product = self.sensor.render_product
+        prim = render_product.GetPrim()
+        return str(prim.GetPath()) if prim and prim.IsValid() else ""
+
+    def sample(self, *, view: str) -> CameraSample:
+        data, info = self.sensor.get_data("rgb")
+        marker = _producer_marker_from_info(info)
+        if marker is None:
+            marker = _reference_time_marker(self.producer_clock)
+        return CameraSample(_camera_frame_from_buffer(data, view=view), marker)
+
+    def close(self) -> None:
+        with contextlib.suppress(Exception):
+            self.sensor.detach_annotators("rgb")
+        with contextlib.suppress(Exception):
+            self.producer_clock.detach([self.render_product_path])
+        with contextlib.suppress(Exception):
+            self.authoring.destroy()
+
+
+@dataclass(frozen=True)
 class CameraPair:
     accepted: bool
     exterior: CameraFrame
@@ -846,16 +882,19 @@ def _install_overlay():
     return window, title, state, counters, latency
 
 
-def _camera_frame(camera, *, view: str) -> CameraFrame:
-    """Classify one current rendered frame without losing its rejection reason."""
+def _camera_frame_from_buffer(buffer, *, view: str) -> CameraFrame:
+    """Copy and classify one numpy/Warp RGB buffer without unsafe aliasing."""
 
     import numpy as np
 
-    rgba = camera.get_rgba()
-    if rgba is None:
+    if buffer is None:
         return CameraFrame(None, "missing")
-    frame = np.asarray(rgba)
-    if frame.ndim != 3 or frame.shape != (224, 224, 4):
+    try:
+        source = buffer.numpy() if callable(getattr(buffer, "numpy", None)) else buffer
+        frame = np.array(source, copy=True)
+    except Exception:
+        return CameraFrame(None, "unreadable")
+    if frame.ndim != 3 or frame.shape not in ((224, 224, 3), (224, 224, 4)):
         return CameraFrame(None, "wrong_shape")
     if not np.issubdtype(frame.dtype, np.number) or not np.isfinite(frame).all():
         return CameraFrame(None, "non_finite")
@@ -914,6 +953,40 @@ def _camera_frame(camera, *, view: str) -> CameraFrame:
     return result
 
 
+def _camera_frame(camera, *, view: str) -> CameraFrame:
+    """Read RGB through the supported CameraSensor API for focused helpers/tests."""
+
+    data, _info = camera.get_data("rgb")
+    return _camera_frame_from_buffer(data, view=view)
+
+
+def _producer_marker_from_info(info) -> tuple[int, int] | None:
+    """Extract an exact producer timestamp from public annotator metadata."""
+
+    if not isinstance(info, dict):
+        return None
+    candidates = [info]
+    candidates.extend(value for value in info.values() if isinstance(value, dict))
+    for candidate in candidates:
+        numerator = candidate.get("referenceTimeNumerator")
+        denominator = candidate.get("referenceTimeDenominator")
+        if denominator is None:
+            for key in ("renderingFrame", "frameNumber", "frame_id"):
+                if key in candidate:
+                    numerator, denominator = candidate[key], 1
+                    break
+        if isinstance(numerator, bool) or isinstance(denominator, bool):
+            continue
+        try:
+            exact_numerator = operator.index(numerator)
+            exact_denominator = operator.index(denominator)
+        except TypeError:
+            continue
+        if exact_denominator > 0:
+            return exact_numerator, exact_denominator
+    return None
+
+
 def _new_reference_time_annotator(render_product: str):
     """Attach Isaac's public producer clock directly to one render product."""
 
@@ -952,64 +1025,51 @@ def _reference_time_advanced(
     return current[0] * prior[1] > prior[0] * current[1]
 
 
-def _detach_reference_time_producers(
-    annotators: dict[str, object], render_products: dict[str, str]
-) -> None:
-    """Best-effort detach producer clocks from their exact render products."""
+def _build_rtx_rgb_camera(RtxCamera, CameraSensor, *, path: str, position=None):
+    """Construct one supported Isaac Sim 6 RTX camera and explicit RGB sensor."""
 
-    for view, annotator in annotators.items():
+    kwargs = {"tick_rate": 0.0}
+    if position is not None:
+        kwargs["positions"] = [position]
+    authoring = RtxCamera(path, **kwargs)
+    sensor = CameraSensor(authoring, resolution=(224, 224), annotators=["rgb"])
+    render_product = sensor.render_product
+    prim = render_product.GetPrim()
+    render_product_path = str(prim.GetPath()) if prim and prim.IsValid() else ""
+    if not render_product_path:
         with contextlib.suppress(Exception):
-            annotator.detach([render_products[view]])
-
-
-def _initialize_camera_producers(world, cameras: tuple[tuple[str, object], ...]):
-    """Attach RGB annotators and fail closed on structural producer errors."""
-
-    render_products: dict[str, str] = {}
-    reference_times: dict[str, object] = {}
-    try:
-        for view, camera in cameras:
-            camera.initialize(attach_rgb_annotator=True)
-            render_product = camera.get_render_product_path()
-            if not isinstance(render_product, str) or not render_product:
-                raise CameraReadinessError(view, "render_product_missing")
-            prim = world.stage.GetPrimAtPath(render_product)
-            if not prim or not prim.IsValid():
-                raise CameraReadinessError(view, "render_product_invalid")
-            render_products[view] = render_product
-            reference_times[view] = _new_reference_time_annotator(render_product)
-
-        markers = {view: None for view, _ in cameras}
-        return render_products, reference_times, markers
-    except Exception:
-        _detach_reference_time_producers(reference_times, render_products)
-        raise
+            sensor.detach_annotators("rgb")
+        raise CameraReadinessError(path, "render_product_invalid")
+    return RtxRgbCamera(
+        authoring, sensor, _new_reference_time_annotator(render_product_path)
+    )
 
 
 def _initialize_live_capture(world, cameras, logger):
     """Create serialized telemetry and structurally valid camera producers."""
     telemetry = LiveTelemetryPublisher(logger)
     try:
-        render_products, reference_times, camera_markers = (
-            _initialize_camera_producers(world, cameras)
-        )
+        render_products = {}
+        for view, camera in cameras:
+            render_product = camera.render_product_path
+            prim = world.stage.GetPrimAtPath(render_product)
+            if not render_product or not prim or not prim.IsValid():
+                raise CameraReadinessError(view, "render_product_invalid")
+            render_products[view] = render_product
     except BaseException:
         telemetry.close()
         for _view, camera in cameras:
             with contextlib.suppress(Exception):
-                camera.destroy()
+                camera.close()
         raise
-    return telemetry, render_products, reference_times, camera_markers
+    return telemetry, render_products, {view: None for view, _ in cameras}
 
 
 def _camera_markers_advanced(
-    reference_times: dict[str, object],
+    samples: dict[str, CameraSample],
     prior: dict[str, tuple[int, int] | None],
 ) -> tuple[bool, dict[str, tuple[int, int] | None], str]:
-    current = {
-        view: _reference_time_marker(annotator)
-        for view, annotator in reference_times.items()
-    }
+    current = {view: sample.producer_marker for view, sample in samples.items()}
     for view, marker in current.items():
         if marker is None:
             return False, current, f"{view}_producer_marker_missing"
@@ -1021,8 +1081,8 @@ def _camera_markers_advanced(
 
 
 def _validate_camera_pair(
-    exterior,
-    wrist,
+    exterior_frame: CameraFrame,
+    wrist_frame: CameraFrame,
     *,
     render_sequence: int,
     last_accepted_render_sequence: int,
@@ -1033,8 +1093,11 @@ def _validate_camera_pair(
 
     import numpy as np
 
-    exterior_frame = _camera_frame(exterior, view="exterior")
-    wrist_frame = _camera_frame(wrist, view="wrist")
+    if not isinstance(exterior_frame, CameraFrame):
+        exterior_frame = _camera_frame(exterior_frame, view="exterior")
+    if not isinstance(wrist_frame, CameraFrame):
+        wrist_frame = _camera_frame(wrist_frame, view="wrist")
+
     difference = 0.0
     if exterior_frame.rgb is not None and wrist_frame.rgb is not None:
         difference = float(
@@ -1358,7 +1421,7 @@ def openpi_franka_mk8s_live_v2(
     # Isaac Sim 6 keeps the legacy Franka helper as an opt-in extension.
     enable_extension("isaacsim.robot.manipulators.examples")
     from isaacsim.robot.manipulators.examples.franka import Franka
-    from isaacsim.sensors.camera import Camera
+    from isaacsim.sensors.experimental.rtx import CameraSensor, RtxCamera
 
     world = antioch.world()
     world.scene.add_ground_plane(z_position=-0.75)
@@ -1405,14 +1468,16 @@ def openpi_franka_mk8s_live_v2(
             max_contact_count=16,
         )
     )
-    exterior = Camera(
-        prim_path=EXTERIOR_CAMERA_PATH,
-        position=np.array(EXTERIOR_CAMERA_EYE),
-        resolution=(224, 224),
+    exterior = _build_rtx_rgb_camera(
+        RtxCamera,
+        CameraSensor,
+        path=EXTERIOR_CAMERA_PATH,
+        position=EXTERIOR_CAMERA_EYE,
     )
-    wrist = Camera(
-        prim_path=WRIST_CAMERA_PATH,
-        resolution=(224, 224),
+    wrist = _build_rtx_rgb_camera(
+        RtxCamera,
+        CameraSensor,
+        path=WRIST_CAMERA_PATH,
     )
     _configure_lighting(world.stage)
     world.reset()
@@ -1433,8 +1498,8 @@ def openpi_franka_mk8s_live_v2(
     _configure_camera_optics(world.stage, EXTERIOR_CAMERA_PATH, "exterior")
     _configure_camera_optics(world.stage, WRIST_CAMERA_PATH, "wrist")
     cameras = (("exterior", exterior), ("wrist", wrist))
-    telemetry, render_products, reference_times, camera_markers = (
-        _initialize_live_capture(world, cameras, logger)
+    telemetry, render_products, camera_markers = _initialize_live_capture(
+        world, cameras, logger
     )
     print(
         "NPA_OPENPI_CAMERAS_ATTACHED "
@@ -1687,16 +1752,20 @@ def openpi_franka_mk8s_live_v2(
                     wrist_pose,
                     _camera_optical_config("wrist"),
                 )
+                samples = {
+                    "exterior": exterior.sample(view="exterior"),
+                    "wrist": wrist.sample(view="wrist"),
+                }
                 pair = _validate_camera_pair(
-                    exterior,
-                    wrist,
+                    samples["exterior"].frame,
+                    samples["wrist"].frame,
                     render_sequence=render_sequence,
                     last_accepted_render_sequence=last_accepted_render_sequence,
                     exterior_cube_in_frame=exterior_cube_in_frame,
                     wrist_cube_in_frame=wrist_cube_in_frame,
                 )
                 producers_advanced, current_markers, producer_reason = (
-                    _camera_markers_advanced(reference_times, camera_markers)
+                    _camera_markers_advanced(samples, camera_markers)
                 )
                 if producers_advanced:
                     camera_markers = current_markers
@@ -2104,11 +2173,9 @@ def openpi_franka_mk8s_live_v2(
             flush=True,
         )
         with contextlib.suppress(Exception):
-            _detach_reference_time_producers(reference_times, render_products)
+            exterior.close()
         with contextlib.suppress(Exception):
-            exterior.destroy()
-        with contextlib.suppress(Exception):
-            wrist.destroy()
+            wrist.close()
         if not all(telemetry_closed.values()):
             raise TelemetryShutdownError(
                 "logger worker remained alive; refusing result finalization"

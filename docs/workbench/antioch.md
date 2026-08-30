@@ -144,6 +144,14 @@ previously published definition from masking the schema-2 camera/action contract
 Its default dispatched instruction is `pick up the red cube`; public proof telemetry
 uses only the non-sensitive `red_cube_pickup` label.
 
+The two 224x224 policy cameras use Isaac Sim 6's supported
+`isaacsim.sensors.experimental.rtx` API: separate `RtxCamera` authoring objects
+and `CameraSensor` runtime objects with an explicit `rgb` annotator. The scenario
+reads `(data, info)` from `get_data("rgb")`, safely copies numpy/Warp buffers, and
+uses sensor metadata or the public exact render-product clock for advancement.
+Policy remains in safe hold until both independent views are valid, distinct,
+and advancing; viewer state and control-loop iterations are not producer clocks.
+
 The scenario keeps safety calculations and durable acceptance counters at control
 cadence, but groups Rerun scalars and generated scene geometry at a documented
 5 Hz display cadence. Fixed latest-only exterior-image, wrist-image, and display

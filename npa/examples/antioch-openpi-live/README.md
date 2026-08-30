@@ -20,7 +20,12 @@ projections. Five returned targets are applied at a nominal 15 Hz. The
 observation-to-action loop is best-effort and not hard real time.
 
 The manipulation scene is a lit tabletop with a reachable red cube and an open
-Franka in the DROID reset posture. The wide exterior camera has explicit optics
+Franka in the DROID reset posture. Both policy views use Isaac Sim 6's supported
+`isaacsim.sensors.experimental.rtx` authoring/runtime split: an independent
+`RtxCamera` and `CameraSensor(annotators=["rgb"])` per view. Acquisition consumes
+the copied numpy/Warp result and producer metadata from `get_data("rgb")`; a
+public clock attached to that sensor's render product supplies the exact marker
+when the RGB annotator omits it. The wide exterior camera has explicit optics
 and frames the complete tabletop manipulation region. The wide wrist camera is
 calibrated once from the measured stock-Franka hand and fingertip transforms,
 then its fixed tool-frame extrinsics are re-applied before every rendered step so
@@ -84,10 +89,10 @@ missing/stale lease revokes readiness immediately. Recovery cancels only the exa
 run, proves stable absence, rebuilds and re-stages after recycle when needed, and
 starts one successor with capped backoff; ambiguous ownership fails closed.
 
-Mission Control can report the livestream as `ready` until an authenticated
-viewer opens the supported console link. Isaac's first rendered camera frame may
-wait at that boundary; the controller never fabricates a viewer session or reads
-browser authentication storage.
+Mission Control's livestream state is independent of policy-camera readiness.
+The scenario waits in safe hold for both RTX render products to return distinct,
+advancing RGB frames; it never treats a viewer connection or the control-loop
+counter as a camera producer clock.
 
 `openpi_franka_mk8s_live_v2` uses a versioned remote scenario identity so an
 already-published definition cannot mask a new camera/action contract. It dispatches

@@ -246,8 +246,9 @@ def test_live_camera_rejects_black_or_flat_annotator_warmup(
         def __init__(self, frame: np.ndarray | None) -> None:
             self.frame = frame
 
-        def get_rgba(self) -> np.ndarray | None:
-            return self.frame
+        def get_data(self, annotator: str) -> tuple[np.ndarray | None, dict]:
+            assert annotator == "rgb"
+            return self.frame, {"renderingFrame": 1}
 
     assert scenario._camera_frame(Camera(None), view="wrist").reason == "missing"
     assert (
@@ -296,8 +297,9 @@ def test_live_rejected_camera_pixels_are_logged_and_metrics_are_not_blank(
         def __init__(self, frame: np.ndarray) -> None:
             self.frame = frame
 
-        def get_rgba(self) -> np.ndarray:
-            return self.frame
+        def get_data(self, annotator: str) -> tuple[np.ndarray, dict]:
+            assert annotator == "rgb"
+            return self.frame, {"renderingFrame": 1}
 
     exterior = np.full((224, 224, 4), 64, dtype=np.uint8)
     exterior[..., 3] = 255
@@ -447,201 +449,133 @@ def test_live_telemetry_is_latest_only_and_control_does_not_wait_for_slow_images
     )
 
 
-def test_camera_producers_attach_without_waiting_for_pixels_on_calling_thread(
+def test_rtx_camera_construction_wires_public_rgb_render_product(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    scenario = _load_live_scenario(monkeypatch, "antioch_camera_producer_test")
-    owner = threading.get_ident()
+    scenario = _load_live_scenario(monkeypatch, "antioch_rtx_construction_test")
+    calls: list[tuple] = []
 
     class Prim:
         def IsValid(self) -> bool:
             return True
 
+        def GetPath(self) -> str:
+            return "/Render/exterior"
+
         def __bool__(self) -> bool:
             return True
 
-    class Stage:
-        def GetPrimAtPath(self, _path: str) -> Prim:
+    class Product:
+        def GetPrim(self) -> Prim:
             return Prim()
 
-    class World:
-        stage = Stage()
-        steps = 0
-
-        def step(self, *, render: bool) -> None:
-            raise AssertionError("structural initialization must not render")
-
-    world = World()
-
-    class ReferenceTime:
-        def __init__(self) -> None:
-            self.render_product = ""
-
-        def attach(self, render_products: list[str]) -> None:
-            self.render_product = render_products[0]
-
-        def get_data(self) -> dict[str, int]:
-            raise AssertionError("structural initialization must not sample producers")
-
-    reference_times: list[ReferenceTime] = []
-
-    def new_reference_time(_render_product: str) -> ReferenceTime:
-        reference_time = ReferenceTime()
-        reference_times.append(reference_time)
-        return reference_time
-
-    monkeypatch.setattr(
-        scenario, "_new_reference_time_annotator", new_reference_time
-    )
-
-    class Camera:
-        def __init__(self, view: str) -> None:
-            self.view = view
-            self.attached = False
-
-        def initialize(self, *, attach_rgb_annotator: bool) -> None:
-            assert threading.get_ident() == owner
-            self.attached = attach_rgb_annotator
-
-        def get_render_product_path(self) -> str:
-            return f"/Render/{self.view}"
-
-        def get_rgba(self) -> np.ndarray | None:
-            raise AssertionError("structural initialization must not sample pixels")
-
-    exterior, wrist = Camera("exterior"), Camera("wrist")
-    products, producers, markers = scenario._initialize_camera_producers(
-        world, (("exterior", exterior), ("wrist", wrist))
-    )
-    assert products == {"exterior": "/Render/exterior", "wrist": "/Render/wrist"}
-    assert set(producers) == {"exterior", "wrist"}
-    assert exterior.attached and wrist.attached
-    assert world.steps == 0
-    assert markers == {"exterior": None, "wrist": None}
-
-
-def test_live_capture_does_not_fabricate_a_logger_driven_camera_lifecycle(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    scenario = _load_live_scenario(monkeypatch, "antioch_camera_lifecycle_test")
-    owner = threading.get_ident()
-    calls: list[tuple[str, float]] = []
-
-    class Logger:
-        def scalar(self, path: str, value: float) -> None:
-            assert threading.get_ident() == owner
-            assert path == "telemetry/initialized" and value == 1.0
-            calls.append((path, value))
-
-    class Prim:
-        def IsValid(self) -> bool:
-            return True
-
-        def __bool__(self) -> bool:
-            return True
-
-    class World:
-        stage = SimpleNamespace(GetPrimAtPath=lambda _path: Prim())
-
-        def step(self, *, render: bool) -> None:
-            raise AssertionError("live capture setup must not warm render frames")
-
-    class ReferenceTime:
-        def get_data(self) -> dict[str, int]:
-            raise AssertionError("live capture setup must not claim producer readiness")
-
-    monkeypatch.setattr(
-        scenario,
-        "_new_reference_time_annotator",
-        lambda _render_product: ReferenceTime(),
-    )
-
-    class Camera:
-        destroyed = False
-
-        def initialize(self, *, attach_rgb_annotator: bool) -> None:
-            assert attach_rgb_annotator
-
-        def get_render_product_path(self) -> str:
-            return "/Render/rgb"
-
-        def get_rgba(self) -> np.ndarray | None:
-            raise AssertionError("live capture setup must not fabricate camera pixels")
+    class Authoring:
+        def __init__(self, path: str, **kwargs) -> None:
+            calls.append(("authoring", path, kwargs))
+            self.destroyed = False
 
         def destroy(self) -> None:
             self.destroyed = True
 
-    exterior, wrist = Camera(), Camera()
-    telemetry, products, producers, markers = scenario._initialize_live_capture(
-        World(), (("exterior", exterior), ("wrist", wrist)), Logger()
-    )
+    class Sensor:
+        def __init__(self, authoring, **kwargs) -> None:
+            calls.append(("sensor", authoring, kwargs))
+            self.render_product = Product()
+            self.detached = False
 
-    assert calls == [("telemetry/initialized", 1.0)]
-    assert products == {"exterior": "/Render/rgb", "wrist": "/Render/rgb"}
-    assert set(producers) == {"exterior", "wrist"}
-    assert markers == {"exterior": None, "wrist": None}
-    assert telemetry.close() == {"exterior": True, "wrist": True, "display": True}
-    assert not exterior.destroyed and not wrist.destroyed
+        def detach_annotators(self, annotator: str) -> None:
+            assert annotator == "rgb"
+            self.detached = True
 
-
-@pytest.mark.parametrize("render_product", [None, "", "/Render/invalid"])
-def test_camera_producer_structural_errors_still_fail_closed(
-    monkeypatch: pytest.MonkeyPatch,
-    render_product: str | None,
-) -> None:
-    scenario = _load_live_scenario(monkeypatch, "antioch_camera_cleanup_test")
-
-    class Prim:
-        def IsValid(self) -> bool:
-            return render_product != "/Render/invalid"
-
-        def __bool__(self) -> bool:
-            return self.IsValid()
-
-    class World:
-        stage = SimpleNamespace(GetPrimAtPath=lambda _path: Prim())
-
-    class ReferenceTime:
+    class Clock:
         detached = False
 
         def get_data(self) -> dict[str, int]:
             return {"referenceTimeNumerator": 1, "referenceTimeDenominator": 60}
 
-        def detach(self, _render_products: list[str]) -> None:
+        def detach(self, products: list[str]) -> None:
+            assert products == ["/Render/exterior"]
             self.detached = True
 
-    producers: list[ReferenceTime] = []
+    clock = Clock()
+    monkeypatch.setattr(scenario, "_new_reference_time_annotator", lambda _path: clock)
+    camera = scenario._build_rtx_rgb_camera(
+        Authoring, Sensor, path=scenario.EXTERIOR_CAMERA_PATH, position=(1.0, 2.0, 3.0)
+    )
 
-    def new_reference_time(_render_product: str) -> ReferenceTime:
-        producer = ReferenceTime()
-        producers.append(producer)
-        return producer
+    assert calls[0] == (
+        "authoring",
+        scenario.EXTERIOR_CAMERA_PATH,
+        {"tick_rate": 0.0, "positions": [(1.0, 2.0, 3.0)]},
+    )
+    assert calls[1][2] == {"resolution": (224, 224), "annotators": ["rgb"]}
+    assert camera.render_product_path == "/Render/exterior"
+    camera.close()
+    assert camera.sensor.detached and clock.detached and camera.authoring.destroyed
 
-    monkeypatch.setattr(scenario, "_new_reference_time_annotator", new_reference_time)
+
+def test_rtx_camera_samples_delayed_numpy_and_warp_without_aliasing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scenario = _load_live_scenario(monkeypatch, "antioch_rtx_sampling_test")
+    source = np.zeros((224, 224, 3), dtype=np.uint8)
+    source[:, 112:] = 255
+
+    class Warp:
+        def numpy(self) -> np.ndarray:
+            return source
+
+    class Sensor:
+        render_product = SimpleNamespace(
+            GetPrim=lambda: SimpleNamespace(
+                IsValid=lambda: True, GetPath=lambda: "/Render/wrist"
+            )
+        )
+        samples = [
+            (None, {}),
+            (Warp(), {"referenceTimeNumerator": 2, "referenceTimeDenominator": 60}),
+        ]
+
+        def get_data(self, annotator: str):
+            assert annotator == "rgb"
+            return self.samples.pop(0)
+
+    clock = SimpleNamespace(
+        get_data=lambda: {},
+        detach=lambda _products: None,
+    )
+    camera = scenario.RtxRgbCamera(SimpleNamespace(destroy=lambda: None), Sensor(), clock)
+    assert camera.sample(view="wrist").frame.reason == "missing"
+    sample = camera.sample(view="wrist")
+    assert sample.producer_marker == (2, 60)
+    assert sample.frame.rgb is not None
+    source[:] = 0
+    assert int(sample.frame.rgb.max()) == 255
+
+
+def test_live_capture_fails_closed_and_tears_down_invalid_rtx_product(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scenario = _load_live_scenario(monkeypatch, "antioch_rtx_cleanup_test")
+
+    class Logger:
+        def scalar(self, _path: str, _value: float) -> None:
+            pass
 
     class Camera:
-        def __init__(self) -> None:
-            self.destroyed = False
+        render_product_path = ""
+        closed = False
 
-        def initialize(self, *, attach_rgb_annotator: bool) -> None:
-            assert attach_rgb_annotator
-
-        def get_render_product_path(self) -> str:
-            return render_product  # type: ignore[return-value]
-
-        def destroy(self) -> None:
-            self.destroyed = True
+        def close(self) -> None:
+            self.closed = True
 
     exterior, wrist = Camera(), Camera()
-    reason = "render_product_invalid" if render_product else "render_product_missing"
-    with pytest.raises(scenario.CameraReadinessError, match=reason):
-        scenario._initialize_camera_producers(
-            World(), (("exterior", exterior), ("wrist", wrist))
+    world = SimpleNamespace(stage=SimpleNamespace(GetPrimAtPath=lambda _path: None))
+    with pytest.raises(scenario.CameraReadinessError, match="render_product_invalid"):
+        scenario._initialize_live_capture(
+            world, (("exterior", exterior), ("wrist", wrist)), Logger()
         )
-
-    assert not producers or all(item.detached for item in producers)
-
-
+    assert exterior.closed and wrist.closed
 def test_camera_readiness_waits_hundreds_of_frames_before_policy_eligibility(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -702,25 +636,21 @@ def test_camera_frame_advancement_uses_producer_marker_not_loop_count(
 ) -> None:
     scenario = _load_live_scenario(monkeypatch, "antioch_camera_advancement_test")
 
-    class ReferenceTime:
-        def __init__(self, marker: int) -> None:
-            self.marker = marker
-
-        def get_data(self) -> dict[str, int]:
-            return {
-                "referenceTimeNumerator": self.marker,
-                "referenceTimeDenominator": 60,
-            }
-
-    exterior, wrist = ReferenceTime(9), ReferenceTime(9)
-    producers = {"exterior": exterior, "wrist": wrist}
+    frame = scenario.CameraFrame(object(), "")
+    samples = {
+        "exterior": scenario.CameraSample(frame, (9, 60)),
+        "wrist": scenario.CameraSample(frame, (9, 60)),
+    }
     advanced, _, reason = scenario._camera_markers_advanced(
-        producers, {"exterior": (9, 60), "wrist": (9, 60)}
+        samples, {"exterior": (9, 60), "wrist": (9, 60)}
     )
     assert not advanced and reason == "exterior_producer_stale"
-    exterior.marker = wrist.marker = 10
+    samples = {
+        "exterior": scenario.CameraSample(frame, (10, 60)),
+        "wrist": scenario.CameraSample(frame, (10, 60)),
+    }
     advanced, current, reason = scenario._camera_markers_advanced(
-        producers, {"exterior": (9, 60), "wrist": (9, 60)}
+        samples, {"exterior": (9, 60), "wrist": (9, 60)}
     )
     assert advanced and not reason and current["wrist"] == (10, 60)
 
@@ -910,8 +840,9 @@ def test_live_telemetry_recovers_from_image_failure_with_supported_rgb_payload(
     noncontiguous_rgba[..., 3] = 255
 
     class Camera:
-        def get_rgba(self) -> np.ndarray:
-            return noncontiguous_rgba
+        def get_data(self, annotator: str) -> tuple[np.ndarray, dict]:
+            assert annotator == "rgb"
+            return noncontiguous_rgba, {"renderingFrame": 1}
 
     frame = scenario._camera_frame(Camera(), view="wrist")
     assert frame.rgb is not None and frame.rgb.flags.c_contiguous
@@ -1066,8 +997,9 @@ def test_live_camera_pair_classifies_each_view_freshness_semantics_and_distinctn
         def __init__(self, frame: np.ndarray | None) -> None:
             self.frame = frame
 
-        def get_rgba(self) -> np.ndarray | None:
-            return self.frame
+        def get_data(self, annotator: str) -> tuple[np.ndarray | None, dict]:
+            assert annotator == "rgb"
+            return self.frame, {"renderingFrame": 1}
 
     rows, columns = np.indices((224, 224))
     exterior = np.zeros((224, 224, 4), dtype=np.uint8)
