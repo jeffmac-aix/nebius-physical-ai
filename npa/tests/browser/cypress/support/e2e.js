@@ -1350,9 +1350,15 @@ function decodePngStats(base64Payload) {
 }
 
 Cypress.Commands.add("installAgentApiMocks", installAgentApiMocks);
-Cypress.Commands.add("visitMockAgent", () => {
+Cypress.Commands.add("visitMockAgent", (options = {}) => {
   installAgentApiMocks();
-  cy.visit("/");
+  cy.visit("/", {
+    onBeforeLoad(win) {
+      if (options.enableLeIsaac) {
+        win.localStorage.setItem("npa.agent.leisaac-ui-enabled.v1", "1");
+      }
+    },
+  });
   cy.get("meta[name='npa-ui-version']").should("have.attr", "content").and("match", /^(\d+|dev)$/);
   cy.get("#statusBar").should("exist");
 });

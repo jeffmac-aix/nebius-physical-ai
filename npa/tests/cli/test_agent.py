@@ -2646,10 +2646,9 @@ def test_run_details_resolves_run_generically_by_id() -> None:
     assert '"/api/workflows/sim2real/runs/" + encodeURIComponent(target)' in ui
     assert "body: JSON.stringify({ run_id: targetRunId, run_ref: targetRunRef })" in ui
     assert 'entry.source_type === "artifact_storage"' in ui
-    assert (
-        "loadArtifactsForSelectedRun(chosen, null, entry, { pendingSelection: true })"
-        in ui
-    )
+    assert "loadArtifactsForSelectedRun(chosen, null, entry, {" in ui
+    assert "pendingSelection: true," in ui
+    assert "isCurrent," in ui
     assert "prefix: artifactPrefixValue()" not in ui
     assert 'params.set("resource_bucket", resourceBucket)' in ui
     assert 'params.set("resolved_prefix", resolvedPrefix)' in ui

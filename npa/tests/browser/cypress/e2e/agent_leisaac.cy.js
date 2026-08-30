@@ -48,12 +48,33 @@ const grantMockControllerLease = () => cy.window().then((win) =>
   win.__NPA_AGENT_TEST__.setLeIsaacControllerLeaseForTest(true),
 );
 
+describe("NPA agent LeIsaac UI opt-in", () => {
+  it("is disabled by default and enables only after an explicit click", () => {
+    cy.installAgentApiMocks();
+    cy.intercept("GET", "/api/leisaac/status*", {
+      statusCode: 200,
+      body: {
+        available: false,
+        episodes_available: false,
+        run_id: "",
+        reason: "No LeIsaac runtime is registered with this agent.",
+      },
+    }).as("optInLeIsaacStatus");
+    cy.visit("/");
+    cy.get("#tabLeIsaac").should("not.exist");
+    cy.get("#enableLeIsaac").should("be.visible").click();
+    cy.wait("@optInLeIsaacStatus");
+    cy.get("#tabLeIsaac").should("be.visible");
+    cy.get("#disableLeIsaac").should("be.visible");
+  });
+});
+
 describe("NPA agent LeIsaac capability tab", () => {
   beforeEach(() => {
     cy.intercept("POST", "/api/leisaac/ws-session*", {
       statusCode: 204,
     }).as("wsSession");
-    cy.visitMockAgent();
+    cy.visitMockAgent({ enableLeIsaac: true });
     cy.wait("@session");
   });
 
@@ -153,6 +174,7 @@ describe("NPA agent LeIsaac capability tab", () => {
     cy.clearLocalStorage();
     cy.window().then((win) => win.sessionStorage.clear());
     cy.reload();
+    cy.get("#enableLeIsaac").click();
     cy.wait("@defaultStatus");
     cy.get("#tabLeIsaac", { timeout: 10000 }).click();
     cy.get("#leisaacRobotSelection").should("have.attr", "data-value", "so101_follower");
@@ -2390,7 +2412,7 @@ describe("NPA agent LeIsaac capability tab", () => {
       control.readyState = win.WebSocket.CLOSED;
       if (control.onclose) control.onclose({ target: control });
     });
-    cy.get("#leisaacViewMode").select("dual_slow");
+    cy.get("#leisaacViewMode").should("not.be.disabled").select("dual_slow");
     cy.window().should((win) => {
       const evidence = win.__NPA_AGENT_TEST__.leisaacTransportEvidence();
       expect(evidence.active).to.equal("websocket-v1");

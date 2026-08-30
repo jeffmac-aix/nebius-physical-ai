@@ -1504,14 +1504,14 @@ describe("NPA agent UI with mocked APIs", () => {
     cy.get("#artifactList").should("contain.text", "View in Rerun");
     cy.get("#artifactList").should("contain.text", "View");
     cy.get("#artifactTypeFilter").select("video");
-    cy.wait("@nonStockArtifactList");
+    cy.get("@nonStockArtifactList.all").should("have.length", 1);
     cy.get("#artifactList").should("contain.text", `${NON_STOCK_RUN_ID}/rollouts/customer-camera.mp4`);
     cy.get("#artifactList").should("not.contain.text", `${NON_STOCK_RUN_ID}/reports/sim2real.rrd`);
     cy.get("#artifactSort").select("largest");
-    cy.wait("@nonStockArtifactList");
+    cy.get("@nonStockArtifactList.all").should("have.length", 1);
     cy.get("#artifactList").should("contain.text", "Showing 1 grouped rows from 1 selected");
     cy.get("#artifactTypeFilter").select("");
-    cy.wait("@nonStockArtifactList");
+    cy.get("@nonStockArtifactList.all").should("have.length", 1);
     cy.get("#simRunId").should("contain.text", NON_STOCK_RUN_ID);
     cy.get("#simStage").should("contain.text", "stage_14_rerun_viz");
     cy.get("#simCamera").should("contain.text", "customer-overhead");
@@ -1634,7 +1634,7 @@ describe("NPA agent UI with mocked APIs", () => {
 
     // Clicking the Augment stage row scopes the artifact list to that stage.
     cy.get('#artifactProvenance .prov-clickable[data-stage="cosmos_augmented"]').click();
-    cy.wait("@dfArtifactList");
+    cy.get("@dfArtifactList.all").should("have.length", 2);
     cy.get("#artifactStageFilter").should("have.value", "cosmos_augmented");
     cy.get("#artifactList").should("contain.text", "cosmos_augmented/aug0/augmented_video.mp4");
     cy.get("#artifactList").should("not.contain.text", "/input/video_0.mp4");
@@ -1649,7 +1649,7 @@ describe("NPA agent UI with mocked APIs", () => {
 
     // Click the "Source frames" (input) pipeline stage.
     cy.get('#artifactProvenance .prov-clickable[data-stage="input"]').should("contain.text", "Source frames").click();
-    cy.wait("@dfArtifactList");
+    cy.get("@dfArtifactList.all").should("have.length", 2);
 
     // The artifact list scopes to the input stage and shows the source frames...
     cy.get("#artifactStageFilter").should("have.value", "input");
@@ -1694,13 +1694,13 @@ describe("NPA agent UI with mocked APIs", () => {
 
     // Selecting a stage scopes the artifact list to that workflow-progress step.
     cy.get("#artifactStageFilter").select("rollouts");
-    cy.wait("@nonStockArtifactList");
+    cy.get("@nonStockArtifactList.all").should("have.length", 1);
     cy.get("#artifactList").should("contain.text", `${NON_STOCK_RUN_ID}/rollouts/customer-camera.mp4`);
     cy.get("#artifactList").should("not.contain.text", `${NON_STOCK_RUN_ID}/reports/sim2real.rrd`);
 
     // Clearing the stage filter restores the full listing.
     cy.get("#artifactStageFilter").select("");
-    cy.wait("@nonStockArtifactList");
+    cy.get("@nonStockArtifactList.all").should("have.length", 1);
     cy.get("#artifactList").should("contain.text", `${NON_STOCK_RUN_ID}/reports/sim2real.rrd`);
 
     // The artifact-derived timeline tags rows with a stage key so they are

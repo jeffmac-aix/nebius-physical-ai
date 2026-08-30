@@ -2238,6 +2238,7 @@
         <button id="tabMain" class="main-tab" type="button" role="tab" aria-selected="true" aria-controls="panelChat" data-tab="main">Main</button>
         <button id="tabRerun" class="main-tab" type="button" role="tab" aria-selected="false" aria-controls="panelRerun" data-tab="rerun">View</button>
         <button id="tabVoxel" class="main-tab" type="button" role="tab" aria-selected="false" aria-controls="panelVoxel" data-tab="voxel51">Dataset &amp; provenance</button>
+        <button id="enableLeIsaac" class="main-tab" type="button" aria-pressed="false">Enable LeIsaac</button>
       </nav>
       <button id="chatDrawerToggle" class="btn btn-primary chat-fab" type="button" aria-expanded="false" aria-controls="panelChat" title="Open chat">
         <span class="chat-fab-icon" aria-hidden="true">
@@ -2743,6 +2744,36 @@
       let activeMainTab = "main";
       let chatDrawerOpen = false;
       const LEISAAC_CONTROL_READINESS_CONTRACT = "LEISAAC_CONTROL_READINESS_CONTRACT";
+      const LEISAAC_UI_STORAGE_KEY = "npa.agent.leisaac-ui-enabled.v1";
+      function leisaacUiEnabled() {
+        try {
+          return window.localStorage.getItem(LEISAAC_UI_STORAGE_KEY) === "1";
+        } catch (_err) {
+          return false;
+        }
+      }
+      function setLeIsaacUiEnabled(enabled) {
+        try {
+          if (enabled) window.localStorage.setItem(LEISAAC_UI_STORAGE_KEY, "1");
+          else window.localStorage.removeItem(LEISAAC_UI_STORAGE_KEY);
+        } catch (_err) { /* storage-disabled browsers remain default-off */ }
+        const enable = document.getElementById("enableLeIsaac");
+        if (enable) {
+          enable.hidden = Boolean(enabled);
+          enable.setAttribute("aria-pressed", enabled ? "true" : "false");
+        }
+      }
+      async function enableLeIsaacUi() {
+        setLeIsaacUiEnabled(true);
+        leisaacCapability = unavailableLeIsaacStatus("");
+        ensureLeIsaacTab(leisaacCapability);
+        await refreshLeIsaacCapability();
+        await activateMainTab("leisaac");
+      }
+      async function disableLeIsaacUi() {
+        setLeIsaacUiEnabled(false);
+        removeLeIsaacTab();
+      }
       function updateChatQueueBadge() {
         const badge = document.getElementById("chatQueueBadge");
         if (!badge) return;
@@ -6427,6 +6458,7 @@
         setLeIsaacStreamState("Disconnected", "pending");
       }
       function ensureLeIsaacTab(status) {
+        if (!leisaacUiEnabled()) return;
         const tabs = document.querySelector(".main-tabs");
         const page = document.querySelector("main.page");
         if (!tabs || !page) return;
@@ -6526,6 +6558,13 @@
           }
           const retry = panel.querySelector("#leisaacRetry");
           if (retry) retry.addEventListener("click", () => refreshLeIsaacCapability(String((leisaacCapability || {}).run_id || "")).catch(() => null));
+          const disable = document.createElement("button");
+          disable.id = "disableLeIsaac";
+          disable.className = "btn";
+          disable.type = "button";
+          disable.textContent = "Disable LeIsaac UI";
+          disable.addEventListener("click", () => disableLeIsaacUi().catch(() => null));
+          panel.appendChild(disable);
           const episodeRetry = panel.querySelector("#leisaacEpisodesRetry");
           const episodeApply = panel.querySelector("#leisaacEpisodesApply");
           if (episodeRetry) episodeRetry.addEventListener("click", () => retryLeIsaacEpisodeSurface().catch((err) => showToast(String(err), "error")));
@@ -6654,6 +6693,7 @@
         };
       }
       async function refreshLeIsaacCapability(runId) {
+        if (!leisaacUiEnabled()) return null;
         const target = String(runId || "").trim();
         const mountedPanel = document.getElementById("panelLeIsaac");
         const mountedRun = String(
@@ -7558,6 +7598,7 @@
         // Viewer state is optional. A browser-specific DOM/WebGL failure here
         // must never abort the rest of this monolithic static-control pass.
         initializeUiFeature("Initial viewer", () => setRenderMode("rerun"));
+        bindClick("enableLeIsaac", enableLeIsaacUi, "Enable LeIsaac UI");
         bindClick("downloadMcap", downloadMcap);
         bindClick("foxgloveOpenWeb", openFoxgloveWeb);
         initializeUiFeature("Foxglove Web action", syncFoxgloveWebAction);
@@ -7774,6 +7815,7 @@
               // preview; that would silently replace the chosen evidence.
               await loadArtifactsForSelectedRun(selectedRun, null, selectedEntry, {
                 deferPreferredViewer: true,
+                reuseInventory: true,
               });
             });
           }
@@ -11137,7 +11179,7 @@
             operation.stale ||
             foxgloveWebOperation !== operation ||
             String(activeRunId || "").trim() !== runId ||
-            String(activeArtifactRunRef || "").trim() !== runRef
+            (runRef && String(activeArtifactRunRef || "").trim() !== runRef)
           ) {
             try { popup.close(); } catch (_closeErr) { /* best effort */ }
             return false;
@@ -12111,6 +12153,7 @@
       let activeArtifactRunRef = "";
       let activeArtifactInventoryRunId = "";
       let activeArtifactInventory = [];
+      let activeArtifactInventoryPage = null;
       let activeLearningArtifactContract = null;
       // Load the whole run list into the picker by default so every run shows
       // without the operator having to guess a search fragment. The server still
@@ -12920,11 +12963,16 @@
         const signal = context.signal || (localController && localController.signal);
         const requestIsCurrent = () => listRequestId === artifactListRequestId &&
           (!context.isCurrent || context.isCurrent());
-        let data = null;
-        let paginationPageCount = 0;
-        let paginationEmptyPageCount = 0;
-        let paginationDuplicateCount = 0;
+        let data = context.reuseInventory && activeArtifactInventoryPage &&
+          String(activeArtifactInventoryPage.run_id || "") === runId &&
+          (!runRef || String(activeArtifactInventoryPage.run_ref || "") === runRef)
+          ? activeArtifactInventoryPage
+          : null;
+        let paginationPageCount = data ? Number(data.inventory_page_count || 1) : 0;
+        let paginationEmptyPageCount = data ? Number(data.inventory_empty_page_count || 0) : 0;
+        let paginationDuplicateCount = data ? Number(data.inventory_duplicate_count || 0) : 0;
         try {
+          if (!data) {
           const runSelector = runRef || runId;
           const firstPage = await apiJson(
             "/api/artifacts/run/" + encodeURIComponent(runSelector) + (query ? "?" + query : ""),
@@ -13043,7 +13091,11 @@
             summary,
             no_recording: !hasRecording,
             recording_state: hasRecording ? "recording_available" : String(firstPage.recording_state || "no_recording"),
+            inventory_page_count: paginationPageCount,
+            inventory_empty_page_count: paginationEmptyPageCount,
+            inventory_duplicate_count: paginationDuplicateCount,
           });
+          }
         } catch (err) {
           if (!requestIsCurrent() || (signal && signal.aborted)) return false;
           const searchResult = document.getElementById("stagesRunSearchResult");
@@ -13065,6 +13117,7 @@
         const artifacts = Array.isArray(data.artifacts) ? data.artifacts : [];
         activeArtifactInventoryRunId = runId;
         activeArtifactInventory = artifacts;
+        activeArtifactInventoryPage = data;
         const contractCandidate = data && data.summary && data.summary.learning && data.summary.learning.artifact_contract;
         activeLearningArtifactContract = contractCandidate && contractCandidate.authoritative === true
           ? contractCandidate
@@ -14329,7 +14382,8 @@
           });
         });
       }
-      async function refresh() {
+      async function refresh(options) {
+        const opts = options && typeof options === "object" ? options : {};
         const generation = ++refreshGeneration;
         try {
           const selectionGeneration = activeRunSelectionGeneration;
@@ -14340,9 +14394,9 @@
           // Fetch independent state in parallel to cut UI-load and per-action latency
           // (was three sequential round-trips: session -> sim-assets -> sim-viz status).
           const [session, assets, simViz] = await Promise.all([
-            loadJson("/api/session"),
+            opts.session ? Promise.resolve(opts.session) : loadJson("/api/session"),
             loadJson("/api/sim-assets"),
-            loadJson(statusPath),
+            opts.simViz ? Promise.resolve(opts.simViz) : loadJson(statusPath),
           ]);
           if (generation !== refreshGeneration) return false;
           if (session && session.deployment) applyDeploymentIdentity(session.deployment);
@@ -14378,12 +14432,9 @@
           // An RRD discovered directly in object storage can have valid sim-viz
           // state without a separate workflow/run-detail record. Keep that
           // optional enrichment from aborting the status labels and viewer mount.
-          try {
-            await loadRunDetails(activeRunId);
-          } catch (runDetailErr) {
+          void loadRunDetails(activeRunId).catch((runDetailErr) => {
             console.warn("run detail enrichment unavailable", runDetailErr);
-          }
-          if (generation !== refreshGeneration) return false;
+          });
           renderAssetsSummary(assets);
           document.getElementById("simRunId").textContent = String(simViz.run_id || "-");
           document.getElementById("simStage").textContent = String(simViz.stage || "idle");
@@ -14586,7 +14637,18 @@
         }
         applyMergedRunSelectors(activeRunEntryKey || currentRef || currentRun);
       }
+      let selectedRunLoadGeneration = 0;
       async function loadSelectedRun(entryOrRunId) {
+        const generation = ++selectedRunLoadGeneration;
+        // Supersede status/session refreshes that captured the prior selection
+        // before this operator-driven load began. The selected run is applied
+        // only after its exact source resolves, but stale refreshes must not
+        // repaint the previous run while that lookup is in flight.
+        activeRunSelectionGeneration += 1;
+        const isCurrent = () => generation === selectedRunLoadGeneration;
+        return _loadSelectedRun(entryOrRunId, isCurrent);
+      }
+      async function _loadSelectedRun(entryOrRunId, isCurrent) {
         const supplied = entryOrRunId && typeof entryOrRunId === "object" ? entryOrRunId : null;
         const selection = supplied
           ? {
@@ -14628,7 +14690,10 @@
             searchResult.textContent = "Checking exact discovered NPA run: " + chosen + "…" +
               (activeRunId ? " Currently loaded run remains " + activeRunId + " until lookup succeeds." : "");
           }
-          return loadArtifactsForSelectedRun(chosen, null, entry, { pendingSelection: true });
+          return loadArtifactsForSelectedRun(chosen, null, entry, {
+            pendingSelection: true,
+            isCurrent,
+          });
         }
         clearVisibleRunState("Loading " + chosen + "…");
         setActiveRunId(chosen);
@@ -14640,6 +14705,7 @@
             headers: { "content-type": "application/json" },
             body: JSON.stringify({}),
           });
+          if (!isCurrent()) return null;
           await loadRunDetails(chosen);
           if (data && data.sim_viz && (data.sim_viz.rrd_uri || data.sim_viz.rerun_ready)) {
             await bestEffortMountRerun(String(data.sim_viz.camera || "workspace"), chosen);
@@ -14647,7 +14713,7 @@
           await refresh();
           return data;
         }
-        return loadWorkflowHistoryRun(chosen, activeArtifactRunRef);
+        return loadWorkflowHistoryRun(chosen, activeArtifactRunRef, { isCurrent });
       }
       function normalizeStageStatus(value) {
         const raw = String(value || "status_unavailable").trim().toLowerCase();
@@ -15080,7 +15146,9 @@
           if (requestId === runDetailsRequestId) runDetailsAbortController = null;
         }
       }
-      async function loadWorkflowHistoryRun(runId, runRef) {
+      async function loadWorkflowHistoryRun(runId, runRef, requestContext) {
+        const context = requestContext && typeof requestContext === "object" ? requestContext : {};
+        const isCurrent = typeof context.isCurrent === "function" ? context.isCurrent : () => true;
         const targetRunId = String(runId || "").trim();
         const targetRunRef = String(runRef || "").trim();
         const viewerIntentRequestId = artifactLoadRequestId;
@@ -15092,6 +15160,7 @@
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ run_id: targetRunId, run_ref: targetRunRef }),
         });
+        if (!isCurrent()) return null;
         syncRerunRecordingCapability(data && data.sim_viz);
         setActiveRunId(targetRunId);
         activeArtifactRunRef = String(data.run_ref || targetRunRef || "").trim();
@@ -15099,11 +15168,12 @@
         // LeIsaac capability. Never probe an arbitrary loaded run as a robot
         // session; that can turn a normal artifact selection into a slow,
         // misleading teleoperation failure.
-        await refreshLeIsaacCapability();
+        if (leisaacUiEnabled()) await refreshLeIsaacCapability();
         appendChat("assistant", "Loaded run context (workflow history) — **run_id**: `" + targetRunId + "`.");
         await loadRunDetails(targetRunId, {
           entry: preferredRunEntry(activeArtifactRunRef || targetRunId) || {},
         });
+        if (!isCurrent()) return null;
         if (
           !operatorMediaPreviewActive &&
           viewerIntentRequestId === artifactLoadRequestId &&
@@ -15354,22 +15424,24 @@
           if (draft && draft.yaml) {
             setWorkflowYaml(draft.yaml, draft.validation || draft);
           }
+          return session;
         } catch (_err) {
           // Session restore is best-effort on first load.
+          return null;
         }
       }
-      async function ensureFrankaRerunLoaded() {
+      async function ensureFrankaRerunLoaded(simViz) {
         // Dedup concurrent callers (background boot mount + a Viewer-tab click) so the
         // wasm viewer is never mounted twice.
         if (rerunEnsureInFlight) return rerunEnsureInFlight;
-        rerunEnsureInFlight = _ensureFrankaRerunLoadedInner();
+        rerunEnsureInFlight = _ensureFrankaRerunLoadedInner(simViz);
         try {
           return await rerunEnsureInFlight;
         } finally {
           rerunEnsureInFlight = null;
         }
       }
-      async function _ensureFrankaRerunLoadedInner() {
+      async function _ensureFrankaRerunLoadedInner(prefetchedSimViz) {
         const explicitMediaSelected = () => operatorMediaPreviewActive;
         // Mobile browsers can't run the Rerun wasm 3D viewer — never mount it;
         // show a notice that points to the Voxel51 data view instead.
@@ -15377,7 +15449,7 @@
           showMobileRerunNotice(activeRunId);
           return "mobile";
         }
-        const simViz = await loadJson("/api/sim-viz/status");
+        const simViz = prefetchedSimViz || await loadJson("/api/sim-viz/status");
         // Boot-time Rerun warming can finish after an operator has opened a
         // media artifact. Preserve that newer explicit viewer choice instead
         // of repainting the pane when the stale warm/mount request resumes.
@@ -15435,13 +15507,14 @@
         const warmPromise = warmRerunBundle().catch((warmErr) => {
           console.warn("rerun bundle warm failed", warmErr);
         });
+        let restoredSession = null;
         try {
-          await restoreSession();
+          restoredSession = await restoreSession();
         } catch (_err) {
           // Session restore is best-effort on first paint.
         }
         try {
-          const refreshPromise = refresh().catch((err) => {
+          const refreshPromise = refresh({ session: restoredSession }).catch((err) => {
             console.warn("initial refresh failed", err);
           });
           // First paint only needs the newest bounded page. Operators can still
@@ -15465,7 +15538,7 @@
           // Boot resolves only the independently registered LeIsaac runtime.
           // The restored Rerun/artifact selection may be unrelated and must not
           // become a fake LeIsaac run or trigger a slow manifest miss.
-          refreshLeIsaacCapability().catch(() => null);
+          if (leisaacUiEnabled()) refreshLeIsaacCapability().catch(() => null);
           const accessPromise = refreshAccess(false).catch((accessErr) => {
             console.warn("access discovery failed", accessErr);
           });
@@ -15496,7 +15569,7 @@
             }
             void artifactsPromise;
             await warmPromise;
-            const mountMode = await ensureFrankaRerunLoaded();
+            const mountMode = await ensureFrankaRerunLoaded(lastSimVizStatus);
             const iframe = document.getElementById("rerunFrame");
             if (["media", "pending-run", "placeholder", "mobile"].includes(mountMode)) {
               // No Rerun canvas to wait for (non-Rerun artifact, run not ready, no run,
@@ -15547,7 +15620,9 @@
           // mounted, keep its safety-critical capability, controller lease,
           // and mode requests pinned to that run until the operator explicitly
           // mounts a different LeIsaac run.
-          refreshLeIsaacCapability(leisaacPeriodicRefreshRunId()).catch(() => null);
+          if (leisaacUiEnabled()) {
+            refreshLeIsaacCapability(leisaacPeriodicRefreshRunId()).catch(() => null);
+          }
           // Skip only while the Rerun panel is the active (visible) tab — do not
           // kill chat/stages/model refresh for the rest of the session just because
           // the iframe was mounted in the background.
@@ -15635,13 +15710,16 @@
           refresh,
           activeRunId: () => activeRunId,
           selectActiveRunId,
+          leisaacUiEnabled,
+          enableLeIsaacUi,
+          disableLeIsaacUi,
         };
         try {
-          // The tab is a persistent product surface, while a live simulator is
-          // optional. Mount its honest unavailable/retry state before any
-          // authenticated status or artifact request can block first paint.
-          leisaacCapability = unavailableLeIsaacStatus("");
-          ensureLeIsaacTab(leisaacCapability);
+          setLeIsaacUiEnabled(leisaacUiEnabled());
+          if (leisaacUiEnabled()) {
+            leisaacCapability = unavailableLeIsaacStatus("");
+            ensureLeIsaacTab(leisaacCapability);
+          }
           wireUi();
           setStatus("UI wired");
         } catch (err) {

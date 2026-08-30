@@ -52,13 +52,16 @@ parallel control routing.
 
 ## What makes the tab appear
 
-The browser mounts the `LeIsaac` tab and its readiness panel as soon as the UI
-is wired, before remote capability or artifact discovery. With no registered
-runtime, session-only configuration, livestream, motion/orbit, and recorder
-widgets are not rendered. The available **Retry readiness** action is safe and
-does not launch infrastructure; the panel instead shows the non-secret
-operator prerequisites and a placeholder Workbench CLI launch template. It
-never accepts an EULA or creates a session from browser state.
+LeIsaac is disabled by default so ordinary agent sessions do not poll its
+capability or load its UI. Choose **Enable LeIsaac** on the main screen to opt
+in; the choice is retained in that browser until **Disable LeIsaac UI** is
+selected. Enabling mounts the `LeIsaac` tab and its readiness panel before
+remote capability or artifact discovery. With no registered runtime,
+session-only configuration, livestream, motion/orbit, and recorder widgets are
+not rendered. The available **Retry readiness** action is safe and does not
+launch infrastructure; the panel instead shows the non-secret operator
+prerequisites and a placeholder Workbench CLI launch template. It never
+accepts an EULA or creates a session from browser state.
 
 A live simulator is optional; an agent-relay launch registers its run through
 the agent's authenticated, certificate-pinned HTTPS API. The browser checks
@@ -397,8 +400,9 @@ stage, so it is intentionally launched and destroyed through the Workbench
 lifecycle command, not represented as an `npa.workflow` step that would report
 completion while the browser session still needs to remain alive.
 
-Reload the agent UI after launch, open `LeIsaac`, and choose **Connect
-teleoperation**. No run-ID entry is required. Click the simulation to focus it.
+Reload the agent UI after launch, choose **Enable LeIsaac** if this browser has
+not opted in before, open `LeIsaac`, and choose **Connect teleoperation**. No
+run-ID entry is required. Click the simulation to focus it.
 Controls are the upstream bindings: `W/S`, `A/D`, `Q/E` translate; `J/L`,
 `K/I` rotate; `U/O` open/close the gripper. Episode state is explicit: **Start
 episode**, **Mark success** or **Mark failure**, then **Finalize & upload**.
