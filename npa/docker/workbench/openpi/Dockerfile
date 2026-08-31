@@ -34,7 +34,8 @@ RUN rm -f /etc/apt/sources.list.d/*.list \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
       ca-certificates ffmpeg git git-lfs linux-libc-dev openssh-server python3 python3-dev \
-      python3-pip python3-venv rsync sudo \
+      python3-pip python3-venv rsync sudo curl fuse gcc netcat-openbsd openssh-client \
+      patch pciutils procps wget \
     && rm -f /etc/ssh/ssh_host_*_key /etc/ssh/ssh_host_*_key.pub \
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/* \
     && (id -u ubuntu >/dev/null 2>&1 || useradd -m -s /bin/bash -u 1000 ubuntu) \

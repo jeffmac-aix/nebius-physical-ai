@@ -189,6 +189,31 @@ def test_openpi_uses_system_ffmpeg_without_bundled_payload() -> None:
     assert "rm -rf /tmp/uv-cache" in dependency_layer
 
 
+def test_openpi_bakes_skypilot_core_bootstrap_closure() -> None:
+    dockerfile = (
+        REPO_ROOT / "npa" / "docker" / "workbench" / "openpi" / "Dockerfile"
+    ).read_text(encoding="utf-8")
+    install_layer = dockerfile.split("apt-get install -y --no-install-recommends", 1)[
+        1
+    ].split("&& rm -f /etc/ssh/ssh_host_", 1)[0]
+
+    # SkyPilot 0.12.2 treats these as mandatory Kubernetes bootstrap packages.
+    # If any are absent it runs apt concurrently in every GPU pod; a mirror
+    # failure then terminates the container before the JAX rendezvous starts.
+    for package in (
+        "curl",
+        "fuse",
+        "gcc",
+        "netcat-openbsd",
+        "openssh-server",
+        "patch",
+        "pciutils",
+        "rsync",
+        "wget",
+    ):
+        assert package in install_layer
+
+
 def test_isaac_lab_dockerfile_excludes_bundled_imageio_ffmpeg_payload() -> None:
     dockerfile = (
         REPO_ROOT / "npa" / "docker" / "workbench" / "isaac-lab" / "Dockerfile"
