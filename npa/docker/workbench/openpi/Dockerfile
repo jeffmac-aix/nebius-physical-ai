@@ -60,12 +60,20 @@ RUN python3 -m venv /opt/uv \
     && /opt/uv/bin/uv venv --python 3.11 /opt/venv \
     && cd /opt/byof \
     && VIRTUAL_ENV=/opt/venv /opt/uv/bin/uv sync --active --frozen --group rlds --no-dev \
+    && find /opt/venv -type f -path '*/imageio_ffmpeg/binaries/ffmpeg*' -delete \
+    && test "$(/opt/venv/bin/python -c \
+      'import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())')" = /usr/bin/ffmpeg \
+    && test -z "$(find /opt/venv -type f \
+      -path '*/imageio_ffmpeg/binaries/ffmpeg*' -print -quit)" \
+    && /opt/venv/bin/python -c \
+      'import imageio_ffmpeg, os; p="/tmp/npa-openpi-ffmpeg-probe.mp4"; w=imageio_ffmpeg.write_frames(p,(2,2),fps=1,macro_block_size=1); w.send(None); w.send(bytes([0,0,0]*4)); w.close(); r=imageio_ffmpeg.read_frames(p,pix_fmt="rgb24"); m=next(r); f=next(r); r.close(); assert m["size"] == (2,2) and len(f) == 12; os.unlink(p)' \
     && /opt/uv/bin/uv pip install --python /opt/venv/bin/python --no-cache 'boto3>=1.34' \
     && /opt/uv/bin/uv venv --python 3.11 /opt/gsutil-venv \
     && /opt/uv/bin/uv pip install --python /opt/gsutil-venv/bin/python --no-cache gsutil \
     && build_hash="$(sha256sum /opt/byof/uv.lock | cut -d' ' -f1)" \
     && printf '{"schema":"npa.byof.build.v1","build_command_executed":true,"build_command_sha256":"%s"}\n' \
-      "$build_hash" > /opt/byof/npa_build_metadata.json
+      "$build_hash" > /opt/byof/npa_build_metadata.json \
+    && rm -rf /tmp/uv-cache
 
 RUN printf '%s\n' \
       '#include <cuda_runtime.h>' \
@@ -85,13 +93,8 @@ COPY workflows/workbench/npa-workflows/openpi-pi05-full-droid-finetune.yaml \
   /opt/npa-src/workflows/workbench/npa-workflows/openpi-pi05-full-droid-finetune.yaml
 RUN /opt/uv/bin/uv pip install --python /opt/venv/bin/python --no-cache --no-deps /opt/npa-src \
     && /opt/venv/bin/python -m npa.workflows.byof.openpi_full_droid --help >/dev/null \
-    && find /opt/venv -type f -path '*/imageio_ffmpeg/binaries/ffmpeg*' -delete \
-    && test "$(/opt/venv/bin/python -c \
-      'import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())')" = /usr/bin/ffmpeg \
     && test -z "$(find /opt/venv -type f \
       -path '*/imageio_ffmpeg/binaries/ffmpeg*' -print -quit)" \
-    && /opt/venv/bin/python -c \
-      'import imageio_ffmpeg, os; p="/tmp/npa-openpi-ffmpeg-probe.mp4"; w=imageio_ffmpeg.write_frames(p,(2,2),fps=1,macro_block_size=1); w.send(None); w.send(bytes([0,0,0]*4)); w.close(); r=imageio_ffmpeg.read_frames(p,pix_fmt="rgb24"); m=next(r); f=next(r); r.close(); assert m["size"] == (2,2) and len(f) == 12; os.unlink(p)' \
     && test -z "$(find /opt/byof /opt/npa-src /opt/venv \
       \( -iname '*.safetensors' -o -iname '*.ckpt' -o -iname 'pytorch_model*.bin' \
          -o -iname '*.tfrecord' -o -iname '*.tfrecord-*' \) -print -quit)" \

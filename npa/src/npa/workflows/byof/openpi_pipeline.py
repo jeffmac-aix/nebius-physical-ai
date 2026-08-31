@@ -758,6 +758,26 @@ def _hardware_evidence(
         sm100_probe.update(
             {"passed": True, "output": output, "elf_contains_sm100": True}
         )
+    sm120_probe: dict[str, object] = {"required": expected_compute_capability == "12.0"}
+    if sm120_probe["required"]:
+        probe = Path("/usr/local/bin/npa-openpi-sm120-probe")
+        if not probe.is_file():
+            raise OpenPIPipelineError("compiled SM120 CUDA probe is missing")
+        output = subprocess.run(
+            [str(probe)], check=True, capture_output=True, text=True
+        ).stdout.strip()
+        elf = subprocess.run(
+            ["cuobjdump", "--list-elf", str(probe)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        elf_text = "\n".join((elf.stdout, elf.stderr)).strip()
+        if "sm_120" not in elf_text.lower():
+            raise OpenPIPipelineError("CUDA probe has no sm_120 ELF")
+        sm120_probe.update(
+            {"passed": True, "output": output, "elf_contains_sm120": True}
+        )
     nvidia_smi = (
         subprocess.run(
             [
@@ -783,6 +803,7 @@ def _hardware_evidence(
         "jaxlib": importlib.metadata.version("jaxlib"),
         "xla_platform_version": str(jax_backend.get_backend().platform_version),
         "sm100_probe": sm100_probe,
+        "sm120_probe": sm120_probe,
     }
 
 

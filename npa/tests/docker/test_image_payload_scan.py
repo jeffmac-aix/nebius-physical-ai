@@ -171,6 +171,14 @@ def test_openpi_uses_system_ffmpeg_without_bundled_payload() -> None:
     assert "imageio_ffmpeg.write_frames" in dockerfile
     assert "imageio_ffmpeg.read_frames" in dockerfile
     assert 'm["size"] == (2,2) and len(f) == 12' in dockerfile
+    dependency_layer = dockerfile.split("RUN python3 -m venv /opt/uv", 1)[1].split(
+        "\n\nRUN printf", 1
+    )[0]
+    assert dependency_layer.index("uv sync --active") < dependency_layer.index(
+        "*/imageio_ffmpeg/binaries/ffmpeg*"
+    )
+    assert "imageio_ffmpeg.write_frames" in dependency_layer
+    assert "rm -rf /tmp/uv-cache" in dependency_layer
 
 
 def test_isaac_lab_dockerfile_excludes_bundled_imageio_ffmpeg_payload() -> None:
