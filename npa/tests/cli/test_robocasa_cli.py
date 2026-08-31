@@ -3,10 +3,7 @@
 from __future__ import annotations
 
 import json
-import sys
-import types
 
-import pytest
 from typer.testing import CliRunner
 
 from npa.cli.main import app as main_app

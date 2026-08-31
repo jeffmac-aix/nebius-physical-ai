@@ -67,7 +67,6 @@ RUN git clone --depth 1 --branch ${ROBOCASA_REPO_REF} ${ROBOCASA_REPO_URL} . \
 RUN mkdir -p /app/npa/workbench
 RUN touch /app/npa/__init__.py /app/npa/workbench/__init__.py
 COPY src/npa/workbench/robocasa /app/npa/workbench/robocasa
-COPY src/npa/workbench/training_config.py /app/npa/workbench/training_config.py 2>/dev/null || true
 COPY src/npa/smoke/test_robocasa_functional.py /app/smoke_functional.py
 
 RUN id -u ubuntu >/dev/null 2>&1 || useradd -m -s /bin/bash -u 1000 ubuntu \

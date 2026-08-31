@@ -13,7 +13,6 @@ import hashlib
 import json
 import os
 import re
-import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -111,11 +110,12 @@ def _storage_client() -> StorageClient:
         except Exception as exc:  # pragma: no cover - depends on NPA config.
             raise AgentRunDataError(f"cannot load S3 credentials: {exc}") from exc
     try:
-        return StorageClient(
-            endpoint_url=endpoint,
-            aws_access_key_id=access_key,
-            aws_secret_access_key=secret_key,
-        )
+        kwargs = {
+            "endpoint_url": endpoint,
+            "aws_access_key_id": access_key,
+            "aws_secret_access_key": secret_key,
+        }
+        return StorageClient(**kwargs)
     except StorageError as exc:
         raise AgentRunDataError(f"cannot build S3 client: {exc}") from exc
 
@@ -249,7 +249,7 @@ def emit_trajectory(
             raise AgentRunDataError("read-after-write hash mismatch")
         payload["collection"]["status"] = CollectionStatus.COLLECTED
         return CollectionStatus.COLLECTED, episode_id
-    except Exception as exc:  # pragma: no cover - depends on live S3.
+    except Exception:  # pragma: no cover - depends on live S3.
         _write_outbox(payload, episode_id)
         return CollectionStatus.PENDING, episode_id
 

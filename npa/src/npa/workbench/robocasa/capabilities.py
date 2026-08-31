@@ -18,19 +18,16 @@ import json
 import logging
 import os
 import platform
-import subprocess
-import time
 from pathlib import Path
 from typing import Any
-
-LOGGER = logging.getLogger(__name__)
-
 
 from npa.workbench.robocasa.schemas import (
     DEFAULT_ENV_ID,
     RoboCasaRunRequest,
     RoboCasaSystemInfo,
 )
+
+LOGGER = logging.getLogger(__name__)
 
 #: Capabilities this tool can exercise, keyed by the upstream capability id.
 SUPPORTED_CAPABILITIES = {

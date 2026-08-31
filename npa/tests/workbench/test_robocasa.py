@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import json
 import sys
 import types
-from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -14,11 +12,8 @@ from npa.workbench.robocasa.capabilities import (
     RoboCasaError,
     compute_manifest_sha256,
     kitchen_asset_availability,
-    kitchen_egl_env_reset,
-    kitchen_random_rollout,
     kitchen_task_registration,
     make_run_id,
-    run_capability,
     system_info,
 )
 from npa.workbench.robocasa.schemas import RoboCasaRunRequest

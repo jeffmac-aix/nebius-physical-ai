@@ -69,7 +69,7 @@ def run(
         )
     from npa.workbench.robocasa.capabilities import run_capability
 
-    result = run_capability(request)
+    run_capability(request)
     return RoboCasaRunResponse(
         run_id="local",
         status="completed",
