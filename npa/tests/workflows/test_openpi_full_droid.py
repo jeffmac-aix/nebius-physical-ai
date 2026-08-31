@@ -19,7 +19,6 @@ SPEC = (
     / "npa-workflows"
     / "openpi-pi05-full-droid-finetune.yaml"
 )
-BUILDER_SPEC = SPEC.with_name("byof-openpi-full-droid-rtxpro.yaml")
 
 
 def test_full_droid_recipe_matches_pinned_upstream_contract() -> None:
@@ -80,23 +79,6 @@ def test_prepare_toolref_has_no_gpu_training_flags() -> None:
     ]
     assert "--checkpoint-uri" not in argv
     assert "--output-uri" in argv
-
-
-def test_builder_keeps_weights_data_and_terms_out_of_build_layers() -> None:
-    text = BUILDER_SPEC.read_text(encoding="utf-8")
-    spec = yaml.safe_load(text)
-    build = spec["config"]["build_command"]
-    smoke = spec["config"]["smoke_command"]
-    assert "--group rlds" in build
-    assert "/opt/gsutil-venv" in build
-    assert "-arch=sm_120" in build
-    assert "openpi-assets/checkpoints" not in build
-    assert "gresearch/robotics/droid" not in build
-    assert "NPA_OPENPI_ACCEPT_GEMMA_TERMS=YES" not in text
-    assert "jax.device_count() != 8" in smoke
-    assert "jax.local_device_count() != 1" in smoke
-    assert "num_processes=8" in smoke
-    assert "sharding.make_mesh(8)" in smoke
 
 
 def test_distributed_rlds_adapter_shards_before_shuffle_and_uses_local_batch(

@@ -125,9 +125,9 @@ Python 3.11, the upstream `rlds` dependency group, JAX CUDA 12, and a compiled
 `sm_120` probe. It contains no checkpoint, dataset, terms value, credentials, or
 populated runtime cache. New bytes first publish as an immutable, scanned
 `dev-<full-git-sha>` image; a supported release tag remains quarantined until
-the exact digest completes the eight-node qualification. The
-`byof-openpi-full-droid-rtxpro.yaml` path remains available when an operator
-needs to rebuild the same source into their own registry.
+the exact digest completes the eight-node qualification. The trusted public
+image workflow is the sole build surface, so no multi-stage builder is hidden
+inside a BYOF resource profile.
 
 `openpi-pi05-full-droid-finetune.yaml` then invokes upstream
 `scripts/train.py:main` without reimplementing its loop. The workflow hard-codes
@@ -163,11 +163,9 @@ statistics, normal return from the pinned upstream trainer, the final upstream
 checkpoint directory, and an immutable content-hashed S3 checkpoint manifest.
 Offline training does not by itself claim physical-robot task success.
 
-Validate both new specs locally:
+Validate the production spec locally:
 
 ```bash
-npa/.venv/bin/npa workbench workflow validate-spec \
-  npa/workflows/workbench/npa-workflows/byof-openpi-full-droid-rtxpro.yaml
 npa/.venv/bin/npa workbench workflow validate-spec \
   npa/workflows/workbench/npa-workflows/openpi-pi05-full-droid-finetune.yaml
 npa/.venv/bin/npa workbench workflow plan-spec \

@@ -835,16 +835,6 @@ SUBMIT_LIVE_MATRIX: tuple[SubmitLiveCase, ...] = (
         notes="OpenPI Polaris B200 inference; covered by test_byof_openpi_polaris_live_e2e.py.",
     ),
     SubmitLiveCase(
-        "byof-openpi-full-droid-rtxpro.yaml",
-        "multi",
-        secret_envs=("NPA_OPENPI_ACCEPT_GEMMA_TERMS",),
-        plan_only=True,
-        plan_only_justification=(
-            "delegated eight-GPU image build is covered by the dedicated full-DROID qualification"
-        ),
-        notes="Operator-controlled OpenPI RLDS image build and eight-RTX-PRO compatibility gate.",
-    ),
-    SubmitLiveCase(
         "openpi-pi05-full-droid-finetune.yaml",
         "multi",
         secret_envs=(

@@ -19,7 +19,6 @@ means editing the spec; picking a *pod shape* means picking a profile here.
 | `byof-container-smoke-rtxpro.yaml` | `container-verify` / `solution-smoke` | CPU only |
 | `byof-solution-smoke-rtxpro-gpu.yaml` | `solution-smoke` needing CUDA/EGL/Vulkan | RTX PRO |
 | `byof-solution-smoke-openpi-b200-gpu.yaml` | OpenPI pi0.5 Polaris immutable-image builder regression: direct + same-pod served inference, runtime-only checkpoint; the digest then feeds `openpi-pi05-four-mode.yaml` | `B200:1` (`sm_100`) |
-| `byof-solution-smoke-openpi-rtxpro8-gpu.yaml` | Full-DROID image qualification: Python 3.11 RLDS/JAX imports, compiled CUDA probe, and an eight-process one-by-eight FSDP mesh before the production recipe | 8 nodes × `RTXPRO6000:1` (`sm_120`) |
 | `byof-solution-smoke-wan22-rtxpro-gpu.yaml` | Wan TI2V-5B tensor-only `solution-smoke` with SM120-tested PyTorch SDPA | `RTXPRO-6000-BLACKWELL-SERVER-EDITION:1` |
 | `byof-solution-smoke-wan22-b200-4gpu.yaml` | Wan TI2V-5B distributed `solution-smoke` with FSDP + Ulysses | one Kubernetes pod, `B200:4` |
 | `skypilot-kubernetes-rtxpro.yaml` | *not a task* — SkyPilot **global config** (`--config`) setting `imagePullSecrets` | — |
