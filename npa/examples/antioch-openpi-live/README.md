@@ -22,8 +22,13 @@ observation-to-action loop is best-effort and not hard real time.
 The manipulation scene is a lit tabletop with a reachable red cube and an open
 Franka in the DROID reset posture. Both policy views use Isaac Sim 6's supported
 `isaacsim.sensors.experimental.rtx` authoring/runtime split: an independent
-`RtxCamera` and `CameraSensor(annotators=["rgb"])` per view. Acquisition consumes
-the copied numpy/Warp result and producer metadata from `get_data("rgb")`. Each
+`RtxCamera(tick_rate=15.0)` and `CameraSensor(annotators=["rgb"])` per view.
+Immediately before acquisition, the scenario invokes the documented blocking
+Replicator orchestrator step without advancing the timeline. This makes policy
+camera rendering explicit while `world.step(render=True)` continues to advance
+physics and the streamed viewport; it does not depend on Antioch implicitly
+autoplaying independent RTX render products. Acquisition consumes the copied
+numpy/Warp result and producer metadata from `get_data("rgb")`. Each
 sensor owns a reusable CPU Warp output buffer passed through the public `out=`
 parameter, so acquisition copies directly from the annotator into host memory
 instead of exposing a CUDA-backed view to downstream code; a
@@ -95,7 +100,11 @@ starts one successor with capped backoff; ambiguous ownership fails closed.
 Mission Control's livestream state is independent of policy-camera readiness.
 The scenario waits in safe hold for both RTX render products to return distinct,
 advancing RGB frames; it never treats a viewer connection or the control-loop
-counter as a camera producer clock.
+counter as a camera producer clock. It accepts only the reviewed
+`antioch-sim==0.3.63` and `isaac-sim-6.0.1` runtime identity and fails clearly
+when the required public orchestrator hook is absent or incompatible. See the
+[compatibility matrix](../../../docs/workbench/antioch.md#live-camera-compatibility-contract)
+before changing either pin.
 
 `openpi_franka_mk8s_live_v2` uses a versioned remote scenario identity so an
 already-published definition cannot mask a new camera/action contract. It dispatches

@@ -147,11 +147,48 @@ uses only the non-sensitive `red_cube_pickup` label.
 The two 224x224 policy cameras use Isaac Sim 6's supported
 `isaacsim.sensors.experimental.rtx` API: separate `RtxCamera` authoring objects
 and `CameraSensor` runtime objects with an explicit `rgb` annotator. The scenario
-reads `(data, info)` from `get_data("rgb", out=<cpu-warp-buffer>)`, safely copies
+authors a nonzero 15 Hz sensor tick rate and calls Isaac Replicator's documented
+blocking `orchestrator.step(delta_time=0.0, pause_timeline=False,
+wait_for_render=True)` hook immediately before sampling. This explicit scheduling
+boundary does not assume that Antioch's scenario lifecycle autoplays independent
+RTX render products. `world.step(render=True)` continues to advance physics and
+the streamed viewport; the orchestrator step completes the policy-camera capture.
+The scenario refuses an unreviewed Antioch SDK/engine identity or a missing or
+incompatible orchestrator hook before policy control begins.
+
+The scenario reads `(data, info)` from
+`get_data("rgb", out=<cpu-warp-buffer>)`, safely copies
 the reusable host buffer before publication, and
 uses sensor metadata or the public exact render-product clock for advancement.
 Policy remains in safe hold until both independent views are valid, distinct,
 and advancing; viewer state and control-loop iterations are not producer clocks.
+
+### Live camera compatibility contract
+
+| Surface | Reviewed contract | Upgrade treatment |
+| --- | --- | --- |
+| Antioch SDK/CLI | `antioch-sim==0.3.63`; public scenario surface exposes `scenario`, `ScenarioRun`, `Logger`, `world`, and `engine` | Exact runtime check; any other version is unsupported until reviewed. |
+| Antioch engine | `antioch-engine/isaac-sim-6.0.1:0.3.63` / engine identity `isaac-sim-6.0.1` | Exact runtime check; do not substitute a newer engine under the old scenario. |
+| Isaac camera | `isaacsim.sensors.experimental.rtx.RtxCamera` + `CameraSensor`, `rgb`, CPU Warp output buffer, nonzero sensor tick | Capability is exercised through public Isaac Sim 6 APIs. |
+| Render advancement | synchronous `omni.replicator.core.orchestrator.step` with `wait_for_render=True` | Missing or incompatible signatures fail clearly; no implicit autoplay fallback. |
+| Current Antioch direction | The public Antioch site advertises higher-level `Simulation` and `antioch.sensors.RgbCamera` authoring | Directional drift evidence only. It is absent from the installed 0.3.63 public exports and is not a migration specification. |
+
+The Isaac contracts above are documented in the official [Isaac Sim 6 camera
+guide](https://docs.isaacsim.omniverse.nvidia.com/6.0.0/sensors/isaacsim_sensors_camera.html)
+and [Replicator workflow guide](https://docs.isaacsim.omniverse.nvidia.com/6.0.0/replicator_tutorials/tutorial_replicator_sdg_workflows.html).
+The higher-level Antioch surface is visible on the [public Antioch
+site](https://antioch.com/), but public marketing alone is insufficient to
+change this adapter.
+
+To upgrade safely, obtain versioned vendor SDK and engine documentation, inspect
+the installed public exports without reading auth state, update this boundary
+and its dependency-injected scheduler tests, then repeat the full local gates.
+Keep the PR draft until one authorized live run on the exact proposed versions
+shows both producer clocks advancing beyond their initial value, at least 120
+valid camera pairs, at least 100 successful policy round trips, at least 500
+applied targets, and every remaining acceptance threshold below. Do not infer
+camera readiness from a healthy service, viewer state, loop count, or scheduler
+call alone.
 
 The scenario keeps safety calculations and durable acceptance counters at control
 cadence, but groups Rerun scalars and generated scene geometry at a documented

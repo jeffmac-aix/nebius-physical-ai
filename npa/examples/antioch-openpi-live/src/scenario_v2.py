@@ -42,6 +42,9 @@ logger = antioch.Logger(TELEMETRY_ROOT)
 CLIENT_ROOT = Path("/tmp/npa-live-client-current")
 ACTION_SHAPE = (15, 8)
 CONTROL_HZ = 15.0
+CAMERA_SENSOR_TICK_RATE_HZ = CONTROL_HZ
+PINNED_ANTIOCH_SDK_VERSION = "0.3.63"
+PINNED_ANTIOCH_ENGINE = "isaac-sim-6.0.1"
 TARGETS_PER_QUERY = 5
 TELEMETRY_DISPLAY_HZ = 5.0
 TELEMETRY_WORKER_JOIN_SECONDS = 0.5
@@ -193,6 +196,25 @@ class CameraReadinessError(RuntimeError):
         super().__init__(f"{view} camera readiness failed: {reason}")
         self.view = view
         self.reason = reason
+
+
+class ExplicitRenderScheduler:
+    """Advance attached render-product annotators through Isaac's public hook."""
+
+    def __init__(self, step: Callable[..., None]) -> None:
+        self._step = step
+
+    def tick(self) -> None:
+        try:
+            self._step(
+                delta_time=0.0,
+                pause_timeline=False,
+                wait_for_render=True,
+            )
+        except TypeError as exc:
+            raise CameraReadinessError(
+                "pair", "render_scheduler_step_signature_unsupported"
+            ) from exc
 
 
 class TelemetryShutdownError(RuntimeError):
@@ -1031,7 +1053,7 @@ def _build_rtx_rgb_camera(
 ):
     """Construct one supported Isaac Sim 6 RTX camera and explicit RGB sensor."""
 
-    kwargs = {"tick_rate": 0.0}
+    kwargs = {"tick_rate": CAMERA_SENSOR_TICK_RATE_HZ}
     if position is not None:
         kwargs["positions"] = [position]
     authoring = RtxCamera(path, **kwargs)
@@ -1053,6 +1075,41 @@ def _build_rtx_rgb_camera(
         _new_reference_time_annotator(render_product_path),
         output_buffer,
     )
+
+
+def _build_render_scheduler(
+    replicator,
+    *,
+    antioch_sdk_version: str,
+    engine: str,
+) -> ExplicitRenderScheduler:
+    """Bind the one versioned render contract this example has reviewed."""
+
+    if antioch_sdk_version != PINNED_ANTIOCH_SDK_VERSION:
+        raise CameraReadinessError(
+            "pair",
+            "unsupported_antioch_sdk_version:"
+            f"expected={PINNED_ANTIOCH_SDK_VERSION}:actual={antioch_sdk_version}",
+        )
+    if engine != PINNED_ANTIOCH_ENGINE:
+        raise CameraReadinessError(
+            "pair",
+            f"unsupported_antioch_engine:expected={PINNED_ANTIOCH_ENGINE}:actual={engine}",
+        )
+    orchestrator = getattr(replicator, "orchestrator", None)
+    step = getattr(orchestrator, "step", None)
+    if not callable(step):
+        raise CameraReadinessError(
+            "pair", "render_scheduler_missing_orchestrator_step"
+        )
+    return ExplicitRenderScheduler(step)
+
+
+def _capture_camera_samples(scheduler, cameras) -> dict[str, CameraSample]:
+    """Complete one blocking render before reading either reusable RGB buffer."""
+
+    scheduler.tick()
+    return {view: camera.sample(view=view) for view, camera in cameras}
 
 
 def _initialize_live_capture(world, cameras, logger):
@@ -1422,6 +1479,8 @@ def openpi_franka_mk8s_live_v2(
     import numpy as np
     import rerun as rr
     import rerun.blueprint as rrb
+    import omni.replicator.core as rep
+    from importlib.metadata import version as package_version
     from isaacsim.core.api.objects import DynamicCuboid, FixedCuboid
     from isaacsim.core.prims import RigidPrim
     from isaacsim.core.utils.types import ArticulationAction
@@ -1433,6 +1492,11 @@ def openpi_franka_mk8s_live_v2(
     from isaacsim.robot.manipulators.examples.franka import Franka
     from isaacsim.sensors.experimental.rtx import CameraSensor, RtxCamera
 
+    render_scheduler = _build_render_scheduler(
+        rep,
+        antioch_sdk_version=package_version("antioch-sim"),
+        engine=str(antioch.engine()),
+    )
     world = antioch.world()
     world.scene.add_ground_plane(z_position=-0.75)
     tabletop = world.scene.add(
@@ -1762,10 +1826,7 @@ def openpi_franka_mk8s_live_v2(
                     wrist_pose,
                     _camera_optical_config("wrist"),
                 )
-                samples = {
-                    "exterior": exterior.sample(view="exterior"),
-                    "wrist": wrist.sample(view="wrist"),
-                }
+                samples = _capture_camera_samples(render_scheduler, cameras)
                 pair = _validate_camera_pair(
                     samples["exterior"].frame,
                     samples["wrist"].frame,
