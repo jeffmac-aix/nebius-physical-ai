@@ -111,6 +111,12 @@ published, and anonymously pullable status for this exact digest only.
 
 ## Validated source-registry candidates pending public release
 
+`npa-openpi` is a zero-weight, zero-dataset public-image candidate for the
+pinned pi0.5 full-DROID runtime. Its only permitted initial publication is the
+immutable `dev-<full-git-sha>` channel; the supported tag remains explicitly
+`-unbuilt` until byte scans, anonymous pull, and the eight-node RTX PRO 6000
+qualification are recorded together.
+
 The supported worker defaults currently select additive Cosmos Transfer,
 FiftyOne, and Rerun releases with the immutable SkyPilot Kubernetes bootstrap
 closure. Those candidate tags are present in the maintainer source registry but

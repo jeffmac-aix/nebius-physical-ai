@@ -120,12 +120,14 @@ trajectory.
 ### Full-DROID fine-tuning on eight RTX PRO 6000 GPUs
 
 The production training surface is deliberately separate from the miniature LoRA
-optimizer gate. `byof-openpi-full-droid-rtxpro.yaml` builds the same pinned
-Apache-2.0 source into an operator-controlled GHCR package with Python 3.11, the
-upstream `rlds` dependency group, JAX CUDA 12, and a compiled `sm_120` probe. It
-contains no checkpoint, dataset, terms value, credentials, or populated runtime
-cache. This ad-hoc BYOF image is not an official public-release image and therefore
-does not appear in the public container-image catalog.
+optimizer gate. `npa-openpi` packages the same pinned Apache-2.0 source with
+Python 3.11, the upstream `rlds` dependency group, JAX CUDA 12, and a compiled
+`sm_120` probe. It contains no checkpoint, dataset, terms value, credentials, or
+populated runtime cache. New bytes first publish as an immutable, scanned
+`dev-<full-git-sha>` image; a supported release tag remains quarantined until
+the exact digest completes the eight-node qualification. The
+`byof-openpi-full-droid-rtxpro.yaml` path remains available when an operator
+needs to rebuild the same source into their own registry.
 
 `openpi-pi05-full-droid-finetune.yaml` then invokes upstream
 `scripts/train.py:main` without reimplementing its loop. The workflow hard-codes
