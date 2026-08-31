@@ -12,6 +12,7 @@ LABEL npa.tool="openpi" \
       npa.source.ref="${OPENPI_SOURCE_REF}" \
       npa.weights="operator-runtime-fetch" \
       npa.dataset="operator-runtime-fetch" \
+      org.nebius.npa.skypilot-bootstrap-contract="skypilot-0.12.2-v1" \
       org.opencontainers.image.licenses="Apache-2.0" \
       org.opencontainers.image.revision="${NPA_SOURCE_SHA}"
 

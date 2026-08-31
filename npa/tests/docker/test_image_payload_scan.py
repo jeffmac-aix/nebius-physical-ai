@@ -174,6 +174,7 @@ def test_openpi_uses_system_ffmpeg_without_bundled_payload() -> None:
     assert "linux-libc-dev" in dockerfile
     assert "'deepdiff==8.6.1'" in dockerfile
     assert "WANDB_MODE=disabled" in dockerfile
+    assert 'org.nebius.npa.skypilot-bootstrap-contract="skypilot-0.12.2-v1"' in dockerfile
     assert "rm -f /opt/venv/lib/python3.11/site-packages/wandb/bin/wandb-core" in dockerfile
     assert "import importlib.metadata, os, wandb" in dockerfile
     assert "rm -rf /opt/nvidia/nsight-compute" in dockerfile
