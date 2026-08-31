@@ -157,6 +157,22 @@ def test_blackwell_envgen_chain_uses_system_ffmpeg_without_bundled_payload() -> 
     assert "pip install --no-deps -e /opt/npa" not in envgen
 
 
+def test_openpi_uses_system_ffmpeg_without_bundled_payload() -> None:
+    dockerfile = (
+        REPO_ROOT / "npa" / "docker" / "workbench" / "openpi" / "Dockerfile"
+    ).read_text(encoding="utf-8")
+
+    assert "IMAGEIO_FFMPEG_EXE=/usr/bin/ffmpeg" in dockerfile
+    assert "      ca-certificates ffmpeg git" in dockerfile
+    assert "*/imageio_ffmpeg/binaries/ffmpeg*" in dockerfile
+    assert "-delete" in dockerfile
+    assert "imageio_ffmpeg.get_ffmpeg_exe()" in dockerfile
+    assert "= /usr/bin/ffmpeg" in dockerfile
+    assert "imageio_ffmpeg.write_frames" in dockerfile
+    assert "imageio_ffmpeg.read_frames" in dockerfile
+    assert 'm["size"] == (2,2) and len(f) == 12' in dockerfile
+
+
 def test_isaac_lab_dockerfile_excludes_bundled_imageio_ffmpeg_payload() -> None:
     dockerfile = (
         REPO_ROOT / "npa" / "docker" / "workbench" / "isaac-lab" / "Dockerfile"
