@@ -157,7 +157,8 @@ The scenario refuses an unreviewed Antioch SDK/engine identity or a missing or
 incompatible orchestrator hook before policy control begins.
 
 The scenario reads `(data, info)` from
-`get_data("rgb")`, safely copies the sensor-owned native result
+`get_data("rgb", out=cpu_rgb)`, using the documented uint8 RGB shape and safely
+copies the CPU result
 to host memory before publication, and
 uses sensor metadata or the public exact render-product clock for advancement.
 Policy remains in safe hold until both independent views are valid, distinct,
@@ -169,7 +170,7 @@ and advancing; viewer state and control-loop iterations are not producer clocks.
 | --- | --- | --- |
 | Antioch SDK/CLI | `antioch-sim==0.3.63`; public scenario surface exposes `scenario`, `ScenarioRun`, `Logger`, `world`, and `engine` | Exact runtime check; any other version is unsupported until reviewed. |
 | Antioch engine | `antioch-engine/isaac-sim-6.0.1:0.3.63` / engine identity `isaac-sim-6.0.1` | Exact runtime check; do not substitute a newer engine under the old scenario. |
-| Isaac camera | `isaacsim.sensors.experimental.rtx.RtxCamera` + `CameraSensor`, native `rgb` result, immediate CPU copy, nonzero sensor tick | Capability is exercised through public Isaac Sim 6 APIs. |
+| Isaac camera | `isaacsim.sensors.experimental.rtx.RtxCamera` + `CameraSensor`, documented uint8 RGB CPU output, immediate scenario-owned copy, nonzero sensor tick | Capability is exercised through public Isaac Sim 6 APIs. |
 | Render advancement | synchronous `omni.replicator.core.orchestrator.step` with `wait_for_render=True` | Missing or incompatible signatures fail clearly; no implicit autoplay fallback. |
 | Current Antioch direction | The public Antioch site advertises higher-level `Simulation` and `antioch.sensors.RgbCamera` authoring | Directional drift evidence only. It is absent from the installed 0.3.63 public exports and is not a migration specification. |
 

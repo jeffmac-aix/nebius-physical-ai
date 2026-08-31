@@ -516,6 +516,7 @@ def test_rtx_camera_construction_wires_public_rgb_render_product(
         Sensor,
         path=scenario.EXTERIOR_CAMERA_PATH,
         position=(1.0, 2.0, 3.0),
+        output_buffer=object(),
     )
 
     assert calls[0] == (
@@ -532,7 +533,7 @@ def test_rtx_camera_construction_wires_public_rgb_render_product(
     assert camera.sensor.detached and clock.detached and camera.authoring.destroyed
 
 
-def test_rtx_camera_uses_native_sensor_buffer_contract(
+def test_rtx_camera_uses_documented_cpu_rgb_output_contract(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     scenario = _load_live_scenario(monkeypatch, "antioch_rtx_native_buffer_test")
@@ -557,8 +558,9 @@ def test_rtx_camera_uses_native_sensor_buffer_contract(
         lambda _path, **_kwargs: object(),
         Sensor,
         path=scenario.EXTERIOR_CAMERA_PATH,
+        output_buffer=(224, 224, 3),
     )
-    assert not hasattr(camera, "output_buffer")
+    assert camera.output_buffer == (224, 224, 3)
 
 
 def test_explicit_render_scheduler_advances_producer_before_each_sample(
@@ -720,15 +722,18 @@ def test_rtx_camera_samples_delayed_numpy_and_warp_without_aliasing(
             (Warp(), {"referenceTimeNumerator": 2, "referenceTimeDenominator": 60}),
         ]
 
-        def get_data(self, annotator: str):
+        def get_data(self, annotator: str, *, out):
             assert annotator == "rgb"
+            assert out == "cpu-rgb"
             return self.samples.pop(0)
 
     clock = SimpleNamespace(
         get_data=lambda: {},
         detach=lambda _products: None,
     )
-    camera = scenario.RtxRgbCamera(SimpleNamespace(destroy=lambda: None), Sensor(), clock)
+    camera = scenario.RtxRgbCamera(
+        SimpleNamespace(destroy=lambda: None), Sensor(), clock, "cpu-rgb"
+    )
     assert camera.sample(view="wrist").frame.reason == "missing"
     sample = camera.sample(view="wrist")
     assert sample.producer_marker == (2, 60)

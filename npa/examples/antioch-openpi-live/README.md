@@ -29,7 +29,8 @@ camera rendering explicit while `world.step(render=True)` continues to advance
 physics and the streamed viewport; it does not depend on Antioch implicitly
 autoplaying independent RTX render products. Acquisition consumes the copied
 numpy/Warp result and producer metadata from `get_data("rgb")`. Each
-sample consumes the sensor-owned native output and immediately copies it to CPU
+sample asks `CameraSensor` to fill a documented `(224, 224, 3)` uint8 CPU buffer
+and immediately copies it into scenario-owned memory
 memory instead of exposing a mutable or device-backed view to downstream code; a
 public clock attached to that sensor's render product supplies the exact marker
 when the RGB annotator omits it. The wide exterior camera has explicit optics
