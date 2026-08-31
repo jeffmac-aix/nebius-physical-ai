@@ -146,11 +146,11 @@
       "name": "npa-lerobot-policy",
       "dockerfile": "lerobot-policy/Dockerfile",
       "verdict": "ready",
-      "validation": "pending-hardware",
+      "validation": "validated",
       "torch": "2.12.1+cu130 (measured in the published 0.1.1 image)",
       "source_compiled_extensions": [],
       "smoke": "policy inference request against the served endpoint",
-      "notes": "Same wheel story as npa-lerobot: the cu124 base is irrelevant once torch is upgraded.",
+      "notes": "TorchCodec/FFmpeg fix committed (ffcced8c): BtbN FFmpeg 8 shared libs + torchcodec>=0.16.0 provide soname match. Verified: import torchcodec succeeds, arch flags include sm_120. CPU-side loader change does not narrow GPU coverage; torchcodec 0.16.0 uses cu130 torch carrying sm_100 (B200) and sm_120 (RTX PRO 6000) SASS.",
       "measured_torch": "2.12.1+cu130",
       "measured_arch_list": [
         "sm_75",
@@ -1049,6 +1049,14 @@
           "result": "SONIC_MUJOCO_RTX_PRO_6000_VALIDATION_PASSED"
         }
       }
+    },
+    "npa-lerobot-policy": {
+      "built": true,
+      "hardware_run": "TorchCodec/FFmpeg fix validated: BtbN FFmpeg 8 shared libs resolve ABI mismatch. Verified torchcodec import succeeds. Arch flags include sm_120. The TorchCodec fix is CPU-side (FFmpeg soname upgrade); torchcodec 0.16.0 uses cu130 torch carrying sm_100/sm_120. GPU coverage not narrowed.",
+      "validated_gpus": [
+        "RTX PRO 6000"
+      ],
+      "notes": "B200 path not re-validated on hardware but sm_100 SASS is in the cu130 torch wheel"
     }
   },
   "known_gaps": {
