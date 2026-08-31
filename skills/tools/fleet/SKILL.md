@@ -258,6 +258,55 @@ depends on it.
    `gpu_health_timeout_minutes`; timeout or smoke cleanup failure leaves the
    cluster in validation-failed state instead of reporting deployment success.
 
+## Replicate an existing NPA-managed project
+
+Use this path when the requested outcome is a new project with the same active
+capabilities as one authoritative project. Keep the working spec and exact
+evidence owner-only; a live project, tenant, reservation, bucket, chart source,
+or kube context never belongs in Git or ordinary handoff text.
+
+1. Resolve the template to one immutable provider project ID. A display-name
+   match is only a candidate: verify its tenant and region, then cross-check the
+   same ID in NPA project configuration and fleet state. Refuse an absent or
+   ambiguous match.
+2. Recover desired state from the template's NPA-managed fleet sidecar and
+   rendered `k8s-training/terraform.tfvars`, then corroborate it with live
+   cluster, node-group, quota, reservation, network, storage, and IAM inventory.
+   Do not infer a shape from currently running instances alone.
+3. Distinguish the active runtime contract from historical residue. In
+   particular, compare `resolve_project_storage(<template-alias>)` with provider
+   bucket inventory. Replicate the selected writable bucket and its proven IAM
+   path with `npa provision-if-absent --skip-k8s`; do not clone unrelated legacy
+   buckets, broad IAM bindings, or abandoned service accounts merely because
+   they remain in the project.
+4. Materialize a private `npa.fleet/v0.0.1` spec for the new project. Prefer a
+   separate fleet name/state root when adding the target to the template's
+   original fleet would rewrite that fleet's prefix or unrelated inventory.
+   Preserve the exact CPU/GPU counts, platforms, presets, disk sizes, driver
+   mode, filestore settings, and runtime-only STRICT capacity-block binding.
+5. Run `npa fleet plan`, then `npa fleet deploy --preflight --yes`. Keep the
+   default GPU validation, CUDA smoke, and stability window enabled. A tenant
+   reservation for another GPU family proves available capability; it is not a
+   reason to add a node pool that the authoritative template does not deploy.
+6. Validate independently after deploy:
+
+   - compare the template and target rendered `terraform.tfvars` bytes;
+   - compare provider-backed quota and core resource inventory, plus exact
+     node-group platform, preset, count, and STRICT reservation policy;
+   - run `npa fleet status`, exact-target `npa cluster status`,
+     `npa workbench workflow gpus`, and `npa skypilot verify`;
+   - write, HEAD, and delete a unique object through the target's selected
+     project storage credentials, and verify provider ownership of that bucket;
+   - re-run the storage dry-run to prove the setup converged idempotently.
+
+If SkyPilot reports a config path from an unrelated checkout even after the
+calling shell is clean, inspect the local SkyPilot API request queue before
+restarting its API server. Restart only when no user request is active; the two
+built-in refresh daemons are not workload launches. Then retry against the
+target's exact saved kube context. Do not rebind or tear down a shared jobs
+controller just to make accelerator discovery pass; use task-scoped isolated
+SkyPilot state for read-only discovery instead.
+
 ## Add / remove clusters and projects
 
 The fleet is spec-driven and idempotent, so growing or shrinking it is targeted:
