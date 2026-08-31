@@ -46,6 +46,7 @@ class RoboCasaRunRequest(BaseModel):
             "kitchen_asset_availability",
             "kitchen_egl_env_reset",
             "kitchen_random_rollout",
+            "kitchen_trajectory_export",
         }
         if value not in supported:
             raise ValueError(f"unsupported robocasa capability: {value}")

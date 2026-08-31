@@ -2817,6 +2817,39 @@ TOOL_CATALOG: dict[str, ToolEntry] = {
             "{{config.timeout_seconds}}",
         ],
     ),
+    "workbench.robocasa.trajectory_export": ToolEntry(
+        name="workbench.robocasa.trajectory_export",
+        description=(
+            "Run a batch of real RoboCasa kitchen rollouts across task/env "
+            "configs and export per-episode trajectories (workspace/wrist "
+            "images, robot state, actions) plus metadata, metrics, and MP4 "
+            "video to S3 for LeRobotDataset materialization."
+        ),
+        argv_template=[
+            "npa",
+            "workbench",
+            "robocasa",
+            "run",
+            "--capability",
+            "kitchen_trajectory_export",
+            "--env-id",
+            "{{config.env_id}}",
+            "--output-uri",
+            "{{config.output_uri}}",
+            "--iterations",
+            "{{config.iterations}}",
+            "--num-envs",
+            "{{config.num_envs}}",
+            "--service",
+            "--endpoint",
+            "{{config.robocasa_endpoint}}",
+            "--wait",
+            "--poll-seconds",
+            "{{config.poll_seconds}}",
+            "--timeout-seconds",
+            "{{config.timeout_seconds}}",
+        ],
+    ),
 }
 
 def validate_tool_ref(tool_ref: str) -> ToolEntry:

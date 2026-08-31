@@ -59,3 +59,49 @@ def test_random_rollout_toolref_includes_iterations() -> None:
     argv = argv_for_tool("workbench.robocasa.random_rollout")
     assert "--iterations" in argv
     assert "--num-envs" in argv
+
+
+DATA_POLICY = ROOT / "npa" / "workflows" / "workbench" / "npa-workflows" / "robocasa-data-policy.yaml"
+
+
+def test_data_policy_workflow_validates() -> None:
+    spec = load_spec(DATA_POLICY)
+    validate_spec(spec)
+    assert spec.name == "robocasa-data-policy"
+    assert spec.initial == "trajectory-export"
+
+
+def test_data_policy_workflow_expands_all_states() -> None:
+    spec = load_spec(DATA_POLICY)
+    plan = build_plan(spec, run_id="test")
+    states = [step.state for step in plan.steps]
+    assert states == [
+        "trajectory-export",
+        "lerobot-convert",
+        "policy-train",
+        "policy-eval",
+        "insights",
+    ]
+
+
+def test_data_policy_uses_real_toolrefs() -> None:
+    spec = load_spec(DATA_POLICY)
+    tool_refs = {
+        state.tool_ref
+        for state in spec.states.values()
+        if state.tool_ref
+    }
+    assert "workbench.robocasa.trajectory_export" in tool_refs
+    assert "workbench.lerobot.policy_train" in tool_refs
+    assert "workbench.lerobot.policy_rollout" in tool_refs
+    assert "workbench.insights.ingest_run" in tool_refs
+    for ref in tool_refs:
+        assert ref in TOOL_CATALOG
+
+
+def test_data_policy_trajectory_export_toolref_renders() -> None:
+    argv = argv_for_tool("workbench.robocasa.trajectory_export")
+    assert argv[:4] == ["npa", "workbench", "robocasa", "run"]
+    assert "--capability" in argv
+    assert "kitchen_trajectory_export" in argv
+    assert "--num-envs" in argv

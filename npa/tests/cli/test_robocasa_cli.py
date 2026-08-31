@@ -74,3 +74,24 @@ def test_system_info_local() -> None:
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
     assert payload["status"] == "ok"
+
+
+def test_run_trajectory_export_help() -> None:
+    result = runner.invoke(robocasa_app, ["run", "--help"])
+    assert result.exit_code == 0
+    assert "--capability" in result.stdout
+
+
+def test_run_trajectory_export_capability_accepted() -> None:
+    # The schema accepts the new trajectory export capability.
+    from npa.workbench.robocasa.schemas import RoboCasaRunRequest
+
+    req = RoboCasaRunRequest(
+        capability="kitchen_trajectory_export",
+        output_uri="s3://bucket/out",
+        iterations=5,
+        num_envs=2,
+    )
+    assert req.capability == "kitchen_trajectory_export"
+    assert req.iterations == 5
+    assert req.num_envs == 2

@@ -834,6 +834,12 @@ SUBMIT_LIVE_MATRIX: tuple[SubmitLiveCase, ...] = (
         notes="Native RoboCasa workbench smoke: task registration, asset availability, EGL reset, random rollout.",
     ),
     SubmitLiveCase(
+        "robocasa-data-policy.yaml",
+        "gpu",
+        secret_envs=("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"),
+        notes="Production RoboCasa data->policy pipeline: trajectory export, LeRobotDataset materialization, LeRobot ACT training on B200, held-out evaluation, insights lineage.",
+    ),
+    SubmitLiveCase(
         "byof-openpi.yaml",
         "multi",
         secret_envs=("NPA_OPENPI_ACCEPT_GEMMA_TERMS",),

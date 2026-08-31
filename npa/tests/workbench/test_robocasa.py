@@ -5,6 +5,8 @@ from __future__ import annotations
 import sys
 import types
 
+import numpy as np
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -159,3 +161,91 @@ def test_service_list_runs() -> None:
     response = client.get("/runs")
     assert response.status_code == 200
     assert "runs" in response.json()
+
+
+class _FakeActionSpace:
+    def sample(self) -> np.ndarray:
+        return np.zeros(7, dtype=np.float32)
+
+
+class _FakeEnv:
+    action_space = _FakeActionSpace()
+
+    def __init__(self) -> None:
+        self._closed = False
+
+    def reset(self, seed=None):
+        return self._obs(), {}
+
+    def step(self, action):
+        return self._obs(), 0.0, False, False, {}
+
+    def render(self):
+        return np.zeros((64, 64, 3), dtype=np.uint8)
+
+    def close(self) -> None:
+        self._closed = True
+
+    @staticmethod
+    def _obs() -> dict:
+        return {
+            "agentview_image": np.zeros((64, 64, 3), dtype=np.uint8),
+            "eye_in_hand_image": np.zeros((64, 64, 3), dtype=np.uint8),
+            "robot0_joint_pos": np.zeros(7, dtype=np.float32),
+            "robot0_eef_pos": np.zeros(3, dtype=np.float32),
+            "robot0_gripper_qpos": np.zeros(1, dtype=np.float32),
+        }
+
+
+def _install_fake_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Install a fake gymnasium whose make() returns a scripted RoboCasa env."""
+    _install_fake_robocasa(monkeypatch)
+
+    class FakeGym:
+        envs = types.SimpleNamespace(registry={})
+        @staticmethod
+        def make(env_id):
+            return _FakeEnv()
+
+    monkeypatch.setitem(sys.modules, "gymnasium", FakeGym())
+
+
+def test_kitchen_trajectory_export(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    _install_fake_env(monkeypatch)
+    from npa.workbench.robocasa.capabilities import kitchen_trajectory_export
+
+    result = kitchen_trajectory_export(
+        env_id="robocasa/PickPlaceCounterToCabinet",
+        iterations=3,
+        num_envs=2,
+        seed=1,
+        output_dir=tmp_path,
+    )
+    assert result["trajectory_export_ok"] is True
+    assert result["num_episodes"] == 2
+    for ep in range(2):
+        ep_dir = tmp_path / f"episode_{ep:04d}"
+        assert (ep_dir / "obs_workspace.npy").exists()
+        assert (ep_dir / "obs_wrist.npy").exists()
+        assert (ep_dir / "state.npy").exists()
+        assert (ep_dir / "actions.npy").exists()
+        ws = np.load(ep_dir / "obs_workspace.npy")
+        assert ws.shape == (3, 64, 64, 3)
+        assert ws.dtype == np.uint8
+        st = np.load(ep_dir / "state.npy")
+        assert st.shape == (3, 11)
+    assert (tmp_path / "metadata.json").exists()
+    assert (tmp_path / "metrics.json").exists()
+
+
+def test_kitchen_trajectory_export_missing_image_key(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    _install_fake_robocasa(monkeypatch)
+    from npa.workbench.robocasa.capabilities import RoboCasaError, kitchen_trajectory_export
+
+    with pytest.raises(RoboCasaError):
+        kitchen_trajectory_export(
+            env_id="robocasa/PickPlaceCounterToCabinet",
+            iterations=1,
+            num_envs=1,
+            output_dir=tmp_path,
+        )

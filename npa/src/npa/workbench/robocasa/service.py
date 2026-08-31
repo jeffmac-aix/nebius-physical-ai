@@ -130,11 +130,33 @@ def _run_capability(body: RoboCasaRunRequest, run_id: str) -> None:
         )
         with tempfile.TemporaryDirectory(prefix="robocasa_") as tmp:
             result = run_capability(body, output_dir=Path(tmp))
+            _upload_output(tmp, body.output_uri, result)
         update("completed", result, None)
     except RoboCasaError as exc:
         update("failed", None, str(exc))
     except Exception as exc:  # pragma: no cover - defensive service boundary.
         update("failed", None, str(exc))
+
+
+def _upload_output(local_dir: str, output_uri: str, result: dict[str, Any]) -> None:
+    """Upload a capability's local output tree to S3 when the run produced one.
+
+    Capabilities that write artifacts (rollouts, trajectory exports) publish
+    their output directory to ``output_uri`` so downstream workflow stages can
+    read it from S3. Capabilities that only return a result dict (task
+    registration, asset availability) have nothing to upload.
+    """
+    if not output_uri:
+        return
+    root = Path(local_dir)
+    if not root.exists() or not any(root.iterdir()):
+        return
+    from npa.clients.storage import StorageClient
+
+    uploaded = StorageClient.from_environment().upload_directory(
+        str(root), output_uri
+    )
+    result["output_uri"] = uploaded
 
 
 app = create_app()

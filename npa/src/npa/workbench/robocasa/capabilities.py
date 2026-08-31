@@ -18,6 +18,8 @@ import json
 import logging
 import os
 import platform
+
+import numpy as np
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +37,7 @@ SUPPORTED_CAPABILITIES = {
     "kitchen_asset_availability",
     "kitchen_egl_env_reset",
     "kitchen_random_rollout",
+    "kitchen_trajectory_export",
 }
 
 
@@ -236,6 +239,148 @@ def kitchen_random_rollout(
             LOGGER.debug("env close failed: %s", exc)
 
 
+def kitchen_trajectory_export(
+    *,
+    env_id: str = DEFAULT_ENV_ID,
+    iterations: int = 1,
+    num_envs: int = 1,
+    seed: int | None = None,
+    output_dir: Path | None = None,
+) -> dict[str, Any]:
+    """Run real RoboCasa rollouts and export trajectories for LeRobotDataset.
+
+    Writes one ``episode_NNNN/`` directory per rollout, each containing the
+    numpy arrays the ``npa adapter convert`` adapter consumes:
+
+      obs_workspace.npy  (T, H, W, 3) uint8   workspace camera
+      obs_wrist.npy      (T, H, W, 3) uint8   wrist camera
+      state.npy          (T, n_joints) float32
+      actions.npy        (T, n_actions) float32
+
+    plus a per-episode ``rollout.mp4`` and run-level ``metadata.json`` /
+    ``metrics.json``. This is the real trajectory export seam between RoboCasa
+    simulation and LeRobotDataset policy training.
+    """
+    os.environ.setdefault("MUJOCO_GL", "egl")
+    os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
+    gym = _import_gymnasium()
+    try:
+        env = gym.make(env_id)
+    except Exception as exc:  # pragma: no cover - depends on the container.
+        raise RoboCasaError(f"failed to create RoboCasa env {env_id}: {exc}") from exc
+    try:
+        episodes: list[dict[str, Any]] = []
+        for ep in range(num_envs):
+            obs, _ = env.reset(seed=(seed + ep) if seed is not None else None)
+            workspace_frames: list[Any] = []
+            wrist_frames: list[Any] = []
+            states: list[Any] = []
+            actions: list[Any] = []
+            reward = 0.0
+            terminated = False
+            truncated = False
+            for _ in range(iterations):
+                action = env.action_space.sample()
+                obs, reward, terminated, truncated, _info = env.step(action)
+                workspace_frames.append(_obs_image(obs, "agentview_image"))
+                wrist_frames.append(_obs_image(obs, "eye_in_hand_image"))
+                states.append(_obs_state(obs))
+                actions.append(np.asarray(action, dtype=np.float32))
+                if terminated or truncated:
+                    break
+            if output_dir is not None:
+                ep_dir = output_dir / f"episode_{ep:04d}"
+                ep_dir.mkdir(parents=True, exist_ok=True)
+                np.save(ep_dir / "obs_workspace.npy", np.stack(workspace_frames))
+                np.save(ep_dir / "obs_wrist.npy", np.stack(wrist_frames))
+                np.save(ep_dir / "state.npy", np.stack(states))
+                np.save(ep_dir / "actions.npy", np.stack(actions))
+                _write_video(workspace_frames, ep_dir / "rollout.mp4")
+            episodes.append(
+                {
+                    "episode_index": ep,
+                    "length": len(actions),
+                    "final_reward": float(reward),
+                    "terminated": bool(terminated),
+                    "truncated": bool(truncated),
+                }
+            )
+        result: dict[str, Any] = {
+            "env_id": env_id,
+            "trajectory_export_ok": True,
+            "num_episodes": len(episodes),
+            "iterations": iterations,
+            "episodes": episodes,
+        }
+        if output_dir is not None:
+            _write_run_metadata(output_dir, env_id, episodes)
+            result["output_dir"] = str(output_dir)
+        return result
+    except Exception as exc:  # pragma: no cover - depends on the container.
+        raise RoboCasaError(
+            f"failed to run RoboCasa trajectory export {env_id}: {exc}"
+        ) from exc
+    finally:
+        try:
+            env.close()
+        except Exception as exc:  # pragma: no cover - best effort.
+            LOGGER.debug("env close failed: %s", exc)
+
+
+def _obs_image(obs: dict[str, Any], key: str) -> Any:
+    """Return a uint8 (H, W, 3) image frame for a RoboCasa observation key."""
+    frame = obs.get(key)
+    if frame is None:
+        raise RoboCasaError(f"RoboCasa observation missing image key: {key}")
+    arr = np.asarray(frame)
+    if arr.ndim == 3 and arr.shape[2] == 3:
+        return arr.astype(np.uint8)
+    if arr.ndim == 4 and arr.shape[0] == 1:
+        return arr[0].astype(np.uint8)
+    raise RoboCasaError(
+        f"RoboCasa image key {key!r} has unexpected shape {arr.shape}"
+    )
+
+
+def _obs_state(obs: dict[str, Any]) -> np.ndarray:
+    """Build a float32 robot-state vector from a RoboCasa observation."""
+    parts: list[np.ndarray] = []
+    for key in ("robot0_joint_pos", "robot0_eef_pos", "robot0_gripper_qpos"):
+        value = obs.get(key)
+        if value is not None:
+            parts.append(np.asarray(value, dtype=np.float32).reshape(-1))
+    if not parts:
+        raise RoboCasaError("RoboCasa observation has no robot state keys")
+    return np.concatenate(parts)
+
+
+def _write_run_metadata(
+    output_dir: Path, env_id: str, episodes: list[dict[str, Any]]
+) -> None:
+    """Write run-level metadata.json and metrics.json for the trajectory export."""
+    metadata = {
+        "env_id": env_id,
+        "num_episodes": len(episodes),
+        "episodes": episodes,
+        "format": "lerobot-adapter-input",
+    }
+    (output_dir / "metadata.json").write_text(
+        json.dumps(metadata, indent=2, sort_keys=True)
+    )
+    metrics = {
+        "num_episodes": len(episodes),
+        "total_steps": sum(int(ep["length"]) for ep in episodes),
+        "mean_episode_length": (
+            sum(int(ep["length"]) for ep in episodes) / len(episodes)
+            if episodes
+            else 0.0
+        ),
+    }
+    (output_dir / "metrics.json").write_text(
+        json.dumps(metrics, indent=2, sort_keys=True)
+    )
+
+
 def _write_video(frames: list[Any], path: Path) -> Path | None:
     """Write frames to an MP4 using imageio's ffmpeg backend when available."""
     if not frames:
@@ -276,6 +421,14 @@ def run_capability(
             seed=request.seed,
             output_dir=output_dir,
         )
+    if request.capability == "kitchen_trajectory_export":
+        return kitchen_trajectory_export(
+            env_id=request.env_id,
+            iterations=request.iterations,
+            num_envs=request.num_envs,
+            seed=request.seed,
+            output_dir=output_dir,
+        )
     raise RoboCasaError(f"unsupported robocasa capability: {request.capability}")
 
 
@@ -287,6 +440,7 @@ __all__ = [
     "kitchen_egl_env_reset",
     "kitchen_random_rollout",
     "kitchen_task_registration",
+    "kitchen_trajectory_export",
     "make_run_id",
     "run_capability",
     "system_info",
