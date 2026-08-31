@@ -112,11 +112,10 @@ class CameraSample:
 class RtxRgbCamera:
     """Own one Isaac Sim 6 RTX camera authoring/runtime pair."""
 
-    def __init__(self, authoring, sensor, producer_clock, output_buffer) -> None:
+    def __init__(self, authoring, sensor, producer_clock) -> None:
         self.authoring = authoring
         self.sensor = sensor
         self.producer_clock = producer_clock
-        self.output_buffer = output_buffer
 
     @property
     def render_product_path(self) -> str:
@@ -125,7 +124,11 @@ class RtxRgbCamera:
         return str(prim.GetPath()) if prim and prim.IsValid() else ""
 
     def sample(self, *, view: str) -> CameraSample:
-        data, info = self.sensor.get_data("rgb", out=self.output_buffer)
+        # CameraSensor owns the annotator buffer contract.  Consume its native
+        # result and copy it immediately in ``_camera_frame_from_buffer``;
+        # supplying a Warp ``out`` array couples this wrapper to an internal
+        # RGB/RGBA shape that differs across the public RTX sensor layers.
+        data, info = self.sensor.get_data("rgb")
         marker = _producer_marker_from_info(info)
         if marker is None:
             marker = _reference_time_marker(self.producer_clock)
@@ -1072,9 +1075,7 @@ def _reference_time_advanced(
     return current[0] * prior[1] > prior[0] * current[1]
 
 
-def _build_rtx_rgb_camera(
-    RtxCamera, CameraSensor, *, path: str, position=None, output_buffer=None
-):
+def _build_rtx_rgb_camera(RtxCamera, CameraSensor, *, path: str, position=None):
     """Construct one supported Isaac Sim 6 RTX camera and explicit RGB sensor."""
 
     kwargs = {"tick_rate": CAMERA_SENSOR_TICK_RATE_HZ}
@@ -1082,13 +1083,6 @@ def _build_rtx_rgb_camera(
         kwargs["positions"] = [position]
     authoring = RtxCamera(path, **kwargs)
     sensor = CameraSensor(authoring, resolution=(224, 224), annotators=["rgb"])
-    if output_buffer is None:
-        import warp as wp
-
-        # Replicator's ``rgb`` / LdrColor annotator writes uint8 RGBA.  The
-        # policy conversion below intentionally drops alpha after the complete
-        # producer buffer has been copied to CPU.
-        output_buffer = wp.empty((224, 224, 4), dtype=wp.uint8, device="cpu")
     render_product = sensor.render_product
     prim = render_product.GetPrim()
     render_product_path = str(prim.GetPath()) if prim and prim.IsValid() else ""
@@ -1100,7 +1094,6 @@ def _build_rtx_rgb_camera(
         authoring,
         sensor,
         _new_reference_time_annotator(render_product_path),
-        output_buffer,
     )
 
 

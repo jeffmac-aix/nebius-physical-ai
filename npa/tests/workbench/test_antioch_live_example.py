@@ -516,7 +516,6 @@ def test_rtx_camera_construction_wires_public_rgb_render_product(
         Sensor,
         path=scenario.EXTERIOR_CAMERA_PATH,
         position=(1.0, 2.0, 3.0),
-        output_buffer=object(),
     )
 
     assert calls[0] == (
@@ -533,11 +532,10 @@ def test_rtx_camera_construction_wires_public_rgb_render_product(
     assert camera.sensor.detached and clock.detached and camera.authoring.destroyed
 
 
-def test_rtx_camera_default_host_buffer_matches_replicator_rgba_contract(
+def test_rtx_camera_uses_native_sensor_buffer_contract(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    scenario = _load_live_scenario(monkeypatch, "antioch_rtx_rgba_buffer_test")
-    allocations: list[tuple[tuple[int, ...], object, str]] = []
+    scenario = _load_live_scenario(monkeypatch, "antioch_rtx_native_buffer_test")
 
     class Prim:
         def IsValid(self) -> bool:
@@ -550,27 +548,17 @@ def test_rtx_camera_default_host_buffer_matches_replicator_rgba_contract(
         def __init__(self, _authoring, **_kwargs) -> None:
             self.render_product = SimpleNamespace(GetPrim=lambda: Prim())
 
-    class WarpModule:
-        uint8 = object()
-
-        @staticmethod
-        def empty(shape, *, dtype, device):
-            allocations.append((shape, dtype, device))
-            return object()
-
-    monkeypatch.setitem(sys.modules, "warp", WarpModule())
     monkeypatch.setattr(
         scenario,
         "_new_reference_time_annotator",
         lambda _path: SimpleNamespace(),
     )
-    scenario._build_rtx_rgb_camera(
+    camera = scenario._build_rtx_rgb_camera(
         lambda _path, **_kwargs: object(),
         Sensor,
         path=scenario.EXTERIOR_CAMERA_PATH,
     )
-
-    assert allocations == [((224, 224, 4), WarpModule.uint8, "cpu")]
+    assert not hasattr(camera, "output_buffer")
 
 
 def test_explicit_render_scheduler_advances_producer_before_each_sample(
@@ -732,19 +720,15 @@ def test_rtx_camera_samples_delayed_numpy_and_warp_without_aliasing(
             (Warp(), {"referenceTimeNumerator": 2, "referenceTimeDenominator": 60}),
         ]
 
-        def get_data(self, annotator: str, *, out):
+        def get_data(self, annotator: str):
             assert annotator == "rgb"
-            assert out is output_buffer
             return self.samples.pop(0)
 
     clock = SimpleNamespace(
         get_data=lambda: {},
         detach=lambda _products: None,
     )
-    output_buffer = object()
-    camera = scenario.RtxRgbCamera(
-        SimpleNamespace(destroy=lambda: None), Sensor(), clock, output_buffer
-    )
+    camera = scenario.RtxRgbCamera(SimpleNamespace(destroy=lambda: None), Sensor(), clock)
     assert camera.sample(view="wrist").frame.reason == "missing"
     sample = camera.sample(view="wrist")
     assert sample.producer_marker == (2, 60)

@@ -29,9 +29,8 @@ camera rendering explicit while `world.step(render=True)` continues to advance
 physics and the streamed viewport; it does not depend on Antioch implicitly
 autoplaying independent RTX render products. Acquisition consumes the copied
 numpy/Warp result and producer metadata from `get_data("rgb")`. Each
-sensor owns a reusable CPU Warp output buffer passed through the public `out=`
-parameter, so acquisition copies directly from the annotator into host memory
-instead of exposing a CUDA-backed view to downstream code; a
+sample consumes the sensor-owned native output and immediately copies it to CPU
+memory instead of exposing a mutable or device-backed view to downstream code; a
 public clock attached to that sensor's render product supplies the exact marker
 when the RGB annotator omits it. The wide exterior camera has explicit optics
 and frames the complete tabletop manipulation region. The wide wrist camera is
