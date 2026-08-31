@@ -16,6 +16,7 @@ LABEL npa.tool="openpi" \
       org.opencontainers.image.revision="${NPA_SOURCE_SHA}"
 
 ENV DEBIAN_FRONTEND=noninteractive \
+    GIT_LFS_SKIP_SMUDGE=1 \
     HOME=/home/ubuntu \
     OPENPI_DATA_HOME=/workspace/.cache/openpi \
     PYTHONDONTWRITEBYTECODE=1 \

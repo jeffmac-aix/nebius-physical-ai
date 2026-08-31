@@ -20,7 +20,7 @@ config:
     ca-certificates && rm -rf /var/lib/apt/lists/* &&
     python3 -m pip install --no-cache-dir --break-system-packages uv &&
     uv python install 3.11 && uv venv --python 3.11 /opt/venv &&
-    VIRTUAL_ENV=/opt/venv uv sync --active --frozen
+    GIT_LFS_SKIP_SMUDGE=1 VIRTUAL_ENV=/opt/venv uv sync --active --frozen
     --group rlds --no-dev &&
     uv pip install --python /opt/venv/bin/python --no-cache 'boto3>=1.34' &&
     uv venv --python 3.11 /opt/gsutil-venv &&
