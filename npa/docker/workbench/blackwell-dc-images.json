@@ -230,7 +230,7 @@
     {
       "name": "npa-openpi",
       "dockerfile": "openpi/Dockerfile",
-      "verdict": "port",
+      "verdict": "unknown",
       "validation": "pending-build",
       "redistribution": "public",
       "source_compiled_extensions": [

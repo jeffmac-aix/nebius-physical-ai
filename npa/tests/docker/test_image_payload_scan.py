@@ -171,6 +171,13 @@ def test_openpi_uses_system_ffmpeg_without_bundled_payload() -> None:
     assert "imageio_ffmpeg.write_frames" in dockerfile
     assert "imageio_ffmpeg.read_frames" in dockerfile
     assert 'm["size"] == (2,2) and len(f) == 12' in dockerfile
+    assert "linux-libc-dev" in dockerfile
+    assert "'deepdiff==8.6.1'" in dockerfile
+    assert "WANDB_MODE=disabled" in dockerfile
+    assert "rm -f /opt/venv/lib/python3.11/site-packages/wandb/bin/wandb-core" in dockerfile
+    assert "import importlib.metadata, os, wandb" in dockerfile
+    assert "rm -rf /opt/nvidia/nsight-compute" in dockerfile
+    assert "test ! -e /opt/nvidia/nsight-compute" in dockerfile
     dependency_layer = dockerfile.split("RUN python3 -m venv /opt/uv", 1)[1].split(
         "\n\nRUN printf", 1
     )[0]

@@ -23,6 +23,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     UV_CACHE_DIR=/tmp/uv-cache \
+    WANDB_MODE=disabled \
     PATH=/opt/venv/bin:/opt/gsutil-venv/bin:${PATH}
 
 SHELL ["/bin/bash", "-lc"]
@@ -31,7 +32,7 @@ USER root
 RUN rm -f /etc/apt/sources.list.d/*.list \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
-      ca-certificates ffmpeg git git-lfs openssh-server python3 python3-dev \
+      ca-certificates ffmpeg git git-lfs linux-libc-dev openssh-server python3 python3-dev \
       python3-pip python3-venv rsync sudo \
     && rm -f /etc/ssh/ssh_host_*_key /etc/ssh/ssh_host_*_key.pub \
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/* \
@@ -67,7 +68,12 @@ RUN python3 -m venv /opt/uv \
       -path '*/imageio_ffmpeg/binaries/ffmpeg*' -print -quit)" \
     && /opt/venv/bin/python -c \
       'import imageio_ffmpeg, os; p="/tmp/npa-openpi-ffmpeg-probe.mp4"; w=imageio_ffmpeg.write_frames(p,(2,2),fps=1,macro_block_size=1); w.send(None); w.send(bytes([0,0,0]*4)); w.close(); r=imageio_ffmpeg.read_frames(p,pix_fmt="rgb24"); m=next(r); f=next(r); r.close(); assert m["size"] == (2,2) and len(f) == 12; os.unlink(p)' \
-    && /opt/uv/bin/uv pip install --python /opt/venv/bin/python --no-cache 'boto3>=1.34' \
+    && /opt/uv/bin/uv pip install --python /opt/venv/bin/python --no-cache \
+      'boto3>=1.34' 'deepdiff==8.6.1' \
+    && rm -f /opt/venv/lib/python3.11/site-packages/wandb/bin/wandb-core \
+    && /opt/venv/bin/python -c \
+      'import importlib.metadata, os, wandb; assert importlib.metadata.version("deepdiff") == "8.6.1"; assert os.environ["WANDB_MODE"] == "disabled"; assert wandb is not None' \
+    && test ! -e /opt/venv/lib/python3.11/site-packages/wandb/bin/wandb-core \
     && /opt/uv/bin/uv venv --python 3.11 /opt/gsutil-venv \
     && /opt/uv/bin/uv pip install --python /opt/gsutil-venv/bin/python --no-cache gsutil \
     && build_hash="$(sha256sum /opt/byof/uv.lock | cut -d' ' -f1)" \
@@ -81,7 +87,9 @@ RUN printf '%s\n' \
       'int main(){int n=0;if(cudaGetDeviceCount(&n)!=cudaSuccess)return 2;if(n!=1)return 3;cudaDeviceProp p{};if(cudaGetDeviceProperties(&p,0)!=cudaSuccess||p.major!=12||p.minor!=0)return 4;std::printf("devices=%d cc=12.0\\n",n);return 0;}' \
       > /tmp/npa-openpi-sm120.cu \
     && nvcc -O2 -arch=sm_120 /tmp/npa-openpi-sm120.cu -o /usr/local/bin/npa-openpi-sm120-probe \
-    && rm -f /tmp/npa-openpi-sm120.cu
+    && rm -f /tmp/npa-openpi-sm120.cu \
+    && rm -rf /opt/nvidia/nsight-compute \
+    && test ! -e /opt/nvidia/nsight-compute
 
 COPY pyproject.toml README.md /opt/npa-src/
 COPY src/npa /opt/npa-src/src/npa
