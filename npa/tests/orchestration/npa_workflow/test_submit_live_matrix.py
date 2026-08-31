@@ -216,6 +216,7 @@ def test_coverage_backfill_cases_are_honestly_plan_only() -> None:
         "byof-mujoco-playground.yaml",
         "byof-open-dreamer.yaml",
         "byof-openpi.yaml",
+        "byof-openpi-full-droid-rtxpro.yaml",
         "byof-robocasa.yaml",
         "cosmos-synth-fanout-curation.yaml",
         "hardening-with-insights.yaml",

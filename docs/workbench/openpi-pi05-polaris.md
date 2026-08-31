@@ -117,6 +117,71 @@ trajectory.
 
 ## Validate and run
 
+### Full-DROID fine-tuning on eight RTX PRO 6000 GPUs
+
+The production training surface is deliberately separate from the miniature LoRA
+optimizer gate. `byof-openpi-full-droid-rtxpro.yaml` builds the same pinned
+Apache-2.0 source into an operator-controlled GHCR package with Python 3.11, the
+upstream `rlds` dependency group, JAX CUDA 12, and a compiled `sm_120` probe. It
+contains no checkpoint, dataset, terms value, credentials, or populated runtime
+cache. This ad-hoc BYOF image is not an official public-release image and therefore
+does not appear in the public container-image catalog.
+
+`openpi-pi05-full-droid-finetune.yaml` then invokes upstream
+`scripts/train.py:main` without reimplementing its loop. The workflow hard-codes
+the pinned recipe's completion contract rather than exposing smoke-sized knobs:
+
+- DROID RLDS `1.0.1` from the public `gs://gresearch/robotics/droid/1.0.1`
+  source, checksum-synchronized to a run-owned durable PVC;
+- normalization statistics over `10,000,000` frames;
+- global batch size `256` (`32` samples per visible device);
+- `100,000` optimizer steps, approximately one upstream-described epoch;
+- eight nodes with exactly one RTX PRO 6000 GPU each, compute capability
+  `12.0`, and `fsdp_devices=8`, which must produce a global `(1, 8)` JAX mesh.
+
+The pinned OpenPI RLDS wrapper rejects multi-process JAX even though its trainer
+and Orbax checkpoint manager are multi-host capable. The NPA adapter makes only
+the required input-side change: it initializes one JAX process per node, shards
+the RLDS source before shuffle, divides the unchanged global batch into eight
+local batches of 32, and passes process-local batches into the upstream global
+data sharding. All ranks still invoke `scripts/train.py:main`; the recipe,
+optimizer, step count, model, and checkpoint implementation remain upstream.
+
+The durable claim must have room for the roughly 1.8 TB dataset plus runtime
+caches and checkpoints. It is an operator-created run resource, supplied through
+`--var durable_pvc=<claim>`, and is not committed with a live infrastructure
+identity. A replacement pod sees the same dataset and checkpoint directory;
+the wrapper selects upstream `resume=True` only when a checkpoint is actually
+present. It never reduces the upstream step count.
+
+Success requires all of the following machine evidence in the run-scoped report:
+eight matching physical devices on eight distinct nodes, the exact one-by-eight mesh, byte-and-object
+agreement with the authoritative GCS listing after checksum sync, normalization
+statistics, normal return from the pinned upstream trainer, the final upstream
+checkpoint directory, and an immutable content-hashed S3 checkpoint manifest.
+Offline training does not by itself claim physical-robot task success.
+
+Validate both new specs locally:
+
+```bash
+npa/.venv/bin/npa workbench workflow validate-spec \
+  npa/workflows/workbench/npa-workflows/byof-openpi-full-droid-rtxpro.yaml
+npa/.venv/bin/npa workbench workflow validate-spec \
+  npa/workflows/workbench/npa-workflows/openpi-pi05-full-droid-finetune.yaml
+npa/.venv/bin/npa workbench workflow plan-spec \
+  npa/workflows/workbench/npa-workflows/openpi-pi05-full-droid-finetune.yaml \
+  --run-id openpi-full-droid-plan \
+  --var runtime_image=registry.example.invalid/operator/openpi@sha256:<digest> \
+  --var durable_pvc=<run-owned-claim>
+```
+
+Before live submission, prove the selected project/tenant/region, eight reserved
+one-GPU node shapes, a ReadWriteMany volume, writable workflow S3 prefix, exact
+image digest and pull, and runtime-only terms secret. Submit with
+`--max-wait-seconds 0`; no workflow,
+job, cost, or training deadline is added. Preserve the same run id, PVC, digest,
+and output prefix when resuming.
+
 Validate and render both connected workflows:
 
 ```bash

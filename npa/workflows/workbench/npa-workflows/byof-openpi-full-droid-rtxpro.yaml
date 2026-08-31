@@ -1,0 +1,120 @@
+apiVersion: npa.workflow/v0.0.1
+kind: Workflow
+metadata:
+  name: byof-openpi-full-droid-rtxpro
+  description: >
+    Build an operator-controlled GHCR image from the pinned Apache-2.0 OpenPI
+    source and prove its Python 3.11 RLDS/JAX stack across eight one-GPU RTX
+    PRO 6000 nodes.
+config:
+  bucket: example-bucket
+  repo_url: "https://github.com/Physical-Intelligence/openpi.git"
+  repo_ref: "15a9616a00943ada6c20a0f158e3adb39df2ccac"
+  repo_auth: none
+  repo_token_env: GH_TOKEN
+  base_profile: ubuntu
+  base_image: "nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04"
+  build_command: >
+    apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y
+    --no-install-recommends python3 python3-pip python3-venv git git-lfs
+    ca-certificates && rm -rf /var/lib/apt/lists/* &&
+    python3 -m pip install --no-cache-dir --break-system-packages uv &&
+    uv python install 3.11 && uv venv --python 3.11 /opt/venv &&
+    VIRTUAL_ENV=/opt/venv uv sync --active --frozen
+    --group rlds --no-dev &&
+    uv pip install --python /opt/venv/bin/python --no-cache 'boto3>=1.34' &&
+    uv venv --python 3.11 /opt/gsutil-venv &&
+    uv pip install --python /opt/gsutil-venv/bin/python --no-cache gsutil &&
+    printf '%s\n' '#include <cuda_runtime.h>' '#include <cstdio>'
+    'int main(){int n=0;if(cudaGetDeviceCount(&n)!=cudaSuccess)return 2;if(n!=1)return 3;cudaDeviceProp p{};if(cudaGetDeviceProperties(&p,0)!=cudaSuccess||p.major!=12||p.minor!=0)return 4;std::printf("devices=%d cc=12.0\\n",n);return 0;}'
+    > /tmp/npa-openpi-sm120.cu && nvcc -O2 -arch=sm_120
+    /tmp/npa-openpi-sm120.cu -o /usr/local/bin/npa-openpi-sm120-probe &&
+    rm /tmp/npa-openpi-sm120.cu
+  workload: solution-smoke
+  smoke_command: |
+    test "${NPA_OPENPI_ACCEPT_GEMMA_TERMS:-}" = "YES"
+    /opt/venv/bin/python - <<'PY'
+    import hashlib, json, os, socket, subprocess
+    import jax
+    import numpy as np
+    import tensorflow as tf
+    from jax.experimental import multihost_utils
+    from openpi.training import config, sharding
+    rank = int(os.environ["SKYPILOT_NODE_RANK"])
+    node_ips = [value for value in os.environ["SKYPILOT_NODE_IPS"].splitlines() if value]
+    if int(os.environ["SKYPILOT_NUM_NODES"]) != 8 or len(node_ips) != 8:
+        raise RuntimeError("expected exactly eight SkyPilot nodes")
+    jax.distributed.initialize(
+        coordinator_address=f"{node_ips[0]}:29602",
+        num_processes=8,
+        process_id=rank,
+        local_device_ids=[0],
+    )
+    if jax.device_count() != 8 or jax.local_device_count() != 1 or jax.process_count() != 8:
+        raise RuntimeError("expected eight global devices and one local device per process")
+    devices = jax.devices()
+    if any("RTX PRO 6000" not in str(device.device_kind).upper() for device in devices):
+        raise RuntimeError(f"unexpected devices {devices}")
+    mesh = sharding.make_mesh(8)
+    if tuple(mesh.devices.shape) != (1, 8):
+        raise RuntimeError(f"unexpected mesh shape {mesh.devices.shape}")
+    probe = subprocess.run(["/usr/local/bin/npa-openpi-sm120-probe"], check=True, capture_output=True, text=True)
+    cfg = config.get_config("pi05_full_droid_finetune")
+    host_hash = hashlib.sha256(socket.gethostname().encode()).hexdigest()
+    hosts = multihost_utils.process_allgather(
+        np.frombuffer(bytes.fromhex(host_hash), dtype=np.uint8), tiled=False
+    )
+    result = {
+        "solution": "openpi",
+        "capability": "pi05_full_droid_finetune_rtxpro8_image",
+        "global_device_count": 8,
+        "local_device_count": 1,
+        "process_count": 8,
+        "distinct_node_hashes": len({bytes(row).hex() for row in hosts}),
+        "mesh_shape": [1, 8],
+        "config_name": cfg.name,
+        "num_train_steps": cfg.num_train_steps,
+        "batch_size": cfg.batch_size,
+        "tensorflow": tf.__version__,
+        "probe": probe.stdout.strip(),
+        "weights_baked": False,
+        "dataset_baked": False,
+    }
+    multihost_utils.sync_global_devices("openpi-image-smoke")
+    if rank == 0:
+        output = os.path.join(os.environ["NPA_SMOKE_OUTPUT_DIR"], "openpi_full_droid_rtxpro8_image.json")
+        with open(output, "w", encoding="utf-8") as handle:
+            json.dump(result, handle, indent=2)
+    print(json.dumps(result))
+    PY
+  solution_name: openpi
+  capability_name: pi05_full_droid_finetune_rtxpro8_image
+  smoke_artifact_name: openpi_full_droid_rtxpro8_image.json
+  resource_profile_yaml: byof-solution-smoke-openpi-rtxpro8-gpu
+  task: pi05_full_droid_finetune
+  iterations: 1
+  num_envs: 1
+  num_demos: 1
+  wait_timeout: -1
+  poll_interval: 60
+  output_root: "s3://{{config.bucket}}/oss-solutions/openpi/{{run.id}}"
+  summary_uri: "{{config.output_root}}/npa_byof_summary.json"
+  image_validation_uri: "{{config.output_root}}/openpi_full_droid_rtxpro8_image.json"
+resources:
+  builder:
+    cloud: kubernetes
+    image: "{{config.base_image}}"
+    cpus: 4
+    memory: 16Gi
+    disk_size: 100
+initial: byof-run
+states:
+  byof-run:
+    toolRef: workbench.byof.repo
+    resources: builder
+    outputs:
+      - uri: "{{config.summary_uri}}"
+        schema: npa.workbench.byof.summary.v1
+      - uri: "{{config.image_validation_uri}}"
+        schema: npa.workbench.openpi.pi05-full-droid-image.v1
+    terminal: true

@@ -114,6 +114,11 @@ _OPENPI_VENDOR_PIPELINE = [
     "-m",
     "npa.workflows.byof.openpi_pipeline",
 ]
+_OPENPI_FULL_DROID_PIPELINE = [
+    "/opt/venv/bin/python",
+    "-m",
+    "npa.workflows.byof.openpi_full_droid",
+]
 
 _CONTENT_AGENTS_PIPELINE = [
     "python3",
@@ -1123,6 +1128,55 @@ TOOL_CATALOG: dict[str, ToolEntry] = {
             "--expected-compute-capability",
             "{{config.expected_compute_capability}}",
         ],
+    ),
+    "workbench.openpi.full_droid_prepare": ToolEntry(
+        name="workbench.openpi.full_droid_prepare",
+        description=(
+            "Checksum-stage DROID 1.0.1 and compute the upstream-prescribed "
+            "normalization statistics on durable shared storage."
+        ),
+        argv_template=[
+            *_OPENPI_FULL_DROID_PIPELINE,
+            "prepare",
+            "--output-uri",
+            "{{config.prepare_uri}}",
+            "--runtime-image",
+            "{{config.runtime_image}}",
+            "--work-root",
+            "{{config.work_root}}",
+            "--data-root",
+            "{{config.data_root}}",
+            "--experiment",
+            "{{run.id}}",
+        ],
+    ),
+    "workbench.openpi.full_droid_finetune": ToolEntry(
+        name="workbench.openpi.full_droid_finetune",
+        description=(
+            "Run the pinned upstream 100,000-step pi0.5 full-DROID recipe across "
+            "eight one-RTX-PRO-6000 nodes and publish the immutable checkpoint."
+        ),
+        argv_template=[
+            *_OPENPI_FULL_DROID_PIPELINE,
+            "train",
+            "--prepare-uri",
+            "{{config.prepare_uri}}",
+            "--output-uri",
+            "{{config.training_uri}}",
+            "--checkpoint-uri",
+            "{{config.trained_checkpoint_uri}}",
+            "--runtime-image",
+            "{{config.runtime_image}}",
+            "--work-root",
+            "{{config.work_root}}",
+            "--data-root",
+            "{{config.data_root}}",
+            "--experiment",
+            "{{run.id}}",
+        ],
+        multi_node_mode="sharded",
+        shard_activation_config="multi_host_enabled",
+        shard_output_config="trained_checkpoint_uri",
     ),
     "workbench.openpi.evaluate": ToolEntry(
         name="workbench.openpi.evaluate",

@@ -104,6 +104,8 @@ below (see `npa/src/npa/orchestration/npa_workflow/blueprints.py`). Deploy guide
 | `byof-robocasa.yaml` | OSS registry: RoboCasa pinned image + headless kitchen-task smoke |
 | `byof-openpi.yaml` | OSS registry: OpenPI pi0.5 Polaris direct + WebSocket-served Franka joint-position inference on `B200:1`; runtime-only checkpoint and scoped Gemma gate ([guide](../../../../docs/workbench/openpi-pi05-polaris.md)) |
 | `openpi-pi05-four-mode.yaml` | Connected OpenPI runtime graph: live negative gate, direct inference, private cross-pod ClusterIP serving, real pi0.5 LoRA optimizer/checkpoint smoke, and disjoint held-out evaluation; consumes the immutable digest built by `byof-openpi.yaml` ([guide](../../../../docs/workbench/openpi-pi05-polaris.md)) |
+| `byof-openpi-full-droid-rtxpro.yaml` | Operator-controlled GHCR build of the pinned OpenPI Python 3.11 RLDS/JAX stack; proves one-by-eight FSDP and `sm_120` execution on exactly 8 RTX PRO 6000 GPUs ([guide](../../../../docs/workbench/openpi-pi05-polaris.md)) |
+| `openpi-pi05-full-droid-finetune.yaml` | Complete upstream pi0.5 full-DROID recipe: checksum-synced RLDS 1.0.1, ten-million-frame normalization, global batch 256, 100,000 steps, eight nodes with exactly one RTX PRO 6000 GPU each, durable resume, and immutable S3 checkpoint lineage ([guide](../../../../docs/workbench/openpi-pi05-polaris.md)) |
 | `byof-droid-policy-learning.yaml` | OSS registry: DROID policy learning pinned image + RLDS config smoke |
 | `rl-policy-training-sim-success.yaml` | Isaac Lab RL train (partial) |
 | `sim2real-two-step.yaml` / `sim2real-two-step-agent.yaml` | **DEMO ONLY** two-state DSL fixtures |
