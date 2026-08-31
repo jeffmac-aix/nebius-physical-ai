@@ -24,6 +24,7 @@ LABEL npa.tool="cosmos3-ray-serve" \
       org.opencontainers.image.licenses="OpenMDW-1.1"
 
 ENV NPA_IMAGE_SOURCE_SHA=${NPA_SOURCE_SHA} \
+    NPA_LIGHT_WORKBENCH_TOOL=cosmos3-ray-serve \
     NPA_COSMOS3_FRAMEWORK_REVISION=${COSMOS3_REF} \
     NPA_COSMOS3_FRAMEWORK_PYTHON=/opt/cosmos3/cosmos-framework/.venv/bin/python \
     NPA_COSMOS3_RAY_MODEL=Cosmos3-Nano \
