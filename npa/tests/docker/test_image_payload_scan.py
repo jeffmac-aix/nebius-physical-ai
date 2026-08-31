@@ -213,6 +213,11 @@ def test_openpi_bakes_skypilot_core_bootstrap_closure() -> None:
     ):
         assert package in install_layer
 
+    # The build runs uv as root while HOME points at the eventual runtime
+    # user's home. SkyPilot installs its own uv there during bootstrap, so all
+    # build-created state under that home must be handed back before USER.
+    assert "chown -R ubuntu:ubuntu /home/ubuntu /workspace /opt/byof" in dockerfile
+
 
 def test_isaac_lab_dockerfile_excludes_bundled_imageio_ffmpeg_payload() -> None:
     dockerfile = (

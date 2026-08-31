@@ -116,7 +116,7 @@ COPY --chmod=0444 docker/workbench/openpi/THIRD_PARTY_NOTICES.md /usr/share/doc/
 
 RUN install -d -m 0755 -o ubuntu -g ubuntu \
       /workspace /workspace/.cache /workspace/.cache/openpi \
-    && chown -R ubuntu:ubuntu /workspace /opt/byof \
+    && chown -R ubuntu:ubuntu /home/ubuntu /workspace /opt/byof \
     && test -r /opt/byof/LICENSE \
     && test -r /usr/share/doc/npa-openpi/REDISTRIBUTION.md
 
