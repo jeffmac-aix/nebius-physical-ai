@@ -231,7 +231,7 @@
       "name": "npa-openpi",
       "dockerfile": "openpi/Dockerfile",
       "verdict": "unknown",
-      "validation": "pending-build",
+      "validation": "pending-gpu",
       "redistribution": "public",
       "source_compiled_extensions": [
         "npa-openpi-sm120-probe"
