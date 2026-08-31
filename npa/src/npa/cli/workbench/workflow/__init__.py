@@ -338,8 +338,10 @@ def submit_cmd(
         "--retry-absent-in-flight/--no-retry-absent-in-flight",
         help=(
             "With --runtime and explicit resume: authorize a new attempt only when "
-            "the exact previously reconciled managed job and every declared durable "
-            "output are proven absent. Disabled by default."
+            "the exact previously reconciled managed-job identity (including a "
+            "typed transport failure before job-ID assignment) and every wave-unique "
+            "durable output are proven absent. Shared outputs already attributed to "
+            "completed waves do not prove the later attempt ran. Disabled by default."
         ),
     ),
     poll_seconds: int = typer.Option(
