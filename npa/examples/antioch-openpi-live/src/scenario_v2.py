@@ -97,6 +97,10 @@ class CameraFrame:
     luminance_variance: float = 0.0
     dynamic_range: float = 0.0
     red_cube_pixels: int = 0
+    raw_min: float = 0.0
+    raw_max: float = 0.0
+    raw_nonzero: int = 0
+    raw_channels: int = 0
 
 
 @dataclass(frozen=True)
@@ -921,6 +925,10 @@ def _camera_frame_from_buffer(buffer, *, view: str) -> CameraFrame:
         return CameraFrame(None, "wrong_shape")
     if not np.issubdtype(frame.dtype, np.number) or not np.isfinite(frame).all():
         return CameraFrame(None, "non_finite")
+    raw_min = float(frame.min())
+    raw_max = float(frame.max())
+    raw_nonzero = int(np.count_nonzero(frame))
+    raw_channels = int(frame.shape[2])
     rgb_source = frame[:, :, :3]
     if np.issubdtype(rgb_source.dtype, np.floating):
         upper = float(rgb_source.max())
@@ -945,6 +953,10 @@ def _camera_frame_from_buffer(buffer, *, view: str) -> CameraFrame:
         luminance_variance,
         dynamic_range,
         int(red_mask.sum()),
+        raw_min,
+        raw_max,
+        raw_nonzero,
+        raw_channels,
     )
     if luminance_mean <= MIN_CAMERA_LUMINANCE_MEAN:
         return CameraFrame(
@@ -954,6 +966,10 @@ def _camera_frame_from_buffer(buffer, *, view: str) -> CameraFrame:
             luminance_variance,
             dynamic_range,
             result.red_cube_pixels,
+            raw_min,
+            raw_max,
+            raw_nonzero,
+            raw_channels,
         )
     if luminance_variance <= MIN_CAMERA_LUMINANCE_VARIANCE:
         return CameraFrame(
@@ -963,6 +979,10 @@ def _camera_frame_from_buffer(buffer, *, view: str) -> CameraFrame:
             luminance_variance,
             dynamic_range,
             result.red_cube_pixels,
+            raw_min,
+            raw_max,
+            raw_nonzero,
+            raw_channels,
         )
     if view == "exterior" and result.red_cube_pixels < MIN_EXTERIOR_RED_CUBE_PIXELS:
         return CameraFrame(
@@ -972,6 +992,10 @@ def _camera_frame_from_buffer(buffer, *, view: str) -> CameraFrame:
             luminance_variance,
             dynamic_range,
             result.red_cube_pixels,
+            raw_min,
+            raw_max,
+            raw_nonzero,
+            raw_channels,
         )
     return result
 
@@ -1061,7 +1085,10 @@ def _build_rtx_rgb_camera(
     if output_buffer is None:
         import warp as wp
 
-        output_buffer = wp.empty((224, 224, 3), dtype=wp.uint8, device="cpu")
+        # Replicator's ``rgb`` / LdrColor annotator writes uint8 RGBA.  The
+        # policy conversion below intentionally drops alpha after the complete
+        # producer buffer has been copied to CPU.
+        output_buffer = wp.empty((224, 224, 4), dtype=wp.uint8, device="cpu")
     render_product = sensor.render_product
     prim = render_product.GetPrim()
     render_product_path = str(prim.GetPath()) if prim and prim.IsValid() else ""
@@ -1348,9 +1375,17 @@ def _camera_rejection_metrics_line(
         f"camera_exterior_luminance_mean_current={pair.exterior.luminance_mean:.3f} "
         f"camera_exterior_luminance_variance_current={pair.exterior.luminance_variance:.3f} "
         f"camera_exterior_dynamic_range_current={pair.exterior.dynamic_range:.3f} "
+        f"camera_exterior_raw_min_current={pair.exterior.raw_min:.3f} "
+        f"camera_exterior_raw_max_current={pair.exterior.raw_max:.3f} "
+        f"camera_exterior_raw_nonzero_current={pair.exterior.raw_nonzero} "
+        f"camera_exterior_raw_channels_current={pair.exterior.raw_channels} "
         f"camera_wrist_luminance_mean_current={pair.wrist.luminance_mean:.3f} "
         f"camera_wrist_luminance_variance_current={pair.wrist.luminance_variance:.3f} "
-        f"camera_wrist_dynamic_range_current={pair.wrist.dynamic_range:.3f}"
+        f"camera_wrist_dynamic_range_current={pair.wrist.dynamic_range:.3f} "
+        f"camera_wrist_raw_min_current={pair.wrist.raw_min:.3f} "
+        f"camera_wrist_raw_max_current={pair.wrist.raw_max:.3f} "
+        f"camera_wrist_raw_nonzero_current={pair.wrist.raw_nonzero} "
+        f"camera_wrist_raw_channels_current={pair.wrist.raw_channels}"
     )
 
 

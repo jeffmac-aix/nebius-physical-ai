@@ -260,6 +260,14 @@ def test_live_camera_rejects_black_or_flat_annotator_warmup(
     assert scenario._camera_frame(
         Camera(np.full((224, 224, 4), 64, dtype=np.uint8)), view="wrist"
     ).reason == "flat"
+    black = scenario._camera_frame(
+        Camera(np.zeros((224, 224, 4), dtype=np.uint8)), view="wrist"
+    )
+    assert black.reason == "blank"
+    assert black.raw_min == 0.0
+    assert black.raw_max == 0.0
+    assert black.raw_nonzero == 0
+    assert black.raw_channels == 4
     flat = scenario._camera_frame(
         Camera(np.full((224, 224, 4), 64, dtype=np.uint8)), view="wrist"
     )
@@ -267,10 +275,12 @@ def test_live_camera_rejects_black_or_flat_annotator_warmup(
     rendered = np.zeros((224, 224, 4), dtype=np.uint8)
     rendered[:, 112:, :3] = 255
     rendered[:, :, 3] = 255
-    np.testing.assert_array_equal(
-        scenario._camera_frame(Camera(rendered), view="wrist").rgb,
-        rendered[:, :, :3],
-    )
+    useful = scenario._camera_frame(Camera(rendered), view="wrist")
+    assert useful.reason == ""
+    assert useful.raw_max == 255.0
+    assert useful.raw_nonzero > 0
+    assert useful.raw_channels == 4
+    np.testing.assert_array_equal(useful.rgb, rendered[:, :, :3])
     normalized = rendered.astype(np.float32) / 255.0
     np.testing.assert_array_equal(
         scenario._camera_frame(Camera(normalized), view="wrist").rgb,
@@ -363,6 +373,8 @@ def test_live_rejected_camera_pixels_are_logged_and_metrics_are_not_blank(
     assert "camera_rejected_pairs=3" in metrics
     assert "camera_render_sequence=17" in metrics
     assert "camera_exterior_dynamic_range_current=" in metrics
+    assert "camera_exterior_raw_channels_current=4" in metrics
+    assert "camera_wrist_raw_nonzero_current=" in metrics
 
 
 def test_live_telemetry_is_latest_only_and_control_does_not_wait_for_slow_images(
@@ -519,6 +531,46 @@ def test_rtx_camera_construction_wires_public_rgb_render_product(
     assert camera.render_product_path == "/Render/exterior"
     camera.close()
     assert camera.sensor.detached and clock.detached and camera.authoring.destroyed
+
+
+def test_rtx_camera_default_host_buffer_matches_replicator_rgba_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scenario = _load_live_scenario(monkeypatch, "antioch_rtx_rgba_buffer_test")
+    allocations: list[tuple[tuple[int, ...], object, str]] = []
+
+    class Prim:
+        def IsValid(self) -> bool:
+            return True
+
+        def GetPath(self) -> str:
+            return "/Render/exterior"
+
+    class Sensor:
+        def __init__(self, _authoring, **_kwargs) -> None:
+            self.render_product = SimpleNamespace(GetPrim=lambda: Prim())
+
+    class WarpModule:
+        uint8 = object()
+
+        @staticmethod
+        def empty(shape, *, dtype, device):
+            allocations.append((shape, dtype, device))
+            return object()
+
+    monkeypatch.setitem(sys.modules, "warp", WarpModule())
+    monkeypatch.setattr(
+        scenario,
+        "_new_reference_time_annotator",
+        lambda _path: SimpleNamespace(),
+    )
+    scenario._build_rtx_rgb_camera(
+        lambda _path, **_kwargs: object(),
+        Sensor,
+        path=scenario.EXTERIOR_CAMERA_PATH,
+    )
+
+    assert allocations == [((224, 224, 4), WarpModule.uint8, "cpu")]
 
 
 def test_explicit_render_scheduler_advances_producer_before_each_sample(
