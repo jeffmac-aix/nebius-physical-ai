@@ -378,6 +378,23 @@ def test_up_runs_terraform_writes_kubeconfig_and_validates(
                     }
                 )
             )
+        if args[:4] == ["nebius", "capacity", "capacity-block-group", "get"]:
+            # STRICT reservation validation: active, right tenant/region/platform,
+            # with enough free GPUs for the 2x8gpu request (16).
+            return _completed(
+                json.dumps(
+                    {
+                        "metadata": {"id": "capacityblockgroup-test", "parent_id": "tenant-a"},
+                        "status": {
+                            "region": "region-a",
+                            "state": "STATE_ACTIVE",
+                            "current_limit": "48",
+                            "usage": "12",
+                            "resource_affinity": {"compute_v1": {"platform": "gpu-rtx6000"}},
+                        },
+                    }
+                )
+            )
         raise AssertionError(args)
 
     saved = []
