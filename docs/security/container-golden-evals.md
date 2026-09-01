@@ -278,8 +278,10 @@ pipeline. Key safety notes are condensed below.
   `loop-eval`, and the runtime-fetch `isaac-lab`) run as the unprivileged
   `ubuntu` user. Both the canonical standard-workflow Isaac states and retained
   standalone BYO Job builders preserve uid/gid 1000; neither may override
-  `runAsUser: 0`. `sonic`, `lancedb`, and `detection-training` retain root from
-  their upstream bases. `foxglove-embed` runs as `nobody` on a digest-pinned
+  `runAsUser: 0`. The LanceDB image also runs as `ubuntu`; its narrow
+  passwordless-sudo exemption exists only for SkyPilot's in-pod bootstrap and
+  does not enable sshd by default. `sonic` and `detection-training` retain root
+  from their upstream bases. `foxglove-embed` runs as `nobody` on a digest-pinned
   caddy base. The remaining root images are candidates for a separate non-root
   hardening pass.
 - **Network exposure** — services that open ports (`lerobot` :8080, `cosmos`

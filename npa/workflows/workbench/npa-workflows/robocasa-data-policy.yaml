@@ -58,10 +58,16 @@ resources:
     accelerators: RTXPRO6000:1
     cpus: 8
     memory: 32Gi
-  cpu:
+  convert-cpu:
     cloud: kubernetes
     cpus: 4
     memory: 16Gi
+    image: tool://lerobot
+  insights-cpu:
+    cloud: kubernetes
+    cpus: 4
+    memory: 16Gi
+    image: tool://lancedb
   train-gpu:
     cloud: kubernetes
     accelerators: RTXPRO6000:1
@@ -82,7 +88,7 @@ states:
 
   lerobot-convert:
     description: Materialize RoboCasa trajectories into LeRobotDataset v3.
-    resources: cpu
+    resources: convert-cpu
     needs: [trajectory-export]
     run:
       argv:
@@ -134,7 +140,7 @@ states:
   insights:
     description: Record lineage and metrics into the insights store.
     toolRef: workbench.insights.ingest_run
-    resources: cpu
+    resources: insights-cpu
     needs: [policy-eval]
     inputs:
       - uri: "{{config.prefix}}"

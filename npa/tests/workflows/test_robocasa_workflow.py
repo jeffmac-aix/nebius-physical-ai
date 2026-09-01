@@ -120,3 +120,11 @@ def test_data_policy_uses_panda_omron_and_disjoint_robocasa_eval() -> None:
     assert "--checkpoint-uri" in argv
     assert "--train-env-ids" in argv
     assert "--heldout-env-ids" in argv
+
+
+def test_data_policy_routes_raw_cpu_stages_to_native_images() -> None:
+    spec = load_spec(DATA_POLICY)
+    assert spec.states["lerobot-convert"].resources == "convert-cpu"
+    assert spec.resources["convert-cpu"]["image"] == "tool://lerobot"
+    assert spec.states["insights"].resources == "insights-cpu"
+    assert spec.resources["insights-cpu"]["image"] == "tool://lancedb"
