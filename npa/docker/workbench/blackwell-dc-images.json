@@ -551,12 +551,22 @@
       "name": "npa-groot",
       "dockerfile": "groot/Dockerfile",
       "build_script": "groot/build.sh",
-      "verdict": "blocked",
-      "validation": "pending-hardware",
-      "blocked_reason": "GR00T's uv-locked venv and its Isaac Lab side venv both pin the NVIDIA x86_64 CUDA 12.8 stack; B200/B300 and RTX PRO 6000 are gated on NVIDIA's CUDA 13 alignment.",
-      "upstream_tracking": "NVIDIA Isaac GR00T release notes for x86_64 CUDA 13 alignment",
-      "smoke": "GR00T finetune step",
-      "notes": "BLOCKED: GR00T's uv-locked venv and its Isaac Lab side venv both pin the NVIDIA x86_64 CUDA 12.8 stack. RTX PRO 6000 requires CUDA 13 for sm_120 coverage. The golden eval (groot functional smoke) is gpu-gated and requires CUDA 13 alignment from upstream NVIDIA Isaac GR00T. Track: NVIDIA Isaac GR00T release notes for x86_64 CUDA 13 alignment."
+      "verdict": "ready",
+      "validation": "validated",
+      "smoke": "NVIDIA standalone_inference_script.py: GR00T-N1.7-3B PyTorch eager inference on DROID sample \u2014 24 steps, 0.204s avg/step, 3/3 checks",
+      "notes": "VALIDATED on physical NVIDIA RTX PRO 6000 Blackwell Server Edition (capability 12.0) on 2026-09-01. The exact public GHCR tag npa-groot:0.1.0 (manifest sha256:47fd6b727f249fbdb0ec237dc748c8bdc7cbf38474dc12c1cffe82f17fdde37b) ran real GR00T-N1.7-3B standalone PyTorch eager inference on the DROID sample: model loaded in 49.9s, 24 inference steps at 0.204s avg/step, exit 0, 3/3 checks passed. The cu128 index torch 2.7.1 wheel carries sm_100 (datacenter) and sm_120 (RTX PRO 6000). GR00T uses CUDA 12.8, not CUDA 13; the prior blocker was based on stale evidence.",
+      "torch": "2.7.1+cu128 (from Isaac-GR00T pyproject.toml cu128 index pin)",
+      "source_compiled_extensions": [],
+      "validated_gpu": {
+        "name": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+        "capability": "12.0",
+        "platform": "gpu-rtx6000",
+        "result": "GROOT_RTX_PRO_6000_VALIDATION_PASSED",
+        "tag": "0.1.0",
+        "digest": "sha256:47fd6b727f249fbdb0ec237dc748c8bdc7cbf38474dc12c1cffe82f17fdde37b"
+      },
+      "validated_tag": "0.1.0",
+      "validated_digest": "sha256:47fd6b727f249fbdb0ec237dc748c8bdc7cbf38474dc12c1cffe82f17fdde37b"
     },
     {
       "name": "npa-fiftyone",
