@@ -201,6 +201,8 @@ def test_openpi_uses_system_ffmpeg_without_bundled_payload() -> None:
     assert "pip check --python /opt/rerun-venv/bin/python" in dockerfile
     assert 'config.get_config("pi05_droid")' in dockerfile
     assert "multihost_utils.broadcast_one_to_all" in dockerfile
+    assert "JAX_PLATFORMS=cpu /opt/venv/bin/python -c" in dockerfile
+    assert "    JAX_PLATFORMS=" not in dockerfile
     assert "nccl/lib/libnccl.so.2" in dockerfile
     assert "nvshmem/lib/libnvshmem_host.so.3" in dockerfile
     dependency_layer = dockerfile.split("RUN python3 -m venv /opt/uv", 1)[1].split(
