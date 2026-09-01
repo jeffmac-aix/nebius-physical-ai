@@ -664,12 +664,64 @@ def test_bound_provider_assignment_is_released_after_exact_run_cleanup(
     assert calls == ["build", "cancel", "release", "build", "up"]
 
 
-def test_unrelated_service_start_failure_does_not_release_assignment(
+def test_retryable_service_start_failure_recovers_with_capped_backoff(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    calls: list[str] = []
+    attempts = 0
+
     class Cli:
         def services_build(self, *_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
-            raise AntiochCliError("provider capacity unavailable")
+            nonlocal attempts
+            calls.append("build")
+            attempts += 1
+            if attempts < 3:
+                raise AntiochCliError(
+                    "control plane temporarily unavailable",
+                    error_type="service_unavailable",
+                    retryable=True,
+                    http_status=503,
+                )
+            return {}
+
+        def services_up(self, *_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+            calls.append("up")
+            return {}
+
+        def machine_release(self, *_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+            raise AssertionError("must not be called")
+
+    monkeypatch.setattr(
+        cluster_runtime.time,
+        "sleep",
+        lambda seconds: calls.append(f"sleep:{seconds}"),
+    )
+    recovered = cluster_runtime._start_cluster_service(
+        Cli(),  # type: ignore[arg-type]
+        runtime=tmp_path,
+        project_id="assigned-project-for-test",
+        scenario="openpi_franka_mk8s_live",
+    )
+    assert recovered is False
+    assert calls == ["build", "sleep:2.0", "build", "sleep:5.0", "build", "up"]
+
+
+def test_fatal_service_start_failure_remains_fatal_without_releasing_assignment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    class Cli:
+        def services_build(self, *_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+            calls.append("build")
+            raise AntiochCliError(
+                "authentication denied",
+                error_type="authentication",
+                retryable=False,
+                http_status=401,
+            )
 
         def services_up(self, *_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
             raise AssertionError("must not be called")
@@ -677,13 +729,20 @@ def test_unrelated_service_start_failure_does_not_release_assignment(
         def machine_release(self, *_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
             raise AssertionError("must not be called")
 
-    with pytest.raises(AntiochCliError, match="capacity"):
+    monkeypatch.setattr(
+        cluster_runtime.time,
+        "sleep",
+        lambda _seconds: (_ for _ in ()).throw(AssertionError("must not sleep")),
+    )
+    with pytest.raises(AntiochCliError, match="authentication") as raised:
         cluster_runtime._start_cluster_service(
             Cli(),  # type: ignore[arg-type]
             runtime=tmp_path,
             project_id="assigned-project-for-test",
             scenario="openpi_franka_mk8s_live",
         )
+    assert raised.value.retryable is False
+    assert calls == ["build"]
 
 
 def test_remote_state_read_recovers_transient_exec_fragment(

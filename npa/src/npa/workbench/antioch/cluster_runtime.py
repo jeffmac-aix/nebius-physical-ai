@@ -445,33 +445,43 @@ def _start_cluster_service(
     project_id: str,
     scenario: str,
 ) -> bool:
-    """Start the service, releasing only a proven dead-client assignment.
+    """Start the service, recovering typed transient control-plane failures.
 
     A provider machine can outlive the Kubernetes pod whose local SSH client
     owned it.  The supported service command then fails deterministically
     before any new stream is dispatched.  Cancel the exact project's live run
-    first, release that exact assignment, and retry once.  Other failures stay
+    first and release that exact assignment.  Structured retryable failures use
+    capped backoff until the control plane recovers; fatal failures stay
     fail-closed.
     """
 
-    try:
-        cli.services_build(runtime, service="sim")
-        cli.services_up(runtime)
-        return False
-    except AntiochCliError as exc:
-        if ASSIGNMENT_BOUND_MARKER not in str(exc):
-            raise
-    _cancel_remote_live_runs(
-        cli,
-        runtime=runtime,
-        project_id=project_id,
-        scenario=scenario,
-        attempts=5,
-    )
-    cli.machine_release(runtime, project_id=project_id)
-    cli.services_build(runtime, service="sim")
-    cli.services_up(runtime)
-    return True
+    released_assignment = False
+    retryable_failures = 0
+    while True:
+        try:
+            cli.services_build(runtime, service="sim")
+            cli.services_up(runtime)
+            return released_assignment
+        except AntiochCliError as exc:
+            if ASSIGNMENT_BOUND_MARKER in str(exc) and not released_assignment:
+                _cancel_remote_live_runs(
+                    cli,
+                    runtime=runtime,
+                    project_id=project_id,
+                    scenario=scenario,
+                    attempts=5,
+                )
+                cli.machine_release(runtime, project_id=project_id)
+                released_assignment = True
+                retryable_failures = 0
+                continue
+            if not exc.retryable:
+                raise
+            delay = RECOVERY_BACKOFF_SECONDS[
+                min(retryable_failures, len(RECOVERY_BACKOFF_SECONDS) - 1)
+            ]
+            retryable_failures += 1
+            time.sleep(delay)
 
 
 def _launch_vendor_successor(
@@ -579,12 +589,21 @@ def run_cluster(args: argparse.Namespace) -> int:
             },
         )
         health.start()
-        _start_cluster_service(
-            cli,
-            runtime=runtime,
-            project_id=project_id,
-            scenario=args.scenario,
-        )
+        startup_state = {
+            "status": "starting",
+            "daemon_status": "starting_service",
+            "owner_identity": args.owner_identity,
+            "session_id": session_id,
+            "scenario": args.scenario,
+            "heartbeat_unix": 0.0,
+        }
+        with _recovery_heartbeat(state_path, **startup_state):
+            _start_cluster_service(
+                cli,
+                runtime=runtime,
+                project_id=project_id,
+                scenario=args.scenario,
+            )
         service_started = True
         _stage_runtime_source(cli, runtime=runtime)
         _stage_private_bundle(cli, runtime=runtime, client_bundle=bundle)

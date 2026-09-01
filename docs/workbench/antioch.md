@@ -276,7 +276,9 @@ container recreation, and rebuilds the machine-local service image after a machi
 recycle before dispatching another scenario. If a dead pod leaves the exact project's
 machine assignment bound to its former local SSH client, the replacement cancels the
 exact live run, releases only that project assignment through the supported CLI, and
-retries the service build once before dispatch. A Mission Control stream in `ready` state is
+retries the service build before dispatch. Typed retryable control-plane failures during
+service build or startup remain in the same controller startup and use capped backoff;
+fatal errors still fail immediately. A Mission Control stream in `ready` state is
 published but waiting for an authenticated viewer; do not describe it as actively
 viewed until the viewer connects and the first rendered frame advances.
 The controller owns `antioch scenario run --stream --verbose` as its direct
