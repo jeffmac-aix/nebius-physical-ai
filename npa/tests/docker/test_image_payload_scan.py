@@ -211,6 +211,7 @@ def test_openpi_uses_system_ffmpeg_without_bundled_payload() -> None:
     )
     assert "'numpy==1.26.4'" in trainer_addons
     assert "rerun-sdk" not in trainer_addons
+    assert "'pyyaml==6.0.3'" in rerun_addons
     assert "'rerun-sdk==0.31.4'" in rerun_addons
     assert "pip check --python /opt/rerun-venv/bin/python" in rerun_addons
     assert dependency_layer.index("uv sync --active") < dependency_layer.index(

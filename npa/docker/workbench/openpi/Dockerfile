@@ -97,9 +97,9 @@ RUN python3 -m venv /opt/uv \
     && /opt/uv/bin/uv pip check --python /opt/venv/bin/python \
     && /opt/uv/bin/uv venv --python 3.11 /opt/rerun-venv \
     && /opt/uv/bin/uv pip install --python /opt/rerun-venv/bin/python --no-cache \
-      'rerun-sdk==0.31.4' \
+      'pyyaml==6.0.3' 'rerun-sdk==0.31.4' \
     && /opt/rerun-venv/bin/python -c \
-      'import importlib.metadata as m, numpy, rerun; assert m.version("rerun-sdk") == "0.31.4" and int(m.version("numpy").split(".")[0]) >= 2 and rerun is not None and numpy is not None' \
+      'import importlib.metadata as m, numpy, rerun, yaml; assert m.version("pyyaml") == "6.0.3" and m.version("rerun-sdk") == "0.31.4" and int(m.version("numpy").split(".")[0]) >= 2 and rerun is not None and numpy is not None and yaml is not None' \
     && /opt/uv/bin/uv pip check --python /opt/rerun-venv/bin/python \
     && /opt/rerun-venv/bin/rerun rrd --help >/dev/null \
     && test ! -e /opt/venv/lib/python3.11/site-packages/wandb/bin/wandb-core \
