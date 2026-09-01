@@ -12,7 +12,7 @@ from typing import Any
 import typer
 
 from npa.clients.config import resolve_container_registry
-from npa.clients.credentials import load_credentials
+from npa.clients.credentials import apply_shared_credential_env, load_credentials
 from npa.deploy.images import DEFAULT_CONTAINER_REGISTRY, container_image_for_tool
 from npa.workbench.robocasa.schemas import DEFAULT_PORT, DEFAULT_TOKEN_ENV
 
@@ -210,6 +210,7 @@ def _service_env(*, output_path: str, auth_mode: str, token_env: str, port: int)
         "NPA_OUTPUT_PATH": output_path,
         "AWS_REGION": os.environ.get("AWS_REGION", "auto"),
     }
+    apply_shared_credential_env(env, creds)
     if auth_mode == "token":
         token = os.environ.get(token_env, "")
         if not token:
