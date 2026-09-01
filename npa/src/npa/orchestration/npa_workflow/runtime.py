@@ -2335,22 +2335,28 @@ def run_workflow_runtime(
             )
         for wave in ledger.state.waves:
             job_id = str(wave.get("job_id") or "").strip()
+            job_name = str(wave.get("job_name") or "").strip()
             if not job_id:
                 raise NpaWorkflowError(
                     "terminal plan migration requires an exact managed-job identity "
                     "for every prior attempt"
                 )
             try:
-                observed = str(wave_executor._status(job_id).status or "").upper()
+                evidence = wave_executor._reconcile_exact(job_name, job_id)
             except Exception as exc:  # noqa: BLE001 - fail closed on live ambiguity
                 raise NpaWorkflowError(
                     "terminal plan migration could not live-verify a prior managed "
                     f"job: {sanitize_reason(exc)}"
                 ) from exc
-            if not is_terminal_fail(observed):
+            outcome = str(getattr(evidence, "outcome", "") or "").lower()
+            observed = str(getattr(evidence, "status", "") or "").upper()
+            if outcome != "absent" and not (
+                outcome == "found" and is_terminal_fail(observed)
+            ):
                 raise NpaWorkflowError(
                     "terminal plan migration requires every exact prior managed job "
-                    f"to remain terminal-failed; observed {observed or 'UNKNOWN'}"
+                    "to be verified absent or remain terminal-failed; observed "
+                    f"{outcome or 'unknown'}/{observed or 'UNKNOWN'}"
                 )
         prior_outputs = sorted(
             {

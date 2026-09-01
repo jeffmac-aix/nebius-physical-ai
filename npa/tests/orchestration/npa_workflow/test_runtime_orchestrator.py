@@ -2893,6 +2893,8 @@ def test_resume_accepts_an_unchanged_plan(tmp_path: Path) -> None:
 def test_explicit_terminal_plan_migration_preserves_failed_attempts(
     tmp_path: Path,
 ) -> None:
+    from npa.orchestration.skypilot.workflow import ManagedJobEvidence
+
     spec = load_spec(_write_spec(tmp_path, FANOUT_SPEC))
     store = MemoryStore()
     prior = RuntimeRunState(
@@ -2927,7 +2929,7 @@ def test_explicit_terminal_plan_migration_preserves_failed_attempts(
         run_id="rt-plan-migrate",
         options=options,
         store=store,
-        status_fn=FakeStatus(["FAILED"]),
+        reconcile_fn=lambda *_args, **_kwargs: ManagedJobEvidence("absent"),
     )
 
     report = run_workflow_runtime(
