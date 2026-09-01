@@ -87,6 +87,7 @@ RUN apt-get update \
 # (GPL) is incompatible with public redistribution.  Remove it; LeRobot uses
 # the system ffmpeg provided by apt instead (the same approach cosmos3 uses).
 RUN find /opt/lerobot/venv -type f -path '*/imageio_ffmpeg/binaries/ffmpeg*' -delete \
+    && IMAGEIO_FFMPEG_EXE=/usr/bin/ffmpeg \
     && test "$(/opt/lerobot/venv/bin/python -c 'import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())')" = /usr/bin/ffmpeg \
     && test -z "$(find /opt/lerobot/venv -type f -path '*/imageio_ffmpeg/binaries/ffmpeg*' -print -quit)"
 
