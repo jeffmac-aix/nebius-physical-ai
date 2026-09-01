@@ -24,6 +24,7 @@ def test_wrapper_preserves_exact_upstream_and_adds_only_bootstrap_surface() -> N
     assert "dpkg-query -W openssh-server rsync sudo" in text
     assert not re.search(r"(?i)(HF_TOKEN|NGC_API_KEY|ACCEPT.*=YES)", text)
     assert "USER ubuntu" in text
+    assert "UV_CACHE_DIR=/home/ubuntu/.cache/uv" in text
     assert 'ENTRYPOINT ["/usr/local/bin/npa-cosmos3-super-benchmark-entrypoint"]' in text
 
 

@@ -30,7 +30,8 @@ RUN apt-get update \
 
 COPY --chmod=0755 docker/workbench/cosmos3-super-benchmark/entrypoint.sh /usr/local/bin/npa-cosmos3-super-benchmark-entrypoint
 
-ENV HOME=/home/ubuntu
+ENV HOME=/home/ubuntu \
+    UV_CACHE_DIR=/home/ubuntu/.cache/uv
 WORKDIR /workspace
 USER ubuntu
 ENTRYPOINT ["/usr/local/bin/npa-cosmos3-super-benchmark-entrypoint"]
