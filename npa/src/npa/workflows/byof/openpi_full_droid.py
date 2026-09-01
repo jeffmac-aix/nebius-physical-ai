@@ -1233,7 +1233,7 @@ def _inspect_preparation_rrd(
     }
 
 
-def _build_preparation_rrd(
+def _build_preparation_rrd_direct(
     journal_path: Path,
     output_path: Path,
     *,
@@ -1385,7 +1385,7 @@ def _set_rerun_time(
         rr.set_time(timeline, sequence=sequence, recording=recording)
 
 
-def _build_training_rrd(
+def _build_training_rrd_direct(
     journal_path: Path,
     output_path: Path,
     *,
@@ -1600,6 +1600,213 @@ def _build_training_rrd(
         require_checkpoint=require_checkpoint,
         expected_metric_steps=expected_steps,
     )
+
+
+def _rrd_worker_python() -> Path | None:
+    value = os.environ.get("NPA_OPENPI_RERUN_PYTHON", "").strip()
+    if not value:
+        return None
+    path = Path(value)
+    if not path.is_file() or not os.access(path, os.X_OK):
+        raise OpenPIPipelineError(
+            "the isolated Rerun worker interpreter is unavailable"
+        )
+    if path.resolve() == Path(sys.executable).resolve():
+        return None
+    return path
+
+
+def _run_rrd_worker(
+    operation: str,
+    request: Mapping[str, object],
+    *,
+    output_path: Path,
+) -> dict[str, object]:
+    worker_python = _rrd_worker_python()
+    if worker_python is None:
+        raise OpenPIPipelineError("the isolated Rerun worker is not configured")
+    with tempfile.TemporaryDirectory(prefix="npa-openpi-rrd-worker-") as tmp:
+        request_path = Path(tmp) / "request.json"
+        result_path = Path(tmp) / "result.json"
+        payload = {
+            "schema": "npa.workbench.openpi.rrd-worker-request.v1",
+            "operation": operation,
+            "output_path": str(output_path),
+            **dict(request),
+        }
+        _write_private_json(request_path, payload)
+        completed = subprocess.run(
+            [
+                str(worker_python),
+                "-m",
+                "npa.workflows.byof.openpi_full_droid",
+                "rrd-worker",
+                "--request",
+                str(request_path),
+                "--result",
+                str(result_path),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if completed.returncode != 0:
+            diagnostic = (completed.stderr or completed.stdout).strip()
+            raise OpenPIPipelineError(
+                "isolated Rerun worker failed"
+                + (f": {diagnostic[-1000:]}" if diagnostic else "")
+            )
+        if not result_path.is_file() or result_path.stat().st_size == 0:
+            raise OpenPIPipelineError("isolated Rerun worker returned no result")
+        if result_path.stat().st_mode & 0o077:
+            raise OpenPIPipelineError("isolated Rerun worker result is not private")
+        result = json.loads(result_path.read_text(encoding="utf-8"))
+        if (
+            not isinstance(result, dict)
+            or result.get("schema")
+            != "npa.workbench.openpi.rrd-worker-result.v1"
+            or not isinstance(result.get("inspection"), dict)
+        ):
+            raise OpenPIPipelineError("isolated Rerun worker result is malformed")
+        if not output_path.is_file() or output_path.stat().st_size == 0:
+            raise OpenPIPipelineError("isolated Rerun worker produced no RRD")
+        return dict(result["inspection"])
+
+
+def _build_preparation_rrd(
+    journal_path: Path,
+    output_path: Path,
+    *,
+    run_id: str,
+    result: Mapping[str, object],
+    runtime_image: str,
+) -> dict[str, object]:
+    if _rrd_worker_python() is None:
+        return _build_preparation_rrd_direct(
+            journal_path,
+            output_path,
+            run_id=run_id,
+            result=result,
+            runtime_image=runtime_image,
+        )
+    return _run_rrd_worker(
+        "preparation",
+        {
+            "journal_path": str(journal_path),
+            "run_id": run_id,
+            "result": dict(result),
+            "runtime_image": runtime_image,
+        },
+        output_path=output_path,
+    )
+
+
+def _build_training_rrd(
+    journal_path: Path,
+    output_path: Path,
+    *,
+    run_id: str,
+    config: object,
+    prepared: Mapping[str, object],
+    runtime_image: str,
+    hardware: Mapping[str, object],
+    topology: Sequence[Mapping[str, object]],
+    through_step: int | None = None,
+    milestone: str = "final",
+    require_checkpoint: bool = True,
+) -> dict[str, object]:
+    if _rrd_worker_python() is None:
+        return _build_training_rrd_direct(
+            journal_path,
+            output_path,
+            run_id=run_id,
+            config=config,
+            prepared=prepared,
+            runtime_image=runtime_image,
+            hardware=hardware,
+            topology=topology,
+            through_step=through_step,
+            milestone=milestone,
+            require_checkpoint=require_checkpoint,
+        )
+    config_contract = {
+        key: int(getattr(config, key))
+        for key in ("num_train_steps", "log_interval", "save_interval", "batch_size")
+    }
+    return _run_rrd_worker(
+        "training",
+        {
+            "journal_path": str(journal_path),
+            "run_id": run_id,
+            "config": config_contract,
+            "prepared": dict(prepared),
+            "runtime_image": runtime_image,
+            "hardware": dict(hardware),
+            "topology": [dict(record) for record in topology],
+            "through_step": through_step,
+            "milestone": milestone,
+            "require_checkpoint": require_checkpoint,
+        },
+        output_path=output_path,
+    )
+
+
+def _rrd_worker(args: argparse.Namespace) -> int:
+    request_path = Path(args.request)
+    result_path = Path(args.result)
+    if request_path.stat().st_mode & 0o077:
+        raise OpenPIPipelineError("Rerun worker request is not private")
+    request = json.loads(request_path.read_text(encoding="utf-8"))
+    if (
+        not isinstance(request, dict)
+        or request.get("schema")
+        != "npa.workbench.openpi.rrd-worker-request.v1"
+    ):
+        raise OpenPIPipelineError("Rerun worker request is malformed")
+    output_path = Path(str(request["output_path"]))
+    operation = request.get("operation")
+    if operation == "preparation":
+        inspection = _build_preparation_rrd_direct(
+            Path(str(request["journal_path"])),
+            output_path,
+            run_id=str(request["run_id"]),
+            result=request["result"],
+            runtime_image=str(request["runtime_image"]),
+        )
+    elif operation == "training":
+        config = argparse.Namespace(**request["config"])
+        inspection = _build_training_rrd_direct(
+            Path(str(request["journal_path"])),
+            output_path,
+            run_id=str(request["run_id"]),
+            config=config,
+            prepared=request["prepared"],
+            runtime_image=str(request["runtime_image"]),
+            hardware=request["hardware"],
+            topology=request["topology"],
+            through_step=request.get("through_step"),
+            milestone=str(request.get("milestone", "final")),
+            require_checkpoint=bool(request.get("require_checkpoint", True)),
+        )
+    else:
+        raise OpenPIPipelineError("Rerun worker operation is unsupported")
+    _write_private_json(
+        result_path,
+        {
+            "schema": "npa.workbench.openpi.rrd-worker-result.v1",
+            "inspection": inspection,
+        },
+    )
+    return 0
+
+
+def _write_private_json(path: Path, value: Mapping[str, object]) -> None:
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+        json.dump(value, stream, sort_keys=True, separators=(",", ":"))
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
 
 
 def _runtime_image_digest(runtime_image: str) -> str:
@@ -2214,6 +2421,10 @@ def build_parser() -> argparse.ArgumentParser:
         train.add_argument("--rrd-root-uri", required=True)
         train.add_argument("--run-id", required=True)
         train.set_defaults(func=_fine_tune, training_kind=kind)
+    worker = subparsers.add_parser("rrd-worker")
+    worker.add_argument("--request", required=True)
+    worker.add_argument("--result", required=True)
+    worker.set_defaults(func=_rrd_worker)
     return parser
 
 

@@ -127,8 +127,14 @@ a narrow runtime compatibility overlay: JAX/JAXlib/CUDA plugin/PJRT 0.6.2,
 ml-dtypes 0.5.1, cuDNN 9.10.2.21, NCCL 2.27.5, and NVSHMEM 3.2.5. That exact
 stack is required for cross-node collectives on RTX PRO 6000 Blackwell; the
 upstream JAX 0.5.3 and NCCL 2.26.2 pair fails the first collective. The image
-contains no checkpoint, dataset, terms value, credentials, or populated runtime
-cache. New bytes first publish as an immutable, scanned
+keeps OpenPI's frozen NumPy 1.26.4 and TensorFlow 2.15 ABI in the trainer
+environment. Rerun 0.31.4 and its NumPy 2 dependency live in a separate
+RRD-worker environment; a local owner-only JSON contract passes only aggregate
+telemetry and sanitized lineage to that worker, and any worker or decoded
+verification failure fails the mandatory milestone while preserving the
+journal and checkpoint. Both environments contain the same NPA source revision.
+The image contains no checkpoint, dataset, terms value, credentials, or
+populated runtime cache. New bytes first publish as an immutable, scanned
 `dev-<full-git-sha>` image; a supported release tag remains quarantined until
 the exact digest completes the eight-node qualification. The trusted public
 image workflow is the sole build surface, so no multi-stage builder is hidden

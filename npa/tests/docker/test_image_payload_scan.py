@@ -176,7 +176,8 @@ def test_openpi_uses_system_ffmpeg_without_bundled_payload() -> None:
     assert "WANDB_MODE=disabled" in dockerfile
     assert 'org.nebius.npa.skypilot-bootstrap-contract="skypilot-0.12.2-v1"' in dockerfile
     assert "rm -f /opt/venv/lib/python3.11/site-packages/wandb/bin/wandb-core" in dockerfile
-    assert "import importlib.metadata, os, rerun, wandb" in dockerfile
+    assert "import importlib.metadata as m, numpy, os, tensorflow" in dockerfile
+    assert "import importlib.metadata as m, numpy, rerun" in dockerfile
     assert "rm -rf /opt/nvidia/nsight-compute" in dockerfile
     assert "test ! -e /opt/nvidia/nsight-compute" in dockerfile
     for pin in (
@@ -192,7 +193,12 @@ def test_openpi_uses_system_ffmpeg_without_bundled_payload() -> None:
         assert pin in dockerfile
     assert "pi05-full-droid-rlds-cu128-jax062-nccl2275-rerun0314" in dockerfile
     assert "'rerun-sdk==0.31.4'" in dockerfile
-    assert "/opt/venv/bin/rerun rrd --help" in dockerfile
+    assert "'numpy==1.26.4'" in dockerfile
+    assert "from transformers import GemmaForCausalLM" in dockerfile
+    assert "NPA_OPENPI_RERUN_PYTHON=/opt/rerun-venv/bin/python" in dockerfile
+    assert "/opt/rerun-venv/bin/rerun rrd --help" in dockerfile
+    assert "pip check --python /opt/venv/bin/python" in dockerfile
+    assert "pip check --python /opt/rerun-venv/bin/python" in dockerfile
     assert 'config.get_config("pi05_droid")' in dockerfile
     assert "multihost_utils.broadcast_one_to_all" in dockerfile
     assert "nccl/lib/libnccl.so.2" in dockerfile
@@ -200,6 +206,13 @@ def test_openpi_uses_system_ffmpeg_without_bundled_payload() -> None:
     dependency_layer = dockerfile.split("RUN python3 -m venv /opt/uv", 1)[1].split(
         "\n\nRUN printf", 1
     )[0]
+    trainer_addons, rerun_addons = dependency_layer.split(
+        "&& /opt/uv/bin/uv venv --python 3.11 /opt/rerun-venv", 1
+    )
+    assert "'numpy==1.26.4'" in trainer_addons
+    assert "rerun-sdk" not in trainer_addons
+    assert "'rerun-sdk==0.31.4'" in rerun_addons
+    assert "pip check --python /opt/rerun-venv/bin/python" in rerun_addons
     assert dependency_layer.index("uv sync --active") < dependency_layer.index(
         "&& cd / \\"
     )

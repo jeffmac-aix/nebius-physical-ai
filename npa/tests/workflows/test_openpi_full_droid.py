@@ -579,6 +579,74 @@ def test_preparation_rrd_contains_factual_progress_and_lineage(
     )
 
 
+def test_preparation_rrd_uses_isolated_worker_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = "preparation-worker-unit"
+    journal = tmp_path / "preparation.jsonl"
+    full_droid._append_jsonl(
+        journal,
+        {
+            "schema": full_droid.PREPARATION_TELEMETRY_SCHEMA,
+            "run_id": run_id,
+            "record_type": "dataset_verified",
+            "normalization_batch": 0,
+            "remote_object_count": 1,
+            "local_file_count": 1,
+            "remote_size_bytes": 23,
+            "local_size_bytes": 23,
+            "listing_sha256": "a" * 64,
+            "checksum_verification_seconds": 1.0,
+            "checksum_verification_bytes_per_second": 23.0,
+        },
+    )
+    full_droid._append_jsonl(
+        journal,
+        {
+            "schema": full_droid.PREPARATION_TELEMETRY_SCHEMA,
+            "run_id": run_id,
+            "record_type": "normalization_complete",
+            "normalization_batch": 1,
+            "frames_processed": 256,
+            "elapsed_seconds": 1.0,
+            "frames_per_second": 256.0,
+        },
+    )
+    output = tmp_path / "worker.rrd"
+    monkeypatch.setattr(
+        full_droid, "_rrd_worker_python", lambda: Path(sys.executable)
+    )
+    inspection = full_droid._build_preparation_rrd(
+        journal,
+        output,
+        run_id=run_id,
+        result={
+            "dataset": {
+                "object_count": 1,
+                "file_count": 1,
+                "remote_total_size_bytes": 23,
+                "local_total_size_bytes": 23,
+                "listing_sha256": "a" * 64,
+            },
+            "normalization": {"sha256": "b" * 64, "frames_processed": 256},
+        },
+        runtime_image="ghcr.io/example/openpi@sha256:" + "c" * 64,
+    )
+    assert inspection["recording_id"] == run_id
+    assert output.stat().st_size > 0
+
+
+def test_rrd_worker_python_fails_closed_when_configured_path_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("NPA_OPENPI_RERUN_PYTHON", "/missing/rerun-python")
+    with pytest.raises(
+        full_droid.OpenPIPipelineError,
+        match="isolated Rerun worker interpreter is unavailable",
+    ):
+        full_droid._rrd_worker_python()
+
+
 def test_dataset_verification_retry_keeps_preparation_journal_immutable(
     tmp_path: Path,
 ) -> None:
