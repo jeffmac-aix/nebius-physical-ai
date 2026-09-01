@@ -58,6 +58,10 @@ RUN apt-get update \
 WORKDIR /opt/robocasa
 
 # Pin the exact dependency closure from the live-accepted BYOF evidence.
+# RoboCasa requires Gymnasium 0.29.1. LeRobot's broad environment dependency
+# requests Gymnasium >=1.1.1, but exact-checkpoint ACT inference uses neither
+# LeRobot environment wrappers nor that newer API. Keep RoboCasa's known-good
+# pin and install only the LeRobot policy package here.
 RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel \
     && python -m pip install --no-cache-dir \
         "git+https://github.com/ARISE-Initiative/robosuite.git@${ROBOSUITE_COMMIT}" \
@@ -67,7 +71,10 @@ RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel \
         h5py lxml hidapi "gymnasium==0.29.1" huggingface_hub \
         "fastapi==0.136.1" "uvicorn[standard]==0.38.0" "pydantic==2.13.4" \
         "boto3==1.42.9" "httpx>=0.27" \
-        "lerobot==0.5.1" "safetensors>=0.4.3" \
+        "datasets>=4.0.0,<5.0.0" "accelerate>=1.10.0,<2.0.0" \
+        "packaging>=24.2,<26.0" "einops>=0.8.0,<0.9.0" \
+        "draccus==0.10.0" "safetensors>=0.4.3,<1.0.0" \
+    && python -m pip install --no-cache-dir --no-deps "lerobot==0.5.1" \
     && python -m pip install --no-cache-dir --upgrade \
         "torch==2.12.1" "torchvision==0.27.1"
 
