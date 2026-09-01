@@ -29,6 +29,9 @@ class RoboCasaRunRequest(BaseModel):
     timeout_seconds: int = Field(DEFAULT_TIMEOUT_SECONDS, ge=1)
     download_assets: bool = True
     seed: int | None = Field(None, ge=0)
+    checkpoint_uri: str = ""
+    train_env_ids: str = ""
+    heldout_env_ids: str = ""
 
     @field_validator("env_id", "capability", "output_uri")
     @classmethod
@@ -47,6 +50,7 @@ class RoboCasaRunRequest(BaseModel):
             "kitchen_egl_env_reset",
             "kitchen_random_rollout",
             "kitchen_trajectory_export",
+            "kitchen_policy_eval",
         }
         if value not in supported:
             raise ValueError(f"unsupported robocasa capability: {value}")

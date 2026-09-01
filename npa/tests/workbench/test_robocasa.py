@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 import types
+import json
 
 import numpy as np
 
@@ -247,6 +248,65 @@ def test_kitchen_trajectory_export(monkeypatch: pytest.MonkeyPatch, tmp_path) ->
         assert st.shape == (3, 16)
     assert (tmp_path / "metadata.json").exists()
     assert (tmp_path / "metrics.json").exists()
+
+
+def test_kitchen_trajectory_export_records_panda_omron_multitask_metadata(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    _install_fake_env(monkeypatch)
+    from npa.workbench.robocasa.capabilities import kitchen_trajectory_export
+
+    result = kitchen_trajectory_export(
+        env_id="robocasa/TrainA,robocasa/TrainB",
+        iterations=1,
+        num_envs=4,
+        output_dir=tmp_path,
+    )
+    metadata = json.loads((tmp_path / "metadata.json").read_text())
+    assert result["embodiment"] == "PandaOmron"
+    assert metadata["robot_type"] == "panda_omron"
+    assert metadata["task_env_ids"] == ["robocasa/TrainA", "robocasa/TrainB"]
+    assert [episode["env_id"] for episode in metadata["episodes"]] == [
+        "robocasa/TrainA",
+        "robocasa/TrainB",
+        "robocasa/TrainA",
+        "robocasa/TrainB",
+    ]
+
+
+def test_kitchen_policy_eval_rejects_overlapping_tasks_before_loading_checkpoint(
+    tmp_path,
+) -> None:
+    from npa.workbench.robocasa.capabilities import RoboCasaError, kitchen_policy_eval
+
+    with pytest.raises(RoboCasaError, match="overlap"):
+        kitchen_policy_eval(
+            checkpoint_uri="s3://example/checkpoint/",
+            train_env_ids="robocasa/TaskA,robocasa/TaskB",
+            heldout_env_ids="robocasa/TaskB,robocasa/TaskC",
+            iterations=1,
+            num_envs=1,
+            seed=0,
+            output_dir=tmp_path,
+        )
+
+
+def test_checkpoint_identity_hashes_exact_pretrained_model_separately(tmp_path) -> None:
+    from npa.workbench.robocasa.capabilities import _checkpoint_identity
+
+    checkpoint = tmp_path / "checkpoints" / "last" / "pretrained_model"
+    checkpoint.mkdir(parents=True)
+    (checkpoint / "config.json").write_text('{"type":"act"}')
+    (checkpoint / "model.safetensors").write_bytes(b"real-act-weights")
+    (tmp_path / "training.log").write_text("first log")
+
+    resolved, checkpoint_sha, first_tree_sha = _checkpoint_identity(tmp_path)
+    (tmp_path / "training.log").write_text("changed unrelated log")
+    _, checkpoint_sha_after, second_tree_sha = _checkpoint_identity(tmp_path)
+
+    assert resolved == checkpoint
+    assert checkpoint_sha == checkpoint_sha_after
+    assert first_tree_sha != second_tree_sha
 
 
 def test_kitchen_trajectory_export_missing_image_key(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:

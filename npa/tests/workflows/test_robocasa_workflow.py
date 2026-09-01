@@ -93,7 +93,7 @@ def test_data_policy_uses_real_toolrefs() -> None:
     }
     assert "workbench.robocasa.trajectory_export" in tool_refs
     assert "workbench.lerobot.policy_train" in tool_refs
-    assert "workbench.lerobot.policy_rollout" in tool_refs
+    assert "workbench.robocasa.policy_eval" in tool_refs
     assert "workbench.insights.ingest_run" in tool_refs
     for ref in tool_refs:
         assert ref in TOOL_CATALOG
@@ -105,3 +105,18 @@ def test_data_policy_trajectory_export_toolref_renders() -> None:
     assert "--capability" in argv
     assert "kitchen_trajectory_export" in argv
     assert "--num-envs" in argv
+
+
+def test_data_policy_uses_panda_omron_and_disjoint_robocasa_eval() -> None:
+    spec = load_spec(DATA_POLICY)
+    assert spec.config["dataset_robot"] == "panda_omron"
+    train = set(spec.config["train_env_ids"].split(","))
+    heldout = set(spec.config["heldout_env_ids"].split(","))
+    assert len(train) >= 2
+    assert len(heldout) >= 2
+    assert train.isdisjoint(heldout)
+    argv = argv_for_tool("workbench.robocasa.policy_eval")
+    assert "kitchen_policy_eval" in argv
+    assert "--checkpoint-uri" in argv
+    assert "--train-env-ids" in argv
+    assert "--heldout-env-ids" in argv

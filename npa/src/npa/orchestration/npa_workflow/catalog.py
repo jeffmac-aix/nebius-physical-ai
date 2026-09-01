@@ -2850,6 +2850,43 @@ TOOL_CATALOG: dict[str, ToolEntry] = {
             "{{config.timeout_seconds}}",
         ],
     ),
+    "workbench.robocasa.policy_eval": ToolEntry(
+        name="workbench.robocasa.policy_eval",
+        description=(
+            "Load the exact produced ACT checkpoint and evaluate it on explicitly "
+            "disjoint held-out RoboCasa tasks and episodes with videos and hashes."
+        ),
+        argv_template=[
+            "npa",
+            "workbench",
+            "robocasa",
+            "run",
+            "--capability",
+            "kitchen_policy_eval",
+            "--env-id",
+            "{{config.heldout_env_ids}}",
+            "--checkpoint-uri",
+            "{{config.artifacts_uri}}",
+            "--train-env-ids",
+            "{{config.train_env_ids}}",
+            "--heldout-env-ids",
+            "{{config.heldout_env_ids}}",
+            "--output-uri",
+            "{{config.rollouts_uri}}",
+            "--iterations",
+            "{{config.eval_iterations}}",
+            "--num-envs",
+            "{{config.rollout_episodes}}",
+            "--service",
+            "--endpoint",
+            "{{config.robocasa_endpoint}}",
+            "--wait",
+            "--poll-seconds",
+            "{{config.poll_seconds}}",
+            "--timeout-seconds",
+            "{{config.timeout_seconds}}",
+        ],
+    ),
 }
 
 def validate_tool_ref(tool_ref: str) -> ToolEntry:

@@ -37,7 +37,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYOPENGL_PLATFORM=egl \
     ROBOCASA_PORT=8791 \
     PYTHONPATH=/app \
-    NUMBA_CACHE_DIR=/tmp/numba_cache
+    NUMBA_CACHE_DIR=/tmp/numba_cache \
+    PATH=/opt/robocasa/venv/bin:$PATH
 
 USER root
 
@@ -45,25 +46,34 @@ USER root
 RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         python3 python3-dev python3-pip python3-venv build-essential git \
+        software-properties-common ca-certificates curl \
         libegl1 libgl1 libglvnd0 libegl1-mesa-dev \
-    && rm -rf /var/lib/apt/lists/*
+    && add-apt-repository -y ppa:deadsnakes/ppa \
+    && apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        python3.12 python3.12-dev python3.12-venv \
+    && rm -rf /var/lib/apt/lists/* \
+    && python3.12 -m venv /opt/robocasa/venv
 
 WORKDIR /opt/robocasa
 
 # Pin the exact dependency closure from the live-accepted BYOF evidence.
-RUN python3 -m pip install --no-cache-dir --upgrade pip \
-    && python3 -m pip install --no-cache-dir \
+RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel \
+    && python -m pip install --no-cache-dir \
         "git+https://github.com/ARISE-Initiative/robosuite.git@${ROBOSUITE_COMMIT}" \
-    && python3 -m pip install --no-cache-dir \
+    && python -m pip install --no-cache-dir \
         numpy==2.2.5 numba==0.61.2 scipy==1.15.3 mujoco==3.3.1 pygame Pillow \
         opencv-python-headless pyyaml pynput tqdm termcolor "imageio[ffmpeg]" \
         h5py lxml hidapi "gymnasium==0.29.1" huggingface_hub \
         "fastapi==0.136.1" "uvicorn[standard]==0.38.0" "pydantic==2.13.4" \
-        "boto3==1.42.9" "httpx>=0.27"
+        "boto3==1.42.9" "httpx>=0.27" \
+        "lerobot==0.5.1" "safetensors>=0.4.3" \
+    && python -m pip install --no-cache-dir --upgrade \
+        "torch==2.12.1" "torchvision==0.27.1"
 
 # Install RoboCasa source (no deps; the closure above is pinned).
 RUN git clone --depth 1 --branch ${ROBOCASA_REPO_REF} ${ROBOCASA_REPO_URL} . \
-    && python3 -m pip install --no-cache-dir --no-deps -e .
+    && python -m pip install --no-cache-dir --no-deps -e .
 
 # Copy the shared workbench implementation into the image.
 RUN mkdir -p /app/npa/workbench

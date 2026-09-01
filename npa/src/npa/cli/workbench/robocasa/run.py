@@ -31,6 +31,9 @@ def run_cmd(
     timeout_seconds: int = typer.Option(DEFAULT_TIMEOUT_SECONDS, "--timeout-seconds", help="Run timeout in seconds."),
     download_assets: bool = typer.Option(True, "--download-assets/--no-download-assets", help="Download kitchen assets before running."),
     seed: int = typer.Option(None, "--seed", help="Random seed."),
+    checkpoint_uri: str = typer.Option("", "--checkpoint-uri", help="Exact trained checkpoint S3 prefix for policy evaluation."),
+    train_env_ids: str = typer.Option("", "--train-env-ids", help="Comma-separated RoboCasa training env ids used for disjointness proof."),
+    heldout_env_ids: str = typer.Option("", "--heldout-env-ids", help="Comma-separated held-out RoboCasa env ids to evaluate."),
     service: bool = typer.Option(False, "--service", help="Call a deployed service endpoint."),
     endpoint: str = typer.Option("", "--endpoint", help="RoboCasa service endpoint."),
     token_env: str = typer.Option(DEFAULT_TOKEN_ENV, "--token-env", help="Environment variable containing service token."),
@@ -48,6 +51,9 @@ def run_cmd(
         timeout_seconds=timeout_seconds,
         download_assets=download_assets,
         seed=seed,
+        checkpoint_uri=checkpoint_uri,
+        train_env_ids=train_env_ids,
+        heldout_env_ids=heldout_env_ids,
     )
     if service:
         result = request_json(
