@@ -150,4 +150,3 @@ def test_video_gate_checks_shape_blank_and_motion(
     result = benchmark.validate_video(tmp_path / "clip.mp4")
     assert result["valid"] is True
     assert result["stream"]["nb_read_frames"] == "189"
-

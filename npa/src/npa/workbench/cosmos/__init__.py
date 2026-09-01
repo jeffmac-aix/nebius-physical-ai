@@ -30,11 +30,6 @@ if not _LIGHT_IMPORT:
         generate_plan as generate_plan,
         run_cosmos3_generate as run_cosmos3_generate,
     )
-    from npa.workbench.cosmos.super_benchmark import (
-        Cosmos3SuperBenchmarkError as Cosmos3SuperBenchmarkError,
-        benchmark_plan as cosmos3_super_benchmark_plan,
-        run_benchmark as run_cosmos3_super_benchmark,
-    )
 
 ensure_ingress = make_cli_wrapper(
     "npa.cli.cosmos", "ensure_ingress_cmd", "Ensure ingress for a Cosmos workbench."
@@ -74,8 +69,6 @@ __all__ = (
         "cosmos3_generate_available",
         "generate_plan",
         "run_cosmos3_generate",
-        "cosmos3_super_benchmark_plan",
-        "run_cosmos3_super_benchmark",
     ]
 ) + [
     "ensure_ingress",
