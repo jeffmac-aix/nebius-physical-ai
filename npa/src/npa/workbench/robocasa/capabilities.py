@@ -402,7 +402,7 @@ def kitchen_trajectory_export(
                 workspace_frames.append(_obs_image(obs, "video.robot0_agentview_left"))
                 wrist_frames.append(_obs_image(obs, "video.robot0_eye_in_hand"))
                 states.append(_obs_state(obs))
-                actions.append(np.asarray(action, dtype=np.float32))
+                actions.append(_flatten_action(action))
                 if terminated or truncated:
                     break
             if output_dir is not None:
@@ -442,6 +442,21 @@ def kitchen_trajectory_export(
             env.close()
         except Exception as exc:  # pragma: no cover - best effort.
             LOGGER.debug("env close failed: %s", exc)
+
+
+def _flatten_action(action: Any) -> np.ndarray:
+    """Flatten a RoboCasa action (OrderedDict or array) into a float32 vector."""
+    if isinstance(action, dict):
+        parts = []
+        for key in sorted(action.keys()):
+            value = action[key]
+            if isinstance(value, dict):
+                for sub_key in sorted(value.keys()):
+                    parts.append(np.asarray(value[sub_key], dtype=np.float32).reshape(-1))
+            else:
+                parts.append(np.asarray(value, dtype=np.float32).reshape(-1))
+        return np.concatenate(parts)
+    return np.asarray(action, dtype=np.float32).reshape(-1)
 
 
 def _obs_image(obs: dict[str, Any], key: str) -> Any:
