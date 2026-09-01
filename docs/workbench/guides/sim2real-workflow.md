@@ -272,6 +272,20 @@ cm. For a custom/private dataset, omit `--preset` and continue to use the
 existing `--var dataset_id=...`, `trigger_uri=...`, and `seed_manifest_uri=...`
 path.
 
+The production training default is 2,000 PPO updates per inner pass. Each later
+pass resumes the validation-selected checkpoint, so the three-pass inner loop
+can cover 6,000 cumulative updates without weakening the fixed validation or
+gold predicates. Reduced plumbing proofs may override this value explicitly;
+effectiveness runs should retain the convergence-capable default.
+
+On the curated stock-Franka scenario task, training also includes three dense
+grasp-and-lift precursors. Finger closure is rewarded only while the end
+effector is near the object, a closed near-object end effector receives a
+lift-attempt signal, and real object-height progress supplies continuous reward
+before the stock task's sparse lift boundary. These terms address the sparse
+reach-to-contact-to-lift transition without changing the strict 5 cm
+stable-placement metric or adding a scripted inference controller.
+
 ```bash
 export RUN_ID="sim2real-$(date -u +%Y%m%dT%H%M%SZ)"
 export NPA_BUCKET='<bucket-name>'

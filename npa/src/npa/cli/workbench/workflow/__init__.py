@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import replace
 import hashlib
 import json
 import logging
@@ -10,6 +11,7 @@ import os
 import re
 import tempfile
 import time
+import sys
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -125,6 +127,130 @@ def _fail(msg: str, code: int = 1) -> None:
     error.append(str(msg))
     console.print(error, soft_wrap=True)
     raise typer.Exit(code)
+
+
+def _workflow_access_requirements(spec) -> tuple:  # noqa: ANN001
+    from npa.workbench.access_approval import requirements_for_tool_refs
+
+    return requirements_for_tool_refs(
+        state.tool_ref for state in spec.states.values() if state.tool_ref
+    )
+
+
+def _workflow_access_requirement_payload(spec) -> dict[str, object]:  # noqa: ANN001
+    requirements = _workflow_access_requirements(spec)
+    return {
+        "hf": sum(item.provider == "huggingface" for item in requirements),
+        "ngc": sum(item.provider == "ngc" for item in requirements),
+        "artifacts": [
+            {
+                "provider": item.provider,
+                "artifact": item.repo,
+                "artifact_type": item.repo_type,
+                "revision": item.revision,
+                "official_url": item.official_url,
+            }
+            for item in requirements
+        ],
+    }
+
+
+def _current_workflow_resume_command(fallback: list[str]) -> str:
+    """Return real process argv, with a deterministic CliRunner fallback."""
+
+    from npa.workbench.access_approval import safe_resume_command
+
+    process = list(sys.argv)
+    executable = Path(process[0]).name if process else ""
+    if executable == "npa" or ("-m" in process and "npa" in process):
+        return safe_resume_command(process)
+    return safe_resume_command(fallback)
+
+
+def _enforce_workflow_access(
+    spec,
+    *,
+    json_output: bool,
+    resume_command: str,  # noqa: ANN001
+    excluded_repos: frozenset[str] = frozenset(),
+    hf_token: str | None = None,
+    ngc_key: str | None = None,
+) -> dict[str, object]:
+    """Fail before execution/provisioning when exact HF/NGC access is not Ready."""
+
+    requirements = tuple(
+        item
+        for item in _workflow_access_requirements(spec)
+        if item.repo not in excluded_repos
+    )
+    if not requirements:
+        return {"status": "ready", "counts": {"hf": 0, "ngc": 0}}
+    from npa.clients.credentials import load_credentials
+    from npa.clients.huggingface import validate_hf_access
+    from npa.workbench.access_approval import (
+        DEFAULT_STATE_PATH,
+        approval_plan,
+        blocked,
+        probe_requirements,
+    )
+    from npa.workbench.nurec.nurec import check_ngc_image_access
+
+    credentials = load_credentials() if hf_token is None or ngc_key is None else None
+    resolved_hf = (
+        str(getattr(credentials, "hf_token", "") or "")
+        if hf_token is None
+        else hf_token
+    )
+    resolved_ngc = (
+        str(getattr(credentials, "ngc_api_key", "") or "")
+        if ngc_key is None
+        else ngc_key
+    )
+    state_path = Path(
+        os.environ.get("NPA_ACCESS_APPROVAL_STATE_PATH", str(DEFAULT_STATE_PATH))
+    )
+    evidence = probe_requirements(
+        requirements,
+        hf_token=resolved_hf,
+        ngc_key=resolved_ngc,
+        hf_validator=validate_hf_access,
+        ngc_validator=check_ngc_image_access,
+        state_path=state_path,
+    )
+    plan = approval_plan(evidence, resume_command=resume_command)
+    if not blocked(plan):
+        return plan
+    if json_output:
+        typer.echo(json.dumps(plan, indent=2, sort_keys=True))
+        raise typer.Exit(code=1)
+    counts = plan["counts"]
+    typer.echo(
+        "This workflow needs approval for "
+        f"{counts['hf']} Hugging Face resource(s) and "
+        f"{counts['ngc']} NVIDIA NGC artifact(s).",
+        err=True,
+    )
+    if sys.stdin.isatty() and typer.confirm(
+        "Open only the missing official approval pages now?", default=False
+    ):
+        import webbrowser
+
+        for url in plan["official_urls"]:
+            webbrowser.open_new_tab(str(url))
+    for provider, rows in plan["providers"].items():
+        typer.echo(f"{provider}:", err=True)
+        for row in rows:
+            typer.echo(
+                f"  - {row['artifact']} ({row['status']}): {row['official_url']}",
+                err=True,
+            )
+    typer.echo(
+        "NPA did not accept any terms or start provisioning. Complete any "
+        "user-bound approval, then resume exactly with:",
+        err=True,
+    )
+    typer.echo(f"  {plan['resume_command']}", err=True)
+    raise typer.Exit(code=1)
 
 
 def _emit_image_bootstrap_observing_progress(
@@ -337,8 +463,10 @@ def submit_cmd(
         "--retry-absent-in-flight/--no-retry-absent-in-flight",
         help=(
             "With --runtime and explicit resume: authorize a new attempt only when "
-            "the exact previously reconciled managed job and every declared durable "
-            "output are proven absent. Disabled by default."
+            "the exact previously reconciled managed-job identity (including a "
+            "typed transport failure before job-ID assignment) and every wave-unique "
+            "durable output are proven absent. Shared outputs already attributed to "
+            "completed waves do not prove the later attempt ran. Disabled by default."
         ),
     ),
     poll_seconds: int = typer.Option(
@@ -365,7 +493,21 @@ def submit_cmd(
     retries: int = typer.Option(
         0,
         "--retries",
-        help="With --runtime: retry a failed wave this many times before failing the run.",
+        min=0,
+        help=(
+            "With --runtime: retry payload/terminal wave failures this many times. "
+            "Infrastructure recovery uses --max-infrastructure-recoveries instead."
+        ),
+    ),
+    max_infrastructure_recoveries: int = typer.Option(
+        1,
+        "--max-infrastructure-recoveries",
+        min=0,
+        help=(
+            "With --runtime: maximum typed infrastructure recoveries per wave "
+            "(capacity, quota, node-not-ready, or provider interruption). "
+            "Zero disables automatic infrastructure relaunch."
+        ),
     ),
     max_concurrency: int = typer.Option(
         0,
@@ -843,8 +985,16 @@ def submit_cmd(
 
     checkpoint_access_error = ""
     checkpoint_modalities: set[str] = set()
+    workflow_access_secret_names: set[str] = set()
     try:
         required_secret_env = list(secret_env)
+        if merged_npa_spec is not None and not plan_only:
+            selected_access = _workflow_access_requirements(merged_npa_spec)
+            if any(item.provider == "huggingface" for item in selected_access):
+                workflow_access_secret_names.add("HF_TOKEN")
+            if any(item.provider == "ngc" for item in selected_access):
+                workflow_access_secret_names.add("NGC_API_KEY")
+            required_secret_env.extend(sorted(workflow_access_secret_names))
         checkpoint_tool_refs = {
             "workbench.cosmos2.transfer_execute",
             "workbench.cosmos2.transfer_conditioned_execute",
@@ -892,6 +1042,11 @@ def submit_cmd(
             "HF_TOKEN is required to verify the exact gated Cosmos Transfer "
             "checkpoint before provisioning or GPU work"
         )
+    for provider_secret in workflow_access_secret_names:
+        if provider_secret in missing_secrets:
+            # The typed approval plan reports missing provider credentials as
+            # Pending with official links and a safe resume command.
+            missing_secrets.remove(provider_secret)
     if missing_secrets and not plan_only:
         _fail(
             "Required secret values are not present in the process environment "
@@ -1213,6 +1368,26 @@ def submit_cmd(
                 _fail_missing_prerequisites(yaml_path, placement_missing)
                 return
             paidf_placement_prechecked = True
+
+        if not plan_only:
+            # Cosmos Transfer already has the stronger state-local pinned-file
+            # fence immediately below. Avoid replacing that exact probe with a
+            # broader repository-level check; all other catalog requirements
+            # use the provider-neutral adapter here.
+            _enforce_workflow_access(
+                merged_npa_spec,
+                json_output=output_format == OutputFormat.json,
+                resume_command=_current_workflow_resume_command(
+                    ["npa", "workbench", "workflow", "submit", str(yaml_path)]
+                ),
+                excluded_repos=(
+                    frozenset({"nvidia/Cosmos-Transfer2.5-2B"})
+                    if checkpoint_access_required
+                    else frozenset()
+                ),
+                hf_token=str(submit_credentials.secret_values.get("HF_TOKEN") or ""),
+                ngc_key=str(submit_credentials.secret_values.get("NGC_API_KEY") or ""),
+            )
 
         if checkpoint_access_required and not plan_only:
             from npa.workbench.cosmos.checkpoint_access import (
@@ -1580,6 +1755,55 @@ def submit_cmd(
                 return
 
         if runtime and not plan_only:
+            def refresh_runtime_preflight(_wave_yaml: Path) -> None:
+                """Re-establish mutable launch facts before every runtime wave."""
+
+                refreshed_pins = _preflight_submit_images(
+                    yaml_path,
+                    spec=merged_npa_spec,
+                    options=replace(npa_render_options, image_digest_pins={}),
+                    assume_decision=assume_decision,
+                    enabled=preflight_images,
+                    infra=infra,
+                    image_bootstrap_timeout_seconds=(
+                        image_bootstrap_timeout_seconds
+                    ),
+                )
+                if preflight_images and refreshed_pins != image_digest_pins:
+                    raise RuntimeError(
+                        "immutable image identity changed after initial preflight"
+                    )
+                refreshed_accelerators = _resolve_submit_accelerators(
+                    yaml_path,
+                    spec=merged_npa_spec,
+                    infra=infra,
+                    sky_bin=sky_bin,
+                    assume_decision=assume_decision,
+                    enabled=resolve_accelerators,
+                    config_path=config_path,
+                    isolated_config_dir=isolated_config_dir,
+                    readiness_timeout=gpu_readiness_timeout,
+                    readiness_poll_interval=gpu_readiness_poll_interval,
+                )
+                if (
+                    resolve_accelerators
+                    and refreshed_accelerators
+                    != npa_render_options.gpu_accelerator_overrides
+                ):
+                    raise RuntimeError(
+                        "accelerator resolution changed after initial preflight"
+                    )
+                if not skip_preflight:
+                    _preflight_submit_gang_capacity(
+                        merged_npa_spec,
+                        context=infra_context,
+                        accelerator_overrides=refreshed_accelerators,
+                        allowed_nodes=None,
+                        sky_bin=sky_bin,
+                        config_path=config_path,
+                        isolated_config_dir=isolated_config_dir,
+                    )
+
             _run_npa_workflow_runtime(
                 yaml_path,
                 run_id=resolved_run_id,
@@ -1598,9 +1822,24 @@ def submit_cmd(
                 max_wait_seconds=max_wait_seconds,
                 cancel_on_timeout=cancel_on_timeout,
                 retries=retries,
+                max_infrastructure_recoveries=max_infrastructure_recoveries,
                 max_concurrency=max_concurrency,
                 resume=resume,
                 retry_absent_in_flight=retry_absent_in_flight,
+                preflight_evidence={
+                    "exact_image_pull": (
+                        "pass" if preflight_images else "unknown"
+                    ),
+                    "credentials_access": "pass",
+                    "accelerator_resolution": (
+                        "pass" if resolve_accelerators else "unknown"
+                    ),
+                    "per_node_gpu_shape": (
+                        "pass" if resolve_accelerators else "unknown"
+                    ),
+                    "gang_capacity": "pass" if not skip_preflight else "unknown",
+                },
+                pre_submit_hook=refresh_runtime_preflight,
                 output_format=output_format,
                 project=project,
                 auto_load=auto_load,
@@ -2160,9 +2399,12 @@ def _run_npa_workflow_runtime(
     max_wait_seconds: int,
     cancel_on_timeout: bool,
     retries: int,
+    max_infrastructure_recoveries: int,
     max_concurrency: int,
     resume: bool,
     retry_absent_in_flight: bool,
+    preflight_evidence: Mapping[str, str],
+    pre_submit_hook: Callable[[Path], None] | None,
     output_format: "OutputFormat",
     project: str = "",
     auto_load: bool = True,
@@ -2222,6 +2464,7 @@ def _run_npa_workflow_runtime(
         poll_seconds=poll_seconds,
         max_wait_seconds=max_wait_seconds,
         retries=max(0, retries),
+        max_infrastructure_recoveries=max(0, max_infrastructure_recoveries),
         cancel_on_timeout=cancel_on_timeout,
         max_concurrency=max(0, max_concurrency),
         secret_envs=resolved_secret_envs,
@@ -2239,6 +2482,8 @@ def _run_npa_workflow_runtime(
             project=project,
             requested=list(resolved_secret_envs),
         ),
+        preflight_evidence=dict(preflight_evidence or {}),
+        pre_submit_hook=pre_submit_hook,
     )
     runtime_env = dict(secret_env_values)
     endpoint = str(getattr(render_options, "aws_endpoint_url", "") or "").strip()
@@ -4120,6 +4365,25 @@ def _durable_workflow_status(
                 "verification": "found",
             }
         )
+        try:
+            from npa.orchestration.npa_workflow.run_state import RunStateStore
+            from npa.orchestration.npa_workflow.supervisor import SupervisorLedger
+
+            supervisor_store = RunStateStore(
+                bucket=state.bucket,
+                prefix=state.prefix.removesuffix("/npa-workflow"),
+                endpoint_url=state.endpoint_url,
+                aws_access_key_id=state.aws_access_key_id,
+                aws_secret_access_key=state.aws_secret_access_key,
+            )
+            latest_supervision = SupervisorLedger(supervisor_store).latest()
+            if latest_supervision is not None:
+                run_payload["supervisor"] = latest_supervision
+        except Exception as exc:  # noqa: BLE001 - status remains useful without enrichment
+            run_payload["supervisor"] = {
+                "state": "evidence_unavailable",
+                "error": sanitize_reason(exc),
+            }
         if diagnostics:
             run_payload["diagnostics"] = diagnostics
         blockers = [
@@ -6492,6 +6756,7 @@ def validate_spec_cmd(
         "task_id": str(spec.config.get("task_id") or ""),
         "trigger_uri": str(spec.config.get("trigger_uri") or ""),
         "seed_manifest_uri": str(spec.config.get("seed_manifest_uri") or ""),
+        "access_requirements": _workflow_access_requirement_payload(spec),
     }
     if json_output:
         typer.echo(json.dumps(payload, indent=2, sort_keys=True))
@@ -6564,7 +6829,9 @@ def plan_spec_cmd(
 
         wave_plan = wave_plan_from_plan(spec, plan, run_id=resolved_run_id)
         if json_output:
-            typer.echo(json.dumps(wave_plan.to_dict(), indent=2, sort_keys=True))
+            payload = wave_plan.to_dict()
+            payload["access_requirements"] = _workflow_access_requirement_payload(spec)
+            typer.echo(json.dumps(payload, indent=2, sort_keys=True))
             return
         typer.echo(f"workflow: {wave_plan.workflow}")
         typer.echo(f"waves: {len(wave_plan.waves)}")
@@ -6582,6 +6849,7 @@ def plan_spec_cmd(
 
     if json_output:
         payload = plan.to_dict()
+        payload["access_requirements"] = _workflow_access_requirement_payload(spec)
         # The human warning is suppressed under --json to keep the document clean,
         # which made a placeholder plan look valid. Say it in the document instead.
         if _is_placeholder_bucket(str(spec.config.get("bucket", "") or "")):
@@ -6589,6 +6857,13 @@ def plan_spec_cmd(
         typer.echo(json.dumps(payload, indent=2, sort_keys=True))
         return
     typer.echo(f"workflow: {plan.workflow}")
+    access = _workflow_access_requirement_payload(spec)
+    if access["hf"] or access["ngc"]:
+        typer.echo(
+            "access_requirements: "
+            f"hf={access['hf']} ngc={access['ngc']} "
+            "(exact artifact access is probed before execution)"
+        )
     if plan.assume_decision:
         typer.echo(f"assume_decision: {plan.assume_decision}")
     for index, step in enumerate(plan.steps, start=1):
@@ -6670,6 +6945,37 @@ def run_spec_cmd(
     resolved_assume = assume_decision or str(
         spec.config.get("plan_assume_decision") or ""
     )
+    if execute:
+        _enforce_workflow_access(
+            spec,
+            json_output=json_output,
+            resume_command=_current_workflow_resume_command(
+                [
+                    "npa",
+                    "workbench",
+                    "workflow",
+                    "run-spec",
+                    str(yaml_path),
+                    *(["--run-id", run_id] if run_id else []),
+                    "--execute",
+                    *(
+                        ["--assume-decision", assume_decision]
+                        if assume_decision
+                        else []
+                    ),
+                    *(
+                        item
+                        for pair in (("--var", item) for item in var)
+                        for item in pair
+                    ),
+                    *(["--preset", preset] if preset else []),
+                    *(["--persist-state"] if persist_state else []),
+                    *(["--require-inputs"] if require_inputs else []),
+                    *(["--scheduler-plan"] if scheduler_plan else []),
+                    *(["--json"] if json_output else []),
+                ]
+            ),
+        )
     try:
         report = run_workflow(
             spec,

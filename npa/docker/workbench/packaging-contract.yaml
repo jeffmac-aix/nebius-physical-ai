@@ -401,8 +401,10 @@ images:
     notes: >-
       Bakes OSS dependencies only and uses Debian FFmpeg at runtime. The image
       removes imageio-ffmpeg's wheel-bundled static executable in the same layer
-      that installs the Python environment. Isaac Sim/Lab and task assets remain
-      cryptographically verified runtime fetches after EULA preflight.
+      that installs the Python environment, and removes the CUDA development
+      base's unrelated Nsight Compute profiler tree from the final filesystem.
+      Isaac Sim/Lab and task assets remain cryptographically verified runtime
+      fetches after EULA preflight.
     redistribution: public
     skypilot_bootstrap_contract: skypilot-0.12.2-v1
   leisaac:
@@ -485,6 +487,15 @@ images:
   sim2real-envgen:
     dockerfile: sim2real-envgen/Dockerfile
     tier: interactive
+    notes: >-
+      The flattened public runtime removes the parent image's optional AGPL
+      tetgen wrapper, W&B client, and Nsight Compute tree. Canonical Sim2Real
+      environment generation does not use tetrahedralization, experiment
+      tracking, or profiler tooling. The runtime correspondingly removes the
+      Genesis/LeRobot metadata edges for those absent optional dependencies;
+      a repository-owned fail-closed import shim rejects tetrahedralization,
+      while build-time imports and pip consistency checks protect the reduced
+      contract.
     redistribution: public
   rerun-viewer:
     dockerfile: rerun-viewer/Dockerfile
