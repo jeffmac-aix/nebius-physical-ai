@@ -177,6 +177,7 @@ def _kubernetes_manifest(
                             "nodeSelector": {node_selector_key: node_selector_value},
                             **({"imagePullSecrets": [{"name": image_pull_secret}]} if image_pull_secret else {}),
                             "tolerations": [{"key": "nvidia.com/gpu", "operator": "Exists", "effect": "NoSchedule"}],
+                            "securityContext": {"fsGroup": 1000},
                             "volumes": [
                                 {"name": "assets", "persistentVolumeClaim": {"claimName": f"{name}-assets"}},
                             ],
