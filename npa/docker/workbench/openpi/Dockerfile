@@ -93,8 +93,9 @@ RUN python3 -m venv /opt/uv \
       'boto3>=1.34' 'deepdiff==8.6.1' 'numpy==1.26.4' \
     && rm -f /opt/venv/lib/python3.11/site-packages/wandb/bin/wandb-core \
     && /opt/venv/bin/python -c \
-      'import importlib.metadata as m, numpy, os, tensorflow, transformers, wandb; from transformers import GemmaForCausalLM; assert m.version("deepdiff") == "8.6.1" and m.version("numpy") == "1.26.4" and m.version("tensorflow") == "2.15.0" and m.version("transformers") == "4.53.2"; assert os.environ["WANDB_MODE"] == "disabled" and GemmaForCausalLM and numpy is not None and tensorflow is not None and wandb is not None' \
-    && /opt/uv/bin/uv pip check --python /opt/venv/bin/python \
+      'import importlib.metadata as m, numpy, os, tensorflow, torch, transformers, wandb; from transformers import GemmaForCausalLM; assert m.version("deepdiff") == "8.6.1" and m.version("numpy") == "1.26.4" and m.version("tensorflow") == "2.15.0" and m.version("transformers") == "4.53.2"; assert os.environ["WANDB_MODE"] == "disabled" and GemmaForCausalLM and numpy is not None and tensorflow is not None and torch is not None and wandb is not None' \
+    && /opt/venv/bin/python -c \
+      'import subprocess; expected={"The package `tensorflow-cpu` requires `ml-dtypes~=0.2.0`, but `0.5.1` is installed","The package `torch` requires `nvidia-cudnn-cu12==9.5.1.17 ; platform_machine == x86_64 and sys_platform == linux`, but `9.10.2.21` is installed","The package `torch` requires `nvidia-nccl-cu12==2.26.2 ; platform_machine == x86_64 and sys_platform == linux`, but `2.27.5` is installed","The package `tensorflow` requires `ml-dtypes~=0.2.0`, but `0.5.1` is installed","The package `openpi` requires `jax[cuda12]==0.5.3`, but `0.6.2` is installed"}; result=subprocess.run(["/opt/uv/bin/uv","pip","check","--python","/opt/venv/bin/python"],capture_output=True,text=True); actual={line.replace(chr(39),"") for line in (result.stdout+result.stderr).splitlines() if line.startswith("The package `")}; assert result.returncode == 1 and actual == expected, {"returncode":result.returncode,"unexpected":sorted(actual-expected),"missing":sorted(expected-actual)}' \
     && /opt/uv/bin/uv venv --python 3.11 /opt/rerun-venv \
     && /opt/uv/bin/uv pip install --python /opt/rerun-venv/bin/python --no-cache \
       'pyyaml==6.0.3' 'rerun-sdk==0.31.4' \

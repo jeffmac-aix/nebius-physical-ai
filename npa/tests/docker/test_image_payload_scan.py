@@ -197,7 +197,9 @@ def test_openpi_uses_system_ffmpeg_without_bundled_payload() -> None:
     assert "from transformers import GemmaForCausalLM" in dockerfile
     assert "NPA_OPENPI_RERUN_PYTHON=/opt/rerun-venv/bin/python" in dockerfile
     assert "/opt/rerun-venv/bin/rerun rrd --help" in dockerfile
-    assert "pip check --python /opt/venv/bin/python" in dockerfile
+    assert '"pip","check","--python","/opt/venv/bin/python"' in dockerfile
+    assert "actual == expected" in dockerfile
+    assert "unexpected" in dockerfile and "missing" in dockerfile
     assert "pip check --python /opt/rerun-venv/bin/python" in dockerfile
     assert 'config.get_config("pi05_droid")' in dockerfile
     assert "multihost_utils.broadcast_one_to_all" in dockerfile
