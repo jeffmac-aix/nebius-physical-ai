@@ -348,9 +348,9 @@ def submit_cmd(
         False,
         "--allow-terminal-plan-migration/--no-allow-terminal-plan-migration",
         help=(
-            "With explicit runtime resume: authorize one append-only plan migration "
-            "only when every prior attempt is terminal-failed and all prior declared "
-            "outputs are verified absent. Disabled by default."
+            "With explicit runtime resume: authorize the next bounded append-only "
+            "plan migration only when every prior attempt is terminal-failed and all "
+            "prior declared outputs are verified absent. Disabled by default."
         ),
     ),
     plan_migration_reason: str = typer.Option(
