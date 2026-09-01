@@ -50,8 +50,7 @@ def create_app(*, auth_mode: str | None = None, token: str | None = None) -> Fas
             raise HTTPException(status_code=401, detail="invalid token")
 
     @app.get("/health")
-    async def health(request: Request, authorization: str = Header(default="")) -> dict[str, Any]:
-        await require_auth(request, authorization)
+    async def health() -> dict[str, Any]:
         return {"status": "ok", "runs": len(RUNS)}
 
     @app.get("/system-info", response_model=RoboCasaSystemInfo)

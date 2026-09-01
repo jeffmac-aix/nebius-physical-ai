@@ -150,9 +150,18 @@ def test_service_run_invalid_capability() -> None:
 def test_service_auth_token() -> None:
     app = create_app(auth_mode="token", token="secret")
     client = TestClient(app)
-    assert client.get("/health").status_code == 401
-    assert client.get("/health", headers={"Authorization": "Bearer secret"}).status_code == 200
-    assert client.get("/health", headers={"Authorization": "Bearer wrong"}).status_code == 401
+    # /health is intentionally unauthenticated so Kubernetes liveness/readiness
+    # probes can reach it without a token; the protected surface is /system-info.
+    assert client.get("/health").status_code == 200
+    assert client.get("/system-info").status_code == 401
+    assert (
+        client.get("/system-info", headers={"Authorization": "Bearer secret"}).status_code
+        == 200
+    )
+    assert (
+        client.get("/system-info", headers={"Authorization": "Bearer wrong"}).status_code
+        == 401
+    )
 
 
 def test_service_list_runs() -> None:
