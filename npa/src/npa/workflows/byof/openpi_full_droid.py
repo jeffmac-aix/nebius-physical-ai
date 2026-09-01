@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import fcntl
 import hashlib
 import importlib.metadata
 import inspect
@@ -37,6 +38,13 @@ from npa.workflows.byof.openpi_pipeline import (
 SOURCE_REF = "15a9616a00943ada6c20a0f158e3adb39df2ccac"
 CONFIG_NAME = "pi05_full_droid_finetune"
 DATASET_URI = "gs://gresearch/robotics/droid/1.0.1"
+FILTER_DICTIONARY_URI = (
+    "gs://openpi-assets/droid/droid_sample_ranges_v1_0_1.json"
+)
+FILTER_DICTIONARY_SHA256 = (
+    "5046049ab62a2df2f802df89cf0888b720f852ce2557849417d40899c9a38bc8"
+)
+FILTER_DICTIONARY_BYTES = 28_573_266
 EXPECTED_STEPS = 100_000
 EXPECTED_BATCH_SIZE = 256
 EXPECTED_PROCESSES = 8
@@ -319,6 +327,81 @@ def _stage_dataset(gsutil: str, data_root: Path, work_root: Path) -> dict[str, o
     return {**remote, **local, "local_path_role": "run_owned_durable_pvc"}
 
 
+def _configure_openpi_cache(work_root: Path) -> Path:
+    cache_root = work_root / "openpi-cache"
+    cache_root.mkdir(parents=True, exist_ok=True)
+    os.environ["OPENPI_DATA_HOME"] = str(cache_root)
+    return cache_root
+
+
+def _validate_filter_dictionary(path: Path) -> dict[str, object]:
+    try:
+        payload = path.read_bytes()
+        decoded = json.loads(payload)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise OpenPIPipelineError(
+            "pinned DROID filter dictionary is absent or invalid JSON"
+        ) from exc
+    digest = hashlib.sha256(payload).hexdigest()
+    if len(payload) != FILTER_DICTIONARY_BYTES or digest != FILTER_DICTIONARY_SHA256:
+        raise OpenPIPipelineError(
+            "pinned DROID filter dictionary failed byte identity validation"
+        )
+    if not isinstance(decoded, dict) or not decoded:
+        raise OpenPIPipelineError(
+            "pinned DROID filter dictionary must be a non-empty mapping"
+        )
+    return {
+        "source_uri": FILTER_DICTIONARY_URI,
+        "sha256": digest,
+        "size_bytes": len(payload),
+        "entry_count": len(decoded),
+        "source_ref": SOURCE_REF,
+        "path_role": "run_owned_durable_openpi_cache",
+    }
+
+
+def _stage_filter_dictionary(gsutil: str, cache_root: Path) -> dict[str, object]:
+    """Fetch upstream's single JSON object without its broken wildcard helper."""
+
+    target = (
+        cache_root
+        / "openpi-assets"
+        / "droid"
+        / "droid_sample_ranges_v1_0_1.json"
+    )
+    target.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = target.with_suffix(target.suffix + ".lock")
+    with lock_path.open("a+b") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        try:
+            evidence = _validate_filter_dictionary(target)
+        except OpenPIPipelineError:
+            partial = target.with_name(target.name + f".{os.getpid()}.partial")
+            partial.unlink(missing_ok=True)
+            try:
+                command = [gsutil, "cp", FILTER_DICTIONARY_URI, str(partial)]
+                if any("*" in item or "?" in item for item in command):
+                    raise OpenPIPipelineError(
+                        "filter dictionary download must address one exact object"
+                    )
+                _run(command)
+                evidence = _validate_filter_dictionary(partial)
+                with partial.open("rb") as handle:
+                    os.fsync(handle.fileno())
+                os.replace(partial, target)
+                directory_fd = os.open(target.parent, os.O_RDONLY)
+                try:
+                    os.fsync(directory_fd)
+                finally:
+                    os.close(directory_fd)
+            finally:
+                partial.unlink(missing_ok=True)
+            evidence = _validate_filter_dictionary(target)
+            return {**evidence, "cache_reused": False}
+        return {**evidence, "cache_reused": True}
+
+
 def _configured_upstream(data_root: Path, work_root: Path, experiment: str):
     from openpi.training import config as openpi_config
 
@@ -379,7 +462,9 @@ def _prepare(args: argparse.Namespace) -> int:
     build = _validate_source(repo_root, args.runtime_image)
     work_root = Path(args.work_root)
     work_root.mkdir(parents=True, exist_ok=True)
+    cache_root = _configure_openpi_cache(work_root)
     started = time.perf_counter()
+    filter_dictionary = _stage_filter_dictionary(args.gsutil, cache_root)
     dataset = _stage_dataset(args.gsutil, Path(args.data_root), work_root)
     config = _configured_upstream(Path(args.data_root), work_root, args.experiment)
     normalization = _compute_norm_stats(config, repo_root)
@@ -393,6 +478,7 @@ def _prepare(args: argparse.Namespace) -> int:
             **build,
         },
         "dataset": dataset,
+        "filter_dictionary": filter_dictionary,
         "normalization": normalization,
         "recipe": {
             "config_name": CONFIG_NAME,
@@ -764,13 +850,21 @@ def _build_training_rrd(
     recording = rr.RecordingStream(RERUN_APPLICATION_ID, recording_id=run_id)
     rr.save(output_path, default_blueprint=blueprint, recording=recording)
     dataset = prepared.get("dataset") or {}
+    filter_dictionary = prepared.get("filter_dictionary") or {}
     normalization = prepared.get("normalization") or {}
-    if not isinstance(dataset, Mapping) or not isinstance(normalization, Mapping):
+    if (
+        not isinstance(dataset, Mapping)
+        or not isinstance(filter_dictionary, Mapping)
+        or not isinstance(normalization, Mapping)
+    ):
         raise OpenPIPipelineError("preparation lineage is malformed")
     dataset_sha256 = str(dataset.get("listing_sha256", ""))
+    filter_dictionary_sha256 = str(filter_dictionary.get("sha256", ""))
     normalization_sha256 = str(normalization.get("sha256", ""))
-    if not re.fullmatch(r"[0-9a-f]{64}", dataset_sha256) or not re.fullmatch(
-        r"[0-9a-f]{64}", normalization_sha256
+    if (
+        not re.fullmatch(r"[0-9a-f]{64}", dataset_sha256)
+        or filter_dictionary_sha256 != FILTER_DICTIONARY_SHA256
+        or not re.fullmatch(r"[0-9a-f]{64}", normalization_sha256)
     ):
         raise OpenPIPipelineError("preparation lineage lacks SHA-256 identities")
     provenance = (
@@ -783,6 +877,7 @@ def _build_training_rrd(
         f"- global batch size: {int(config.batch_size)}\n"
         f"- dataset: `DROID 1.0.1`\n"
         f"- dataset listing sha256: `{dataset_sha256}`\n"
+        f"- DROID filter dictionary sha256: `{filter_dictionary_sha256}`\n"
         f"- normalization sha256: `{normalization_sha256}`\n"
         f"- runtime image digest: `{_runtime_image_digest(runtime_image)}`\n"
         f"- source telemetry sha256: `{source_telemetry_sha256}`\n"
@@ -1054,6 +1149,9 @@ def _read_topology(work_root: Path) -> list[dict[str, object]]:
 
 def _fine_tune(args: argparse.Namespace) -> int:
     _require_terms()
+    work_root = Path(args.work_root)
+    work_root.mkdir(parents=True, exist_ok=True)
+    _configure_openpi_cache(work_root)
     repo_root = Path(args.repo_root)
     build = _validate_source(repo_root, args.runtime_image)
     prepared = _read_json_uri(args.prepare_uri)
@@ -1063,6 +1161,16 @@ def _fine_tune(args: argparse.Namespace) -> int:
     ):
         raise OpenPIPipelineError(
             "full-DROID preparation artifact is absent or invalid"
+        )
+    filter_dictionary = prepared.get("filter_dictionary")
+    if (
+        not isinstance(filter_dictionary, Mapping)
+        or filter_dictionary.get("source_uri") != FILTER_DICTIONARY_URI
+        or filter_dictionary.get("sha256") != FILTER_DICTIONARY_SHA256
+        or filter_dictionary.get("size_bytes") != FILTER_DICTIONARY_BYTES
+    ):
+        raise OpenPIPipelineError(
+            "full-DROID preparation lacks the pinned filter dictionary lineage"
         )
 
     rank, node_ips = _multihost_environment()
@@ -1083,8 +1191,6 @@ def _fine_tune(args: argparse.Namespace) -> int:
         text=True,
     ).stdout.strip()
 
-    work_root = Path(args.work_root)
-    work_root.mkdir(parents=True, exist_ok=True)
     started = time.perf_counter()
     config = _configured_upstream(Path(args.data_root), work_root, args.experiment)
     checkpoint_root, resumed, telemetry_path = _run_training(

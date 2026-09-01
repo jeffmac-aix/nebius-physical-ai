@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 import hashlib
+import json
+import os
 import subprocess
 import sys
 import types
@@ -34,6 +36,10 @@ def test_full_droid_recipe_matches_pinned_upstream_contract() -> None:
     assert full_droid.EXPECTED_DEVICES == full_droid.EXPECTED_FSDP_DEVICES == 8
     assert full_droid.EXPECTED_BATCH_SIZE % full_droid.EXPECTED_DEVICES == 0
     assert full_droid.NORM_MAX_FRAMES == 10_000_000
+    assert full_droid.FILTER_DICTIONARY_URI.endswith(
+        "/droid_sample_ranges_v1_0_1.json"
+    )
+    assert len(full_droid.FILTER_DICTIONARY_SHA256) == 64
 
 
 def test_full_droid_spec_is_exactly_eight_one_gpu_nodes() -> None:
@@ -168,6 +174,113 @@ def test_remote_inventory_is_content_addressed(monkeypatch, tmp_path: Path) -> N
     assert result["object_count"] == 2
     assert result["total_size_bytes"] == 46
     assert len(str(result["listing_sha256"])) == 64
+
+
+def test_filter_dictionary_stages_exact_single_object_and_reuses_cache(
+    monkeypatch, tmp_path: Path
+) -> None:
+    payload = json.dumps({"episode": [[0, 1]]}).encode()
+    monkeypatch.setattr(full_droid, "FILTER_DICTIONARY_BYTES", len(payload))
+    monkeypatch.setattr(
+        full_droid,
+        "FILTER_DICTIONARY_SHA256",
+        hashlib.sha256(payload).hexdigest(),
+    )
+    commands: list[list[str]] = []
+
+    def fake_run(command, *, cwd=None, stdout=None):
+        del cwd, stdout
+        commands.append(list(command))
+        Path(command[-1]).write_bytes(payload)
+
+    monkeypatch.setattr(full_droid, "_run", fake_run)
+    cache = full_droid._configure_openpi_cache(tmp_path)
+    first = full_droid._stage_filter_dictionary("gsutil", cache)
+    second = full_droid._stage_filter_dictionary("gsutil", cache)
+
+    assert commands == [
+        [
+            "gsutil",
+            "cp",
+            "gs://openpi-assets/droid/droid_sample_ranges_v1_0_1.json",
+            commands[0][-1],
+        ]
+    ]
+    assert all("*" not in item and "?" not in item for item in commands[0])
+    assert first["cache_reused"] is False
+    assert second["cache_reused"] is True
+    assert first["entry_count"] == 1
+    assert Path(os.environ["OPENPI_DATA_HOME"]) == cache
+
+
+def test_filter_dictionary_rejects_malformed_download(
+    monkeypatch, tmp_path: Path
+) -> None:
+    payload = b"not-json"
+    monkeypatch.setattr(full_droid, "FILTER_DICTIONARY_BYTES", len(payload))
+    monkeypatch.setattr(
+        full_droid,
+        "FILTER_DICTIONARY_SHA256",
+        hashlib.sha256(payload).hexdigest(),
+    )
+
+    def fake_run(command, *, cwd=None, stdout=None):
+        del cwd, stdout
+        Path(command[-1]).write_bytes(payload)
+
+    monkeypatch.setattr(full_droid, "_run", fake_run)
+    cache = full_droid._configure_openpi_cache(tmp_path)
+    with pytest.raises(full_droid.OpenPIPipelineError, match="invalid JSON"):
+        full_droid._stage_filter_dictionary("gsutil", cache)
+    assert not list(cache.rglob("*.partial"))
+
+
+def test_prepare_report_preserves_filter_dictionary_lineage(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("NPA_OPENPI_ACCEPT_GEMMA_TERMS", "YES")
+    monkeypatch.setattr(full_droid, "_validate_source", lambda *args: {})
+    monkeypatch.setattr(
+        full_droid,
+        "_stage_filter_dictionary",
+        lambda *args: {
+            "source_uri": full_droid.FILTER_DICTIONARY_URI,
+            "sha256": full_droid.FILTER_DICTIONARY_SHA256,
+            "size_bytes": full_droid.FILTER_DICTIONARY_BYTES,
+        },
+    )
+    monkeypatch.setattr(
+        full_droid,
+        "_stage_dataset",
+        lambda *args: {"listing_sha256": "a" * 64},
+    )
+    monkeypatch.setattr(full_droid, "_configured_upstream", lambda *args: object())
+    monkeypatch.setattr(
+        full_droid, "_compute_norm_stats", lambda *args: {"sha256": "b" * 64}
+    )
+    written: dict[str, object] = {}
+    monkeypatch.setattr(
+        full_droid,
+        "_write_json_uri",
+        lambda uri, value: written.update({"uri": uri, "value": value}),
+    )
+
+    result = full_droid._prepare(
+        SimpleNamespace(
+            repo_root=str(tmp_path),
+            runtime_image="ghcr.io/example/openpi@sha256:" + "c" * 64,
+            work_root=str(tmp_path / "work"),
+            data_root=str(tmp_path / "data"),
+            experiment="lineage-test",
+            gsutil="gsutil",
+            output_uri="s3://example.invalid/private/prepare.json",
+        )
+    )
+
+    assert result == 0
+    assert written["value"]["filter_dictionary"]["sha256"] == (
+        full_droid.FILTER_DICTIONARY_SHA256
+    )
 
 
 def _telemetry_config() -> SimpleNamespace:
@@ -313,6 +426,9 @@ def test_real_rrd_contains_run_identity_timeline_and_review_entities(
         config=config,
         prepared={
             "dataset": {"listing_sha256": "a" * 64},
+            "filter_dictionary": {
+                "sha256": full_droid.FILTER_DICTIONARY_SHA256
+            },
             "normalization": {"sha256": "b" * 64},
         },
         runtime_image="ghcr.io/example/openpi@sha256:" + "c" * 64,
@@ -407,7 +523,11 @@ def test_rrd_refuses_incomplete_actual_metric_history(tmp_path: Path) -> None:
             tmp_path / "incomplete.rrd",
             run_id=run_id,
             config=config,
-            prepared={"dataset": {}, "normalization": {}},
+            prepared={
+                "dataset": {},
+                "filter_dictionary": {},
+                "normalization": {},
+            },
             runtime_image="ghcr.io/example/openpi@sha256:" + "d" * 64,
             hardware={
                 "process_count": 8,

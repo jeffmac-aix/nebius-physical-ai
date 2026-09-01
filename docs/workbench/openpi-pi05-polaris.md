@@ -141,6 +141,9 @@ the pinned recipe's completion contract rather than exposing smoke-sized knobs:
 - DROID RLDS `1.0.1` from the public `gs://gresearch/robotics/droid/1.0.1`
   source, checksum-synchronized to a run-owned durable PVC;
 - normalization statistics over `10,000,000` frames;
+- runtime staging of OpenPI's pinned DROID sample-range JSON as the exact
+  single public object into the durable run cache, with byte/SHA-256/JSON
+  validation before normalization (the file is not baked into the image);
 - global batch size `256` (`32` samples per visible device);
 - `100,000` optimizer steps, approximately one upstream-described epoch;
 - eight nodes with exactly one RTX PRO 6000 GPU each, compute capability
