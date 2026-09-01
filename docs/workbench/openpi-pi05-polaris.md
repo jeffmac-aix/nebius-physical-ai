@@ -122,8 +122,13 @@ trajectory.
 The production training surface is deliberately separate from the miniature LoRA
 optimizer gate. `npa-openpi` packages the same pinned Apache-2.0 source with
 Python 3.11, the upstream `rlds` dependency group, JAX CUDA 12, and a compiled
-`sm_120` probe. It contains no checkpoint, dataset, terms value, credentials, or
-populated runtime cache. New bytes first publish as an immutable, scanned
+`sm_120` probe. After resolving upstream's frozen environment, the image applies
+a narrow runtime compatibility overlay: JAX/JAXlib/CUDA plugin/PJRT 0.6.2,
+ml-dtypes 0.5.1, cuDNN 9.10.2.21, NCCL 2.27.5, and NVSHMEM 3.2.5. That exact
+stack is required for cross-node collectives on RTX PRO 6000 Blackwell; the
+upstream JAX 0.5.3 and NCCL 2.26.2 pair fails the first collective. The image
+contains no checkpoint, dataset, terms value, credentials, or populated runtime
+cache. New bytes first publish as an immutable, scanned
 `dev-<full-git-sha>` image; a supported release tag remains quarantined until
 the exact digest completes the eight-node qualification. The trusted public
 image workflow is the sole build surface, so no multi-stage builder is hidden

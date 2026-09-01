@@ -179,10 +179,29 @@ def test_openpi_uses_system_ffmpeg_without_bundled_payload() -> None:
     assert "import importlib.metadata, os, wandb" in dockerfile
     assert "rm -rf /opt/nvidia/nsight-compute" in dockerfile
     assert "test ! -e /opt/nvidia/nsight-compute" in dockerfile
+    for pin in (
+        "'jax==0.6.2'",
+        "'jaxlib==0.6.2'",
+        "'jax-cuda12-plugin==0.6.2'",
+        "'jax-cuda12-pjrt==0.6.2'",
+        "'ml-dtypes==0.5.1'",
+        "'nvidia-cudnn-cu12==9.10.2.21'",
+        "'nvidia-nccl-cu12==2.27.5'",
+        "'nvidia-nvshmem-cu12==3.2.5'",
+    ):
+        assert pin in dockerfile
+    assert "pi05-full-droid-rlds-cu128-jax062-nccl2275" in dockerfile
+    assert 'config.get_config("pi05_droid")' in dockerfile
+    assert "multihost_utils.broadcast_one_to_all" in dockerfile
+    assert "nccl/lib/libnccl.so.2" in dockerfile
+    assert "nvshmem/lib/libnvshmem_host.so.3" in dockerfile
     dependency_layer = dockerfile.split("RUN python3 -m venv /opt/uv", 1)[1].split(
         "\n\nRUN printf", 1
     )[0]
     assert dependency_layer.index("uv sync --active") < dependency_layer.index(
+        "'jax==0.6.2'"
+    )
+    assert dependency_layer.index("'jax==0.6.2'") < dependency_layer.index(
         "*/imageio_ffmpeg/binaries/ffmpeg*"
     )
     assert "imageio_ffmpeg.write_frames" in dependency_layer

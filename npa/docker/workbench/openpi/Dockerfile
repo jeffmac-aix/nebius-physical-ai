@@ -7,7 +7,7 @@ ARG OPENPI_SOURCE_REF=15a9616a00943ada6c20a0f158e3adb39df2ccac
 ARG NPA_SOURCE_SHA=unknown
 
 LABEL npa.tool="openpi" \
-      npa.version="pi05-full-droid-rlds-cu128" \
+      npa.version="pi05-full-droid-rlds-cu128-jax062-nccl2275" \
       npa.source.repo="${OPENPI_SOURCE_URL}" \
       npa.source.ref="${OPENPI_SOURCE_REF}" \
       npa.weights="operator-runtime-fetch" \
@@ -55,14 +55,31 @@ RUN git clone --filter=blob:none --no-checkout "${OPENPI_SOURCE_URL}" /opt/byof 
       '  "ref": "15a9616a00943ada6c20a0f158e3adb39df2ccac"' \
       '}' > /opt/byof/npa_source_metadata.json
 
-# Upstream's frozen lock is authoritative. Keep gsutil isolated from the
-# TensorFlow/JAX environment so its older transitive pins cannot perturb it.
+# Upstream's frozen lock is authoritative except for the exact JAX/NCCL SM120
+# compatibility overlay below. The upstream JAX 0.5.3 / NCCL 2.26.2 pair faults
+# on the first cross-node collective; the replacement wheels were qualified on
+# eight one-GPU RTX PRO 6000 nodes. Keep gsutil isolated from this environment.
 RUN python3 -m venv /opt/uv \
     && /opt/uv/bin/pip install --no-cache-dir 'uv==0.9.7' \
     && /opt/uv/bin/uv python install 3.11 \
     && /opt/uv/bin/uv venv --python 3.11 /opt/venv \
     && cd /opt/byof \
     && VIRTUAL_ENV=/opt/venv /opt/uv/bin/uv sync --active --frozen --group rlds --no-dev \
+    && /opt/uv/bin/uv pip install --python /opt/venv/bin/python --no-cache --no-deps \
+      'jax==0.6.2' \
+      'jaxlib==0.6.2' \
+      'jax-cuda12-plugin==0.6.2' \
+      'jax-cuda12-pjrt==0.6.2' \
+      'ml-dtypes==0.5.1' \
+      'nvidia-cudnn-cu12==9.10.2.21' \
+      'nvidia-nccl-cu12==2.27.5' \
+      'nvidia-nvshmem-cu12==3.2.5' \
+    && /opt/venv/bin/python -c \
+      'import importlib.metadata as m; expected={"jax":"0.6.2","jaxlib":"0.6.2","jax-cuda12-plugin":"0.6.2","jax-cuda12-pjrt":"0.6.2","ml-dtypes":"0.5.1","nvidia-cublas-cu12":"12.6.4.1","nvidia-cuda-cupti-cu12":"12.6.80","nvidia-cuda-nvcc-cu12":"12.9.41","nvidia-cuda-nvrtc-cu12":"12.6.77","nvidia-cuda-runtime-cu12":"12.6.77","nvidia-cudnn-cu12":"9.10.2.21","nvidia-cufft-cu12":"11.3.0.4","nvidia-cusolver-cu12":"11.7.1.2","nvidia-cusparse-cu12":"12.5.4.2","nvidia-nccl-cu12":"2.27.5","nvidia-nvjitlink-cu12":"12.6.85","nvidia-nvshmem-cu12":"3.2.5"}; assert all(m.version(k)==v for k,v in expected.items()), {k:m.version(k) for k in expected}' \
+    && /opt/venv/bin/python -c \
+      'from pathlib import Path; root=Path("/opt/venv/lib/python3.11/site-packages/nvidia"); required=("cuda_runtime/lib/libcudart.so.12","cudnn/lib/libcudnn.so.9","cufft/lib/libcufft.so.11","cusolver/lib/libcusolver.so.11","cusparse/lib/libcusparse.so.12","nccl/lib/libnccl.so.2","nvshmem/lib/libnvshmem_host.so.3"); assert all((root/path).is_file() for path in required), [path for path in required if not (root/path).is_file()]' \
+    && /opt/venv/bin/python -c \
+      'import numpy as np; import chex, flax, jax, jax.numpy as jnp, ml_dtypes, orbax.checkpoint, tensorflow, tensorflow_datasets; import openpi.training.config as config; from jax.experimental import multihost_utils; from jax.extend import backend; from jax.sharding import Mesh, NamedSharding, PartitionSpec; cfg=config.get_config("pi05_droid"); value=multihost_utils.broadcast_one_to_all(jax.jit(lambda x: x+1)(jnp.asarray([1]))); assert cfg and np.asarray(value).tolist()==[2] and jax.tree.map and jax.random.key and backend and Mesh and NamedSharding and PartitionSpec' \
     && find /opt/venv -type f -path '*/imageio_ffmpeg/binaries/ffmpeg*' -delete \
     && test "$(/opt/venv/bin/python -c \
       'import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())')" = /usr/bin/ffmpeg \
