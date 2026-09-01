@@ -17,6 +17,11 @@ def test_robocasa_keeps_known_good_gymnasium_and_policy_only_lerobot() -> None:
 
     assert '"gymnasium==0.29.1"' in text
     assert 'pip install --no-cache-dir --no-deps "lerobot==0.5.1"' in text
+    assert '"av>=15.0.0,<16.0.0"' in text
+    assert '"diffusers>=0.27.2,<0.36.0"' in text
+    assert '"pyserial>=3.5,<4.0"' in text
+    assert "from lerobot.policies.act.modeling_act import ACTPolicy" in text
+    assert "from lerobot.policies.factory import make_pre_post_processors" in text
     assert '"draccus==0.10.0"' in text
     assert '"einops>=0.8.0,<0.9.0"' in text
     assert "${ROBOCASA_REPO_URL} /opt/robocasa/source" in text

@@ -62,18 +62,21 @@ WORKDIR /opt/robocasa
 # requests Gymnasium >=1.1.1, but exact-checkpoint ACT inference uses neither
 # LeRobot environment wrappers nor that newer API. Keep RoboCasa's known-good
 # pin and install only the LeRobot policy package here.
-RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel \
+RUN python -m pip install --no-cache-dir --upgrade pip "setuptools>=71,<81" wheel \
     && python -m pip install --no-cache-dir \
         "git+https://github.com/ARISE-Initiative/robosuite.git@${ROBOSUITE_COMMIT}" \
     && python -m pip install --no-cache-dir \
         numpy==2.2.5 numba==0.61.2 scipy==1.15.3 mujoco==3.3.1 pygame Pillow \
-        opencv-python-headless pyyaml pynput tqdm termcolor "imageio[ffmpeg]" \
+        "opencv-python-headless>=4.9,<4.14" pyyaml pynput tqdm termcolor "imageio[ffmpeg]" \
         h5py lxml hidapi "gymnasium==0.29.1" huggingface_hub \
         "fastapi==0.136.1" "uvicorn[standard]==0.38.0" "pydantic==2.13.4" \
         "boto3==1.42.9" "httpx>=0.27" \
         "datasets>=4.0.0,<5.0.0" "accelerate>=1.10.0,<2.0.0" \
         "packaging>=24.2,<26.0" "einops>=0.8.0,<0.9.0" \
         "draccus==0.10.0" "safetensors>=0.4.3,<1.0.0" \
+        "av>=15.0.0,<16.0.0" "jsonlines>=4.0.0,<5.0.0" \
+        "deepdiff>=7.0.1,<9.0.0" "diffusers>=0.27.2,<0.36.0" \
+        "pyserial>=3.5,<4.0" \
     && python -m pip install --no-cache-dir --no-deps "lerobot==0.5.1" \
     && python -m pip install --no-cache-dir --upgrade \
         "torch==2.12.1" "torchvision==0.27.1"
@@ -82,6 +85,9 @@ RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel \
 RUN git clone --depth 1 --branch ${ROBOCASA_REPO_REF} \
       ${ROBOCASA_REPO_URL} /opt/robocasa/source \
     && python -m pip install --no-cache-dir --no-deps -e /opt/robocasa/source
+
+# Fail the image build if the exact held-out evaluator import path is incomplete.
+RUN python -c "import gymnasium; assert gymnasium.__version__ == '0.29.1'; from lerobot.policies.act.modeling_act import ACTPolicy; from lerobot.configs.policies import PreTrainedConfig; from lerobot.policies.factory import make_pre_post_processors"
 
 # Copy the shared workbench implementation into the image.
 RUN mkdir -p /app/npa/workbench
