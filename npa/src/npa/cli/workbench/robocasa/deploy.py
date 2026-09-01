@@ -228,6 +228,7 @@ def _service_env(*, output_path: str, auth_mode: str, token_env: str, port: int)
         "ROBOCASA_PORT": str(port),
         "NPA_OUTPUT_PATH": output_path,
         "AWS_REGION": os.environ.get("AWS_REGION", "auto"),
+        "NUMBA_CACHE_DIR": "/tmp/numba_cache",
     }
     apply_shared_credential_env(env, creds)
     if auth_mode == "token":

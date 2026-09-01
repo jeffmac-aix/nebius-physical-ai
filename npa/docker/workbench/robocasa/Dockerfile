@@ -36,7 +36,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     MUJOCO_GL=egl \
     PYOPENGL_PLATFORM=egl \
     ROBOCASA_PORT=8791 \
-    PYTHONPATH=/app
+    PYTHONPATH=/app \
+    NUMBA_CACHE_DIR=/tmp/numba_cache
 
 USER root
 
