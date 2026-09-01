@@ -135,6 +135,11 @@ def _download_assets() -> None:
     ``download_kitchen_assets.py`` registry but skips its interactive prompt so
     it can run inside the service. Missing assets are the usual cause of a
     ``model.xml`` FileNotFoundError on the first real rollout.
+
+    The standard fixtures (stoves, windows, sinks, ...) live in
+    ``robocasa/robocasa-assets/fixtures.zip``; the lightwheel variants are
+    published as individual ``fixtures_lightwheel/<name>.zip`` files in
+    ``nvidia/PhysicalAI-Kitchen-Assets``.
     """
     try:
         from huggingface_hub import hf_hub_download
@@ -143,17 +148,28 @@ def _download_assets() -> None:
         from pathlib import Path as _Path
 
         assets_root = _Path(robocasa.__file__).resolve().parent / "models" / "assets"
+        # (repo_id, filename, extract_to) where extract_to is relative to assets_root.
         registry = [
-            ("robocasa/robocasa-assets", "textures.zip", "textures"),
-            ("robocasa/robocasa-assets", "generative_textures.zip", "generative_textures"),
-            ("nvidia/PhysicalAI-Kitchen-Assets", "fixtures_lightwheel.zip", "fixtures"),
-            ("robocasa/robocasa-assets", "objaverse.zip", "objects/objaverse"),
-            ("robocasa/robocasa-assets", "aigen_objs.zip", "objects/aigen_objs"),
-            ("nvidia/PhysicalAI-Kitchen-Assets", "objects_lightwheel.zip", "objects/lightwheel"),
+            ("robocasa/robocasa-assets", "textures.zip", "."),
+            ("robocasa/robocasa-assets", "generative_textures.zip", "."),
+            ("robocasa/robocasa-assets", "fixtures.zip", "."),
+            ("robocasa/robocasa-assets", "objaverse.zip", "."),
+            ("robocasa/robocasa-assets", "aigen_objs.zip", "."),
         ]
-        for repo_id, filename, rel in registry:
-            target = assets_root / rel
-            if target.exists() and any(target.iterdir()):
+        # Lightwheel fixtures are one zip per fixture family.
+        lightwheel_fixtures = [
+            "blenders", "cabinets", "coffee_machines", "dishwashers",
+            "electric_kettles", "fridges", "handles", "hoods", "microwaves",
+            "ovens", "sinks", "stand_mixers", "stoves", "stovetops",
+            "toaster_ovens", "toasters", "windows",
+        ]
+        for name in lightwheel_fixtures:
+            registry.append(
+                ("nvidia/PhysicalAI-Kitchen-Assets", f"fixtures_lightwheel/{name}.zip", "fixtures")
+            )
+        for repo_id, filename, extract_to in registry:
+            target = assets_root / extract_to
+            if extract_to != "." and target.exists() and any(target.iterdir()):
                 continue
             try:
                 zip_path = hf_hub_download(
@@ -162,10 +178,9 @@ def _download_assets() -> None:
                     filename=filename,
                     revision="main",
                 )
-                parent = target.parent
-                parent.mkdir(parents=True, exist_ok=True)
+                assets_root.mkdir(parents=True, exist_ok=True)
                 with ZipFile(zip_path, "r") as zf:
-                    zf.extractall(path=parent)
+                    zf.extractall(path=assets_root)
                 LOGGER.info("downloaded robocasa assets %s from %s", filename, repo_id)
             except Exception as exc:  # pragma: no cover - network/entitlement.
                 LOGGER.warning("failed to download robocasa assets %s: %s", filename, exc)
