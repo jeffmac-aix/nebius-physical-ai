@@ -585,31 +585,42 @@ def dispatch_cell(
         raise Cosmos3SuperBenchmarkError("attempts must divide evenly across services")
     per_service = attempts // topology.services
     barrier = threading.Barrier(topology.services)
+    boundary_lock = threading.Lock()
+    first_dispatch: float | None = None
+    final_completion: float | None = None
 
     def worker(replica: int) -> list[dict[str, Any]]:
+        nonlocal first_dispatch, final_completion
         barrier.wait()
         rows = []
         for index in range(per_service):
             attempt_id = f"{kind}-{topology.name}-r{replica}-a{index:03d}"
-            rows.append(
-                attempt_fn(
-                    url=urls[replica],
-                    prompt=prompt,
-                    negative_prompt=negative_prompt,
-                    prompt_hashes=prompt_hashes,
-                    seed=SEEDS[index % len(SEEDS)],
-                    attempt_id=attempt_id,
-                    replica=replica,
-                    clip_path=clips_dir / f"{attempt_id}.mp4",
-                    kind=kind,
-                )
+            dispatched = time.monotonic()
+            with boundary_lock:
+                if first_dispatch is None or dispatched < first_dispatch:
+                    first_dispatch = dispatched
+            row = attempt_fn(
+                url=urls[replica],
+                prompt=prompt,
+                negative_prompt=negative_prompt,
+                prompt_hashes=prompt_hashes,
+                seed=SEEDS[index % len(SEEDS)],
+                attempt_id=attempt_id,
+                replica=replica,
+                clip_path=clips_dir / f"{attempt_id}.mp4",
+                kind=kind,
             )
+            completed = time.monotonic()
+            with boundary_lock:
+                if final_completion is None or completed > final_completion:
+                    final_completion = completed
+            rows.append(row)
         return rows
 
-    first_dispatch = time.monotonic()
     with concurrent.futures.ThreadPoolExecutor(max_workers=topology.services) as pool:
         groups = list(pool.map(worker, range(topology.services)))
-    final_completion = time.monotonic()
+    if first_dispatch is None or final_completion is None:
+        raise Cosmos3SuperBenchmarkError("measurement produced no request boundaries")
     rows = [row for group in groups for row in group]
     rows.sort(key=lambda row: str(row["attempt_id"]))
     window = {
