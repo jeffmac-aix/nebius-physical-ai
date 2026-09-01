@@ -212,20 +212,36 @@ def join_living_lab_zones(
 
     Reads each zone's ``zone_manifest.json`` (published by the shard after the
     real NRE pipeline ran on its own RTX PRO 6000), requires equality with the
-    16 canonical zones, aggregates objective metrics (GPU participation, PSNR /
-    SSIM / LPIPS, timings), and publishes a composite digital-twin report plus a
-    contact-sheet panorama. Raises unless every zone is present with a real USDZ
-    and a real GPU identity.
+    16 canonical zones, and fails unless every zone records a real USDZ, a real
+    GPU UUID + node, fail-closed input provenance, and real (non-missing) NRE
+    validation metrics. Aggregates objective metrics, distinct GPU UUID/node
+    participation, and a sixteen-way concurrency (execution-window overlap)
+    proof, then publishes a composite digital-twin report plus a contact-sheet
+    panorama.
     """
     base = zones_uri.rstrip("/") + "/"
     expected = zone_names(shards)
+    # Deterministic scene/variant map for the 16 canonical zones so the join can
+    # fail-closed when a zone fetched a capture it did not ask for.
+    expected_prov = {z["zone_name"]: (z["scene"], z["variant"]) for z in living_lab_zones()}
 
     entries: list[dict[str, Any]] = []
     missing: list[str] = []
     gpu_names: set[str] = set()
+    gpu_uuids: set[str] = set()
+    nodes: set[str] = set()
     psnr_vals: list[float] = []
     ssim_vals: list[float] = []
+    lpips_vals: list[float] = []
+    windows: list[tuple[int, int]] = []
     zones_uri_map: dict[str, str] = {}
+
+    def _finite(val: Any) -> float | None:
+        try:
+            f = float(val)
+        except (TypeError, ValueError):
+            return None
+        return f if f == f else None
 
     for zone in expected:
         uri = f"{base}{zone}/{ZONE_MANIFEST_FILENAME}"
@@ -239,37 +255,73 @@ def join_living_lab_zones(
             continue
         status = payload.get("status")
         usdz = bool(payload.get("usdz_path"))
-        gpu = str(payload.get("gpu_name") or "").strip()
-        ok = status == "ok" and usdz and bool(gpu)
+        gpu_uuid = str(payload.get("gpu_uuid") or "").strip()
+        gpu_name = str(payload.get("gpu_name") or "").strip()
+        node_name = str(payload.get("node_name") or "").strip()
+        metrics_path = str(payload.get("metrics_path") or "").strip()
+        metrics = payload.get("metrics") or {}
+        psnr = _finite(metrics.get("test/psnr"))
+        ssim = _finite(metrics.get("test/ssim"))
+        lpips = _finite(metrics.get("test/lpips"))
+        # Real validation metrics must be measured and parseable; a missing or
+        # 0.0-placeholder metric is never accepted (PSNR/SSIM/LPIPS of exactly
+        # 0.0 are not genuine NRE validation values).
+        metrics_ok = (
+            bool(metrics_path)
+            and psnr not in (None, 0.0)
+            and ssim not in (None, 0.0)
+            and lpips not in (None, 0.0)
+        )
+        prov = payload.get("provenance") or {}
+        prov_scene = str(prov.get("scene") or payload.get("scene") or "").strip()
+        prov_variant = str(prov.get("variant") or payload.get("variant") or "").strip()
+        exp_scene, exp_variant = expected_prov.get(zone, ("", ""))
+        provenance_ok = prov_scene == exp_scene and prov_variant == exp_variant
+        started = _finite(payload.get("started_epoch")) or 0
+        ended = _finite(payload.get("ended_epoch")) or 0
+        ok = (
+            status == "ok"
+            and usdz
+            and bool(gpu_uuid)
+            and bool(node_name)
+            and metrics_ok
+            and provenance_ok
+        )
         if not ok:
             missing.append(zone)
         entries.append(
             {
                 "zone": zone,
                 "status": "ok" if ok else payload.get("status", "unknown"),
-                "gpu_name": gpu,
+                "gpu_uuid": gpu_uuid,
+                "gpu_name": gpu_name,
+                "node_name": node_name,
+                "pod_name": payload.get("pod_name", ""),
                 "usdz_present": usdz,
                 "reconstruction_uri": payload.get("reconstruction_uri", ""),
                 "novel_views_uri": payload.get("novel_views_uri", ""),
-                "metrics": payload.get("metrics", {}),
+                "metrics_path": metrics_path,
+                "metrics": metrics,
+                "provenance": {"scene": prov_scene, "variant": prov_variant},
+                "started_epoch": started,
+                "ended_epoch": ended,
                 "elapsed_seconds": payload.get("elapsed_seconds"),
             }
         )
-        if gpu:
-            gpu_names.add(gpu)
-        metrics = payload.get("metrics") or {}
-        try:
-            psnr = float(metrics.get("test/psnr"))
-        except (TypeError, ValueError):
-            psnr = float("nan")
-        try:
-            ssim = float(metrics.get("test/ssim"))
-        except (TypeError, ValueError):
-            ssim = float("nan")
-        if psnr == psnr:
+        if gpu_uuid:
+            gpu_uuids.add(gpu_uuid)
+        if gpu_name:
+            gpu_names.add(gpu_name)
+        if node_name:
+            nodes.add(node_name)
+        if psnr is not None:
             psnr_vals.append(psnr)
-        if ssim == ssim:
+        if ssim is not None:
             ssim_vals.append(ssim)
+        if lpips is not None:
+            lpips_vals.append(lpips)
+        if started and ended:
+            windows.append((int(started), int(ended)))
         if ok:
             zones_uri_map[zone] = f"{base}{zone}/novel_views/"
 
@@ -286,6 +338,17 @@ def join_living_lab_zones(
     def _avg(values: list[float]) -> float | None:
         return round(sum(values) / len(values), 4) if values else None
 
+    # Sixteen-way concurrency: the per-shard execution windows must materially
+    # overlap at a common instant (max start < min end).
+    overlap_start = max((w[0] for w in windows), default=None)
+    overlap_end = min((w[1] for w in windows), default=None)
+    concurrent = (
+        len(windows) == len(expected)
+        and overlap_start is not None
+        and overlap_end is not None
+        and overlap_start < overlap_end
+    )
+
     report = {
         "schema": DIGITAL_TWIN_SCHEMA,
         "run_id": run_id,
@@ -295,9 +358,20 @@ def join_living_lab_zones(
         "missing_zones": missing,
         "gpu_participation": sorted(gpu_names),
         "distinct_gpu_count": len(gpu_names),
+        "distinct_gpu_uuid_count": len(gpu_uuids),
+        "gpu_uuids": sorted(gpu_uuids),
+        "distinct_node_count": len(nodes),
+        "nodes": sorted(nodes),
+        "concurrency": {
+            "sixteen_way": concurrent,
+            "overlapping_zones": len(windows),
+            "overlap_start_epoch": overlap_start,
+            "overlap_end_epoch": overlap_end,
+        },
         "aggregate_metrics": {
             "test/psnr_mean": _avg(psnr_vals),
             "test/ssim_mean": _avg(ssim_vals),
+            "test/lpips_mean": _avg(lpips_vals),
         },
         "panorama": panorama,
         "zones": entries,
@@ -360,6 +434,14 @@ _GPU_RESOURCE = {
                 "containers": [
                     {
                         "name": "ray-node",
+                        "env": [
+                            {
+                                "name": "NODE_NAME",
+                                "valueFrom": {
+                                    "fieldRef": {"fieldPath": "spec.nodeName"}
+                                },
+                            }
+                        ],
                         "volumeMounts": [
                             {"name": "npa-sudo-shim", "mountPath": "/usr/local/sbin"},
                             {"name": "dshm", "mountPath": "/dev/shm"},
@@ -378,6 +460,9 @@ _GPU_RESOURCE = {
 _ZONE_SHARD_TEMPLATE = """set -euo pipefail
 ZONE="{{config.zone_name}}"
 RUN_URI="{{config.run_prefix_uri}}"
+DATASET_ID="{{config.dataset_id}}"
+SCENE="{{config.scene}}"
+VARIANT="{{config.variant}}"
 ZU="${RUN_URI}zones/${ZONE}/"
 NC="${ZU}ncore/"
 RC="${ZU}reconstruction/"
@@ -404,29 +489,62 @@ npa_pip() {
 npa_pip "boto3>=1.34" "awscli>=1.32" "huggingface_hub>=0.30" "nvidia-ncore" "rerun-sdk" "pillow>=10.0" "pyyaml>=6.0"
 command -v npa >/dev/null 2>&1 || { echo "npa not found; set NPA_SRC_S3_URI" >&2; exit 1; }
 
-# Export the shell vars the manifest writer (a child python process) needs.
-export ZONE RUN_URI ZU NC RC NV INPUT RRD FINAL MF
+# ---- objective per-shard GPU / scheduler identity ---------------------------
+# Captured once at the top of the shard so the manifest carries real, per-GPU
+# provenance (UUID + model + node + pod + wave), not just a model-name count.
+# HOSTNAME inside a Kubernetes pod is the pod name; NODE_NAME comes from the
+# downward-API env the workflow's pod_config injects.
+GPU_UUID=$(nvidia-smi --query-gpu=uuid --format=csv,noheader | head -1 || echo unknown)
 GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1 || echo unknown)
-export GPU_NAME
+POD_NAME="${HOSTNAME:-unknown}"
+NODE_NAME="${NODE_NAME:-unknown}"
 START=$(date +%s)
-export START
+export ZONE RUN_URI DATASET_ID SCENE VARIANT ZU NC RC NV INPUT RRD FINAL MF
+export GPU_UUID GPU_NAME POD_NAME NODE_NAME START
 
 echo "=== zone $ZONE: check (container + dataset rights + RT-core GPU) ==="
 npa workbench nurec check --require-gpu --output json
 
 echo "=== zone $ZONE: fetch real NCore V4 shards + derived rig pose edge ==="
-npa workbench nurec fetch --output-uri "${NC}" --output json >/tmp/nurec-fetch.json
+npa workbench nurec fetch --dataset "${DATASET_ID}" --scene "${SCENE}" --variant "${VARIANT}" --output-uri "${NC}" --output json >/tmp/nurec-fetch.json
+
+# ---- fail-closed provenance gate -------------------------------------------
+# The fetch result records the *actual* dataset/scene/variant that were pulled
+# (defaulting to struktur28/auto when flags were absent). A shard must never
+# reconstruct a capture it did not ask for: assert exact equality here and fail
+# the shard (and therefore the join) on any mismatch.
+python3 - "$DATASET_ID" "$SCENE" "$VARIANT" <<'PY'
+import json, os, sys
+requested = {"dataset_id": sys.argv[1], "scene": sys.argv[2], "variant": sys.argv[3]}
+with open("/tmp/nurec-fetch.json") as fh:
+    fetched = json.load(fh)
+actual = {k: str(fetched.get(k) or "") for k in ("dataset_id", "scene", "variant")}
+mismatch = {k: (actual[k], requested[k]) for k in requested if actual[k] != requested[k]}
+if mismatch:
+    print("PROVENANCE MISMATCH for zone", os.environ["ZONE"], ":",
+          json.dumps({"actual": actual, "requested": requested}), file=sys.stderr)
+    sys.exit(1)
+print("provenance-ok", json.dumps(actual))
+PY
+test "$(python3 -c "import json;print(json.load(open('/tmp/nurec-fetch.json'))['status'] or '')")" = "ok"
+
 NCORE_JSON=$(python3 -c "import json;print(json.load(open('/tmp/nurec-fetch.json'))['ncore_json'])")
 POSES_GROUP=$(python3 -c "import json;print(json.load(open('/tmp/nurec-fetch.json'))['poses_component_group'])")
 CAMERA=$(python3 -c "import json;print(json.load(open('/tmp/nurec-fetch.json'))['reference_camera'])")
 test -n "${NCORE_JSON}" && test -n "${POSES_GROUP}" && test -n "${CAMERA}"
 export NCORE_JSON POSES_GROUP CAMERA
 
+# ---- reconstruct + real, non-missing quality metrics ------------------------
+# The reconstruct stage writes NRE's val metrics.yaml. metrics_path preserves
+# where the numbers came from; metrics are recorded only when actually measured.
+# A missing/unparseable metrics payload makes the shard (and the join) FAIL
+# rather than substituting a numeric zero.
 echo "=== zone $ZONE: reconstruct (3DGUT Gaussians -> renderable USDZ) ==="
 npa workbench nurec reconstruct --ncore-json "${NCORE_JSON}" --poses-component-group "${POSES_GROUP}" --camera-id "${CAMERA}" --world-size 1 --export-gt --output-uri "${RC}" --input-uri "${INPUT}" --output json >/tmp/nurec-reconstruct.json
 USDZ=$(python3 -c "import json;print(json.load(open('/tmp/nurec-reconstruct.json'))['usdz_path'])")
+METRICS_PATH=$(python3 -c "import json;print(json.load(open('/tmp/nurec-reconstruct.json')).get('metrics_path') or '')")
+export USDZ METRICS_PATH
 test -n "${USDZ}"
-export USDZ
 
 echo "=== zone $ZONE: render novel views (rig-offset, not training views) ==="
 npa workbench nurec render --artifact-path "${USDZ}" --output-dir /tmp/render-out --camera-id "${CAMERA}" --renderer default --rig-translation-offset "{{config.rig_translation_offset}}" --rig-rotation-offset "{{config.rig_rotation_offset}}" --no-replicate-training-views --output-uri "${NV}" --output json >/tmp/nurec-render.json
@@ -451,23 +569,55 @@ def _load_json(path, default=None):
         return default
 recon = _load_json("/tmp/nurec-reconstruct.json")
 final = _load_json("/tmp/nurec-final.json")
-metrics = recon.get("metrics") or {}
+raw_metrics = recon.get("metrics") or {}
+metrics_path = os.environ.get("METRICS_PATH", "")
+# Keep an unavailable metric distinct from a measured value: None means no
+# value was produced, never substitute 0.0.
+def _m(key):
+    val = raw_metrics.get(key)
+    if val is None or val == "":
+        return None
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return None
+metrics = {"test/psnr": _m("test/psnr"), "test/ssim": _m("test/ssim"), "test/lpips": _m("test/lpips")}
+metrics_present = bool(metrics_path) and all(metrics[k] is not None for k in metrics)
+if not metrics_present:
+    print("zone", os.environ["ZONE"], ": NRE validation metrics missing/unparseable (metrics_path=%r); failing shard" % metrics_path, flush=True)
+    raise SystemExit(1)
 payload = {
   "schema": "npa.living_lab.zone_manifest.v1",
   "zone_name": os.environ["ZONE"],
   "status": "ok",
+  "provenance": {
+    "dataset_id": os.environ["DATASET_ID"],
+    "scene": os.environ["SCENE"],
+    "variant": os.environ["VARIANT"],
+    "requested": {k: os.environ[k] for k in ("DATASET_ID", "SCENE", "VARIANT")},
+  },
+  "gpu": {
+    "gpu_uuid": os.environ.get("GPU_UUID", ""),
+    "gpu_name": os.environ.get("GPU_NAME", ""),
+    "node_name": os.environ.get("NODE_NAME", ""),
+    "pod_name": os.environ.get("POD_NAME", ""),
+    "wave_id": os.environ.get("RUN_URI", ""),
+  },
+  "gpu_uuid": os.environ.get("GPU_UUID", ""),
   "gpu_name": os.environ.get("GPU_NAME", ""),
+  "node_name": os.environ.get("NODE_NAME", ""),
+  "pod_name": os.environ.get("POD_NAME", ""),
+  "wave_id": os.environ.get("RUN_URI", ""),
   "usdz_path": os.environ.get("USDZ", ""),
   "reconstruction_uri": os.environ.get("RC", ""),
   "novel_views_uri": os.environ.get("NV", ""),
   "rrd_uri": os.environ.get("RRD", ""),
   "final_report_uri": os.environ.get("FINAL", ""),
+  "started_epoch": int(os.environ.get("START", 0)),
+  "ended_epoch": int(os.environ.get("END", 0)),
   "elapsed_seconds": int(os.environ.get("END", 0)) - int(os.environ.get("START", 0)),
-  "metrics": {
-    "test/psnr": metrics.get("test/psnr", 0.0),
-    "test/ssim": metrics.get("test/ssim", 0.0),
-    "test/lpips": metrics.get("test/lpips", 0.0),
-  },
+  "metrics_path": metrics_path,
+  "metrics": metrics,
   "finalize": {
     "status": final.get("status", ""),
     "has_usdz": bool(final.get("has_usdz", False)),

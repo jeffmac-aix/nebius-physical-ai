@@ -69,7 +69,26 @@ def local_storage(monkeypatch, tmp_path: Path):
     return root
 
 
-def _write_zone(root: Path, zone_name: str, *, gpu: str = "RTX PRO 6000") -> None:
+def _zone_identity(zone_name: str) -> tuple[str, str]:
+    """Derive (scene, variant) from a zone name like ``huerstholz-auto-a``."""
+    parts = zone_name.split("-")
+    return parts[0], parts[1]
+
+
+def _write_zone(
+    root: Path,
+    zone_name: str,
+    *,
+    gpu: str = "RTX PRO 6000",
+    gpu_uuid: str | None = None,
+    node_name: str | None = None,
+    metrics: dict[str, float] | None = None,
+    provenance: dict[str, str] | None = None,
+    started_epoch: int = 1000,
+    ended_epoch: int = 2000,
+    metrics_path: str = "s3://bucket/living-lab/zones/{zone}/reconstruction/val/metrics.yaml",
+    include_all_metrics: bool = True,
+) -> None:
     path = (
         root
         / "bucket/living-lab/zones"
@@ -77,21 +96,30 @@ def _write_zone(root: Path, zone_name: str, *, gpu: str = "RTX PRO 6000") -> Non
         / living_lab.ZONE_MANIFEST_FILENAME
     )
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(
-            {
-                "schema": "npa.living_lab.zone_manifest.v1",
-                "zone_name": zone_name,
-                "status": "ok",
-                "gpu_name": gpu,
-                "usdz_path": f"s3://bucket/living-lab/zones/{zone_name}/reconstruction/last.usdz",
-                "reconstruction_uri": f"s3://bucket/living-lab/zones/{zone_name}/reconstruction/",
-                "novel_views_uri": f"s3://bucket/living-lab/zones/{zone_name}/novel_views/",
-                "metrics": {"test/psnr": 31.19, "test/ssim": 0.833},
-            }
-        ),
-        encoding="utf-8",
-    )
+    scene, variant = _zone_identity(zone_name)
+    default_metrics = {"test/psnr": 31.19, "test/ssim": 0.833, "test/lpips": 0.267}
+    payload_metrics = metrics if metrics is not None else default_metrics
+    if not include_all_metrics:
+        payload_metrics = {k: v for k, v in payload_metrics.items() if k != "test/lpips"}
+    mt = metrics_path.format(zone=zone_name)
+    payload = {
+        "schema": "npa.living_lab.zone_manifest.v1",
+        "zone_name": zone_name,
+        "status": "ok",
+        "provenance": provenance if provenance is not None else {"scene": scene, "variant": variant},
+        "gpu_uuid": gpu_uuid if gpu_uuid is not None else f"GPU-{zone_name}",
+        "gpu_name": gpu,
+        "node_name": node_name if node_name is not None else f"node-{zone_name}",
+        "pod_name": f"pod-{zone_name}",
+        "usdz_path": f"s3://bucket/living-lab/zones/{zone_name}/reconstruction/last.usdz",
+        "reconstruction_uri": f"s3://bucket/living-lab/zones/{zone_name}/reconstruction/",
+        "novel_views_uri": f"s3://bucket/living-lab/zones/{zone_name}/novel_views/",
+        "started_epoch": started_epoch,
+        "ended_epoch": ended_epoch,
+        "metrics_path": mt,
+        "metrics": payload_metrics,
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
     # a real, openable preview frame for the panorama
     png = path.parent / "novel_views/frame.png"
     png.parent.mkdir(parents=True, exist_ok=True)
@@ -154,8 +182,13 @@ def test_join_merges_all_16_zones(local_storage) -> None:
     assert report["zone_count"] == 16
     assert report["joined_zones"] == 16
     assert report["missing_zones"] == []
-    assert report["distinct_gpu_count"] == 1
+    # Sixteen distinct GPU UUIDs / nodes, all materially overlapping.
+    assert report["distinct_gpu_uuid_count"] == 16
+    assert report["distinct_node_count"] == 16
+    assert report["concurrency"]["sixteen_way"] is True
     assert report["aggregate_metrics"]["test/ssim_mean"] == 0.833
+    assert report["aggregate_metrics"]["test/lpips_mean"] == 0.267
+    assert report["aggregate_metrics"]["test/psnr_mean"] == 31.19
     assert report["panorama"]["cells"] == 16
     assert report["panorama"]["panorama_uri"].endswith("panorama.png")
     written = json.loads(
@@ -164,6 +197,12 @@ def test_join_merges_all_16_zones(local_storage) -> None:
         ).read_text()
     )
     assert len(written["zones"]) == 16
+    for zone in written["zones"]:
+        assert zone["gpu_uuid"]
+        assert zone["node_name"]
+        assert zone["metrics_path"]
+        assert zone["provenance"]["scene"]
+        assert zone["metrics"]["test/psnr"] > 0.0
 
 
 def test_join_fails_when_a_zone_is_missing(local_storage) -> None:
@@ -178,15 +217,76 @@ def test_join_fails_when_a_zone_is_missing(local_storage) -> None:
         )
 
 
-def test_join_requires_real_gpu_and_usdz(local_storage) -> None:
+def test_join_requires_real_gpu_uuid(local_storage) -> None:
     for zone in living_lab.living_lab_zones():
-        _write_zone(local_storage, zone["zone_name"], gpu="")
-    with pytest.raises(RuntimeError):
+        _write_zone(local_storage, zone["zone_name"], gpu_uuid="", node_name="")
+    with pytest.raises(RuntimeError, match="16 of 16 zones missing"):
         living_lab.join_living_lab_zones(
             zones_uri="s3://bucket/living-lab/zones/",
             report_uri="s3://bucket/living-lab/reports/",
             panorama_uri="s3://bucket/living-lab/reports/panorama.png",
         )
+
+
+def test_join_fails_when_validation_metrics_missing(local_storage) -> None:
+    for i, zone in enumerate(living_lab.living_lab_zones()):
+        _write_zone(local_storage, zone["zone_name"], metrics={"test/psnr": None, "test/ssim": None, "test/lpips": None})
+    with pytest.raises(RuntimeError, match="16 of 16 zones missing"):
+        living_lab.join_living_lab_zones(
+            zones_uri="s3://bucket/living-lab/zones/",
+            report_uri="s3://bucket/living-lab/reports/",
+            panorama_uri="s3://bucket/living-lab/reports/panorama.png",
+        )
+
+
+def test_join_fails_on_placeholder_zero_metrics(local_storage) -> None:
+    # The prior defect substituted missing NRE metrics with numeric zero; the
+    # join must fail rather than accept 0.0 placeholders.
+    for zone in living_lab.living_lab_zones():
+        _write_zone(
+            local_storage,
+            zone["zone_name"],
+            metrics={"test/psnr": 0.0, "test/ssim": 0.0, "test/lpips": 0.0},
+        )
+    with pytest.raises(RuntimeError, match="16 of 16 zones missing"):
+        living_lab.join_living_lab_zones(
+            zones_uri="s3://bucket/living-lab/zones/",
+            report_uri="s3://bucket/living-lab/reports/",
+            panorama_uri="s3://bucket/living-lab/reports/panorama.png",
+        )
+
+
+def test_join_fails_on_provenance_mismatch(local_storage) -> None:
+    # A zone that fetched a capture other than the one it was defined to
+    # reconstruct (e.g. every shard reverting to struktur28/auto) must fail.
+    for zone in living_lab.living_lab_zones():
+        _write_zone(
+            local_storage,
+            zone["zone_name"],
+            provenance={"scene": "struktur28", "variant": "auto"},
+        )
+    # Only the two struktur28/auto zones can legitimately claim this provenance;
+    # every other zone must be rejected for fetching a capture it did not ask for.
+    with pytest.raises(RuntimeError, match="14 of 16 zones missing"):
+        living_lab.join_living_lab_zones(
+            zones_uri="s3://bucket/living-lab/zones/",
+            report_uri="s3://bucket/living-lab/reports/",
+            panorama_uri="s3://bucket/living-lab/reports/panorama.png",
+        )
+
+
+def test_join_concurrency_requires_overlap(local_storage) -> None:
+    zones = living_lab.living_lab_zones()
+    for i, zone in enumerate(zones):
+        # Non-overlapping windows: zone i runs in [i*100, i*100+10], so there
+        # is no common instant across all sixteen.
+        _write_zone(local_storage, zone["zone_name"], started_epoch=100 * i, ended_epoch=100 * i + 10)
+    report = living_lab.join_living_lab_zones(
+        zones_uri="s3://bucket/living-lab/zones/",
+        report_uri="s3://bucket/living-lab/reports/",
+        panorama_uri="s3://bucket/living-lab/reports/panorama.png",
+    )
+    assert report["concurrency"]["sixteen_way"] is False
 
 
 def test_spec_has_16_gpu_shards_and_a_join() -> None:
@@ -251,10 +351,21 @@ def test_every_shard_is_real_nurec_work_on_rtx_gpu() -> None:
         assert "rerun-sdk" in shell
         assert "command -v npa" in shell
 
+        # --- defect regression guard: the fetch must pass the exact dataset,
+        # scene and variant the zone was defined to reconstruct, and must fail
+        # closed on any provenance mismatch (previously every shard silently
+        # reverted to the default struktur28/auto capture). ---
+        assert "nurec fetch --dataset" in shell
+        assert "--scene" in shell
+        assert "--variant" in shell
+        assert "PROVENANCE MISMATCH" in shell
+        assert 'actual[k] != requested[k]' in shell
+
         # Manifest writer is a child python process: the shell vars it reads
         # must be exported.
         assert "export ZONE" in shell
-        assert "export GPU_NAME" in shell
+        assert "export GPU_UUID" in shell
+        assert "GPU_UUID GPU_NAME POD_NAME NODE_NAME START" in shell
         assert "export USDZ" in shell
     assert gpu["accelerators"] == "RTXPRO-6000-BLACKWELL-SERVER-EDITION:1", (
         "shard must route to RTX PRO 6000"
@@ -306,16 +417,28 @@ def test_shard_shell_runs_full_pipeline_and_writes_manifest(tmp_path) -> None:
 
     write(
         "nvidia-smi",
-        "#!/bin/sh\necho 'NVIDIA RTX PRO 6000 Blackwell'\n",
+        "#!/bin/sh\ncase \"$*\" in\n  *uuid*) echo 'GPU-00000000-1111-2222-3333-444444444444' ;;\n  *) echo 'NVIDIA RTX PRO 6000 Blackwell' ;;\nesac\n",
     )
     write("ffmpeg", "#!/bin/sh\nexit 0\n")
     write(
         "npa",
         """#!/bin/sh
+fetch_prov() {
+  dataset_id=""; scene=""; variant=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dataset) dataset_id="$2"; shift 2 ;;
+      --scene) scene="$2"; shift 2 ;;
+      --variant) variant="$2"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  echo '{"status":"ok","dataset_id":"'"$dataset_id"'","scene":"'"$scene"'","variant":"'"$variant"'","ncore_json":"/tmp/n.json","poses_component_group":"npa_rig","reference_camera":"cam1"}'
+}
 case "$*" in
   *"nurec check"*) echo '{"status":"ok","has_rt_cores":true}' ;;
-  *"nurec fetch"*) echo '{"status":"ok","ncore_json":"/tmp/n.json","poses_component_group":"npa_rig","reference_camera":"cam1"}' ;;
-  *"nurec reconstruct"*) echo '{"status":"ok","usdz_path":"/tmp/last.usdz","metrics":{"test/psnr":31.19,"test/ssim":0.833,"test/lpips":0.267}}' ;;
+  *"nurec fetch"*) fetch_prov "$@" ;;
+  *"nurec reconstruct"*) echo '{"status":"ok","usdz_path":"/tmp/last.usdz","metrics_path":"/tmp/npa-nurec-out/nre/val/metrics.yaml","metrics":{"test/psnr":31.19,"test/ssim":0.833,"test/lpips":0.267}}' ;;
   *"nurec render"*) echo '{"status":"ok"}' ;;
   *"nurec visualize"*) echo '{"status":"completed"}' ;;
   *"nurec finalize"*) echo '{"status":"ok","has_usdz":true,"has_rrd":true,"artifact_count":42}' ;;
@@ -352,10 +475,13 @@ esac
     ]["run"]["shell"]
     zone_cfg = {
         "config.zone_name": "toro-standard-b",
+        "config.dataset_id": "nvidia/PhysicalAI-NuRec-PPISP",
+        "config.scene": "toro",
+        "config.variant": "standard",
         "config.run_prefix_uri": "s3://bucket/prefix/",
         "config.nurec_image": "nvcr.io/nvidia/nre/nre-ga:26.04",
-        "config.rig_translation_offset": "0,0.25,0",
-        "config.rig_rotation_offset": "0,0,0",
+        "config.rig_translation_offset": "0,0,0",
+        "config.rig_rotation_offset": "120,0,0",
     }
     for tok, val in zone_cfg.items():
         shell = shell.replace("{{" + tok + "}}", val)
@@ -384,3 +510,19 @@ esac
     assert payload["finalize"]["has_usdz"] is True
     assert payload["finalize"]["artifact_count"] == 42
     assert payload["metrics"]["test/ssim"] == 0.833
+    assert payload["metrics"]["test/psnr"] == 31.19
+    assert payload["metrics"]["test/lpips"] == 0.267
+    # Provenance must reflect what was requested and actually fetched.
+    assert payload["provenance"]["dataset_id"] == "nvidia/PhysicalAI-NuRec-PPISP"
+    assert payload["provenance"]["scene"] == "toro"
+    assert payload["provenance"]["variant"] == "standard"
+    # The shard records what it was asked to fetch and proves it equals the
+    # actual fetched capture.
+    assert payload["provenance"]["requested"] == {
+        "DATASET_ID": "nvidia/PhysicalAI-NuRec-PPISP",
+        "SCENE": "toro",
+        "VARIANT": "standard",
+    }
+    assert payload["metrics_path"].endswith("metrics.yaml")
+    assert payload["gpu"]["gpu_uuid"].startswith("GPU-")
+    assert payload["gpu"]["node_name"] == "unknown"  # NODE_NAME unset outside k8s
