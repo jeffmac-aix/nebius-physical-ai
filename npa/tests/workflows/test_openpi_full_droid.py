@@ -55,16 +55,25 @@ def test_full_droid_spec_is_exactly_eight_one_gpu_nodes() -> None:
     assert "persistentVolumeClaim" in str(profile)
     prepare = spec["states"]["prepare_full_droid"]
     assert prepare["toolRef"] == "workbench.openpi.full_droid_prepare"
-    assert prepare["next"] == "full_droid_finetune"
+    assert prepare["next"] == "qualify_full_droid"
+    qualification = spec["states"]["qualify_full_droid"]
+    assert qualification["toolRef"] == "workbench.openpi.full_droid_qualification"
+    assert qualification["next"] == "full_droid_finetune"
     state = spec["states"]["full_droid_finetune"]
     assert state["toolRef"] == "workbench.openpi.full_droid_finetune"
     assert state["terminal"] is True
     outputs = {item["uri"]: item["schema"] for item in state["outputs"]}
-    assert outputs["{{config.rrd_uri}}"] == "application/vnd.rerun.rrd"
+    for milestone in full_droid.FULL_PROGRESS_MILESTONES:
+        slug = f"progress-step-{milestone:06d}"
+        assert outputs[f"{{{{config.rrd_root_uri}}}}/{slug}.rrd"] == (
+            "application/vnd.rerun.rrd"
+        )
+        assert outputs[f"{{{{config.rrd_root_uri}}}}/{slug}.manifest.json"] == (
+            full_droid.MILESTONE_MANIFEST_SCHEMA
+        )
     assert outputs["{{config.telemetry_uri}}"] == full_droid.TELEMETRY_SCHEMA
-    assert spec["config"]["rrd_uri"].endswith(
-        "reports/full-droid-finetune.rrd"
-    )
+    prepare_outputs = {item["uri"]: item["schema"] for item in prepare["outputs"]}
+    assert prepare_outputs["{{config.prepare_rrd_uri}}"] == full_droid.RERUN_SCHEMA
     assert "{{run.id}}" in spec["config"]["prefix"]
 
 
@@ -82,7 +91,7 @@ def test_full_droid_toolref_has_no_tunable_recipe_shortcuts() -> None:
     assert "--fsdp-devices" not in argv
     assert "--checkpoint-uri" in argv
     assert "--telemetry-uri" in argv
-    assert "--rrd-uri" in argv
+    assert "--rrd-root-uri" in argv
     assert "--run-id" in argv
     assert entry.multi_node_mode == "sharded"
     assert entry.shard_activation_config == "multi_host_enabled"
@@ -99,6 +108,22 @@ def test_prepare_toolref_has_no_gpu_training_flags() -> None:
     ]
     assert "--checkpoint-uri" not in argv
     assert "--output-uri" in argv
+    assert "--rrd-uri" in argv
+    assert "--milestone-manifest-uri" in argv
+    assert "--run-id" in argv
+
+
+def test_qualification_toolref_is_fixed_and_distributed() -> None:
+    entry = TOOL_CATALOG["workbench.openpi.full_droid_qualification"]
+    assert entry.argv_template[:4] == [
+        "/opt/venv/bin/python",
+        "-m",
+        "npa.workflows.byof.openpi_full_droid",
+        "qualify",
+    ]
+    assert "--train-steps" not in entry.argv_template
+    assert "--rrd-root-uri" in entry.argv_template
+    assert entry.multi_node_mode == "sharded"
 
 
 def test_distributed_rlds_adapter_shards_before_shuffle_and_uses_local_batch(
@@ -252,11 +277,26 @@ def test_prepare_report_preserves_filter_dictionary_lineage(
     monkeypatch.setattr(
         full_droid,
         "_stage_dataset",
-        lambda *args: {"listing_sha256": "a" * 64},
+        lambda *args: {
+            "listing_sha256": "a" * 64,
+            "object_count": 2,
+            "file_count": 2,
+            "remote_total_size_bytes": 46,
+            "local_total_size_bytes": 46,
+            "timings_seconds": {"checksum_sync": 2.0},
+            "checksum_verification_bytes_per_second": 23.0,
+        },
     )
     monkeypatch.setattr(full_droid, "_configured_upstream", lambda *args: object())
     monkeypatch.setattr(
-        full_droid, "_compute_norm_stats", lambda *args: {"sha256": "b" * 64}
+        full_droid,
+        "_compute_norm_stats",
+        lambda *args, **kwargs: {"sha256": "b" * 64},
+    )
+    monkeypatch.setattr(
+        full_droid,
+        "_publish_preparation_rrd",
+        lambda *args, **kwargs: {"uri": kwargs["rrd_uri"]},
     )
     written: dict[str, object] = {}
     monkeypatch.setattr(
@@ -274,6 +314,11 @@ def test_prepare_report_preserves_filter_dictionary_lineage(
             experiment="lineage-test",
             gsutil="gsutil",
             output_uri="s3://example.invalid/private/prepare.json",
+            rrd_uri="s3://example.invalid/private/preparation.rrd",
+            milestone_manifest_uri=(
+                "s3://example.invalid/private/preparation.manifest.json"
+            ),
+            run_id="prepare-lineage-test",
         )
     )
 
@@ -465,6 +510,230 @@ def test_real_rrd_contains_run_identity_timeline_and_review_entities(
     assert "optimizer_step" in decoded_loss
     assert "[1.2]" in decoded_loss
     assert "[1.0]" in decoded_loss
+
+
+def test_preparation_rrd_contains_factual_progress_and_lineage(
+    tmp_path: Path,
+) -> None:
+    run_id = "preparation-rrd-unit"
+    journal = tmp_path / "preparation.jsonl"
+    full_droid._append_jsonl(
+        journal,
+        {
+            "schema": full_droid.PREPARATION_TELEMETRY_SCHEMA,
+            "run_id": run_id,
+            "record_type": "dataset_verified",
+            "normalization_batch": 0,
+            "remote_object_count": 2,
+            "local_file_count": 2,
+            "remote_size_bytes": 46,
+            "local_size_bytes": 46,
+            "listing_sha256": "a" * 64,
+            "checksum_verification_seconds": 2.0,
+            "checksum_verification_bytes_per_second": 23.0,
+        },
+    )
+    for record_type, batch in (
+        ("normalization_progress", 1_000),
+        ("normalization_complete", 2_000),
+    ):
+        full_droid._append_jsonl(
+            journal,
+            {
+                "schema": full_droid.PREPARATION_TELEMETRY_SCHEMA,
+                "run_id": run_id,
+                "record_type": record_type,
+                "normalization_batch": batch,
+                "frames_processed": batch * 256,
+                "elapsed_seconds": float(batch),
+                "frames_per_second": 256.0,
+            },
+        )
+    result = {
+        "dataset": {
+            "object_count": 2,
+            "file_count": 2,
+            "total_size_bytes": 46,
+            "remote_total_size_bytes": 46,
+            "local_total_size_bytes": 46,
+            "listing_sha256": "a" * 64,
+            "checksum_verification_bytes_per_second": 23.0,
+        },
+        "normalization": {
+            "sha256": "b" * 64,
+            "frames_processed": 2_000 * 256,
+        },
+    }
+    output = tmp_path / "preparation.rrd"
+    inspection = full_droid._build_preparation_rrd(
+        journal,
+        output,
+        run_id=run_id,
+        result=result,
+        runtime_image="ghcr.io/example/openpi@sha256:" + "c" * 64,
+    )
+    assert inspection["parseable"] is True
+    assert inspection["timelines"] == ["normalization_batch"]
+    assert set(full_droid.PREPARATION_RRD_ENTITIES) <= set(
+        inspection["entities"]
+    )
+
+
+def test_dataset_verification_retry_keeps_preparation_journal_immutable(
+    tmp_path: Path,
+) -> None:
+    journal = tmp_path / "preparation.jsonl"
+    dataset = {
+        "object_count": 2,
+        "file_count": 2,
+        "remote_total_size_bytes": 46,
+        "local_total_size_bytes": 46,
+        "listing_sha256": "a" * 64,
+        "timings_seconds": {"checksum_sync": 2.0},
+        "checksum_verification_bytes_per_second": 23.0,
+    }
+    full_droid._record_dataset_verification_once(
+        journal, run_id="preparation-retry", dataset=dataset
+    )
+    first = journal.read_bytes()
+    retried = {
+        **dataset,
+        "timings_seconds": {"checksum_sync": 1.0},
+        "checksum_verification_bytes_per_second": 46.0,
+    }
+    full_droid._record_dataset_verification_once(
+        journal, run_id="preparation-retry", dataset=retried
+    )
+    assert journal.read_bytes() == first
+
+
+def test_checkpoint_completion_marker_is_atomic_and_run_scoped(
+    tmp_path: Path,
+) -> None:
+    checkpoint_root = tmp_path / "checkpoints"
+    step_path = checkpoint_root / "10000"
+    step_path.mkdir(parents=True)
+    (step_path / "orbax-metadata").write_text("complete", encoding="utf-8")
+
+    assert not full_droid._checkpoint_completion_is_valid(
+        checkpoint_root, step=10_000, run_id="marker-unit"
+    )
+    full_droid._write_checkpoint_completion_marker(
+        checkpoint_root, step=10_000, run_id="marker-unit"
+    )
+    assert full_droid._checkpoint_completion_is_valid(
+        checkpoint_root, step=10_000, run_id="marker-unit"
+    )
+    assert not full_droid._checkpoint_completion_is_valid(
+        checkpoint_root, step=10_000, run_id="different-run"
+    )
+    assert not list(step_path.glob("*.tmp"))
+
+
+def test_telemetry_prefix_is_immutable_milestone_source(tmp_path: Path) -> None:
+    run_id = "prefix-unit"
+    path = tmp_path / "telemetry.jsonl"
+    journal = full_droid._TrainingTelemetryJournal(
+        path,
+        run_id=run_id,
+        config=SimpleNamespace(
+            num_train_steps=4,
+            batch_size=256,
+            log_interval=1,
+            save_interval=2,
+        ),
+    )
+    for step in range(4):
+        journal.record_metrics(
+            step=step,
+            values={"loss": 1.0, "grad_norm": 0.2, "param_norm": 20.0},
+            learning_rate=1e-6,
+        )
+    journal.close()
+    first = full_droid._telemetry_prefix_payload(
+        path, run_id=run_id, through_step=1
+    )
+    assert b'"optimizer_step": 2' not in first
+    assert b'"optimizer_step": 1' in first
+    assert first == full_droid._telemetry_prefix_payload(
+        path, run_id=run_id, through_step=1
+    )
+
+
+def test_milestone_manifest_hashes_rrd_and_journal() -> None:
+    payload = full_droid._manifest_payload(
+        run_id="manifest-unit",
+        stage="full",
+        milestone="progress-step-001000",
+        rrd_uri="s3://private.invalid/run/reports/rrd/progress-step-001000.rrd",
+        inspection={"bytes": 12, "sha256": "a" * 64},
+        source_telemetry_sha256="b" * 64,
+        source_coverage={"through_optimizer_step": 1_000},
+    )
+    value = json.loads(payload)
+    content_sha256 = value.pop("content_sha256")
+    value["content_sha256"] = ""
+    assert content_sha256 == hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    assert value["rrd"]["sha256"] == "a" * 64
+    assert value["source_telemetry_sha256"] == "b" * 64
+
+
+def test_training_rrd_rebuild_has_deterministic_decoded_contract(
+    tmp_path: Path,
+) -> None:
+    run_id = "deterministic-rebuild"
+    config = _telemetry_config()
+    journal_path = tmp_path / "telemetry.jsonl"
+    journal = full_droid._TrainingTelemetryJournal(
+        journal_path, run_id=run_id, config=config
+    )
+    for step in range(2):
+        journal.record_metrics(
+            step=step,
+            values={"loss": 1.0, "grad_norm": 0.2, "param_norm": 20.0},
+            learning_rate=1e-6,
+        )
+    journal.record_checkpoint(step=1, event="save_requested")
+    journal.record_checkpoint(step=1, event="materialized")
+    journal.close()
+    kwargs = {
+        "run_id": run_id,
+        "config": config,
+        "prepared": {
+            "dataset": {"listing_sha256": "a" * 64},
+            "filter_dictionary": {
+                "sha256": full_droid.FILTER_DICTIONARY_SHA256
+            },
+            "normalization": {"sha256": "b" * 64},
+        },
+        "runtime_image": "ghcr.io/example/openpi@sha256:" + "c" * 64,
+        "hardware": {
+            "process_count": 8,
+            "global_gpu_count": 8,
+            "local_devices_per_process": 1,
+        },
+        "topology": [
+            {"sm120_probe": "devices=1 cc=12.0"} for _ in range(8)
+        ],
+    }
+    first = tmp_path / "first.rrd"
+    second = tmp_path / "second.rrd"
+    first_inspection = full_droid._build_training_rrd(
+        journal_path, first, **kwargs
+    )
+    second_inspection = full_droid._build_training_rrd(
+        journal_path, second, **kwargs
+    )
+    for key in (
+        "application_id",
+        "recording_id",
+        "timelines",
+        "entities",
+        "source_telemetry_sha256",
+    ):
+        assert first_inspection[key] == second_inspection[key]
 
 
 def test_runtime_image_provenance_requires_only_a_digest() -> None:

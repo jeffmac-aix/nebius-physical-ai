@@ -34,10 +34,15 @@ config:
 
   run_root_uri: "s3://{{config.bucket}}/{{config.prefix}}/"
   prepare_uri: "{{config.run_root_uri}}reports/full-droid-prepare.json"
+  prepare_rrd_uri: "{{config.run_root_uri}}reports/rrd/preparation.rrd"
+  prepare_rrd_manifest_uri: "{{config.run_root_uri}}reports/rrd/preparation.manifest.json"
+  qualification_uri: "{{config.run_root_uri}}reports/full-droid-qualification.json"
+  qualification_checkpoint_uri: "{{config.run_root_uri}}checkpoints/qualification"
+  qualification_telemetry_uri: "{{config.run_root_uri}}reports/qualification-telemetry.jsonl"
   trained_checkpoint_uri: "{{config.run_root_uri}}checkpoints/full-droid"
   training_uri: "{{config.run_root_uri}}reports/full-droid-finetune.json"
   telemetry_uri: "{{config.run_root_uri}}reports/full-droid-telemetry.jsonl"
-  rrd_uri: "{{config.run_root_uri}}reports/full-droid-finetune.rrd"
+  rrd_root_uri: "{{config.run_root_uri}}reports/rrd"
 
 resources:
   prepare:
@@ -93,6 +98,28 @@ states:
     outputs:
       - uri: "{{config.prepare_uri}}"
         schema: npa.workbench.openpi.pi05-full-droid-prepare.v1
+      - uri: "{{config.prepare_rrd_uri}}"
+        schema: application/vnd.rerun.rrd
+      - uri: "{{config.prepare_rrd_manifest_uri}}"
+        schema: npa.workbench.openpi.pi05-full-droid-rerun-milestone.v1
+    next: qualify_full_droid
+  qualify_full_droid:
+    description: >
+      Run a fixed 100-step optimizer gate on the same eight-process sharded
+      topology. Its journal, checkpoint, and RRD are isolated from full training.
+    toolRef: workbench.openpi.full_droid_qualification
+    resources: rtxpro8
+    outputs:
+      - uri: "{{config.qualification_checkpoint_uri}}/manifest.json"
+        schema: npa.workbench.openpi.checkpoint-manifest.v1
+      - uri: "{{config.qualification_uri}}"
+        schema: npa.workbench.openpi.pi05-full-droid-qualification.v1
+      - uri: "{{config.qualification_telemetry_uri}}"
+        schema: npa.workbench.openpi.pi05-full-droid-telemetry.v1
+      - uri: "{{config.rrd_root_uri}}/qualification-step-000100.rrd"
+        schema: application/vnd.rerun.rrd
+      - uri: "{{config.rrd_root_uri}}/qualification-step-000100.manifest.json"
+        schema: npa.workbench.openpi.pi05-full-droid-rerun-milestone.v1
     next: full_droid_finetune
   full_droid_finetune:
     description: >
@@ -109,6 +136,28 @@ states:
         schema: npa.workbench.openpi.pi05-full-droid-finetune.v1
       - uri: "{{config.telemetry_uri}}"
         schema: npa.workbench.openpi.pi05-full-droid-telemetry.v1
-      - uri: "{{config.rrd_uri}}"
+      - uri: "{{config.rrd_root_uri}}/progress-step-001000.rrd"
         schema: application/vnd.rerun.rrd
+      - uri: "{{config.rrd_root_uri}}/progress-step-001000.manifest.json"
+        schema: npa.workbench.openpi.pi05-full-droid-rerun-milestone.v1
+      - uri: "{{config.rrd_root_uri}}/progress-step-010000.rrd"
+        schema: application/vnd.rerun.rrd
+      - uri: "{{config.rrd_root_uri}}/progress-step-010000.manifest.json"
+        schema: npa.workbench.openpi.pi05-full-droid-rerun-milestone.v1
+      - uri: "{{config.rrd_root_uri}}/progress-step-025000.rrd"
+        schema: application/vnd.rerun.rrd
+      - uri: "{{config.rrd_root_uri}}/progress-step-025000.manifest.json"
+        schema: npa.workbench.openpi.pi05-full-droid-rerun-milestone.v1
+      - uri: "{{config.rrd_root_uri}}/progress-step-050000.rrd"
+        schema: application/vnd.rerun.rrd
+      - uri: "{{config.rrd_root_uri}}/progress-step-050000.manifest.json"
+        schema: npa.workbench.openpi.pi05-full-droid-rerun-milestone.v1
+      - uri: "{{config.rrd_root_uri}}/progress-step-075000.rrd"
+        schema: application/vnd.rerun.rrd
+      - uri: "{{config.rrd_root_uri}}/progress-step-075000.manifest.json"
+        schema: npa.workbench.openpi.pi05-full-droid-rerun-milestone.v1
+      - uri: "{{config.rrd_root_uri}}/progress-step-100000.rrd"
+        schema: application/vnd.rerun.rrd
+      - uri: "{{config.rrd_root_uri}}/progress-step-100000.manifest.json"
+        schema: npa.workbench.openpi.pi05-full-droid-rerun-milestone.v1
     terminal: true

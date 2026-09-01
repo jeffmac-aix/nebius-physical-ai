@@ -160,12 +160,29 @@ Rank zero wraps the pinned trainer's existing `wandb.log` and checkpoint-save
 callbacks to append a fsynced, resume-deduplicated telemetry journal. It records
 the real reduced loss, gradient and parameter norms, exact optimizer schedule,
 measured interval throughput/timing, and checkpoint events; it does not add a
-collective or change the upstream loop. After the final checkpoint materializes,
-that journal is converted with `rerun-sdk==0.31.4` into the run-scoped
-`reports/full-droid-finetune.rrd`. The recording uses `optimizer_step`, carries
-sanitized source/recipe/run provenance and aggregate device health, and states
-that this offline run produced no held-out before/after policy trajectory. No
-stock trajectory is substituted.
+collective or change the upstream loop. The workflow turns factual journal
+prefixes into independent immutable Rerun recordings rather than appending to a
+partial file:
+
+- preparation emits `reports/rrd/preparation.rrd` after checksum verification
+  and normalization complete, with dataset coverage and normalization progress;
+- a separate fixed 100-update qualification emits
+  `qualification-step-000100.rrd` from its own journal and checkpoint;
+- full training emits an early, explicitly checkpoint-free
+  `progress-step-001000.rrd`, then checkpoint-aligned snapshots at 10,000,
+  25,000, 50,000, 75,000, and 100,000 completed updates.
+
+The upstream loop numbers its final update `optimizer_step=99999`, so the
+`progress-step-100000` manifest explicitly records factual coverage through
+99,999; it does not invent a 100,000 timeline row. Each checkpoint-aligned
+snapshot waits for the asynchronous Orbax manager and atomically records a
+run-scoped completion marker before conversion. Every closed RRD is decoded,
+its optimizer coverage is compared with the source journal prefix, and its
+uploaded bytes are read back before a content-hashed companion manifest is
+written. No mutable `latest.rrd` exists. The recordings carry sanitized
+source/recipe/run provenance and aggregate device health, and state that this
+offline run produced no held-out before/after policy trajectory. No stock
+trajectory is substituted.
 
 The durable claim must have room for the roughly 1.8 TB dataset plus runtime
 caches and checkpoints. It is an operator-created run resource, supplied through
@@ -179,9 +196,11 @@ eight matching physical devices on eight distinct nodes, the exact one-by-eight 
 agreement with the authoritative GCS listing after checksum sync, normalization
 statistics, normal return from the pinned upstream trainer, the final upstream
 checkpoint directory, an immutable content-hashed S3 checkpoint manifest, and
-a read-after-write Rerun recording that passes `rerun rrd verify` plus decoded
-identity/timeline/entity inspection. Both telemetry JSONL and `.rrd` are
-declared run outputs so artifact discovery can find them.
+a read-after-write preparation RRD, qualification RRD, and every required full
+training milestone RRD that pass `rerun rrd verify`, decoded
+identity/timeline/entity inspection, journal-coverage comparison, and manifest
+hash validation. The telemetry journals, exact RRD URIs, and companion manifests
+are declared run outputs so artifact discovery can find them.
 Offline training does not by itself claim physical-robot task success.
 
 Validate the production spec locally:

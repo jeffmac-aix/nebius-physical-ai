@@ -53,6 +53,39 @@ placeholder, screenshot, or renamed JSON file is never evidence for the run.
   deterministically after success. This makes resume factual without relying on
   unsupported append/recovery behavior for a partial RRD.
 
+## Long-running staged recordings
+
+Do not make a reviewer wait for a long workflow's terminal stage when factual
+intermediate review points exist. Define a sparse milestone plan before launch:
+
+- emit a preparation recording only after input verification and preprocessing
+  succeed, using a preparation-specific timeline and actual coverage/progress;
+- emit a separate qualification recording after a real bounded optimizer gate;
+- during long training, emit an early journal-only snapshot and periodic
+  checkpoint-aligned snapshots, including the final checkpoint;
+- rebuild each snapshot deterministically from the durable journal prefix that
+  existed at that milestone, then close, inspect, upload, and read it back as a
+  standalone RRD; never append to or recover a partially written RRD;
+- give every RRD and companion manifest a stage/milestone-specific immutable
+  URI. Do not overwrite `latest.rrd` or use qualification facts as full-run
+  progress;
+- put the RRD byte hash, source-journal-prefix hash, decoded coverage, run id,
+  stage, milestone, and checkpoint status in a write-once content-hashed
+  manifest. Declare every known URI directly in the workflow outputs; and
+- fail closed at a mandatory milestone while retaining its journal and any
+  materialized checkpoint so an identical resume can rebuild missing artifacts.
+
+Checkpoint callbacks may be asynchronous. A checkpoint-aligned snapshot is
+eligible only after the checkpoint manager has finished and the expected
+checkpoint directory is non-empty. Persist a run-scoped, atomic completion
+marker only after that wait succeeds; resume must not infer completion from a
+partially populated checkpoint directory. An explicitly labelled early
+log-only snapshot is eligible after the corresponding metric record is flushed
+and fsynced; its manifest must say that no checkpoint was claimed. If the
+trainer numbers updates from zero, keep that factual timeline and state the
+mapping between a human-facing completed-update milestone and its final source
+step instead of inventing a future timeline row.
+
 ## Validate before handoff
 
 Independently validate the uploaded bytes:
@@ -61,7 +94,8 @@ Independently validate the uploaded bytes:
 - inspect with `rerun rrd print -vv <file>`;
 - require the expected application id, run recording id, timelines, and entity
   paths in decoded output;
-- compare decoded coverage with the source journal/manifest;
+- decode a metric entity and compare its complete observed step sequence with
+  the source journal prefix, not only its last value;
 - verify non-empty S3 bytes by read-after-write; and
 - confirm artifact discovery lists the exact run-scoped `.rrd`.
 
