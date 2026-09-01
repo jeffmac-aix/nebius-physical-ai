@@ -154,8 +154,8 @@ def _download_assets() -> None:
             ("robocasa/robocasa-assets", "textures.zip", ".", "textures"),
             ("robocasa/robocasa-assets", "generative_textures.zip", ".", "generative_textures"),
             ("robocasa/robocasa-assets", "fixtures.zip", ".", "fixtures/accessories"),
-            ("robocasa/robocasa-assets", "objaverse.zip", ".", "objects/objaverse"),
-            ("robocasa/robocasa-assets", "aigen_objs.zip", ".", "objects/aigen_objs"),
+            ("robocasa/robocasa-assets", "objaverse.zip", "objects", "objects/objaverse"),
+            ("robocasa/robocasa-assets", "aigen_objs.zip", "objects", "objects/aigen_objs"),
         ]
         # Lightwheel fixtures are one zip per fixture family, each extracting a
         # top-level folder (e.g. stoves/) that must land under fixtures/. They are
