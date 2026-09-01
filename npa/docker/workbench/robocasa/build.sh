@@ -47,7 +47,7 @@ docker build \
   --build-arg NPA_SOURCE_SHA="${NPA_SOURCE_SHA}" \
   -t "${IMAGE}" \
   -f "${SCRIPT_DIR}/Dockerfile" \
-  "${NPA_ROOT}/npa"
+  "${NPA_ROOT}"
 
 if [[ "${PUSH}" == "1" ]]; then
   echo "Pushing ${IMAGE}"
