@@ -23,15 +23,15 @@ The manipulation scene is a lit tabletop with a reachable red cube and an open
 Franka in the DROID reset posture. Both policy views use Isaac Sim 6's supported
 `isaacsim.sensors.experimental.rtx` authoring/runtime split: an independent
 `RtxCamera(tick_rate=15.0)` and `CameraSensor(annotators=["rgb"])` per view.
-Immediately before acquisition, the scenario invokes the documented blocking
-Replicator orchestrator step without advancing the timeline. This makes policy
-camera rendering explicit while `world.step(render=True)` continues to advance
-physics and the streamed viewport; it does not depend on Antioch implicitly
-autoplaying independent RTX render products. Acquisition consumes the copied
+After scene reset, the scenario commits timeline play with Isaac's public app
+utility. Each control tick then uses exactly one `world.step(render=True)` for
+physics, the streamed viewport, and the attached policy-camera render products
+before reading both sensors. It does not add a second Replicator orchestrator
+step, which can invalidate the RGB render-var lifecycle. Acquisition consumes the copied
 numpy/Warp result and producer metadata from `get_data("rgb")`. Each
 sample asks `CameraSensor` to fill a documented `(224, 224, 3)` uint8 CPU buffer
 and immediately copies it into scenario-owned memory
-memory instead of exposing a mutable or device-backed view to downstream code; a
+instead of exposing a mutable or device-backed view to downstream code; a
 public clock attached to that sensor's render product supplies the exact marker
 when the RGB annotator omits it. The wide exterior camera has explicit optics
 and frames the complete tabletop manipulation region. The wide wrist camera is
@@ -100,9 +100,9 @@ starts one successor with capped backoff; ambiguous ownership fails closed.
 Mission Control's livestream state is independent of policy-camera readiness.
 The scenario waits in safe hold for both RTX render products to return distinct,
 advancing RGB frames; it never treats a viewer connection or the control-loop
-counter as a camera producer clock. It accepts only the reviewed
-`antioch-sim==0.3.63` and `isaac-sim-6.0.1` runtime identity and fails clearly
-when the required public orchestrator hook is absent or incompatible. See the
+counter as a camera producer clock. The supported lifecycle follows the reviewed
+`antioch-sim==0.3.63` and `isaac-sim-6.0.1` runtime identity: timeline play is
+committed once, then every sensor read follows a completed rendered world step. See the
 [compatibility matrix](../../../docs/workbench/antioch.md#live-camera-compatibility-contract)
 before changing either pin.
 

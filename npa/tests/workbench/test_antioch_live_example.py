@@ -484,10 +484,10 @@ def test_rtx_camera_construction_wires_public_rgb_render_product(
     class Authoring:
         def __init__(self, path: str, **kwargs) -> None:
             calls.append(("authoring", path, kwargs))
-            self.destroyed = False
 
-        def destroy(self) -> None:
-            self.destroyed = True
+        def __getattr__(self, name: str):
+            calls.append(("unsupported_authoring_api", name))
+            raise AttributeError(name)
 
     class Sensor:
         def __init__(self, authoring, **kwargs) -> None:
@@ -530,7 +530,8 @@ def test_rtx_camera_construction_wires_public_rgb_render_product(
     assert calls[1][2] == {"resolution": (224, 224), "annotators": ["rgb"]}
     assert camera.render_product_path == "/Render/exterior"
     camera.close()
-    assert camera.sensor.detached and clock.detached and camera.authoring.destroyed
+    assert camera.sensor.detached and clock.detached
+    assert not [call for call in calls if call[0] == "unsupported_authoring_api"]
 
 
 def test_rtx_camera_uses_documented_cpu_rgb_output_contract(
@@ -563,23 +564,11 @@ def test_rtx_camera_uses_documented_cpu_rgb_output_contract(
     assert camera.output_buffer == (224, 224, 3)
 
 
-def test_explicit_render_scheduler_advances_producer_before_each_sample(
+def test_camera_capture_uses_completed_world_render_without_double_step(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     scenario = _load_live_scenario(monkeypatch, "antioch_render_scheduler_test")
-    calls: list[dict[str, object]] = []
     producer_sequence = 1
-
-    def step(**kwargs) -> None:
-        nonlocal producer_sequence
-        calls.append(kwargs)
-        producer_sequence += 1
-
-    scheduler = scenario._build_render_scheduler(
-        SimpleNamespace(orchestrator=SimpleNamespace(step=step)),
-        antioch_sdk_version=scenario.PINNED_ANTIOCH_SDK_VERSION,
-        engine=scenario.PINNED_ANTIOCH_ENGINE,
-    )
     frame = scenario.CameraFrame(np.ones((224, 224, 3), dtype=np.uint8), "")
 
     class Camera:
@@ -594,69 +583,12 @@ def test_explicit_render_scheduler_advances_producer_before_each_sample(
     )
     assert not advanced and reason == "exterior_producer_stale"
 
-    first = scenario._capture_camera_samples(scheduler, cameras)
-    second = scenario._capture_camera_samples(scheduler, cameras)
+    producer_sequence += 1  # world.step(render=True)
+    first = scenario._capture_camera_samples(cameras)
+    producer_sequence += 1  # world.step(render=True)
+    second = scenario._capture_camera_samples(cameras)
     assert first["exterior"].producer_marker == (2, 60)
     assert second["exterior"].producer_marker == (3, 60)
-    assert calls == [
-        {"delta_time": 0.0, "pause_timeline": False, "wait_for_render": True},
-        {"delta_time": 0.0, "pause_timeline": False, "wait_for_render": True},
-    ]
-
-
-@pytest.mark.parametrize(
-    ("sdk_version", "engine", "replicator", "reason"),
-    [
-        (
-            "0.4.0",
-            "isaac-sim-6.0.1",
-            SimpleNamespace(orchestrator=SimpleNamespace(step=lambda **_kwargs: None)),
-            "unsupported_antioch_sdk_version",
-        ),
-        (
-            "0.3.63",
-            "isaac-sim-7.0.0",
-            SimpleNamespace(orchestrator=SimpleNamespace(step=lambda **_kwargs: None)),
-            "unsupported_antioch_engine",
-        ),
-        (
-            "0.3.63",
-            "isaac-sim-6.0.1",
-            SimpleNamespace(orchestrator=SimpleNamespace()),
-            "render_scheduler_missing_orchestrator_step",
-        ),
-    ],
-)
-def test_render_scheduler_fails_closed_on_unreviewed_runtime_contract(
-    monkeypatch: pytest.MonkeyPatch,
-    sdk_version: str,
-    engine: str,
-    replicator: object,
-    reason: str,
-) -> None:
-    scenario = _load_live_scenario(monkeypatch, f"antioch_contract_{reason}_test")
-    with pytest.raises(scenario.CameraReadinessError, match=reason):
-        scenario._build_render_scheduler(
-            replicator,
-            antioch_sdk_version=sdk_version,
-            engine=engine,
-        )
-
-
-def test_render_scheduler_rejects_an_incompatible_step_signature(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    scenario = _load_live_scenario(monkeypatch, "antioch_step_signature_test")
-    scheduler = scenario._build_render_scheduler(
-        SimpleNamespace(orchestrator=SimpleNamespace(step=lambda: None)),
-        antioch_sdk_version=scenario.PINNED_ANTIOCH_SDK_VERSION,
-        engine=scenario.PINNED_ANTIOCH_ENGINE,
-    )
-    with pytest.raises(
-        scenario.CameraReadinessError,
-        match="render_scheduler_step_signature_unsupported",
-    ):
-        scheduler.tick()
 
 
 def test_scheduler_tick_does_not_fake_camera_readiness(
@@ -664,16 +596,6 @@ def test_scheduler_tick_does_not_fake_camera_readiness(
 ) -> None:
     scenario = _load_live_scenario(monkeypatch, "antioch_scheduler_safe_hold_test")
     ticks = 0
-
-    def step(**_kwargs) -> None:
-        nonlocal ticks
-        ticks += 1
-
-    scheduler = scenario._build_render_scheduler(
-        SimpleNamespace(orchestrator=SimpleNamespace(step=step)),
-        antioch_sdk_version=scenario.PINNED_ANTIOCH_SDK_VERSION,
-        engine=scenario.PINNED_ANTIOCH_ENGINE,
-    )
 
     class MissingCamera:
         def sample(self, *, view: str):
@@ -684,7 +606,8 @@ def test_scheduler_tick_does_not_fake_camera_readiness(
     cameras = (("exterior", MissingCamera()), ("wrist", MissingCamera()))
     monitor = scenario.CameraReadinessMonitor()
     for render_sequence in (1, 2, 3):
-        samples = scenario._capture_camera_samples(scheduler, cameras)
+        ticks += 1  # world.step(render=True)
+        samples = scenario._capture_camera_samples(cameras)
         pair = scenario._validate_camera_pair(
             samples["exterior"].frame,
             samples["wrist"].frame,
@@ -698,6 +621,17 @@ def test_scheduler_tick_does_not_fake_camera_readiness(
         assert not decision.policy_eligible
         assert decision.status == "waiting_for_camera"
     assert ticks == 3
+
+
+def test_camera_timeline_is_committed_before_rendered_readback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scenario = _load_live_scenario(monkeypatch, "antioch_timeline_start_test")
+    calls: list[dict[str, object]] = []
+    scenario._start_camera_timeline(
+        SimpleNamespace(play=lambda **kwargs: calls.append(kwargs))
+    )
+    assert calls == [{"commit": True}]
 
 
 def test_rtx_camera_samples_delayed_numpy_and_warp_without_aliasing(

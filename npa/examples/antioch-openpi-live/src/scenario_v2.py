@@ -139,8 +139,6 @@ class RtxRgbCamera:
             self.sensor.detach_annotators("rgb")
         with contextlib.suppress(Exception):
             self.producer_clock.detach([self.render_product_path])
-        with contextlib.suppress(Exception):
-            self.authoring.destroy()
 
 
 @dataclass(frozen=True)
@@ -203,25 +201,6 @@ class CameraReadinessError(RuntimeError):
         super().__init__(f"{view} camera readiness failed: {reason}")
         self.view = view
         self.reason = reason
-
-
-class ExplicitRenderScheduler:
-    """Advance attached render-product annotators through Isaac's public hook."""
-
-    def __init__(self, step: Callable[..., None]) -> None:
-        self._step = step
-
-    def tick(self) -> None:
-        try:
-            self._step(
-                delta_time=0.0,
-                pause_timeline=False,
-                wait_for_render=True,
-            )
-        except TypeError as exc:
-            raise CameraReadinessError(
-                "pair", "render_scheduler_step_signature_unsupported"
-            ) from exc
 
 
 class TelemetryShutdownError(RuntimeError):
@@ -1104,39 +1083,16 @@ def _build_rtx_rgb_camera(
     )
 
 
-def _build_render_scheduler(
-    replicator,
-    *,
-    antioch_sdk_version: str,
-    engine: str,
-) -> ExplicitRenderScheduler:
-    """Bind the one versioned render contract this example has reviewed."""
+def _capture_camera_samples(cameras) -> dict[str, CameraSample]:
+    """Read both products after the caller's completed rendered world step."""
 
-    if antioch_sdk_version != PINNED_ANTIOCH_SDK_VERSION:
-        raise CameraReadinessError(
-            "pair",
-            "unsupported_antioch_sdk_version:"
-            f"expected={PINNED_ANTIOCH_SDK_VERSION}:actual={antioch_sdk_version}",
-        )
-    if engine != PINNED_ANTIOCH_ENGINE:
-        raise CameraReadinessError(
-            "pair",
-            f"unsupported_antioch_engine:expected={PINNED_ANTIOCH_ENGINE}:actual={engine}",
-        )
-    orchestrator = getattr(replicator, "orchestrator", None)
-    step = getattr(orchestrator, "step", None)
-    if not callable(step):
-        raise CameraReadinessError(
-            "pair", "render_scheduler_missing_orchestrator_step"
-        )
-    return ExplicitRenderScheduler(step)
-
-
-def _capture_camera_samples(scheduler, cameras) -> dict[str, CameraSample]:
-    """Complete one blocking render before reading either reusable RGB buffer."""
-
-    scheduler.tick()
     return {view: camera.sample(view=view) for view, camera in cameras}
+
+
+def _start_camera_timeline(app_utils) -> None:
+    """Commit timeline play before the first rendered sensor update."""
+
+    app_utils.play(commit=True)
 
 
 def _initialize_live_capture(world, cameras, logger):
@@ -1514,8 +1470,7 @@ def openpi_franka_mk8s_live_v2(
     import numpy as np
     import rerun as rr
     import rerun.blueprint as rrb
-    import omni.replicator.core as rep
-    from importlib.metadata import version as package_version
+    import isaacsim.core.experimental.utils.app as app_utils
     from isaacsim.core.api.objects import DynamicCuboid, FixedCuboid
     from isaacsim.core.prims import RigidPrim
     from isaacsim.core.utils.types import ArticulationAction
@@ -1527,11 +1482,6 @@ def openpi_franka_mk8s_live_v2(
     from isaacsim.robot.manipulators.examples.franka import Franka
     from isaacsim.sensors.experimental.rtx import CameraSensor, RtxCamera
 
-    render_scheduler = _build_render_scheduler(
-        rep,
-        antioch_sdk_version=package_version("antioch-sim"),
-        engine=str(antioch.engine()),
-    )
     world = antioch.world()
     world.scene.add_ground_plane(z_position=-0.75)
     tabletop = world.scene.add(
@@ -1606,6 +1556,7 @@ def openpi_franka_mk8s_live_v2(
     wrist_pose = _aim_wrist_camera(world.stage, wrist_mount)
     _configure_camera_optics(world.stage, EXTERIOR_CAMERA_PATH, "exterior")
     _configure_camera_optics(world.stage, WRIST_CAMERA_PATH, "wrist")
+    _start_camera_timeline(app_utils)
     cameras = (("exterior", exterior), ("wrist", wrist))
     telemetry, render_products, camera_markers = _initialize_live_capture(
         world, cameras, logger
@@ -1861,7 +1812,7 @@ def openpi_franka_mk8s_live_v2(
                     wrist_pose,
                     _camera_optical_config("wrist"),
                 )
-                samples = _capture_camera_samples(render_scheduler, cameras)
+                samples = _capture_camera_samples(cameras)
                 pair = _validate_camera_pair(
                     samples["exterior"].frame,
                     samples["wrist"].frame,
