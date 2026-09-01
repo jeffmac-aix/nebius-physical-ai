@@ -170,6 +170,29 @@ def _download_assets() -> None:
             registry.append(
                 ("nvidia/PhysicalAI-Kitchen-Assets", f"fixtures_lightwheel/{name}.zip", "fixtures", f"fixtures/{name}")
             )
+        # Lightwheel objects are one zip per object family, each extracting a
+        # top-level folder (e.g. stool/) that must land under objects/lightwheel/.
+        lightwheel_objects = [
+            "aluminum_foil", "basket", "blender_jug", "cheese_grater",
+            "chicken_drumstick", "cinnamon", "colander", "cookie_dough_ball",
+            "cream_cheese_stick", "digital_scale", "dish_brush", "dish_rack",
+            "flour_bag", "flower_vase", "fruit_bowl", "glass_cup",
+            "honey_bottle", "hotdog_bun", "ice_cube", "ice_cube_tray", "jar",
+            "juice", "kebab_skewer", "kettle", "knife_block", "lemon_wedge",
+            "lettuce", "marshmallow", "mayonnaise", "measuring_cup", "mug_tree",
+            "mustard", "oil_and_vinegar_bottle", "oven_tray", "pancake",
+            "paper_towel_holder", "paprika", "peeler", "pickle_slice",
+            "pitcher", "pizza", "pizza_cutter", "placemat", "plant", "pot",
+            "reamer", "salt_and_pepper_shaker", "sandwich_bread", "saucepan",
+            "shrimp", "soap_dispenser", "spray", "stool", "strainer", "straw",
+            "sugar_cube", "syrup_bottle", "tiered_basket", "tiered_shelf",
+            "tomato_slice", "tongs", "tray", "tupperware", "turkey_slice",
+            "turmeric", "utensil_rack", "utensil_set", "whisk", "wooden_spoon",
+        ]
+        for name in lightwheel_objects:
+            registry.append(
+                ("nvidia/PhysicalAI-Kitchen-Assets", f"objects_lightwheel/{name}.zip", "objects/lightwheel", f"objects/lightwheel/{name}")
+            )
         for repo_id, filename, extract_to, marker in registry:
             marker_path = assets_root / marker
             if marker_path.exists() and any(marker_path.iterdir()):
