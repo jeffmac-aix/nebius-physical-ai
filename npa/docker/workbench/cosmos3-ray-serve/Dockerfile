@@ -43,6 +43,7 @@ USER root
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
        "linux-libc-dev=${LINUX_LIBC_DEV_VERSION}" \
+    && dpkg --purge --force-depends linux-libc-dev \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /outputs /tmp/ray \
     && chown ubuntu:ubuntu /outputs /tmp/ray
