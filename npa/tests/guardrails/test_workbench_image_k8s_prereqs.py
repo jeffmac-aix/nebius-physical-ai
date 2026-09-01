@@ -52,6 +52,7 @@ SKYPILOT_HOSTED_IMAGES = (
     "groot",
     "isaac-lab",
     "lerobot",
+    "robocasa",
     "sim2real-control",
     "sim2real-envgen",
     "sim2real-eval",
