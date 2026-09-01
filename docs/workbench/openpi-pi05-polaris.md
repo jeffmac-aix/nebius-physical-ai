@@ -153,6 +153,16 @@ the RLDS source before shuffle, divides the unchanged global batch into eight
 local batches of 32, and passes process-local batches into the upstream global
 data sharding. All ranks still invoke `scripts/train.py:main`; the recipe,
 optimizer, step count, model, and checkpoint implementation remain upstream.
+Rank zero wraps the pinned trainer's existing `wandb.log` and checkpoint-save
+callbacks to append a fsynced, resume-deduplicated telemetry journal. It records
+the real reduced loss, gradient and parameter norms, exact optimizer schedule,
+measured interval throughput/timing, and checkpoint events; it does not add a
+collective or change the upstream loop. After the final checkpoint materializes,
+that journal is converted with `rerun-sdk==0.31.4` into the run-scoped
+`reports/full-droid-finetune.rrd`. The recording uses `optimizer_step`, carries
+sanitized source/recipe/run provenance and aggregate device health, and states
+that this offline run produced no held-out before/after policy trajectory. No
+stock trajectory is substituted.
 
 The durable claim must have room for the roughly 1.8 TB dataset plus runtime
 caches and checkpoints. It is an operator-created run resource, supplied through
@@ -165,7 +175,10 @@ Success requires all of the following machine evidence in the run-scoped report:
 eight matching physical devices on eight distinct nodes, the exact one-by-eight mesh, byte-and-object
 agreement with the authoritative GCS listing after checksum sync, normalization
 statistics, normal return from the pinned upstream trainer, the final upstream
-checkpoint directory, and an immutable content-hashed S3 checkpoint manifest.
+checkpoint directory, an immutable content-hashed S3 checkpoint manifest, and
+a read-after-write Rerun recording that passes `rerun rrd verify` plus decoded
+identity/timeline/entity inspection. Both telemetry JSONL and `.rrd` are
+declared run outputs so artifact discovery can find them.
 Offline training does not by itself claim physical-robot task success.
 
 Validate the production spec locally:

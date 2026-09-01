@@ -176,7 +176,7 @@ def test_openpi_uses_system_ffmpeg_without_bundled_payload() -> None:
     assert "WANDB_MODE=disabled" in dockerfile
     assert 'org.nebius.npa.skypilot-bootstrap-contract="skypilot-0.12.2-v1"' in dockerfile
     assert "rm -f /opt/venv/lib/python3.11/site-packages/wandb/bin/wandb-core" in dockerfile
-    assert "import importlib.metadata, os, wandb" in dockerfile
+    assert "import importlib.metadata, os, rerun, wandb" in dockerfile
     assert "rm -rf /opt/nvidia/nsight-compute" in dockerfile
     assert "test ! -e /opt/nvidia/nsight-compute" in dockerfile
     for pin in (
@@ -190,7 +190,9 @@ def test_openpi_uses_system_ffmpeg_without_bundled_payload() -> None:
         "'nvidia-nvshmem-cu12==3.2.5'",
     ):
         assert pin in dockerfile
-    assert "pi05-full-droid-rlds-cu128-jax062-nccl2275" in dockerfile
+    assert "pi05-full-droid-rlds-cu128-jax062-nccl2275-rerun0314" in dockerfile
+    assert "'rerun-sdk==0.31.4'" in dockerfile
+    assert "/opt/venv/bin/rerun rrd --help" in dockerfile
     assert 'config.get_config("pi05_droid")' in dockerfile
     assert "multihost_utils.broadcast_one_to_all" in dockerfile
     assert "nccl/lib/libnccl.so.2" in dockerfile

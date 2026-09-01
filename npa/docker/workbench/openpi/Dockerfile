@@ -7,7 +7,7 @@ ARG OPENPI_SOURCE_REF=15a9616a00943ada6c20a0f158e3adb39df2ccac
 ARG NPA_SOURCE_SHA=unknown
 
 LABEL npa.tool="openpi" \
-      npa.version="pi05-full-droid-rlds-cu128-jax062-nccl2275" \
+      npa.version="pi05-full-droid-rlds-cu128-jax062-nccl2275-rerun0314" \
       npa.source.repo="${OPENPI_SOURCE_URL}" \
       npa.source.ref="${OPENPI_SOURCE_REF}" \
       npa.weights="operator-runtime-fetch" \
@@ -89,10 +89,11 @@ RUN python3 -m venv /opt/uv \
     && /opt/venv/bin/python -c \
       'import imageio_ffmpeg, os; p="/tmp/npa-openpi-ffmpeg-probe.mp4"; w=imageio_ffmpeg.write_frames(p,(2,2),fps=1,macro_block_size=1); w.send(None); w.send(bytes([0,0,0]*4)); w.close(); r=imageio_ffmpeg.read_frames(p,pix_fmt="rgb24"); m=next(r); f=next(r); r.close(); assert m["size"] == (2,2) and len(f) == 12; os.unlink(p)' \
     && /opt/uv/bin/uv pip install --python /opt/venv/bin/python --no-cache \
-      'boto3>=1.34' 'deepdiff==8.6.1' \
+      'boto3>=1.34' 'deepdiff==8.6.1' 'rerun-sdk==0.31.4' \
     && rm -f /opt/venv/lib/python3.11/site-packages/wandb/bin/wandb-core \
     && /opt/venv/bin/python -c \
-      'import importlib.metadata, os, wandb; assert importlib.metadata.version("deepdiff") == "8.6.1"; assert os.environ["WANDB_MODE"] == "disabled"; assert wandb is not None' \
+      'import importlib.metadata, os, rerun, wandb; assert importlib.metadata.version("deepdiff") == "8.6.1"; assert importlib.metadata.version("rerun-sdk") == "0.31.4"; assert os.environ["WANDB_MODE"] == "disabled"; assert rerun is not None and wandb is not None' \
+    && /opt/venv/bin/rerun rrd --help >/dev/null \
     && test ! -e /opt/venv/lib/python3.11/site-packages/wandb/bin/wandb-core \
     && /opt/uv/bin/uv venv --python 3.11 /opt/gsutil-venv \
     && /opt/uv/bin/uv pip install --python /opt/gsutil-venv/bin/python --no-cache gsutil \

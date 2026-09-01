@@ -112,7 +112,9 @@ published, and anonymously pullable status for this exact digest only.
 ## Validated source-registry candidates pending public release
 
 `npa-openpi` is a zero-weight, zero-dataset public-image candidate for the
-pinned pi0.5 full-DROID runtime. Its only permitted initial publication is the
+pinned pi0.5 full-DROID runtime. It includes `rerun-sdk==0.31.4` solely to turn
+the actual run's rank-zero training journal into the declared, verified RRD;
+the recording is not a baked demo or image payload. Its only permitted initial publication is the
 immutable `dev-<full-git-sha>` channel; the supported tag remains explicitly
 `-unbuilt` until byte scans, anonymous pull, and the eight-node RTX PRO 6000
 qualification are recorded together.

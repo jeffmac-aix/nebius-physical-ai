@@ -36,6 +36,8 @@ config:
   prepare_uri: "{{config.run_root_uri}}reports/full-droid-prepare.json"
   trained_checkpoint_uri: "{{config.run_root_uri}}checkpoints/full-droid"
   training_uri: "{{config.run_root_uri}}reports/full-droid-finetune.json"
+  telemetry_uri: "{{config.run_root_uri}}reports/full-droid-telemetry.jsonl"
+  rrd_uri: "{{config.run_root_uri}}reports/full-droid-finetune.rrd"
 
 resources:
   prepare:
@@ -105,4 +107,8 @@ states:
         schema: npa.workbench.openpi.checkpoint-manifest.v1
       - uri: "{{config.training_uri}}"
         schema: npa.workbench.openpi.pi05-full-droid-finetune.v1
+      - uri: "{{config.telemetry_uri}}"
+        schema: npa.workbench.openpi.pi05-full-droid-telemetry.v1
+      - uri: "{{config.rrd_uri}}"
+        schema: application/vnd.rerun.rrd
     terminal: true
