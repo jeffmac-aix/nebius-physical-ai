@@ -222,6 +222,27 @@ def _install_fake_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setitem(sys.modules, "gymnasium", FakeGym())
 
 
+def test_make_env_uses_nonempty_objaverse_registry(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_fake_robocasa(monkeypatch)
+    observed: dict[str, object] = {}
+
+    class FakeGym:
+        @staticmethod
+        def make(env_id, **kwargs):
+            observed.update(kwargs)
+            return _FakeEnv()
+
+    monkeypatch.setitem(sys.modules, "gymnasium", FakeGym())
+    monkeypatch.setattr(
+        "npa.workbench.robocasa.capabilities._download_assets", lambda: None
+    )
+    from npa.workbench.robocasa.capabilities import _make_env
+
+    _make_env("robocasa/PickPlaceCounterToCabinet")
+
+    assert observed == {"split": "all", "obj_registries": ("objaverse",)}
+
+
 def test_kitchen_trajectory_export(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     _install_fake_env(monkeypatch)
     from npa.workbench.robocasa.capabilities import kitchen_trajectory_export

@@ -43,6 +43,7 @@ SUPPORTED_CAPABILITIES = {
 }
 
 ROBOCASA_EMBODIMENT = "PandaOmron"
+ROBOCASA_OBJECT_REGISTRIES = ("objaverse",)
 
 
 class RoboCasaError(RuntimeError):
@@ -257,7 +258,11 @@ def _make_env(env_id: str, *, download_assets: bool = True) -> Any:
     _import_robocasa()
     gym = _import_gymnasium()
     try:
-        return gym.make(env_id, split="all")
+        return gym.make(
+            env_id,
+            split="all",
+            obj_registries=ROBOCASA_OBJECT_REGISTRIES,
+        )
     except Exception as exc:  # pragma: no cover - depends on the container.
         raise RoboCasaError(f"failed to create RoboCasa env {env_id}: {exc}") from exc
 
