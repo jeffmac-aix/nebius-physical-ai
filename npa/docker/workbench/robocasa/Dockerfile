@@ -79,8 +79,9 @@ RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel \
         "torch==2.12.1" "torchvision==0.27.1"
 
 # Install RoboCasa source (no deps; the closure above is pinned).
-RUN git clone --depth 1 --branch ${ROBOCASA_REPO_REF} ${ROBOCASA_REPO_URL} . \
-    && python -m pip install --no-cache-dir --no-deps -e .
+RUN git clone --depth 1 --branch ${ROBOCASA_REPO_REF} \
+      ${ROBOCASA_REPO_URL} /opt/robocasa/source \
+    && python -m pip install --no-cache-dir --no-deps -e /opt/robocasa/source
 
 # Copy the shared workbench implementation into the image.
 RUN mkdir -p /app/npa/workbench

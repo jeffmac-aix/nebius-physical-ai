@@ -19,3 +19,5 @@ def test_robocasa_keeps_known_good_gymnasium_and_policy_only_lerobot() -> None:
     assert 'pip install --no-cache-dir --no-deps "lerobot==0.5.1"' in text
     assert '"draccus==0.10.0"' in text
     assert '"einops>=0.8.0,<0.9.0"' in text
+    assert "${ROBOCASA_REPO_URL} /opt/robocasa/source" in text
+    assert "-e /opt/robocasa/source" in text
