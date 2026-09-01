@@ -91,6 +91,10 @@ MAX_CONSECUTIVE_STATUS_ERRORS = 5
 #: Exact cancellation is asynchronous at the provider boundary. Poll a finite
 #: number of times so recovery never launches beside a still-live predecessor.
 CANCELLATION_VERIFY_ATTEMPTS = 12
+#: A run may need more than one terminal repair (for example, an artifact-contract
+#: migration followed by an immutable image repair), but unbounded plan drift would
+#: make one run identity meaningless. Every migration remains independently gated.
+MAX_TERMINAL_PLAN_MIGRATIONS = 3
 
 
 def is_terminal_ok(status: str) -> bool:
@@ -2313,9 +2317,40 @@ def run_workflow_runtime(
                 "terminal plan migration requires a non-empty, single-line, "
                 "non-sensitive --plan-migration-reason of at most 120 safe characters"
             )
-        if ledger.state.plan_migrations:
+        migrations = ledger.state.plan_migrations
+        if len(migrations) >= MAX_TERMINAL_PLAN_MIGRATIONS:
             raise NpaWorkflowError(
-                "terminal plan migration is append-only and this run already records one"
+                "terminal plan migration limit reached for this run"
+            )
+        seen_fingerprints: set[str] = set()
+        expected_old = ""
+        for index, migration in enumerate(migrations, 1):
+            old = str(migration.get("old_plan_fingerprint") or "")
+            new = str(migration.get("new_plan_fingerprint") or "")
+            if not old or not new or (expected_old and old != expected_old):
+                raise NpaWorkflowError(
+                    "terminal plan migration history is not a contiguous "
+                    "append-only chain"
+                )
+            if not seen_fingerprints:
+                seen_fingerprints.add(old)
+            if old not in seen_fingerprints or new in seen_fingerprints:
+                raise NpaWorkflowError(
+                    "terminal plan migration history contains a fingerprint cycle"
+                )
+            if migration.get("migration_index", index) != index:
+                raise NpaWorkflowError(
+                    "terminal plan migration history has a non-contiguous index"
+                )
+            seen_fingerprints.add(new)
+            expected_old = new
+        if migrations and expected_old != recorded:
+            raise NpaWorkflowError(
+                "terminal plan migration history does not match the ledger head"
+            )
+        if fingerprint in seen_fingerprints:
+            raise NpaWorkflowError(
+                "terminal plan migration cannot revisit a prior fingerprint"
             )
         if not ledger.state.waves:
             raise NpaWorkflowError(
@@ -2372,6 +2407,7 @@ def run_workflow_runtime(
                 "terminal plan migration refused because a prior declared output exists"
             )
         migration = {
+            "migration_index": len(migrations) + 1,
             "old_plan_fingerprint": recorded,
             "new_plan_fingerprint": fingerprint,
             "reason": reason,
