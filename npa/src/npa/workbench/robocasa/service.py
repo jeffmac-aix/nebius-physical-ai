@@ -150,12 +150,30 @@ def _upload_output(local_dir: str, output_uri: str, result: dict[str, Any]) -> N
     root = Path(local_dir)
     if not root.exists() or not any(root.iterdir()):
         return
-    from npa.clients.storage import StorageClient
+    import boto3
 
-    uploaded = StorageClient.from_environment().upload_directory(
-        str(root), output_uri
+    endpoint = os.environ.get("AWS_ENDPOINT_URL") or os.environ.get("NEBIUS_S3_ENDPOINT", "")
+    s3 = boto3.client(
+        "s3",
+        endpoint_url=endpoint or None,
+        aws_access_key_id=os.environ.get("AWS_ACCESS_KEY_ID") or None,
+        aws_secret_access_key=os.environ.get("AWS_SECRET_ACCESS_KEY") or None,
     )
-    result["output_uri"] = uploaded
+    bucket, prefix = _parse_s3_uri(output_uri)
+    for file_path in sorted(root.rglob("*")):
+        if file_path.is_file():
+            rel = file_path.relative_to(root)
+            s3.upload_file(str(file_path), bucket, f"{prefix}/{rel}")
+    result["output_uri"] = output_uri
+
+
+def _parse_s3_uri(uri: str) -> tuple[str, str]:
+    """Parse an s3:// URI into (bucket, prefix)."""
+    if not uri.startswith("s3://"):
+        raise ValueError(f"not an s3:// URI: {uri}")
+    rest = uri[len("s3://"):]
+    bucket, _, prefix = rest.partition("/")
+    return bucket, prefix.rstrip("/")
 
 
 app = create_app()
