@@ -11,6 +11,7 @@ metadata:
 
 config:
   bucket: example-bucket
+  runtime_image: "registry.example.invalid/operator/npa-cosmos3-super-benchmark@sha256:0000000000000000000000000000000000000000000000000000000000000000"
   prefix: "runs/{{run.id}}/cosmos3-super-b200-benchmark"
   output_uri: "s3://{{config.bucket}}/{{config.prefix}}/"
   topologies: 1x8,2x4,4x2,8x1
@@ -23,7 +24,7 @@ resources:
     accelerators: B200:8
     cpus: 96
     memory: 1400Gi
-    image: docker.io/vllm/vllm-omni:cosmos3@sha256:6d2630c7d637b699557573f2c3fee8df5d4d0cd718977aa22549ed6a6ef30587
+    image: "{{config.runtime_image}}"
     disk_size: 500
     kubernetes:
       pod_config:

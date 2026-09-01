@@ -122,6 +122,10 @@ redistribution eligibility are not evidence of publication.
 
 ## Intentionally not published as separate images
 
+- **`npa-cosmos3-super-benchmark`** is a restricted, operator-private wrapper
+  around the exact digest-pinned upstream vLLM-Omni benchmark runtime. It adds
+  only the SkyPilot worker bootstrap closure and must be built into the
+  operator's own registry; it is deliberately excluded from the public catalog.
 - **`npa-sim2real-control`** is an internal workflow artifact, not a public-mirror
   tool. Its packaging contract permits redistribution, but it has no entry in
   `CONTAINER_IMAGE_NAMES` and is therefore outside `publicly_publishable_tools()`;

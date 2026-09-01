@@ -15,7 +15,12 @@ That recipe intentionally runs the upstream `vllm/vllm-omni:cosmos3` image at
 its recorded digest, rather than this NPA bootstrap image, so a new measurement
 preserves the public benchmark's software boundary.
 The YAML spells out the equivalent `docker.io/vllm/...` pull reference so image
-preflight can verify the Docker Hub artifact before GPU submission.
+preflight can verify the Docker Hub artifact before GPU submission. Because the
+upstream image lacks `sshd` and `rsync`, SkyPilot cannot use it directly. Build
+`npa/docker/workbench/cosmos3-super-benchmark` into an operator-controlled
+registry and pass its immutable digest as `runtime_image`; the wrapper inherits
+the exact upstream digest and adds only the reviewed worker-bootstrap packages.
+It is intentionally excluded from the public image catalog.
 
 | Piece | Path |
 | --- | --- |

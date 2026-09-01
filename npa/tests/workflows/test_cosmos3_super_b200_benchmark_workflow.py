@@ -4,7 +4,8 @@ from pathlib import Path
 
 import yaml
 
-from npa.orchestration.npa_workflow import build_plan, load_spec
+from npa.orchestration.npa_workflow import build_plan
+from npa.orchestration.npa_workflow.submit import load_spec_for_submit
 from npa.orchestration.npa_workflow.skypilot_render import (
     SkypilotRenderOptions,
     render_skypilot_yaml,
@@ -23,7 +24,9 @@ SPEC_PATH = (
 def test_workflow_is_fixed_full_node_primary_sweep() -> None:
     raw = yaml.safe_load(SPEC_PATH.read_text(encoding="utf-8"))
     assert raw["resources"]["b200-node"]["accelerators"] == "B200:8"
-    assert raw["resources"]["b200-node"]["image"] == IMAGE
+    assert raw["resources"]["b200-node"]["image"] == "{{config.runtime_image}}"
+    wrapper = REPO_ROOT / "npa/docker/workbench/cosmos3-super-benchmark/Dockerfile"
+    assert IMAGE in wrapper.read_text(encoding="utf-8")
     assert raw["config"]["topologies"] == "1x8,2x4,4x2,8x1"
     assert raw["config"]["attempts"] == "24"
     assert raw["states"]["benchmark"]["toolRef"] == "workbench.cosmos3.super_benchmark"
@@ -38,7 +41,12 @@ def test_workflow_is_fixed_full_node_primary_sweep() -> None:
 
 def test_workflow_renders_exact_vendor_digest_and_real_command(monkeypatch) -> None:
     monkeypatch.setenv("NPA_SRC_S3_URI", "s3://example-bucket/npa-src")
-    spec = load_spec(SPEC_PATH)
+    wrapper = "registry.example.invalid/operator/npa-cosmos3-super-benchmark@sha256:" + (
+        "1" * 64
+    )
+    spec = load_spec_for_submit(
+        SPEC_PATH, config_overrides={"runtime_image": wrapper}
+    )
     plan = build_plan(spec, run_id="cosmos3-super-test")
     rendered = render_skypilot_yaml(
         spec,
@@ -47,7 +55,7 @@ def test_workflow_renders_exact_vendor_digest_and_real_command(monkeypatch) -> N
         options=SkypilotRenderOptions(),
     )
     docs = [item for item in yaml.safe_load_all(rendered) if item]
-    assert docs[1]["resources"]["image_id"] == f"docker:{IMAGE}"
+    assert docs[1]["resources"]["image_id"] == f"docker:{wrapper}"
     assert docs[1]["resources"]["accelerators"] == "B200:8"
     assert "npa workbench cosmos3 super-benchmark" in docs[1]["run"]
     assert "--attempts 24" in docs[1]["run"]

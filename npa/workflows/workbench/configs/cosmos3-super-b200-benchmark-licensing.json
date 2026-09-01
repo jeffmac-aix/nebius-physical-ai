@@ -7,8 +7,9 @@
     "handling": "methodology reference only; upstream code, prompt text, result records, and media are not redistributed"
   },
   "runtime": {
-    "image": "docker.io/vllm/vllm-omni:cosmos3@sha256:6d2630c7d637b699557573f2c3fee8df5d4d0cd718977aa22549ed6a6ef30587",
-    "distribution": "pulled directly from the upstream publisher by the operator",
+    "upstream_image": "docker.io/vllm/vllm-omni:cosmos3@sha256:6d2630c7d637b699557573f2c3fee8df5d4d0cd718977aa22549ed6a6ef30587",
+    "wrapper_image": "operator-controlled registry only; exact digest supplied through config.runtime_image",
+    "distribution": "restricted; built and pulled only within the owning operator organization",
     "operator_acceptance_env": "NPA_COSMOS3_ACCEPT_NVIDIA_SOFTWARE_LICENSE",
     "accepted_value": "YES",
     "baked_into_npa_image": false

@@ -587,6 +587,18 @@
       "published_registries": ["public-development", "public-release"]
     },
     {
+      "name": "npa-cosmos3-super-benchmark",
+      "dockerfile": "cosmos3-super-benchmark/Dockerfile",
+      "build_script": "cosmos3-super-benchmark/build.sh",
+      "redistribution": "restricted",
+      "verdict": "ready",
+      "validation": "pending-hardware",
+      "torch": "inherited from exact vllm/vllm-omni:cosmos3 upstream digest",
+      "source_compiled_extensions": [],
+      "smoke": "full four-cell B200 serving benchmark with strict MP4 validity",
+      "notes": "Operator-private wrapper around the pinned upstream benchmark runtime; adds only the SkyPilot worker bootstrap surface and is excluded from public publication."
+    },
+    {
       "name": "npa-cosmos3-ray-serve",
       "dockerfile": "cosmos3-ray-serve/Dockerfile",
       "build_script": "cosmos3-ray-serve/build.sh",
