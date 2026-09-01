@@ -148,15 +148,18 @@ def _download_assets() -> None:
         from pathlib import Path as _Path
 
         assets_root = _Path(robocasa.__file__).resolve().parent / "models" / "assets"
-        # (repo_id, filename, extract_to) where extract_to is relative to assets_root.
+        # (repo_id, filename, extract_to, marker) where extract_to is the
+        # directory under assets_root the zip's top-level folder should land in,
+        # and marker is the sub-path whose presence means the download is done.
         registry = [
-            ("robocasa/robocasa-assets", "textures.zip", "."),
-            ("robocasa/robocasa-assets", "generative_textures.zip", "."),
-            ("robocasa/robocasa-assets", "fixtures.zip", "."),
-            ("robocasa/robocasa-assets", "objaverse.zip", "."),
-            ("robocasa/robocasa-assets", "aigen_objs.zip", "."),
+            ("robocasa/robocasa-assets", "textures.zip", ".", "textures"),
+            ("robocasa/robocasa-assets", "generative_textures.zip", ".", "generative_textures"),
+            ("robocasa/robocasa-assets", "fixtures.zip", ".", "fixtures/accessories"),
+            ("robocasa/robocasa-assets", "objaverse.zip", ".", "objects/objaverse"),
+            ("robocasa/robocasa-assets", "aigen_objs.zip", ".", "objects/aigen_objs"),
         ]
-        # Lightwheel fixtures are one zip per fixture family.
+        # Lightwheel fixtures are one zip per fixture family, each extracting a
+        # top-level folder (e.g. stoves/) that must land under fixtures/.
         lightwheel_fixtures = [
             "blenders", "cabinets", "coffee_machines", "dishwashers",
             "electric_kettles", "fridges", "handles", "hoods", "microwaves",
@@ -165,11 +168,11 @@ def _download_assets() -> None:
         ]
         for name in lightwheel_fixtures:
             registry.append(
-                ("nvidia/PhysicalAI-Kitchen-Assets", f"fixtures_lightwheel/{name}.zip", "fixtures")
+                ("nvidia/PhysicalAI-Kitchen-Assets", f"fixtures_lightwheel/{name}.zip", "fixtures", f"fixtures/{name}")
             )
-        for repo_id, filename, extract_to in registry:
-            target = assets_root / extract_to
-            if extract_to != "." and target.exists() and any(target.iterdir()):
+        for repo_id, filename, extract_to, marker in registry:
+            marker_path = assets_root / marker
+            if marker_path.exists() and any(marker_path.iterdir()):
                 continue
             try:
                 zip_path = hf_hub_download(
@@ -178,9 +181,10 @@ def _download_assets() -> None:
                     filename=filename,
                     revision="main",
                 )
-                assets_root.mkdir(parents=True, exist_ok=True)
+                dest = assets_root if extract_to == "." else assets_root / extract_to
+                dest.mkdir(parents=True, exist_ok=True)
                 with ZipFile(zip_path, "r") as zf:
-                    zf.extractall(path=assets_root)
+                    zf.extractall(path=dest)
                 LOGGER.info("downloaded robocasa assets %s from %s", filename, repo_id)
             except Exception as exc:  # pragma: no cover - network/entitlement.
                 LOGGER.warning("failed to download robocasa assets %s: %s", filename, exc)
