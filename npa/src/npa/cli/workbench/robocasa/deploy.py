@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import subprocess
@@ -13,6 +14,7 @@ import typer
 
 from npa.clients.config import resolve_container_registry
 from npa.clients.credentials import apply_shared_credential_env, load_credentials
+from npa.clients.project_credentials import storage_env_for_project
 from npa.deploy.images import DEFAULT_CONTAINER_REGISTRY, container_image_for_tool
 from npa.workbench.robocasa.schemas import DEFAULT_PORT, DEFAULT_TOKEN_ENV
 
@@ -86,6 +88,7 @@ def deploy_cmd(
         registry=resolve_container_registry(project or None),
     )
     manifest = _kubernetes_manifest(
+        project=project,
         image=resolved_image,
         name=name,
         namespace=namespace,
@@ -126,6 +129,7 @@ def deploy_cmd(
 
 def _kubernetes_manifest(
     *,
+    project: str,
     image: str,
     name: str,
     namespace: str,
@@ -137,7 +141,16 @@ def _kubernetes_manifest(
     auth_mode: str,
     token_env: str,
 ) -> dict[str, Any]:
-    env = _service_env(output_path=output_path, auth_mode=auth_mode, token_env=token_env, port=port)
+    env = _service_env(
+        project=project,
+        output_path=output_path,
+        auth_mode=auth_mode,
+        token_env=token_env,
+        port=port,
+    )
+    env_checksum = hashlib.sha256(
+        json.dumps(env, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
     return {
         "apiVersion": "v1",
         "kind": "List",
@@ -163,7 +176,15 @@ def _kubernetes_manifest(
                     "strategy": {"type": "Recreate"},
                     "selector": {"matchLabels": {"app.kubernetes.io/instance": name}},
                     "template": {
-                        "metadata": {"labels": {"app.kubernetes.io/name": "npa-robocasa", "app.kubernetes.io/instance": name}},
+                        "metadata": {
+                            "labels": {
+                                "app.kubernetes.io/name": "npa-robocasa",
+                                "app.kubernetes.io/instance": name,
+                            },
+                            "annotations": {
+                                "npa.nebius.ai/env-checksum": env_checksum,
+                            },
+                        },
                         "spec": {
                             "nodeSelector": {node_selector_key: node_selector_value},
                             **({"imagePullSecrets": [{"name": image_pull_secret}]} if image_pull_secret else {}),
@@ -206,7 +227,14 @@ def _kubernetes_manifest(
     }
 
 
-def _service_env(*, output_path: str, auth_mode: str, token_env: str, port: int) -> dict[str, str]:
+def _service_env(
+    *,
+    project: str,
+    output_path: str,
+    auth_mode: str,
+    token_env: str,
+    port: int,
+) -> dict[str, str]:
     creds = load_credentials()
     env = {
         "ROBOCASA_AUTH_MODE": auth_mode,
@@ -216,22 +244,30 @@ def _service_env(*, output_path: str, auth_mode: str, token_env: str, port: int)
         "NUMBA_CACHE_DIR": "/tmp/numba_cache",
     }
     apply_shared_credential_env(env, creds)
+    if project.strip():
+        project_storage = storage_env_for_project(project.strip())
+        env.update(project_storage)
+        endpoint = project_storage.get("AWS_ENDPOINT_URL", "")
+        if endpoint:
+            env["AWS_ENDPOINT_URL_S3"] = endpoint
+            env["NEBIUS_S3_ENDPOINT"] = endpoint
     if auth_mode == "token":
         token = os.environ.get(token_env, "")
         if not token:
             fail(f"{token_env} is required when --auth-mode token")
         env["ROBOCASA_TOKEN"] = token
-    access_key = os.environ.get("AWS_ACCESS_KEY_ID") or creds.s3_access_key_id
-    secret_key = os.environ.get("AWS_SECRET_ACCESS_KEY") or creds.s3_secret_access_key
-    endpoint = os.environ.get("AWS_ENDPOINT_URL") or creds.s3_endpoint
-    if access_key:
-        env["AWS_ACCESS_KEY_ID"] = access_key
-    if secret_key:
-        env["AWS_SECRET_ACCESS_KEY"] = secret_key
-    if endpoint:
-        env["AWS_ENDPOINT_URL"] = endpoint
-        env["AWS_ENDPOINT_URL_S3"] = endpoint
-        env["NEBIUS_S3_ENDPOINT"] = endpoint
+    if not project.strip():
+        access_key = os.environ.get("AWS_ACCESS_KEY_ID") or creds.s3_access_key_id
+        secret_key = os.environ.get("AWS_SECRET_ACCESS_KEY") or creds.s3_secret_access_key
+        endpoint = os.environ.get("AWS_ENDPOINT_URL") or creds.s3_endpoint
+        if access_key:
+            env["AWS_ACCESS_KEY_ID"] = access_key
+        if secret_key:
+            env["AWS_SECRET_ACCESS_KEY"] = secret_key
+        if endpoint:
+            env["AWS_ENDPOINT_URL"] = endpoint
+            env["AWS_ENDPOINT_URL_S3"] = endpoint
+            env["NEBIUS_S3_ENDPOINT"] = endpoint
     return {key: value for key, value in env.items() if value}
 
 

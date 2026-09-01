@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from typer.testing import CliRunner
 
 from npa.cli.main import app as main_app
 from npa.cli.workbench.robocasa import app as robocasa_app
+from npa.cli.workbench.robocasa import deploy as deploy_module
 
 
 runner = CliRunner()
@@ -38,6 +40,83 @@ def test_deploy_help() -> None:
     assert result.exit_code == 0
     assert "--gpu-type" in result.stdout
     assert "--auth-mode" in result.stdout
+
+
+def test_deploy_service_env_prefers_project_scoped_storage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(deploy_module, "load_credentials", object)
+    monkeypatch.setattr(
+        deploy_module,
+        "apply_shared_credential_env",
+        lambda env, _creds: env.update(
+            {
+                "AWS_ACCESS_KEY_ID": "host-ak",
+                "AWS_SECRET_ACCESS_KEY": "host-sk",
+                "AWS_ENDPOINT_URL": "https://host.invalid",
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        deploy_module,
+        "storage_env_for_project",
+        lambda project: {
+            "AWS_ACCESS_KEY_ID": f"{project}-ak",
+            "AWS_SECRET_ACCESS_KEY": f"{project}-sk",
+            "AWS_ENDPOINT_URL": "https://project.invalid",
+            "NEBIUS_S3_ENDPOINT": "https://project.invalid",
+        },
+    )
+
+    env = deploy_module._service_env(
+        project="fleet-test",
+        output_path="s3://example/output",
+        auth_mode="none",
+        token_env="ROBOCASA_TOKEN",
+        port=8791,
+    )
+
+    assert env["AWS_ACCESS_KEY_ID"] == "fleet-test-ak"
+    assert env["AWS_SECRET_ACCESS_KEY"] == "fleet-test-sk"
+    assert env["AWS_ENDPOINT_URL"] == "https://project.invalid"
+    assert env["AWS_ENDPOINT_URL_S3"] == "https://project.invalid"
+
+
+def test_deploy_manifest_rolls_when_service_env_changes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def manifest() -> dict:
+        return deploy_module._kubernetes_manifest(
+            project="fleet-test",
+            image="example.invalid/npa-robocasa@sha256:" + "1" * 64,
+            name="npa-robocasa",
+            namespace="default",
+            port=8791,
+            output_path="s3://example/output",
+            node_selector_key="node.kubernetes.io/instance-type",
+            node_selector_value="gpu-test",
+            image_pull_secret="pull-secret",
+            auth_mode="none",
+            token_env="ROBOCASA_TOKEN",
+        )
+
+    monkeypatch.setattr(
+        deploy_module,
+        "_service_env",
+        lambda **_kwargs: {"AWS_ACCESS_KEY_ID": "first-ak"},
+    )
+    first = manifest()
+    monkeypatch.setattr(
+        deploy_module,
+        "_service_env",
+        lambda **_kwargs: {"AWS_ACCESS_KEY_ID": "second-ak"},
+    )
+    second = manifest()
+
+    first_annotation = first["items"][1]["spec"]["template"]["metadata"]["annotations"]
+    second_annotation = second["items"][1]["spec"]["template"]["metadata"]["annotations"]
+    assert first_annotation != second_annotation
+    assert len(first_annotation["npa.nebius.ai/env-checksum"]) == 64
 
 
 def test_status_help() -> None:
