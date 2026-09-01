@@ -70,7 +70,7 @@ def deploy_cmd(
         _kubectl(["delete", "service", name, "-n", namespace, "--ignore-not-found=true"], dry_run=dry_run, kubeconfig=resolved_kubeconfig)
         _kubectl(["delete", "deployment", name, "-n", namespace, "--ignore-not-found=true"], dry_run=dry_run, kubeconfig=resolved_kubeconfig)
         _kubectl(["delete", "secret", f"{name}-env", "-n", namespace, "--ignore-not-found=true"], dry_run=dry_run, kubeconfig=resolved_kubeconfig)
-        _kubectl(["delete", "pvc", f"{name}-assets", "-n", namespace, "--ignore-not-found=true"], dry_run=dry_run, kubeconfig=resolved_kubeconfig)
+
         emit({"status": "deleted", "name": name, "namespace": namespace}, output=output)
         return
 
@@ -149,16 +149,7 @@ def _kubernetes_manifest(
                 "type": "Opaque",
                 "data": {key: base64.b64encode(value.encode("utf-8")).decode("ascii") for key, value in env.items()},
             },
-            {
-                "apiVersion": "v1",
-                "kind": "PersistentVolumeClaim",
-                "metadata": {"name": f"{name}-assets", "namespace": namespace},
-                "spec": {
-                    "accessModes": ["ReadWriteMany"],
-                    "resources": {"requests": {"storage": "60Gi"}},
-                    "storageClassName": "csi-mounted-fs-path-sc",
-                },
-            },
+
             {
                 "apiVersion": "apps/v1",
                 "kind": "Deployment",
@@ -178,9 +169,6 @@ def _kubernetes_manifest(
                             **({"imagePullSecrets": [{"name": image_pull_secret}]} if image_pull_secret else {}),
                             "tolerations": [{"key": "nvidia.com/gpu", "operator": "Exists", "effect": "NoSchedule"}],
                             "securityContext": {"fsGroup": 1000, "fsGroupChangePolicy": "OnRootMismatch"},
-                            "volumes": [
-                                {"name": "assets", "persistentVolumeClaim": {"claimName": f"{name}-assets"}},
-                            ],
                             "containers": [
                                 {
                                     "name": "service",
@@ -198,10 +186,7 @@ def _kubernetes_manifest(
                                         "capabilities": {"drop": ["ALL"]},
                                         "seccompProfile": {"type": "RuntimeDefault"},
                                     },
-                                    "volumeMounts": [
-                                        {"name": "assets", "mountPath": "/opt/robocasa/robocasa/models/assets"},
-                                        {"name": "assets", "mountPath": "/home/ubuntu/.cache/huggingface"},
-                                    ],
+
                                 }
                             ],
                         },
