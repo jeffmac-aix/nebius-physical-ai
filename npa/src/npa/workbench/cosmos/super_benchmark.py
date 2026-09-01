@@ -36,7 +36,7 @@ ATTEMPT_SCHEMA_VERSION = "npa.cosmos3-super.b200-attempt.v1"
 MODEL_ID = "nvidia/Cosmos3-Super"
 MODEL_REVISION = "e0262be9d8f7586bc24c069a2aed2b665bdff266"
 IMAGE = (
-    "vllm/vllm-omni:cosmos3@"
+    "docker.io/vllm/vllm-omni:cosmos3@"
     "sha256:6d2630c7d637b699557573f2c3fee8df5d4d0cd718977aa22549ed6a6ef30587"
 )
 PROMPT_ASSET = "assets/example_t2v_prompt.json"

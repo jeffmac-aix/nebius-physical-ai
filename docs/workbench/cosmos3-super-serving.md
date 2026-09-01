@@ -14,6 +14,8 @@ workflow
 That recipe intentionally runs the upstream `vllm/vllm-omni:cosmos3` image at
 its recorded digest, rather than this NPA bootstrap image, so a new measurement
 preserves the public benchmark's software boundary.
+The YAML spells out the equivalent `docker.io/vllm/...` pull reference so image
+preflight can verify the Docker Hub artifact before GPU submission.
 
 | Piece | Path |
 | --- | --- |
