@@ -65,6 +65,7 @@ RUN python3 -m venv /opt/uv \
     && /opt/uv/bin/uv venv --python 3.11 /opt/venv \
     && cd /opt/byof \
     && VIRTUAL_ENV=/opt/venv /opt/uv/bin/uv sync --active --frozen --group rlds --no-dev \
+    && cd / \
     && /opt/uv/bin/uv pip install --python /opt/venv/bin/python --no-cache --no-deps \
       'jax==0.6.2' \
       'jaxlib==0.6.2' \

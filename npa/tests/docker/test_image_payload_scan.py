@@ -199,6 +199,9 @@ def test_openpi_uses_system_ffmpeg_without_bundled_payload() -> None:
         "\n\nRUN printf", 1
     )[0]
     assert dependency_layer.index("uv sync --active") < dependency_layer.index(
+        "&& cd / \\"
+    )
+    assert dependency_layer.index("&& cd / \\") < dependency_layer.index(
         "'jax==0.6.2'"
     )
     assert dependency_layer.index("'jax==0.6.2'") < dependency_layer.index(
