@@ -160,7 +160,13 @@ and Orbax checkpoint manager are multi-host capable. The NPA adapter makes only
 the required input-side change: it initializes one JAX process per node, shards
 the RLDS source before shuffle, divides the unchanged global batch into eight
 local batches of 32, and passes process-local batches into the upstream global
-data sharding. All ranks still invoke `scripts/train.py:main`; the recipe,
+data sharding. NumPy 2 can expose the RLDS action tensor as a read-only view,
+while the pinned joint-position recipe's next `DeltaActions` transform updates
+that tensor in place. The same adapter therefore inserts a fail-closed writable
+copy of only the action tensor between the pinned `DroidInputs` and
+`DeltaActions` transforms; it rejects any upstream transform-order drift and
+does not copy image payloads or patch the upstream checkout. All ranks still
+invoke `scripts/train.py:main`; the recipe,
 optimizer, step count, model, and checkpoint implementation remain upstream.
 Rank zero wraps the pinned trainer's existing `wandb.log` and checkpoint-save
 callbacks to append a fsynced, resume-deduplicated telemetry journal. It records

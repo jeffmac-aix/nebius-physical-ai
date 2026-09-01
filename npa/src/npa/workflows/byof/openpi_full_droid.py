@@ -92,6 +92,52 @@ REQUIRED_RRD_ENTITIES = (
 _RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 
+@dataclasses.dataclass(frozen=True)
+class _WritableActionsTransform:
+    """Copy the DROID action view before upstream delta conversion mutates it."""
+
+    def __call__(self, data: Mapping[str, object]) -> dict[str, object]:
+        import numpy as np
+
+        if "actions" not in data:
+            raise OpenPIPipelineError(
+                "pinned full-DROID transform input is missing actions"
+            )
+        source = np.asarray(data["actions"])
+        actions = np.array(source, copy=True, order="K", subok=False)
+        if (
+            not actions.flags.writeable
+            or actions.shape != source.shape
+            or actions.dtype != source.dtype
+            or np.shares_memory(actions, source)
+        ):
+            raise OpenPIPipelineError(
+                "failed to isolate a writable full-DROID action tensor"
+            )
+        return {**data, "actions": actions}
+
+
+@dataclasses.dataclass(frozen=True)
+class _ReadOnlySafeDroidDataFactory:
+    """Preserve the pinned factory while isolating its in-place action update."""
+
+    delegate: object
+
+    def create(self, assets_dirs: Path, model_config: object):
+        data_config = self.delegate.create(assets_dirs, model_config)
+        transforms = tuple(data_config.data_transforms.inputs)
+        transform_names = tuple(type(transform).__name__ for transform in transforms)
+        if transform_names != ("DroidInputs", "DeltaActions"):
+            raise OpenPIPipelineError(
+                "pinned full-DROID data transform sequence drifted"
+            )
+        data_transforms = dataclasses.replace(
+            data_config.data_transforms,
+            inputs=(transforms[0], _WritableActionsTransform(), transforms[1]),
+        )
+        return dataclasses.replace(data_config, data_transforms=data_transforms)
+
+
 def _scalar(value: object, *, name: str) -> float:
     import numpy as np
 
@@ -450,7 +496,9 @@ def _configured_upstream(
         or config.batch_size != EXPECTED_BATCH_SIZE
     ):
         raise OpenPIPipelineError("pinned upstream full-DROID recipe drifted")
-    data = dataclasses.replace(config.data, rlds_data_dir=str(data_root))
+    data = _ReadOnlySafeDroidDataFactory(
+        dataclasses.replace(config.data, rlds_data_dir=str(data_root))
+    )
     configured = dataclasses.replace(
         config,
         data=data,

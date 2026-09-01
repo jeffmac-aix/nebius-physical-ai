@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import dataclasses
 import hashlib
 import json
 import os
@@ -40,6 +41,82 @@ def test_full_droid_recipe_matches_pinned_upstream_contract() -> None:
         "/droid_sample_ranges_v1_0_1.json"
     )
     assert len(full_droid.FILTER_DICTIONARY_SHA256) == 64
+
+
+def test_writable_actions_transform_isolates_read_only_numpy_view() -> None:
+    np = pytest.importorskip("numpy")
+    source = np.arange(32, dtype=np.float32).reshape(2, 16)
+    source.setflags(write=False)
+
+    transformed = full_droid._WritableActionsTransform()(
+        {"actions": source, "prompt": "move"}
+    )
+    actions = transformed["actions"]
+
+    assert actions.flags.writeable
+    assert actions.shape == source.shape
+    assert actions.dtype == source.dtype
+    assert np.array_equal(actions, source)
+    assert not np.shares_memory(actions, source)
+    actions[0, 0] = -1
+    assert source[0, 0] == 0
+
+
+def test_writable_actions_transform_fails_closed_without_actions() -> None:
+    with pytest.raises(full_droid.OpenPIPipelineError, match="missing actions"):
+        full_droid._WritableActionsTransform()({"prompt": "move"})
+
+
+def test_read_only_safe_factory_injects_copy_before_delta_actions() -> None:
+    @dataclasses.dataclass(frozen=True)
+    class Group:
+        inputs: tuple[object, ...]
+        outputs: tuple[object, ...] = ()
+
+    @dataclasses.dataclass(frozen=True)
+    class DataConfig:
+        data_transforms: Group
+
+    class DroidInputs:
+        pass
+
+    class DeltaActions:
+        pass
+
+    class Factory:
+        def create(self, assets_dirs, model_config):
+            del assets_dirs, model_config
+            return DataConfig(Group((DroidInputs(), DeltaActions())))
+
+    configured = full_droid._ReadOnlySafeDroidDataFactory(Factory()).create(
+        Path("/assets"), object()
+    )
+
+    assert [type(item).__name__ for item in configured.data_transforms.inputs] == [
+        "DroidInputs",
+        "_WritableActionsTransform",
+        "DeltaActions",
+    ]
+
+
+def test_read_only_safe_factory_rejects_upstream_transform_drift() -> None:
+    @dataclasses.dataclass(frozen=True)
+    class Group:
+        inputs: tuple[object, ...]
+
+    @dataclasses.dataclass(frozen=True)
+    class DataConfig:
+        data_transforms: Group
+
+    class Factory:
+        def create(self, assets_dirs, model_config):
+            del assets_dirs, model_config
+            return DataConfig(Group((object(),)))
+
+    with pytest.raises(full_droid.OpenPIPipelineError, match="sequence drifted"):
+        full_droid._ReadOnlySafeDroidDataFactory(Factory()).create(
+            Path("/assets"), object()
+        )
 
 
 def test_full_droid_spec_is_exactly_eight_one_gpu_nodes() -> None:
