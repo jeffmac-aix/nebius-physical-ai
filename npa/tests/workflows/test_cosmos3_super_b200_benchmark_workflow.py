@@ -25,6 +25,9 @@ def test_workflow_is_fixed_full_node_primary_sweep() -> None:
     raw = yaml.safe_load(SPEC_PATH.read_text(encoding="utf-8"))
     assert raw["resources"]["b200-node"]["accelerators"] == "B200:8"
     assert raw["resources"]["b200-node"]["image"] == "{{config.runtime_image}}"
+    assert raw["resources"]["b200-node"]["kubernetes"]["pod_config"]["spec"][
+        "imagePullSecrets"
+    ] == [{"name": "{{config.image_pull_secret}}"}]
     wrapper = REPO_ROOT / "npa/docker/workbench/cosmos3-super-benchmark/Dockerfile"
     assert IMAGE in wrapper.read_text(encoding="utf-8")
     assert raw["config"]["topologies"] == "1x8,2x4,4x2,8x1"

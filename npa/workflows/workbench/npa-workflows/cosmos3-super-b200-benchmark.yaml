@@ -12,6 +12,7 @@ metadata:
 config:
   bucket: example-bucket
   runtime_image: "registry.example.invalid/operator/npa-cosmos3-super-benchmark@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  image_pull_secret: npa-cosmos3-super-registry
   prefix: "runs/{{run.id}}/cosmos3-super-b200-benchmark"
   output_uri: "s3://{{config.bucket}}/{{config.prefix}}/"
   topologies: 1x8,2x4,4x2,8x1
@@ -29,6 +30,8 @@ resources:
     kubernetes:
       pod_config:
         spec:
+          imagePullSecrets:
+            - name: "{{config.image_pull_secret}}"
           volumes:
             - name: dshm
               emptyDir:
