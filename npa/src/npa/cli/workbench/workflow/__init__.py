@@ -344,6 +344,23 @@ def submit_cmd(
             "completed waves do not prove the later attempt ran. Disabled by default."
         ),
     ),
+    allow_terminal_plan_migration: bool = typer.Option(
+        False,
+        "--allow-terminal-plan-migration/--no-allow-terminal-plan-migration",
+        help=(
+            "With explicit runtime resume: authorize one append-only plan migration "
+            "only when every prior attempt is terminal-failed and all prior declared "
+            "outputs are verified absent. Disabled by default."
+        ),
+    ),
+    plan_migration_reason: str = typer.Option(
+        "",
+        "--plan-migration-reason",
+        help=(
+            "Short non-sensitive audit reason required with "
+            "--allow-terminal-plan-migration."
+        ),
+    ),
     poll_seconds: int = typer.Option(
         30,
         "--poll-seconds",
@@ -772,6 +789,12 @@ def submit_cmd(
         return
     if retry_absent_in_flight and not (resume_run or (resume and run_id)):
         _fail("--retry-absent-in-flight requires an explicit --resume-run ID")
+        return
+    if allow_terminal_plan_migration and not resume_run:
+        _fail("--allow-terminal-plan-migration requires an explicit --resume-run ID")
+        return
+    if plan_migration_reason and not allow_terminal_plan_migration:
+        _fail("--plan-migration-reason requires --allow-terminal-plan-migration")
         return
     workflow_identity = ""
     if is_npa_spec:
@@ -1668,6 +1691,8 @@ def submit_cmd(
                 max_concurrency=max_concurrency,
                 resume=resume,
                 retry_absent_in_flight=retry_absent_in_flight,
+                allow_terminal_plan_migration=allow_terminal_plan_migration,
+                plan_migration_reason=plan_migration_reason,
                 preflight_evidence={
                     "exact_image_pull": (
                         "pass" if preflight_images else "unknown"
@@ -2245,6 +2270,8 @@ def _run_npa_workflow_runtime(
     max_concurrency: int,
     resume: bool,
     retry_absent_in_flight: bool,
+    allow_terminal_plan_migration: bool,
+    plan_migration_reason: str,
     preflight_evidence: Mapping[str, str],
     pre_submit_hook: Callable[[Path], None] | None,
     output_format: "OutputFormat",
@@ -2318,6 +2345,8 @@ def _run_npa_workflow_runtime(
         config_path=config_path,
         resume=resume,
         retry_absent_in_flight=retry_absent_in_flight,
+        allow_terminal_plan_migration=allow_terminal_plan_migration,
+        plan_migration_reason=plan_migration_reason,
         project=project or "default",
         sky_bin=sky_bin,
         credential_resolver=lambda: _resolve_runtime_secret_values(

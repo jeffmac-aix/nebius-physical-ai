@@ -2890,6 +2890,112 @@ def test_resume_accepts_an_unchanged_plan(tmp_path: Path) -> None:
     assert not submitter.calls, "an unchanged plan must replay, not resubmit"
 
 
+def test_explicit_terminal_plan_migration_preserves_failed_attempts(
+    tmp_path: Path,
+) -> None:
+    spec = load_spec(_write_spec(tmp_path, FANOUT_SPEC))
+    store = MemoryStore()
+    prior = RuntimeRunState(
+        workflow=spec.name,
+        run_id="rt-plan-migrate",
+        api_version=spec.api_version,
+        status="failed",
+        plan_fingerprint="0" * 64,
+        waves=[
+            {
+                "key": "001|parallel|fanout",
+                "states": ["shard-a", "shard-b", "shard-c"],
+                "attempt": 1,
+                "status": "failed",
+                "sky_status": "FAILED",
+                "job_id": "prior-1",
+                "outputs": [],
+            }
+        ],
+    )
+    store.write_runtime_state(prior)
+    options = RuntimeOptions(
+        poll_seconds=0,
+        max_wait_seconds=60,
+        retries=1,
+        resume=True,
+        allow_terminal_plan_migration=True,
+        plan_migration_reason="add-staged-reviewable-rrd",
+    )
+    executor = _executor(
+        spec,
+        run_id="rt-plan-migrate",
+        options=options,
+        store=store,
+        status_fn=FakeStatus(["FAILED"]),
+    )
+
+    report = run_workflow_runtime(
+        spec, run_id="rt-plan-migrate", executor=executor, options=options
+    )
+
+    assert report.status == "succeeded"
+    recorded = store.read_runtime_state()
+    assert recorded is not None
+    assert len(recorded.plan_migrations) == 1
+    migration = recorded.plan_migrations[0]
+    assert migration["old_plan_fingerprint"] == "0" * 64
+    assert migration["new_plan_fingerprint"] == recorded.plan_fingerprint
+    assert migration["reason"] == "add-staged-reviewable-rrd"
+    assert recorded.waves[0] == prior.waves[0]
+    assert len(recorded.waves) > 1
+    assert recorded.waves[-1]["status"] == "succeeded"
+
+
+@pytest.mark.parametrize(
+    ("wave", "message"),
+    [
+        (
+            {"status": "running", "sky_status": "RUNNING", "outputs": []},
+            "every prior attempt",
+        ),
+        (
+            {"status": "succeeded", "sky_status": "SUCCEEDED", "outputs": []},
+            "every prior attempt",
+        ),
+    ],
+)
+def test_terminal_plan_migration_rejects_nonfailed_prior_attempt(
+    tmp_path: Path, wave: dict[str, Any], message: str
+) -> None:
+    spec = load_spec(_write_spec(tmp_path, FANOUT_SPEC))
+    store = MemoryStore()
+    wave = {"key": "001|parallel|fanout", "attempt": 1, **wave}
+    store.write_runtime_state(
+        RuntimeRunState(
+            workflow=spec.name,
+            run_id="rt-plan-migrate-blocked",
+            api_version=spec.api_version,
+            status="failed",
+            plan_fingerprint="0" * 64,
+            waves=[wave],
+        )
+    )
+    options = RuntimeOptions(
+        poll_seconds=0,
+        max_wait_seconds=60,
+        resume=True,
+        allow_terminal_plan_migration=True,
+        plan_migration_reason="safe-reason",
+    )
+    executor = _executor(
+        spec, run_id="rt-plan-migrate-blocked", options=options, store=store
+    )
+
+    with pytest.raises(NpaWorkflowError, match=message):
+        run_workflow_runtime(
+            spec,
+            run_id="rt-plan-migrate-blocked",
+            executor=executor,
+            options=options,
+        )
+
+
 def _supervisor_preflight() -> dict[str, str]:
     return {
         "exact_image_pull": "pass",
