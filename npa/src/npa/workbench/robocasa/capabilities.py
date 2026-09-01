@@ -247,6 +247,10 @@ def _make_env(env_id: str, *, download_assets: bool = True) -> Any:
     os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
     if download_assets:
         _download_assets()
+    # Import robocasa AFTER assets are downloaded so OBJ_CATEGORIES are
+    # populated with real object paths. This also registers the gymnasium
+    # environments.
+    _import_robocasa()
     gym = _import_gymnasium()
     try:
         return gym.make(env_id, split="all")
