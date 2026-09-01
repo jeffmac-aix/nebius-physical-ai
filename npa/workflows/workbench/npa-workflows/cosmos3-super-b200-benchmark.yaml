@@ -38,7 +38,10 @@ resources:
                 medium: Memory
                 sizeLimit: 32Gi
           containers:
-            - name: main
+            # SkyPilot's Kubernetes backend merges overrides into its
+            # generated `ray-node` container by name.  Any other name becomes
+            # an image-less sidecar and Kubernetes rejects the pod.
+            - name: ray-node
               volumeMounts:
                 - name: dshm
                   mountPath: /dev/shm

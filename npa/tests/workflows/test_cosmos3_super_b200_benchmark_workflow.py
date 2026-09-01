@@ -36,6 +36,14 @@ def test_workflow_is_fixed_full_node_primary_sweep() -> None:
     assert raw["resources"]["b200-node"]["kubernetes"]["pod_config"]["spec"][
         "volumes"
     ][0]["emptyDir"]["sizeLimit"] == "32Gi"
+    assert raw["resources"]["b200-node"]["kubernetes"]["pod_config"]["spec"][
+        "containers"
+    ] == [
+        {
+            "name": "ray-node",
+            "volumeMounts": [{"name": "dshm", "mountPath": "/dev/shm"}],
+        }
+    ]
     assert MODEL_REVISION in SPEC_PATH.parent.parent.parent.parent.joinpath(
         "src/npa/workbench/cosmos/super_benchmark.py"
     ).read_text(encoding="utf-8")
@@ -60,6 +68,9 @@ def test_workflow_renders_exact_vendor_digest_and_real_command(monkeypatch) -> N
     docs = [item for item in yaml.safe_load_all(rendered) if item]
     assert docs[1]["resources"]["image_id"] == f"docker:{wrapper}"
     assert docs[1]["resources"]["accelerators"] == "B200:8"
+    assert docs[1]["config"]["kubernetes"]["pod_config"]["spec"]["containers"][0][
+        "name"
+    ] == "ray-node"
     assert "npa workbench cosmos3 super-benchmark" in docs[1]["run"]
     assert "--attempts 24" in docs[1]["run"]
     hints = secret_env_hints_for_plan(plan.steps)
