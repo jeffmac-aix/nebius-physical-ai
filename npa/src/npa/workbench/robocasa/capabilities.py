@@ -144,10 +144,17 @@ def _download_assets() -> None:
     try:
         from huggingface_hub import hf_hub_download
         from zipfile import ZipFile
-        import robocasa
+        import importlib.util
         from pathlib import Path as _Path
 
-        assets_root = _Path(robocasa.__file__).resolve().parent / "models" / "assets"
+        # Locate the robocasa package WITHOUT importing it. Importing robocasa
+        # eagerly loads OBJ_CATEGORIES, which scans the filesystem for object
+        # model.xml files. If assets are not yet downloaded, the categories are
+        # cached empty and never refresh. Download assets first, then import.
+        robocasa_spec = importlib.util.find_spec("robocasa")
+        if robocasa_spec is None or robocasa_spec.origin is None:
+            raise RoboCasaError("robocasa package not found")
+        assets_root = _Path(robocasa_spec.origin).resolve().parent / "models" / "assets"
         # Standard (non-additive) assets: skip when the target directory already
         # has content. (repo_id, filename, extract_to, marker_dir)
         standard = [
