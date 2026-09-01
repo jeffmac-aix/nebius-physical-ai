@@ -126,6 +126,69 @@ def system_info() -> RoboCasaSystemInfo:
     return info
 
 
+
+def _download_assets() -> None:
+    """Download the RoboCasa kitchen assets (textures, fixtures, objects).
+
+    Assets are NOT baked into the image and download at runtime from the
+    operator's entitled Hugging Face identity. This mirrors the upstream
+    ``download_kitchen_assets.py`` registry but skips its interactive prompt so
+    it can run inside the service. Missing assets are the usual cause of a
+    ``model.xml`` FileNotFoundError on the first real rollout.
+    """
+    try:
+        from huggingface_hub import hf_hub_download
+        from zipfile import ZipFile
+        import robocasa
+        from pathlib import Path as _Path
+
+        assets_root = _Path(robocasa.__file__).resolve().parent / "models" / "assets"
+        registry = [
+            ("robocasa/robocasa-assets", "textures.zip", "textures"),
+            ("robocasa/robocasa-assets", "generative_textures.zip", "generative_textures"),
+            ("nvidia/PhysicalAI-Kitchen-Assets", "fixtures_lightwheel.zip", "fixtures"),
+            ("robocasa/robocasa-assets", "objaverse.zip", "objects/objaverse"),
+            ("robocasa/robocasa-assets", "aigen_objs.zip", "objects/aigen_objs"),
+            ("nvidia/PhysicalAI-Kitchen-Assets", "objects_lightwheel.zip", "objects/lightwheel"),
+        ]
+        for repo_id, filename, rel in registry:
+            target = assets_root / rel
+            if target.exists() and any(target.iterdir()):
+                continue
+            try:
+                zip_path = hf_hub_download(
+                    repo_id=repo_id,
+                    repo_type="dataset",
+                    filename=filename,
+                    revision="main",
+                )
+                parent = target.parent
+                parent.mkdir(parents=True, exist_ok=True)
+                with ZipFile(zip_path, "r") as zf:
+                    zf.extractall(path=parent)
+                LOGGER.info("downloaded robocasa assets %s from %s", filename, repo_id)
+            except Exception as exc:  # pragma: no cover - network/entitlement.
+                LOGGER.warning("failed to download robocasa assets %s: %s", filename, exc)
+    except Exception as exc:  # pragma: no cover - client without the stack.
+        LOGGER.warning("robocasa asset download unavailable: %s", exc)
+
+
+def _make_env(env_id: str, *, download_assets: bool = True) -> Any:
+    """Create a headless EGL RoboCasa env, downloading assets when requested.
+
+    The upstream gym wrapper defaults ``split="test"``, which the pinned
+    ``create_env`` rejects; pass ``split="all"`` so real rollouts can run.
+    """
+    os.environ.setdefault("MUJOCO_GL", "egl")
+    os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
+    if download_assets:
+        _download_assets()
+    gym = _import_gymnasium()
+    try:
+        return gym.make(env_id, split="all")
+    except Exception as exc:  # pragma: no cover - depends on the container.
+        raise RoboCasaError(f"failed to create RoboCasa env {env_id}: {exc}") from exc
+
 def kitchen_task_registration(*, env_id: str = DEFAULT_ENV_ID) -> dict[str, Any]:
     """Verify Gymnasium task registration for a RoboCasa env id."""
     gym = _import_gymnasium()
@@ -158,15 +221,11 @@ def kitchen_asset_availability() -> dict[str, Any]:
     }
 
 
-def kitchen_egl_env_reset(*, env_id: str = DEFAULT_ENV_ID, seed: int | None = None) -> dict[str, Any]:
+def kitchen_egl_env_reset(
+    *, env_id: str = DEFAULT_ENV_ID, seed: int | None = None, download_assets: bool = True
+) -> dict[str, Any]:
     """Create a headless EGL RoboCasa env and reset it."""
-    os.environ.setdefault("MUJOCO_GL", "egl")
-    os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
-    gym = _import_gymnasium()
-    try:
-        env = gym.make(env_id)
-    except Exception as exc:  # pragma: no cover - depends on the container.
-        raise RoboCasaError(f"failed to create RoboCasa env {env_id}: {exc}") from exc
+    env = _make_env(env_id, download_assets=download_assets)
     try:
         obs, info = env.reset(seed=seed)
         return {
@@ -191,15 +250,10 @@ def kitchen_random_rollout(
     iterations: int = 1,
     seed: int | None = None,
     output_dir: Path | None = None,
+    download_assets: bool = True,
 ) -> dict[str, Any]:
     """Run a real random rollout and write a video artifact."""
-    os.environ.setdefault("MUJOCO_GL", "egl")
-    os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
-    gym = _import_gymnasium()
-    try:
-        env = gym.make(env_id)
-    except Exception as exc:  # pragma: no cover - depends on the container.
-        raise RoboCasaError(f"failed to create RoboCasa env {env_id}: {exc}") from exc
+    env = _make_env(env_id, download_assets=download_assets)
     video_path: Path | None = None
     try:
         obs, _ = env.reset(seed=seed)
@@ -246,6 +300,7 @@ def kitchen_trajectory_export(
     num_envs: int = 1,
     seed: int | None = None,
     output_dir: Path | None = None,
+    download_assets: bool = True,
 ) -> dict[str, Any]:
     """Run real RoboCasa rollouts and export trajectories for LeRobotDataset.
 
@@ -261,13 +316,7 @@ def kitchen_trajectory_export(
     ``metrics.json``. This is the real trajectory export seam between RoboCasa
     simulation and LeRobotDataset policy training.
     """
-    os.environ.setdefault("MUJOCO_GL", "egl")
-    os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
-    gym = _import_gymnasium()
-    try:
-        env = gym.make(env_id)
-    except Exception as exc:  # pragma: no cover - depends on the container.
-        raise RoboCasaError(f"failed to create RoboCasa env {env_id}: {exc}") from exc
+    env = _make_env(env_id, download_assets=download_assets)
     try:
         episodes: list[dict[str, Any]] = []
         for ep in range(num_envs):
@@ -413,13 +462,16 @@ def run_capability(
     if request.capability == "kitchen_asset_availability":
         return kitchen_asset_availability()
     if request.capability == "kitchen_egl_env_reset":
-        return kitchen_egl_env_reset(env_id=request.env_id, seed=request.seed)
+        return kitchen_egl_env_reset(
+            env_id=request.env_id, seed=request.seed, download_assets=request.download_assets
+        )
     if request.capability == "kitchen_random_rollout":
         return kitchen_random_rollout(
             env_id=request.env_id,
             iterations=request.iterations,
             seed=request.seed,
             output_dir=output_dir,
+            download_assets=request.download_assets,
         )
     if request.capability == "kitchen_trajectory_export":
         return kitchen_trajectory_export(
@@ -428,6 +480,7 @@ def run_capability(
             num_envs=request.num_envs,
             seed=request.seed,
             output_dir=output_dir,
+            download_assets=request.download_assets,
         )
     raise RoboCasaError(f"unsupported robocasa capability: {request.capability}")
 

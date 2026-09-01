@@ -213,7 +213,7 @@ def _install_fake_env(monkeypatch: pytest.MonkeyPatch) -> None:
     class FakeGym:
         envs = types.SimpleNamespace(registry={})
         @staticmethod
-        def make(env_id):
+        def make(env_id, **kwargs):
             return _FakeEnv()
 
     monkeypatch.setitem(sys.modules, "gymnasium", FakeGym())
