@@ -399,8 +399,8 @@ def kitchen_trajectory_export(
             for _ in range(iterations):
                 action = env.action_space.sample()
                 obs, reward, terminated, truncated, _info = env.step(action)
-                workspace_frames.append(_obs_image(obs, "agentview_image"))
-                wrist_frames.append(_obs_image(obs, "eye_in_hand_image"))
+                workspace_frames.append(_obs_image(obs, "video.robot0_agentview_left"))
+                wrist_frames.append(_obs_image(obs, "video.robot0_eye_in_hand"))
                 states.append(_obs_state(obs))
                 actions.append(np.asarray(action, dtype=np.float32))
                 if terminated or truncated:
@@ -462,7 +462,13 @@ def _obs_image(obs: dict[str, Any], key: str) -> Any:
 def _obs_state(obs: dict[str, Any]) -> np.ndarray:
     """Build a float32 robot-state vector from a RoboCasa observation."""
     parts: list[np.ndarray] = []
-    for key in ("robot0_joint_pos", "robot0_eef_pos", "robot0_gripper_qpos"):
+    for key in (
+        "state.base_position",
+        "state.base_rotation",
+        "state.end_effector_position_relative",
+        "state.end_effector_rotation_relative",
+        "state.gripper_qpos",
+    ):
         value = obs.get(key)
         if value is not None:
             parts.append(np.asarray(value, dtype=np.float32).reshape(-1))

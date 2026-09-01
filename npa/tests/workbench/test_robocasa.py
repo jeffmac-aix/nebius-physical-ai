@@ -198,11 +198,13 @@ class _FakeEnv:
     @staticmethod
     def _obs() -> dict:
         return {
-            "agentview_image": np.zeros((64, 64, 3), dtype=np.uint8),
-            "eye_in_hand_image": np.zeros((64, 64, 3), dtype=np.uint8),
-            "robot0_joint_pos": np.zeros(7, dtype=np.float32),
-            "robot0_eef_pos": np.zeros(3, dtype=np.float32),
-            "robot0_gripper_qpos": np.zeros(1, dtype=np.float32),
+            "video.robot0_agentview_left": np.zeros((64, 64, 3), dtype=np.uint8),
+            "video.robot0_eye_in_hand": np.zeros((64, 64, 3), dtype=np.uint8),
+            "state.base_position": np.zeros(3, dtype=np.float32),
+            "state.base_rotation": np.zeros(4, dtype=np.float32),
+            "state.end_effector_position_relative": np.zeros(3, dtype=np.float32),
+            "state.end_effector_rotation_relative": np.zeros(4, dtype=np.float32),
+            "state.gripper_qpos": np.zeros(2, dtype=np.float32),
         }
 
 
@@ -242,7 +244,7 @@ def test_kitchen_trajectory_export(monkeypatch: pytest.MonkeyPatch, tmp_path) ->
         assert ws.shape == (3, 64, 64, 3)
         assert ws.dtype == np.uint8
         st = np.load(ep_dir / "state.npy")
-        assert st.shape == (3, 11)
+        assert st.shape == (3, 16)
     assert (tmp_path / "metadata.json").exists()
     assert (tmp_path / "metrics.json").exists()
 
