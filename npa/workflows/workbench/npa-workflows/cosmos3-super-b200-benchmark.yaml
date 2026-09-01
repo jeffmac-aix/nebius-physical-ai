@@ -1,0 +1,54 @@
+apiVersion: npa.workflow/v0.0.1
+kind: Workflow
+
+metadata:
+  name: cosmos3-super-b200-benchmark
+  description: >-
+    Reproduce the public Cosmos3-Super primary serving sweep on one eight-GPU
+    B200 node. Four full-node arrangements run sequentially in the immutable
+    vLLM-Omni Cosmos3 image; every service receives one validated warmup before
+    a 24-request, concurrency-one measurement cell.
+
+config:
+  bucket: example-bucket
+  prefix: "runs/{{run.id}}/cosmos3-super-b200-benchmark"
+  output_uri: "s3://{{config.bucket}}/{{config.prefix}}/"
+  topologies: 1x8,2x4,4x2,8x1
+  attempts: "24"
+  base_port: "8100"
+
+resources:
+  b200-node:
+    cloud: kubernetes
+    accelerators: B200:8
+    cpus: 96
+    memory: 1400Gi
+    image: vllm/vllm-omni:cosmos3@sha256:6d2630c7d637b699557573f2c3fee8df5d4d0cd718977aa22549ed6a6ef30587
+    disk_size: 500
+    kubernetes:
+      pod_config:
+        spec:
+          volumes:
+            - name: dshm
+              emptyDir:
+                medium: Memory
+                sizeLimit: 32Gi
+          containers:
+            - name: main
+              volumeMounts:
+                - name: dshm
+                  mountPath: /dev/shm
+
+initial: benchmark
+
+states:
+  benchmark:
+    description: >-
+      Start real loopback services on disjoint GPU sets, validate warmups, run
+      the fixed BF16 1280x720/189-frame workload, and publish measured evidence.
+    toolRef: workbench.cosmos3.super_benchmark
+    resources: b200-node
+    outputs:
+      - uri: "{{config.output_uri}}benchmark.json"
+        schema: npa.cosmos3-super.b200-benchmark.v1
+    terminal: true

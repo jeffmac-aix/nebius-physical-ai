@@ -2585,6 +2585,30 @@ TOOL_CATALOG: dict[str, ToolEntry] = {
             "{{run.id}}",
         ],
     ),
+    "workbench.cosmos3.super_benchmark": ToolEntry(
+        name="workbench.cosmos3.super_benchmark",
+        access_capabilities=("cosmos3-serving",),
+        description=(
+            "Run the real fixed Cosmos3-Super primary topology sweep on one "
+            "eight-GPU B200 node, validate every MP4, and publish per-attempt records."
+        ),
+        argv_template=[
+            "npa",
+            "workbench",
+            "cosmos3",
+            "super-benchmark",
+            "--output-path",
+            "{{config.output_uri}}",
+            "--topologies",
+            "{{config.topologies}}",
+            "--attempts",
+            "{{config.attempts}}",
+            "--base-port",
+            "{{config.base_port}}",
+            "--run-id",
+            "{{run.id}}",
+        ],
+    ),
     "workbench.cosmos3.ray_batch": ToolEntry(
         name="workbench.cosmos3.ray_batch",
         access_capabilities=("cosmos3-serving",),

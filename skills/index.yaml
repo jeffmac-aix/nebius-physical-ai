@@ -778,6 +778,17 @@ skills:
           - npa/workflows/workbench/npa-workflows/cosmos3-ray-batch.yaml
       - type: file_exists
         path: npa/docker/workbench/cosmos3-ray-serve/Dockerfile
+  - name: cosmos3-super-benchmark
+    category: tools
+    when_to_use: "Reproduce, run, validate, or troubleshoot the fixed Cosmos3-Super primary serving sweep across the 1x8, 2x4, 4x2, and 8x1 arrangements on one eight-GPU B200 node."
+    path: skills/tools/cosmos3-super-benchmark/SKILL.md
+    smoke:
+      - type: cli_help
+        args: ["workbench", "cosmos3", "super-benchmark", "--help"]
+        contains: "8xB200"
+      - type: npa_workflow_yaml
+        paths:
+          - npa/workflows/workbench/npa-workflows/cosmos3-super-b200-benchmark.yaml
   - name: contribute-workbench-image
     category: workflows
     when_to_use: "Carry an external or maintainer-authored NPA image change from a fork PR through license classification, trusted build, immutable public-dev validation, and incremental GHCR publication."

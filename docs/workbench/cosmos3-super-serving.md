@@ -8,6 +8,13 @@ workload that wants many clips pays it over and over.
 This image is the serving half. It loads `nvidia/Cosmos3-Super` once and serves
 an OpenAI-compatible endpoint against resident weights, on one 8-GPU node.
 
+For the fixed public B200 topology benchmark, use the separate production
+workflow
+[`cosmos3-super-b200-benchmark.yaml`](../../npa/workflows/workbench/npa-workflows/cosmos3-super-b200-benchmark.yaml).
+That recipe intentionally runs the upstream `vllm/vllm-omni:cosmos3` image at
+its recorded digest, rather than this NPA bootstrap image, so a new measurement
+preserves the public benchmark's software boundary.
+
 | Piece | Path |
 | --- | --- |
 | Image | `npa/docker/workbench/cosmos3-serving/Dockerfile` (`npa-cosmos3-serving`) |
@@ -250,6 +257,78 @@ to 8 concurrent requests are under 10% and nearly all collected at concurrency
 2, while median latency doubles at each step. There is little reason to run
 this server above concurrency 2 unless the marginal 9.8% of throughput is worth
 a 7.2x median-latency cost.
+
+## Reproduce the primary B200 topology sweep
+
+The Workbench recipe reproduces the methodology documented by the public
+[`cosmos3-super-serving`](https://github.com/stewtong/cosmos3-super-serving)
+record at upstream revision `532bffd4c2b2ec08909a92d5bc0b3bab4e911b2b`.
+NPA reimplements the measurement contract; it does not redistribute the
+upstream repository's code, prompt text, result records, or generated media.
+The artifact-level decision is recorded in
+[`cosmos3-super-b200-benchmark-licensing.json`](../../npa/workflows/workbench/configs/cosmos3-super-b200-benchmark-licensing.json).
+
+One workflow task reserves a complete eight-GPU B200 node and runs these cells
+sequentially:
+
+| Arrangement | Service parallelism | Request concurrency | Measured attempts |
+| --- | --- | ---: | ---: |
+| 1 service x 8 GPUs | CFG-2 x Ulysses-4 x HSDP-8 | 1 per service | 24 |
+| 2 services x 4 GPUs | TP-4 per service | 1 per service | 24 |
+| 4 services x 2 GPUs | TP-2 per service | 1 per service | 24 |
+| 8 services x 1 GPU | TP-1 per service | 1 per service | 24 |
+
+Every cell uses BF16 text-to-video at 1280x720, 189 frames, 24 fps, 35
+denoising steps, guidance 6.0, flow shift 10.0, maximum sequence length 4096,
+the two prompt assets from the pinned model snapshot, the 17/23/41 seed cycle,
+guardrails disabled, and a 5400-second synchronous endpoint timeout. One
+validated warmup per service runs before the measurement window and is not
+counted.
+
+Before provisioning, verify the operator's Hugging Face and S3 access, then the
+specific Cosmos3 serving entitlement:
+
+```bash
+npa workbench health preflight --checks hf,s3 --json
+npa workbench health access --capability cosmos3-serving --json
+npa workbench workflow validate-spec \
+  npa/workflows/workbench/npa-workflows/cosmos3-super-b200-benchmark.yaml
+```
+
+After reviewing the runtime terms, submit with the run-scoped exact value
+`NPA_COSMOS3_ACCEPT_NVIDIA_SOFTWARE_LICENSE=YES`, `HF_TOKEN`, and S3 credentials
+through `--secret-env`. Override the placeholder bucket and select the exact
+existing Kubernetes context; do not put either value in the committed spec.
+
+The durable output contains `benchmark.json`, and for each topology:
+`attempts.json`, `window.json`, `derived.json`, and the production MP4s. Every
+attempt records client start/finish time, wall latency, HTTP status, output byte
+count and SHA-256, prompt hashes, seed, validation detail, and failure reason.
+A clip receives credit only after HTTP 200, non-empty output, complete
+first-to-last decode, exact 1280x720/189-frame/24-fps shape, and blank/frozen
+checks. Failures consume elapsed window time and receive zero video-second
+credit.
+
+Throughput is derived from the shared first-dispatch-to-final-completion window,
+not the sum of request latencies. This includes routing, generation, MP4
+encoding, uneven replica completion, failure time, and tail idle time; service
+startup, model loading, and warmups are outside the boundary.
+
+The public record's approximate primary frontier is a comparison target, never
+a value to hard-code or report as a fresh run:
+
+| Arrangement | Reference mean latency | Reference technically valid video-s/node-hour |
+| --- | ---: | ---: |
+| 1x8 | 68.5 s | 413.6 |
+| 2x4 | 121.5 s | 466.3 |
+| 4x2 | 212.4 s | 529.0 |
+| 8x1 | 378.1 s | 589.4 |
+
+The expected operational ordering is higher node throughput from more,
+smaller services at the cost of greater per-request latency. A live report must
+be labeled with its own immutable image/model pins and derived from its own
+per-attempt records. These figures establish technical validity and transport
+throughput only; they do not measure semantic quality or human acceptance.
 
 ## Historical baseline (quarantined predecessor; not release evidence)
 

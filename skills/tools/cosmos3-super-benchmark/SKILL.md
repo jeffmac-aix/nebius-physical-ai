@@ -1,0 +1,93 @@
+---
+name: cosmos3-super-benchmark
+description: Reproduce, operate, validate, or troubleshoot the fixed Cosmos3-Super four-topology serving benchmark on one eight-GPU B200 node through the immutable public vLLM-Omni image.
+---
+
+# Cosmos3-Super B200 Benchmark
+
+Use this skill for the production benchmark in
+`npa/workflows/workbench/npa-workflows/cosmos3-super-b200-benchmark.yaml`.
+It is different from Cosmos Framework native Ray Serve (`cosmos3-ray-serve`):
+this workload runs the public vLLM-Omni synchronous video endpoint and measures
+four independent-service arrangements on one complete B200 node.
+
+## Fixed contract
+
+- Image: `vllm/vllm-omni:cosmos3` at the digest in the workflow.
+- Model: `nvidia/Cosmos3-Super` at revision
+  `e0262be9d8f7586bc24c069a2aed2b665bdff266`.
+- Arrangements, in order: one 8-GPU hybrid service; two TP-4 services; four
+  TP-2 services; eight TP-1 services. Every arrangement occupies all 8 GPUs.
+- Workload: BF16 text-to-video, 1280x720, 189 frames, 24 fps, 35 steps,
+  guidance 6.0, flow shift 10.0, max sequence length 4096, pinned model anchor
+  and negative prompts, seed cycle 17/23/41, guardrails disabled, synchronous
+  timeout 5400 seconds.
+- One technically valid warmup per service is excluded. The primary cell is 24
+  attempts, exactly one request in flight per service.
+
+Do not turn the reference frontier in the documentation into expected output or
+a pass threshold. A new report is live evidence only when its per-attempt
+records and window were emitted by the real command.
+
+## Before submit
+
+Load and follow `skills/atomic/health-preflight/SKILL.md`,
+`skills/atomic/third-party-eula-preflight/SKILL.md`,
+`skills/atomic/solution-licensing/SKILL.md`, and
+`skills/atomic/protect-nebius-infra-details/SKILL.md`.
+
+Run the exact access gates before provisioning:
+
+```bash
+npa/.venv/bin/npa workbench health preflight --checks hf,s3 --json
+npa/.venv/bin/npa workbench health access --capability cosmos3-serving --json
+npa/.venv/bin/npa workbench workflow validate-spec \
+  npa/workflows/workbench/npa-workflows/cosmos3-super-b200-benchmark.yaml
+```
+
+The operator must independently review the runtime terms and pass
+`NPA_COSMOS3_ACCEPT_NVIDIA_SOFTWARE_LICENSE=YES` at submit time. Never commit,
+persist, or bake acceptance, credentials, model weights, prompt text, generated
+clips, or runtime caches.
+
+## Run
+
+Submit the shipped spec through `npa workbench workflow submit`, selecting the
+operator's exact Kubernetes context and bucket. Pass the acceptance value,
+`HF_TOKEN`, and S3 credentials through `--secret-env`; never render their values
+into YAML or logs. The resource profile must remain `B200:8`, must keep the
+32-GiB `/dev/shm`, and must retain the exact external image digest.
+
+The command starts services sequentially and refuses to open a cell's measured
+window if any service warmup fails technical validation. It tears down one
+arrangement before starting the next. Do not run two topology cells concurrently
+on the same node.
+
+## Evidence and interpretation
+
+The durable root contains `benchmark.json`, per-cell `attempts.json`,
+`window.json`, `derived.json`, and validated production MP4s. A valid attempt
+requires HTTP 200, non-empty bytes, full first-to-last decode, exact geometry,
+frame count and rate, and passing blank/frozen checks. Failures remain in the
+window and receive zero valid-video-second credit.
+
+Use only the shared first-dispatch-to-final-completion window for node
+throughput. It includes routing, generation, encoding, skew, failure time, and
+tail idle time; it excludes startup, model load, and warmup. Report this as
+*technically valid video-seconds per node-hour*, not accepted or useful output.
+
+## Teardown
+
+Cancel the exact workflow run before removing any cluster or controller. Follow
+`skills/atomic/teardown-and-cost/SKILL.md`; shared controllers and operator
+projects are not run-owned resources. Preserve exact infrastructure identifiers
+only in access-controlled evidence.
+
+## Verify
+
+```bash
+npa/.venv/bin/python -m pytest \
+  npa/tests/workbench/test_cosmos3_super_benchmark.py \
+  npa/tests/workflows/test_cosmos3_super_b200_benchmark_workflow.py \
+  npa/tests/cli/test_cosmos3_cli.py -q
+```

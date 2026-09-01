@@ -220,6 +220,31 @@ def test_cosmos3_ray_batch_dry_run_uses_standard_path_contract(tmp_path) -> None
     assert payload["batch_size"] == 1
 
 
+def test_cosmos3_super_benchmark_dry_run_exposes_fixed_contract(tmp_path) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "workbench",
+            "cosmos3",
+            "super-benchmark",
+            "--output-path",
+            str(tmp_path / "out"),
+            "--dry-run",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["gpu"] == {"family": "B200", "node_gpu_count": 8}
+    assert payload["sync_timeout_seconds"] == 5400
+    assert [item["name"] for item in payload["topologies"]] == [
+        "1x8",
+        "2x4",
+        "4x2",
+        "8x1",
+    ]
+    assert all(item["measured_attempts"] == 24 for item in payload["topologies"])
+
+
 def test_cosmos3_ray_serve_refuses_outside_the_service_image(
     tmp_path, monkeypatch
 ) -> None:
