@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import platform
+import sys
 import tempfile
 
 import numpy as np
@@ -83,8 +84,26 @@ def _import_gymnasium() -> Any:
 
 
 def _assets_root() -> Path:
-    robocasa = _import_robocasa()
-    return Path(robocasa.__file__).resolve().parent / "models" / "assets"
+    """Locate RoboCasa assets without importing its eager object catalog.
+
+    Importing :mod:`robocasa` before the runtime-fetched object assets exist
+    permanently caches empty ``mjcf_paths`` in the service process.  Keep
+    read-only system-info and asset checks from changing later simulation
+    behavior.
+    """
+    import importlib.util
+
+    loaded = sys.modules.get("robocasa")
+    loaded_path = getattr(loaded, "__file__", None)
+    if loaded_path:
+        return Path(loaded_path).resolve().parent / "models" / "assets"
+    try:
+        robocasa_spec = importlib.util.find_spec("robocasa")
+    except ValueError:
+        robocasa_spec = None
+    if robocasa_spec is None or robocasa_spec.origin is None:
+        raise RoboCasaError("robocasa package not found")
+    return Path(robocasa_spec.origin).resolve().parent / "models" / "assets"
 
 
 def _package_version(name: str) -> str:
@@ -149,17 +168,10 @@ def _download_assets() -> None:
     try:
         from huggingface_hub import hf_hub_download
         from zipfile import ZipFile
-        import importlib.util
         from pathlib import Path as _Path
 
-        # Locate the robocasa package WITHOUT importing it. Importing robocasa
-        # eagerly loads OBJ_CATEGORIES, which scans the filesystem for object
-        # model.xml files. If assets are not yet downloaded, the categories are
-        # cached empty and never refresh. Download assets first, then import.
-        robocasa_spec = importlib.util.find_spec("robocasa")
-        if robocasa_spec is None or robocasa_spec.origin is None:
-            raise RoboCasaError("robocasa package not found")
-        assets_root = _Path(robocasa_spec.origin).resolve().parent / "models" / "assets"
+        # Locate the package WITHOUT importing its eager object catalog.
+        assets_root = _Path(_assets_root())
         # Standard (non-additive) assets: skip when the target directory already
         # has content. (repo_id, filename, extract_to, marker_dir)
         standard = [

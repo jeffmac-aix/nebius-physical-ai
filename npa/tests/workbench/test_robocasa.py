@@ -243,6 +243,31 @@ def test_make_env_uses_nonempty_objaverse_registry(monkeypatch: pytest.MonkeyPat
     assert observed == {"split": "all", "obj_registries": ("objaverse",)}
 
 
+def test_assets_root_does_not_import_robocasa(monkeypatch: pytest.MonkeyPatch) -> None:
+    from importlib.machinery import ModuleSpec
+
+    imported = False
+
+    def fail_import():
+        nonlocal imported
+        imported = True
+        raise AssertionError("asset discovery must not import robocasa")
+
+    monkeypatch.setattr(
+        "npa.workbench.robocasa.capabilities._import_robocasa", fail_import
+    )
+    monkeypatch.setattr(
+        "importlib.util.find_spec",
+        lambda name: ModuleSpec(
+            name, loader=None, origin="/opt/robocasa/source/robocasa/__init__.py"
+        ),
+    )
+    from npa.workbench.robocasa.capabilities import _assets_root
+
+    assert str(_assets_root()) == "/opt/robocasa/source/robocasa/models/assets"
+    assert imported is False
+
+
 def test_kitchen_trajectory_export(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     _install_fake_env(monkeypatch)
     from npa.workbench.robocasa.capabilities import kitchen_trajectory_export
