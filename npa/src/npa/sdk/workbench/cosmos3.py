@@ -19,6 +19,7 @@ from npa.workbench.cosmos.ray_serve import (
     submit_batch,
 )
 from npa.workbench.cosmos.super_benchmark import (
+    PRIMARY_SUITE,
     TOPOLOGY_ORDER,
     Cosmos3SuperBenchmarkError,
     run_benchmark,
@@ -128,6 +129,7 @@ def super_benchmark(
     output_path: str,
     topologies: str = ",".join(TOPOLOGY_ORDER),
     attempts: int = 24,
+    suite: str = PRIMARY_SUITE,
     gpu_family: str = "B200",
     base_port: int = 8100,
     run_id: str = "",
@@ -139,6 +141,7 @@ def super_benchmark(
         output_path=output_path,
         topologies=topologies,
         attempts=attempts,
+        suite=suite,
         gpu_family=gpu_family,
         base_port=base_port,
         run_id=run_id,

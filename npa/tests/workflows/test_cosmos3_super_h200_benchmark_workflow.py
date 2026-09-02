@@ -27,6 +27,7 @@ def test_h200_workflow_is_fixed_full_node_primary_sweep() -> None:
     assert raw["config"]["gpu_family"] == "H200"
     assert raw["config"]["topologies"] == "1x8,2x4,4x2,8x1"
     assert raw["config"]["attempts"] == "24"
+    assert raw["config"]["suite"] == "primary"
     assert raw["states"]["benchmark"]["toolRef"] == (
         "workbench.cosmos3.super_benchmark"
     )
@@ -64,6 +65,7 @@ def test_h200_workflow_renders_family_and_real_command(monkeypatch) -> None:
     assert "npa workbench cosmos3 super-benchmark" in docs[1]["run"]
     assert "--gpu-family H200" in docs[1]["run"]
     assert "--attempts 24" in docs[1]["run"]
+    assert "--suite primary" in docs[1]["run"]
     hints = secret_env_hints_for_plan(plan.steps)
     assert "HF_TOKEN" in hints
     assert "NPA_COSMOS3_ACCEPT_NVIDIA_SOFTWARE_LICENSE" in hints

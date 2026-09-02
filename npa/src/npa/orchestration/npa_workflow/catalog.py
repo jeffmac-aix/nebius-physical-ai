@@ -2589,7 +2589,7 @@ TOOL_CATALOG: dict[str, ToolEntry] = {
         name="workbench.cosmos3.super_benchmark",
         access_capabilities=("cosmos3-serving",),
         description=(
-            "Run the real fixed Cosmos3-Super primary topology sweep on one "
+            "Run the real fixed Cosmos3-Super primary or complete ten-cell sweep on one "
             "eight-GPU B200 or H200 node, validate every MP4, and publish "
             "per-attempt records."
         ),
@@ -2604,6 +2604,8 @@ TOOL_CATALOG: dict[str, ToolEntry] = {
             "{{config.topologies}}",
             "--attempts",
             "{{config.attempts}}",
+            "--suite",
+            "{{config.suite}}",
             "--gpu-family",
             "{{config.gpu_family}}",
             "--base-port",

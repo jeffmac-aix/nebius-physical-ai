@@ -32,6 +32,7 @@ def test_workflow_is_fixed_full_node_primary_sweep() -> None:
     assert IMAGE in wrapper.read_text(encoding="utf-8")
     assert raw["config"]["topologies"] == "1x8,2x4,4x2,8x1"
     assert raw["config"]["attempts"] == "24"
+    assert raw["config"]["suite"] == "primary"
     assert raw["config"]["gpu_family"] == "B200"
     assert raw["states"]["benchmark"]["toolRef"] == "workbench.cosmos3.super_benchmark"
     assert raw["resources"]["b200-node"]["kubernetes"]["pod_config"]["spec"][
@@ -74,7 +75,30 @@ def test_workflow_renders_exact_vendor_digest_and_real_command(monkeypatch) -> N
     ] == "ray-node"
     assert "npa workbench cosmos3 super-benchmark" in docs[1]["run"]
     assert "--attempts 24" in docs[1]["run"]
+    assert "--suite primary" in docs[1]["run"]
     assert "--gpu-family B200" in docs[1]["run"]
     hints = secret_env_hints_for_plan(plan.steps)
     assert "HF_TOKEN" in hints
     assert "NPA_COSMOS3_ACCEPT_NVIDIA_SOFTWARE_LICENSE" in hints
+
+
+def test_workflow_can_select_complete_b200_suite(monkeypatch) -> None:
+    monkeypatch.setenv("NPA_SRC_S3_URI", "s3://example-bucket/npa-src")
+    spec = load_spec_for_submit(
+        SPEC_PATH,
+        config_overrides={
+            "runtime_image": (
+                "registry.example.invalid/operator/benchmark@sha256:" + "3" * 64
+            ),
+            "suite": "b200-full",
+        },
+    )
+    plan = build_plan(spec, run_id="cosmos3-super-full-test")
+    rendered = render_skypilot_yaml(
+        spec,
+        plan,
+        run_id="cosmos3-super-full-test",
+        options=SkypilotRenderOptions(),
+    )
+    docs = [item for item in yaml.safe_load_all(rendered) if item]
+    assert "--suite b200-full" in docs[1]["run"]

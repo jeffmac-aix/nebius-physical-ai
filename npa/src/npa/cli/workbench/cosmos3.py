@@ -25,6 +25,7 @@ from npa.workbench.cosmos.ray_serve import (
     submit_batch as submit_ray_batch,
 )
 from npa.workbench.cosmos.super_benchmark import (
+    PRIMARY_SUITE as SUPER_BENCHMARK_PRIMARY_SUITE,
     TOPOLOGY_ORDER as SUPER_BENCHMARK_TOPOLOGIES,
     Cosmos3SuperBenchmarkError,
     run_benchmark as run_super_benchmark,
@@ -55,6 +56,14 @@ def super_benchmark_cmd(
         help="Comma-separated ordered subset of 1x8,2x4,4x2,8x1.",
     ),
     attempts: int = typer.Option(24, "--attempts", min=1),
+    suite: str = typer.Option(
+        SUPER_BENCHMARK_PRIMARY_SUITE,
+        "--suite",
+        help=(
+            "Benchmark suite: primary (four concurrency-one cells) or b200-full "
+            "(the exact ten-cell, 240-attempt public record)."
+        ),
+    ),
     gpu_family: str = typer.Option(
         "B200",
         "--gpu-family",
@@ -66,13 +75,14 @@ def super_benchmark_cmd(
         False, "--dry-run", help="Print the immutable benchmark plan without touching a GPU."
     ),
 ) -> None:
-    """Run the fixed Cosmos3-Super sweep on one 8xB200 or 8xH200 node."""
+    """Run a fixed Cosmos3-Super suite on one 8xB200 or 8xH200 node."""
 
     try:
         payload = run_super_benchmark(
             output_path=output_path,
             topologies=topologies,
             attempts=attempts,
+            suite=suite,
             gpu_family=gpu_family,
             base_port=base_port,
             run_id=run_id,

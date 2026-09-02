@@ -1,6 +1,6 @@
 ---
 name: cosmos3-super-benchmark
-description: Reproduce, operate, validate, or troubleshoot the fixed Cosmos3-Super four-topology serving benchmark on one eight-GPU B200 or H200 node through the immutable public vLLM-Omni image.
+description: Reproduce, operate, validate, or troubleshoot the fixed Cosmos3-Super primary four-cell benchmark on B200/H200 or complete ten-cell B200 record through the immutable public vLLM-Omni image.
 ---
 
 # Cosmos3-Super B200/H200 Benchmark
@@ -9,8 +9,10 @@ Use this skill for the production benchmark in
 `npa/workflows/workbench/npa-workflows/cosmos3-super-b200-benchmark.yaml` or
 `npa/workflows/workbench/npa-workflows/cosmos3-super-h200-benchmark.yaml`.
 It is different from Cosmos Framework native Ray Serve (`cosmos3-ray-serve`):
-this workload runs the public vLLM-Omni synchronous video endpoint and measures
-four independent-service arrangements on one complete B200 or H200 node.
+this workload runs the public vLLM-Omni synchronous video endpoint. The default
+`primary` suite measures four independent-service arrangements on one complete
+B200 or H200 node. The `b200-full` suite reproduces the public machine-readable
+ten-cell B200 record and its 240 measured attempts.
 
 ## Fixed contract
 
@@ -23,8 +25,11 @@ four independent-service arrangements on one complete B200 or H200 node.
   guidance 6.0, flow shift 10.0, max sequence length 4096, pinned model anchor
   and negative prompts, seed cycle 17/23/41, guardrails disabled, synchronous
   timeout 5400 seconds.
-- One technically valid warmup per service is excluded. The primary cell is 24
-  attempts, exactly one request in flight per service.
+- One technically valid warmup per service is excluded. Every measured cell is
+  24 attempts. The primary cells have exactly one request in flight per service.
+- `b200-full` adds a concurrency-two cell for every topology and delayed repeats
+  of the 1x8 concurrency-one and concurrency-two cells. Request concurrency is
+  per service and is independent of replica count.
 
 Do not turn the reference frontier in the documentation into expected output or
 a pass threshold. A new report is live evidence only when its per-attempt
@@ -62,21 +67,31 @@ the exact external image digest. The H200 path sets PyTorch expandable segments
 for the lower-memory one-GPU service cell; B200 behavior is unchanged.
 
 The command starts services sequentially and refuses to open a cell's measured
-window if any service warmup fails technical validation. It tears down one
-arrangement before starting the next. Do not run two topology cells concurrently
-on the same node.
+window if any service warmup fails technical validation. It tears down one cell
+before starting the next. Do not run two cells concurrently on the same node.
+
+The shipped workflow defaults to `suite: primary`. Select the complete B200
+record with `--var suite=b200-full`; that suite fails closed unless the GPU family
+is B200, all four topologies are selected, and every cell has exactly 24 attempts.
+After each cell, its records and validated clips are uploaded before an immutable
+completion marker is created and read back. A resumed run reuses only a marker
+whose complete cell record matches the current model/image/workload/prompt/run
+contract; a partial cell is rerun and a conflicting completed cell fails closed.
 
 ## Evidence and interpretation
 
 The durable root contains `benchmark.json`, per-cell `attempts.json`,
-`window.json`, `derived.json`, and validated production MP4s. A valid attempt
+`window.json`, `derived.json`, `cell.json`, `complete.json`, and validated
+production MP4s. A valid attempt
 requires HTTP 200, non-empty bytes, full first-to-last decode, exact geometry,
 frame count and rate, and passing blank/frozen checks. Failures remain in the
 window and receive zero valid-video-second credit.
 
 Use only the shared first-dispatch-to-final-completion window for node
 throughput. It includes routing, generation, encoding, skew, failure time, and
-tail idle time; it excludes startup, model load, and warmup. Report this as
+tail idle time; it excludes startup, model load, and warmup. The final full-suite
+report derives primary-frontier, concurrency-two, and delayed-repeat comparisons
+from the live cell records. Report throughput as
 *technically valid video-seconds per node-hour*, not accepted or useful output.
 
 ## Teardown

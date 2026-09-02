@@ -29,11 +29,18 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, Sequence
 
-from npa.clients.storage import StorageClient
+from npa.clients.storage import StorageClient, StoragePreconditionFailed
 
 SCHEMA_VERSION = "npa.cosmos3-super.b200-benchmark.v1"
 ATTEMPT_SCHEMA_VERSION = "npa.cosmos3-super.b200-attempt.v1"
 SUPPORTED_GPU_FAMILIES = ("B200", "H200")
+PRIMARY_SUITE = "primary"
+B200_FULL_SUITE = "b200-full"
+SUITE_CHOICES = (PRIMARY_SUITE, B200_FULL_SUITE)
+UPSTREAM_METHOD_REVISION = "532bffd4c2b2ec08909a92d5bc0b3bab4e911b2b"
+UPSTREAM_B200_RECORD_SHA256 = (
+    "18cf5ae1d118e07f3f2111b56a3e02c76eb9282d847a78005c6ca060f8106221"
+)
 MODEL_ID = "nvidia/Cosmos3-Super"
 MODEL_REVISION = "e0262be9d8f7586bc24c069a2aed2b665bdff266"
 IMAGE = (
@@ -71,6 +78,16 @@ class Topology:
     server_args: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class BenchmarkCell:
+    """One measured cell, keeping request concurrency separate from services."""
+
+    name: str
+    topology: str
+    request_concurrency_per_service: int = 1
+    repeat_of: str = ""
+
+
 TOPOLOGIES: dict[str, Topology] = {
     "1x8": Topology(
         "1x8",
@@ -90,6 +107,20 @@ TOPOLOGIES: dict[str, Topology] = {
     "4x2": Topology("4x2", 4, 2, ("--tensor-parallel-size", "2")),
     "8x1": Topology("8x1", 8, 1, ("--tensor-parallel-size", "1")),
 }
+
+PRIMARY_CELLS = tuple(BenchmarkCell(name, name) for name in TOPOLOGY_ORDER)
+B200_FULL_CELLS = (
+    BenchmarkCell("T1_1x8", "1x8"),
+    BenchmarkCell("T2_2x4", "2x4"),
+    BenchmarkCell("T3_4x2", "4x2"),
+    BenchmarkCell("T4_8x1", "8x1"),
+    BenchmarkCell("T1C2", "1x8", 2),
+    BenchmarkCell("T2C2", "2x4", 2),
+    BenchmarkCell("T3C2", "4x2", 2),
+    BenchmarkCell("T4C2", "8x1", 2),
+    BenchmarkCell("T1R", "1x8", 1, "T1_1x8"),
+    BenchmarkCell("T1C2R", "1x8", 2, "T1C2"),
+)
 
 
 def _utc_now() -> str:
@@ -119,6 +150,39 @@ def parse_topologies(value: str | Sequence[str]) -> tuple[str, ...]:
     return selected
 
 
+def parse_suite(value: str) -> str:
+    suite = value.strip().lower()
+    if suite not in SUITE_CHOICES:
+        raise Cosmos3SuperBenchmarkError(
+            f"unknown suite {value!r}; choose from {', '.join(SUITE_CHOICES)}"
+        )
+    return suite
+
+
+def benchmark_cells(
+    *, suite: str, topologies: str | Sequence[str], attempts: int, gpu_family: str
+) -> tuple[BenchmarkCell, ...]:
+    selected_suite = parse_suite(suite)
+    selected_topologies = parse_topologies(topologies)
+    family = _normalize_gpu_family(gpu_family)
+    if selected_suite == B200_FULL_SUITE:
+        if family != "B200":
+            raise Cosmos3SuperBenchmarkError(
+                "the b200-full suite is the exact public B200 ten-cell record; "
+                "use primary for H200"
+            )
+        if selected_topologies != TOPOLOGY_ORDER:
+            raise Cosmos3SuperBenchmarkError(
+                "the b200-full suite fixes topologies to 1x8,2x4,4x2,8x1"
+            )
+        if attempts != 24:
+            raise Cosmos3SuperBenchmarkError(
+                "the b200-full suite fixes exactly 24 measured attempts per cell"
+            )
+        return B200_FULL_CELLS
+    return tuple(BenchmarkCell(name, name) for name in selected_topologies)
+
+
 def _normalize_gpu_family(value: str) -> str:
     family = value.strip().upper()
     if family not in SUPPORTED_GPU_FAMILIES:
@@ -140,38 +204,69 @@ def benchmark_plan(
     topologies: str | Sequence[str],
     attempts: int = 24,
     gpu_family: str = "B200",
+    suite: str = PRIMARY_SUITE,
 ) -> dict[str, Any]:
-    selected = parse_topologies(topologies)
     family = _normalize_gpu_family(gpu_family)
     if attempts < 1:
         raise Cosmos3SuperBenchmarkError("attempts must be positive")
-    for name in selected:
-        if attempts % TOPOLOGIES[name].services:
+    cells = benchmark_cells(
+        suite=suite,
+        topologies=topologies,
+        attempts=attempts,
+        gpu_family=family,
+    )
+    for cell in cells:
+        topology = TOPOLOGIES[cell.topology]
+        if attempts % topology.services:
             raise Cosmos3SuperBenchmarkError(
-                f"attempts={attempts} must divide evenly across {name}'s "
-                f"{TOPOLOGIES[name].services} services"
+                f"attempts={attempts} must divide evenly across {cell.topology}'s "
+                f"{topology.services} services"
             )
     if not output_path.startswith("s3://") and not Path(output_path).is_absolute():
         raise Cosmos3SuperBenchmarkError(
             "output_path must be an s3:// URI or absolute local directory"
         )
+    cell_plans = [
+        {
+            "name": cell.name,
+            "topology": cell.topology,
+            "services": TOPOLOGIES[cell.topology].services,
+            "gpus_per_service": TOPOLOGIES[cell.topology].gpus_per_service,
+            "server_parallelism": list(TOPOLOGIES[cell.topology].server_args),
+            "request_concurrency_per_service": cell.request_concurrency_per_service,
+            "warmups_per_service": 1,
+            "measured_attempts": attempts,
+            "repeat_of": cell.repeat_of or None,
+        }
+        for cell in cells
+    ]
     return {
         "schema_version": _schema_version(family),
         "status": "planned",
         "model": {"id": MODEL_ID, "revision": MODEL_REVISION},
         "runtime_image": IMAGE,
         "gpu": {"family": family, "node_gpu_count": 8},
+        "suite": parse_suite(suite),
+        "upstream": {
+            "method_revision": UPSTREAM_METHOD_REVISION,
+            "b200_record_sha256": UPSTREAM_B200_RECORD_SHA256,
+        },
+        "planned_cells": cell_plans,
+        "cells": cell_plans,
+        # Kept for consumers of the original primary-only plan schema.
         "topologies": [
             {
-                "name": name,
-                "services": TOPOLOGIES[name].services,
-                "gpus_per_service": TOPOLOGIES[name].gpus_per_service,
-                "server_parallelism": list(TOPOLOGIES[name].server_args),
-                "request_concurrency_per_service": 1,
-                "warmups_per_service": 1,
-                "measured_attempts": attempts,
+                "name": cell["topology"],
+                "services": cell["services"],
+                "gpus_per_service": cell["gpus_per_service"],
+                "server_parallelism": cell["server_parallelism"],
+                "request_concurrency_per_service": cell[
+                    "request_concurrency_per_service"
+                ],
+                "warmups_per_service": cell["warmups_per_service"],
+                "measured_attempts": cell["measured_attempts"],
             }
-            for name in selected
+            for cell in cell_plans
         ],
         "workload": dict(WORKLOAD),
         "seeds": list(SEEDS),
@@ -592,6 +687,68 @@ def derive_cell(records: Sequence[Mapping[str, Any]], window_seconds: float) -> 
     }
 
 
+def derive_suite_comparisons(cells: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
+    """Derive the public record's primary, concurrency, and repeat comparisons."""
+
+    required = {cell.name for cell in B200_FULL_CELLS}
+    if not required.issubset(cells):
+        return {}
+
+    def metric(name: str, key: str) -> float:
+        return float(cells[name]["derived"][key])
+
+    def delta(value: float, baseline: float) -> float:
+        return round((value / baseline - 1.0) * 100.0, 2)
+
+    primary_names = ("T1_1x8", "T2_2x4", "T3_4x2", "T4_8x1")
+    concurrency_pairs = (
+        ("T1C2", "T1_1x8"),
+        ("T2C2", "T2_2x4"),
+        ("T3C2", "T3_4x2"),
+        ("T4C2", "T4_8x1"),
+    )
+    repeat_pairs = (("T1R", "T1_1x8"), ("T1C2R", "T1C2"))
+    latency_key = "mean_request_latency_seconds"
+    throughput_key = "valid_video_seconds_per_node_hour"
+    return {
+        "primary_frontier": {
+            name: {
+                "mean_request_latency_seconds": metric(name, latency_key),
+                "valid_video_seconds_per_node_hour": metric(name, throughput_key),
+                "latency_delta_vs_T1_pct": delta(
+                    metric(name, latency_key), metric("T1_1x8", latency_key)
+                ),
+                "throughput_delta_vs_T1_pct": delta(
+                    metric(name, throughput_key), metric("T1_1x8", throughput_key)
+                ),
+            }
+            for name in primary_names
+        },
+        "concurrency_two_delta_pct": {
+            current: {
+                "mean_request_latency": delta(
+                    metric(current, latency_key), metric(baseline, latency_key)
+                ),
+                "valid_video_seconds_per_node_hour": delta(
+                    metric(current, throughput_key), metric(baseline, throughput_key)
+                ),
+            }
+            for current, baseline in concurrency_pairs
+        },
+        "repeat_variation_pct": {
+            current: {
+                "mean_request_latency": delta(
+                    metric(current, latency_key), metric(baseline, latency_key)
+                ),
+                "valid_video_seconds_per_node_hour": delta(
+                    metric(current, throughput_key), metric(baseline, throughput_key)
+                ),
+            }
+            for current, baseline in repeat_pairs
+        },
+    }
+
+
 AttemptFn = Callable[..., dict[str, Any]]
 
 
@@ -606,46 +763,64 @@ def dispatch_cell(
     clips_dir: Path,
     kind: str,
     gpu_family: str = "B200",
+    request_concurrency_per_service: int = 1,
+    cell_name: str = "",
     attempt_fn: AttemptFn = one_attempt,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     if len(urls) != topology.services:
         raise Cosmos3SuperBenchmarkError("URL count does not match service topology")
     if attempts % topology.services:
         raise Cosmos3SuperBenchmarkError("attempts must divide evenly across services")
+    if request_concurrency_per_service < 1:
+        raise Cosmos3SuperBenchmarkError("request concurrency must be positive")
     per_service = attempts // topology.services
-    barrier = threading.Barrier(topology.services)
+    workers_per_service = min(request_concurrency_per_service, per_service)
+    barrier = threading.Barrier(topology.services * workers_per_service)
     boundary_lock = threading.Lock()
     first_dispatch: float | None = None
     final_completion: float | None = None
 
-    def worker(replica: int) -> list[dict[str, Any]]:
+    def attempt(replica: int, index: int) -> dict[str, Any]:
         nonlocal first_dispatch, final_completion
-        barrier.wait()
-        rows = []
-        for index in range(per_service):
-            attempt_id = f"{kind}-{topology.name}-r{replica}-a{index:03d}"
-            dispatched = time.monotonic()
-            with boundary_lock:
-                if first_dispatch is None or dispatched < first_dispatch:
-                    first_dispatch = dispatched
-            row = attempt_fn(
-                url=urls[replica],
-                prompt=prompt,
-                negative_prompt=negative_prompt,
-                prompt_hashes=prompt_hashes,
-                seed=SEEDS[index % len(SEEDS)],
-                attempt_id=attempt_id,
-                replica=replica,
-                clip_path=clips_dir / f"{attempt_id}.mp4",
-                kind=kind,
-                gpu_family=gpu_family,
-            )
-            completed = time.monotonic()
-            with boundary_lock:
-                if final_completion is None or completed > final_completion:
-                    final_completion = completed
-            rows.append(row)
-        return rows
+        if index < workers_per_service:
+            barrier.wait()
+        identity = cell_name or topology.name
+        attempt_id = f"{kind}-{identity}-r{replica}-a{index:03d}"
+        dispatched = time.monotonic()
+        with boundary_lock:
+            if first_dispatch is None or dispatched < first_dispatch:
+                first_dispatch = dispatched
+        row = attempt_fn(
+            url=urls[replica],
+            prompt=prompt,
+            negative_prompt=negative_prompt,
+            prompt_hashes=prompt_hashes,
+            seed=SEEDS[index % len(SEEDS)],
+            attempt_id=attempt_id,
+            replica=replica,
+            clip_path=clips_dir / f"{attempt_id}.mp4",
+            kind=kind,
+            gpu_family=gpu_family,
+        )
+        completed = time.monotonic()
+        with boundary_lock:
+            if final_completion is None or completed > final_completion:
+                final_completion = completed
+        row["cell"] = identity
+        row["topology"] = topology.name
+        row["request_concurrency_per_service"] = request_concurrency_per_service
+        row["service_attempt_index"] = index
+        return row
+
+    def worker(replica: int) -> list[dict[str, Any]]:
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=workers_per_service
+        ) as request_pool:
+            futures = [
+                request_pool.submit(attempt, replica, index)
+                for index in range(per_service)
+            ]
+            return [future.result() for future in futures]
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=topology.services) as pool:
         groups = list(pool.map(worker, range(topology.services)))
@@ -662,6 +837,7 @@ def dispatch_cell(
             "generation, MP4 encoding, uneven completion, failures, and tail idle time; "
             "excludes startup, model load, and warmup"
         ),
+        "request_concurrency_per_service": request_concurrency_per_service,
     }
     return rows, window
 
@@ -669,6 +845,138 @@ def dispatch_cell(
 def _write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _canonical_json_bytes(payload: Any) -> bytes:
+    return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def _cell_contract_sha256(
+    *,
+    plan: Mapping[str, Any],
+    cell: BenchmarkCell,
+    prompt_hashes: Mapping[str, str],
+    run_id: str,
+) -> str:
+    planned = next(
+        item for item in plan["planned_cells"] if item["name"] == cell.name
+    )
+    return _sha256(
+        _canonical_json_bytes(
+            {
+                "schema_version": plan["schema_version"],
+                "suite": plan["suite"],
+                "run_id": run_id,
+                "model": plan["model"],
+                "runtime_image": plan["runtime_image"],
+                "gpu": plan["gpu"],
+                "workload": plan["workload"],
+                "seeds": plan["seeds"],
+                "sync_timeout_seconds": plan["sync_timeout_seconds"],
+                "cell": planned,
+                "prompt_hashes": dict(prompt_hashes),
+            }
+        )
+    )
+
+
+def _read_json_object(storage: Any, uri: str) -> tuple[dict[str, Any], bytes] | None:
+    found = storage.read_bytes_with_etag(uri)
+    if found is None:
+        return None
+    payload, _etag = found
+    try:
+        parsed = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise Cosmos3SuperBenchmarkError(
+            "durable resume object is not valid JSON; refusing to overwrite it"
+        ) from exc
+    if not isinstance(parsed, dict):
+        raise Cosmos3SuperBenchmarkError(
+            "durable resume object must contain a JSON object"
+        )
+    return parsed, payload
+
+
+def _load_completed_cell(
+    *, storage: Any, output_path: str, cell: BenchmarkCell, contract_sha256: str
+) -> dict[str, Any] | None:
+    cell_uri = f"{output_path.rstrip('/')}/cells/{cell.name}"
+    marker_result = _read_json_object(storage, f"{cell_uri}/complete.json")
+    if marker_result is None:
+        return None
+    marker, _marker_bytes = marker_result
+    if marker.get("contract_sha256") != contract_sha256:
+        raise Cosmos3SuperBenchmarkError(
+            f"completed cell {cell.name} has a different immutable contract; "
+            "choose a new output path"
+        )
+    cell_result = _read_json_object(storage, f"{cell_uri}/cell.json")
+    if cell_result is None:
+        raise Cosmos3SuperBenchmarkError(
+            f"completed cell {cell.name} is missing its durable cell record"
+        )
+    payload, payload_bytes = cell_result
+    if _sha256(payload_bytes) != marker.get("cell_json_sha256"):
+        raise Cosmos3SuperBenchmarkError(
+            f"completed cell {cell.name} failed its durable hash check"
+        )
+    attempts = payload.get("attempts")
+    derived = payload.get("derived")
+    if (
+        not isinstance(attempts, list)
+        or not isinstance(derived, Mapping)
+        or len(attempts) != int(derived.get("attempts") or -1)
+    ):
+        raise Cosmos3SuperBenchmarkError(
+            f"completed cell {cell.name} failed its attempt-count audit"
+        )
+    return payload
+
+
+def _publish_completed_cell(
+    *,
+    storage: Any,
+    output_path: str,
+    cell: BenchmarkCell,
+    cell_dir: Path,
+    payload: Mapping[str, Any],
+    contract_sha256: str,
+) -> None:
+    cell_uri = f"{output_path.rstrip('/')}/cells/{cell.name}"
+    cell_json = _canonical_json_bytes(payload)
+    (cell_dir / "cell.json").write_bytes(cell_json)
+    storage.upload_directory(str(cell_dir), cell_uri + "/")
+    marker = {
+        "schema_version": "npa.cosmos3-super.cell-completion.v1",
+        "cell": cell.name,
+        "contract_sha256": contract_sha256,
+        "cell_json_sha256": _sha256(cell_json),
+        "attempts": len(payload["attempts"]),
+        "valid_attempts": int(payload["derived"]["valid_attempts"]),
+        "failed_attempts": int(payload["derived"]["failed_attempts"]),
+        "published_at": _utc_now(),
+    }
+    marker_bytes = _canonical_json_bytes(marker)
+    marker_uri = f"{cell_uri}/complete.json"
+    try:
+        storage.put_bytes_conditional(
+            marker_bytes,
+            marker_uri,
+            if_none_match=True,
+            content_type="application/json",
+        )
+    except StoragePreconditionFailed:
+        existing = _read_json_object(storage, marker_uri)
+        if existing is None or existing[0].get("contract_sha256") != contract_sha256:
+            raise Cosmos3SuperBenchmarkError(
+                f"completed cell {cell.name} was concurrently replaced by a different run"
+            )
+    verified = _read_json_object(storage, marker_uri)
+    if verified is None or verified[1] != marker_bytes:
+        raise Cosmos3SuperBenchmarkError(
+            f"completed cell {cell.name} failed read-after-write verification"
+        )
 
 
 def _publish(local_dir: Path, output_path: str, storage_client: Any = None) -> str:
@@ -695,14 +1003,16 @@ def run_benchmark(
     dry_run: bool = False,
     storage_client: Any = None,
     gpu_family: str = "B200",
+    suite: str = PRIMARY_SUITE,
 ) -> dict[str, Any]:
-    """Run and publish the fixed primary B200 or H200 topology sweep."""
+    """Run and publish a fixed primary sweep or the exact ten-cell B200 suite."""
 
     plan = benchmark_plan(
         output_path=output_path,
         topologies=topologies,
         attempts=attempts,
         gpu_family=gpu_family,
+        suite=suite,
     )
     plan["run_id"] = run_id
     if dry_run:
@@ -715,15 +1025,43 @@ def run_benchmark(
     family = _normalize_gpu_family(gpu_family)
     gpu = _require_gpu_family(family)
     prompt, negative, prompt_hashes = _load_anchor_prompts()
+    selected_cells = benchmark_cells(
+        suite=suite,
+        topologies=topologies,
+        attempts=attempts,
+        gpu_family=family,
+    )
+    remote = output_path.startswith("s3://")
+    storage = (
+        storage_client or StorageClient.from_environment()
+    ) if remote else None
     with tempfile.TemporaryDirectory(
         prefix=f"npa-cosmos3-super-{family.lower()}-"
     ) as tmp:
         root = Path(tmp)
         cells: dict[str, Any] = {}
-        for name in parse_topologies(topologies):
-            topology = TOPOLOGIES[name]
-            cell_dir = root / "cells" / name
-            log_dir = root / "private-service-logs" / name
+        execution: dict[str, str] = {}
+        for cell in selected_cells:
+            topology = TOPOLOGIES[cell.topology]
+            cell_dir = root / "cells" / cell.name
+            log_dir = root / "private-service-logs" / cell.name
+            contract_sha256 = _cell_contract_sha256(
+                plan=plan,
+                cell=cell,
+                prompt_hashes=prompt_hashes,
+                run_id=run_id,
+            )
+            if remote:
+                completed = _load_completed_cell(
+                    storage=storage,
+                    output_path=output_path,
+                    cell=cell,
+                    contract_sha256=contract_sha256,
+                )
+                if completed is not None:
+                    cells[cell.name] = completed
+                    execution[cell.name] = "resumed"
+                    continue
             with running_services(
                 topology,
                 base_port=base_port,
@@ -740,11 +1078,14 @@ def run_benchmark(
                     clips_dir=cell_dir / "warmup-clips",
                     kind="warmup",
                     gpu_family=family,
+                    request_concurrency_per_service=1,
+                    cell_name=cell.name,
                 )
                 if not all(_strict_valid(row) for row in warmups):
                     _write_json(cell_dir / "warmups.json", warmups)
                     raise Cosmos3SuperBenchmarkError(
-                        f"{name} warmup validation failed; measurement window was not opened"
+                        f"{cell.name} warmup validation failed; "
+                        "measurement window was not opened"
                     )
                 shutil.rmtree(cell_dir / "warmup-clips", ignore_errors=True)
                 records, window = dispatch_cell(
@@ -757,41 +1098,97 @@ def run_benchmark(
                     clips_dir=cell_dir / "clips",
                     kind="production",
                     gpu_family=family,
+                    request_concurrency_per_service=(
+                        cell.request_concurrency_per_service
+                    ),
+                    cell_name=cell.name,
                 )
             derived = derive_cell(records, float(window["seconds"]))
             _write_json(cell_dir / "attempts.json", records)
             _write_json(cell_dir / "window.json", window)
             _write_json(cell_dir / "derived.json", derived)
-            cells[name] = {
+            cell_payload = {
+                "cell": cell.name,
                 "topology": {
+                    "name": topology.name,
                     "services": topology.services,
                     "gpus_per_service": topology.gpus_per_service,
                     "server_parallelism": list(topology.server_args),
-                    "request_concurrency_per_service": 1,
+                    "request_concurrency_per_service": (
+                        cell.request_concurrency_per_service
+                    ),
                     "warmups_per_service": 1,
                 },
+                "repeat_of": cell.repeat_of or None,
                 "warmups": warmups,
                 "attempts": records,
                 "window": window,
                 "derived": derived,
+                "contract_sha256": contract_sha256,
             }
+            cells[cell.name] = cell_payload
+            if remote:
+                _publish_completed_cell(
+                    storage=storage,
+                    output_path=output_path,
+                    cell=cell,
+                    cell_dir=cell_dir,
+                    payload=cell_payload,
+                    contract_sha256=contract_sha256,
+                )
+            execution[cell.name] = "executed"
         shutil.rmtree(root / "private-service-logs", ignore_errors=True)
-        artifact_uri = output_path.rstrip("/") + "/" if output_path.startswith("s3://") else output_path
+        artifact_uri = output_path.rstrip("/") + "/" if remote else output_path
+        total_attempts = sum(
+            int(cell["derived"]["attempts"]) for cell in cells.values()
+        )
+        valid_attempts = sum(
+            int(cell["derived"]["valid_attempts"]) for cell in cells.values()
+        )
+        failed_attempts = total_attempts - valid_attempts
         report = {
             **plan,
             "status": "succeeded"
-            if all(cell["derived"]["failed_attempts"] == 0 for cell in cells.values())
+            if failed_attempts == 0
             else "completed_with_invalid_attempts",
             "run_id": run_id,
             "gpu": gpu,
             "prompt_hashes": prompt_hashes,
             "cells": cells,
+            "execution": execution,
+            "audit": {
+                "expected_cells": len(selected_cells),
+                "completed_cells": len(cells),
+                "expected_attempts": len(selected_cells) * attempts,
+                "attempts": total_attempts,
+                "valid_attempts": valid_attempts,
+                "failed_attempts": failed_attempts,
+                "all_attempt_records_present": (
+                    total_attempts == len(selected_cells) * attempts
+                ),
+            },
+            "comparisons": derive_suite_comparisons(cells),
             "completed_at": _utc_now(),
             "measurement_claim": "technical validity only; semantic quality was not measured",
             "artifact_uri": artifact_uri,
         }
         _write_json(root / "benchmark.json", report)
-        published = _publish(root, output_path, storage_client=storage_client)
+        if remote:
+            published = storage.upload_file(
+                str(root / "benchmark.json"),
+                f"{output_path.rstrip('/')}/benchmark.json",
+            )
+            verified = _read_json_object(
+                storage, f"{output_path.rstrip('/')}/benchmark.json"
+            )
+            expected_bytes = (root / "benchmark.json").read_bytes()
+            if verified is None or verified[1] != expected_bytes:
+                raise Cosmos3SuperBenchmarkError(
+                    "final benchmark report failed read-after-write verification"
+                )
+            published = output_path.rstrip("/") + "/"
+        else:
+            published = _publish(root, output_path)
         report["artifact_uri"] = published
         if report["status"] != "succeeded":
             raise Cosmos3SuperBenchmarkError(
@@ -802,18 +1199,25 @@ def run_benchmark(
 
 __all__ = [
     "ATTEMPT_SCHEMA_VERSION",
+    "B200_FULL_CELLS",
+    "B200_FULL_SUITE",
+    "BenchmarkCell",
     "Cosmos3SuperBenchmarkError",
     "IMAGE",
     "MODEL_ID",
     "MODEL_REVISION",
+    "PRIMARY_SUITE",
     "SCHEMA_VERSION",
     "SUPPORTED_GPU_FAMILIES",
     "TOPOLOGIES",
     "TOPOLOGY_ORDER",
     "WORKLOAD",
+    "benchmark_cells",
     "benchmark_plan",
     "derive_cell",
+    "derive_suite_comparisons",
     "dispatch_cell",
+    "parse_suite",
     "parse_topologies",
     "run_benchmark",
     "service_command",

@@ -267,7 +267,7 @@ to 8 concurrent requests are under 10% and nearly all collected at concurrency
 this server above concurrency 2 unless the marginal 9.8% of throughput is worth
 a 7.2x median-latency cost.
 
-## Reproduce the primary B200 or H200 topology sweep
+## Reproduce the primary sweep or complete B200 record
 
 The Workbench recipe reproduces the methodology documented by the public
 [`cosmos3-super-serving`](https://github.com/stewtong/cosmos3-super-serving)
@@ -280,9 +280,10 @@ hardware-specific records
 and
 [`cosmos3-super-h200-benchmark-licensing.json`](../../npa/workflows/workbench/configs/cosmos3-super-h200-benchmark-licensing.json).
 
-Each recipe reserves one complete homogeneous eight-GPU node and runs these
-cells sequentially. Select the recipe matching the physical GPU; the command
-also verifies the reported GPU family before model access or measurement:
+Each recipe reserves one complete homogeneous eight-GPU node and runs cells
+sequentially. Select the recipe matching the physical GPU; the command also
+verifies the reported GPU family before model access or measurement. The
+default `primary` suite is the original four-cell surface:
 
 | Arrangement | Service parallelism | Request concurrency | Measured attempts |
 | --- | --- | ---: | ---: |
@@ -290,6 +291,29 @@ also verifies the reported GPU family before model access or measurement:
 | 2 services x 4 GPUs | TP-4 per service | 1 per service | 24 |
 | 4 services x 2 GPUs | TP-2 per service | 1 per service | 24 |
 | 8 services x 1 GPU | TP-1 per service | 1 per service | 24 |
+
+The B200 recipe also exposes `suite=b200-full`, grounded in the ten cell keys
+and controls of the pinned machine-readable public record rather than inferred
+from its prose:
+
+| Cell | Arrangement | Request concurrency per service | Variation |
+| --- | --- | ---: | --- |
+| `T1_1x8` | 1 service x 8 GPUs, hybrid | 1 | primary |
+| `T2_2x4` | 2 services x 4 GPUs, TP-4 | 1 | primary |
+| `T3_4x2` | 4 services x 2 GPUs, TP-2 | 1 | primary |
+| `T4_8x1` | 8 services x 1 GPU, TP-1 | 1 | primary |
+| `T1C2` | 1 service x 8 GPUs, hybrid | 2 | concurrency confirmation |
+| `T2C2` | 2 services x 4 GPUs, TP-4 | 2 | concurrency confirmation |
+| `T3C2` | 4 services x 2 GPUs, TP-2 | 2 | concurrency confirmation |
+| `T4C2` | 8 services x 1 GPU, TP-1 | 2 | concurrency confirmation |
+| `T1R` | 1 service x 8 GPUs, hybrid | 1 | delayed repeat of `T1_1x8` |
+| `T1C2R` | 1 service x 8 GPUs, hybrid | 2 | delayed repeat of `T1C2` |
+
+Every full-suite cell has 24 measured attempts, for 240 total. Concurrency is
+implemented as requests in flight independently inside each service; it never
+changes the number of service replicas or the GPU partition. The full suite is
+B200-specific and fails closed on H200, a topology subset, or a non-24 attempt
+count. The H200 recipe continues to default to its four-cell primary surface.
 
 Every cell uses BF16 text-to-video at 1280x720, 189 frames, 24 fps, 35
 denoising steps, guidance 6.0, flow shift 10.0, maximum sequence length 4096,
@@ -315,9 +339,11 @@ After reviewing the runtime terms, submit with the run-scoped exact value
 `NPA_COSMOS3_ACCEPT_NVIDIA_SOFTWARE_LICENSE=YES`, `HF_TOKEN`, and S3 credentials
 through `--secret-env`. Override the placeholder bucket and select the exact
 existing Kubernetes context; do not put either value in the committed spec.
+Add `--var suite=b200-full` to the B200 submission to select all ten cells.
 
-The durable output contains `benchmark.json`, and for each topology:
-`attempts.json`, `window.json`, `derived.json`, and the production MP4s. Every
+The durable output contains `benchmark.json`, and for each cell:
+`attempts.json`, `window.json`, `derived.json`, `cell.json`, `complete.json`,
+and the production MP4s. Every
 attempt records client start/finish time, wall latency, HTTP status, output byte
 count and SHA-256, prompt hashes, seed, validation detail, and failure reason.
 A clip receives credit only after HTTP 200, non-empty output, complete
@@ -329,6 +355,14 @@ Throughput is derived from the shared first-dispatch-to-final-completion window,
 not the sum of request latencies. This includes routing, generation, MP4
 encoding, uneven replica completion, failure time, and tail idle time; service
 startup, model loading, and warmups are outside the boundary.
+
+Cell artifacts and clips upload before the immutable `complete.json` marker is
+created and read back. Re-running the same workflow output prefix reuses only
+cells whose marker and `cell.json` hash match the current run, model, image,
+prompt, workload, and cell contract. A preemption before the marker reruns that
+cell without discarding earlier completed cells; a conflicting marker refuses
+overwrite. The final report independently derives the primary frontier,
+concurrency-two deltas, and delayed-repeat variation from its own cell records.
 
 The public record's approximate primary frontier is a comparison target, never
 a value to hard-code or report as a fresh run:

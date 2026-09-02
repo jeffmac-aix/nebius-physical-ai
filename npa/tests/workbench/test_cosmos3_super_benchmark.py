@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import threading
 import time
@@ -53,6 +54,66 @@ def test_h200_plan_changes_only_hardware_identity() -> None:
     assert h200["schema_version"] == "npa.cosmos3-super.h200-benchmark.v1"
     for key in ("model", "runtime_image", "topologies", "workload", "seeds"):
         assert h200[key] == b200[key]
+
+
+def test_full_suite_matches_machine_readable_public_record() -> None:
+    plan = benchmark.benchmark_plan(
+        output_path="s3://example-bucket/full/",
+        topologies="1x8,2x4,4x2,8x1",
+        attempts=24,
+        suite="b200-full",
+    )
+    assert [cell["name"] for cell in plan["cells"]] == [
+        "T1_1x8",
+        "T2_2x4",
+        "T3_4x2",
+        "T4_8x1",
+        "T1C2",
+        "T2C2",
+        "T3C2",
+        "T4C2",
+        "T1R",
+        "T1C2R",
+    ]
+    assert [cell["request_concurrency_per_service"] for cell in plan["cells"]] == [
+        1,
+        1,
+        1,
+        1,
+        2,
+        2,
+        2,
+        2,
+        1,
+        2,
+    ]
+    assert all(cell["measured_attempts"] == 24 for cell in plan["cells"])
+    assert plan["cells"][-2]["repeat_of"] == "T1_1x8"
+    assert plan["cells"][-1]["repeat_of"] == "T1C2"
+    assert plan["upstream"]["method_revision"] == benchmark.UPSTREAM_METHOD_REVISION
+    assert plan["upstream"]["b200_record_sha256"] == (
+        benchmark.UPSTREAM_B200_RECORD_SHA256
+    )
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"gpu_family": "H200"}, "exact public B200"),
+        ({"attempts": 16}, "exactly 24"),
+        ({"topologies": "1x8,8x1"}, "fixes topologies"),
+    ],
+)
+def test_full_suite_rejects_contract_drift(kwargs: dict, message: str) -> None:
+    options = {
+        "output_path": "/tmp/results",
+        "topologies": "1x8,2x4,4x2,8x1",
+        "attempts": 24,
+        "suite": "b200-full",
+    }
+    options.update(kwargs)
+    with pytest.raises(benchmark.Cosmos3SuperBenchmarkError, match=message):
+        benchmark.benchmark_plan(**options)
 
 
 def test_plan_rejects_unqualified_gpu_family() -> None:
@@ -144,6 +205,131 @@ def test_dispatch_runs_one_request_at_a_time_per_service(tmp_path: Path) -> None
     assert all(values == [17, 23, 41, 17, 23, 41] for values in seeds.values())
     assert window["seconds"] > 0
     assert "tail idle time" in window["boundary"]
+
+
+def test_dispatch_concurrency_two_is_per_service_not_replica_count(
+    tmp_path: Path,
+) -> None:
+    active: dict[int, int] = {}
+    peaks: dict[int, int] = {}
+    lock = threading.Lock()
+
+    def fake_attempt(**kwargs):
+        replica = kwargs["replica"]
+        with lock:
+            active[replica] = active.get(replica, 0) + 1
+            peaks[replica] = max(peaks.get(replica, 0), active[replica])
+        time.sleep(0.01)
+        with lock:
+            active[replica] -= 1
+        row = _valid_record(kwargs["attempt_id"], latency=0.01)
+        row.update(
+            {
+                "started_at": "2026-01-01T00:00:00Z",
+                "finished_at": "2026-01-01T00:00:01Z",
+                "replica": replica,
+            }
+        )
+        return row
+
+    topology = benchmark.TOPOLOGIES["2x4"]
+    records, window = benchmark.dispatch_cell(
+        topology=topology,
+        urls=["http://127.0.0.1:8100", "http://127.0.0.1:8101"],
+        attempts=24,
+        prompt="prompt",
+        negative_prompt="negative",
+        prompt_hashes={"prompt_sha256": "a", "negative_prompt_sha256": "b"},
+        clips_dir=tmp_path,
+        kind="production",
+        request_concurrency_per_service=2,
+        cell_name="T2C2",
+        attempt_fn=fake_attempt,
+    )
+    assert len(records) == 24
+    assert peaks == {0: 2, 1: 2}
+    assert {record["cell"] for record in records} == {"T2C2"}
+    assert {record["request_concurrency_per_service"] for record in records} == {2}
+    assert window["request_concurrency_per_service"] == 2
+
+
+class _MemoryStorage:
+    def __init__(self) -> None:
+        self.objects: dict[str, bytes] = {}
+
+    def upload_directory(self, local_dir: str, bucket_uri: str) -> str:
+        for root, _dirs, files in os.walk(local_dir):
+            for name in files:
+                path = Path(root) / name
+                relative = path.relative_to(local_dir).as_posix()
+                self.objects[f"{bucket_uri.rstrip('/')}/{relative}"] = path.read_bytes()
+        return bucket_uri
+
+    def put_bytes_conditional(self, payload: bytes, uri: str, **_kwargs) -> str:
+        if uri in self.objects:
+            raise benchmark.StoragePreconditionFailed("exists")
+        self.objects[uri] = payload
+        return "etag"
+
+    def read_bytes_with_etag(self, uri: str):
+        payload = self.objects.get(uri)
+        return None if payload is None else (payload, "etag")
+
+
+def test_completed_cell_marker_supports_hash_verified_resume(tmp_path: Path) -> None:
+    storage = _MemoryStorage()
+    cell = benchmark.B200_FULL_CELLS[0]
+    payload = {
+        "cell": cell.name,
+        "attempts": [_valid_record(f"a{index}") for index in range(24)],
+        "derived": {"attempts": 24, "valid_attempts": 24, "failed_attempts": 0},
+    }
+    benchmark._publish_completed_cell(
+        storage=storage,
+        output_path="s3://example-bucket/run",
+        cell=cell,
+        cell_dir=tmp_path,
+        payload=payload,
+        contract_sha256="contract",
+    )
+    resumed = benchmark._load_completed_cell(
+        storage=storage,
+        output_path="s3://example-bucket/run",
+        cell=cell,
+        contract_sha256="contract",
+    )
+    assert resumed == payload
+    storage.objects["s3://example-bucket/run/cells/T1_1x8/cell.json"] += b" "
+    with pytest.raises(benchmark.Cosmos3SuperBenchmarkError, match="hash check"):
+        benchmark._load_completed_cell(
+            storage=storage,
+            output_path="s3://example-bucket/run",
+            cell=cell,
+            contract_sha256="contract",
+        )
+
+
+def test_full_suite_comparisons_cover_primary_concurrency_and_repeats() -> None:
+    cells = {}
+    for index, cell in enumerate(benchmark.B200_FULL_CELLS, start=1):
+        cells[cell.name] = {
+            "derived": {
+                "mean_request_latency_seconds": float(index),
+                "valid_video_seconds_per_node_hour": float(index * 10),
+            }
+        }
+    comparisons = benchmark.derive_suite_comparisons(cells)
+    assert set(comparisons) == {
+        "primary_frontier",
+        "concurrency_two_delta_pct",
+        "repeat_variation_pct",
+    }
+    assert set(comparisons["concurrency_two_delta_pct"]) == {
+        "T1C2",
+        "T2C2",
+        "T3C2",
+        "T4C2",
+    }
 
 
 def test_video_gate_checks_shape_blank_and_motion(

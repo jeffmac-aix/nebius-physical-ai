@@ -17,6 +17,7 @@ config:
   output_uri: "s3://{{config.bucket}}/{{config.prefix}}/"
   topologies: 1x8,2x4,4x2,8x1
   attempts: "24"
+  suite: primary
   gpu_family: H200
   base_port: "8100"
 
