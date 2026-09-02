@@ -1332,7 +1332,12 @@ def default_npa_setup() -> str:
         # --no-deps FIRST: the overlay is the same distribution the image already has, so
         # resolving its requirements would only risk moving a pinned vendor stack.
         "  if ! npa_pip_install -e /tmp/npa-src-overlay --no-deps; then\n"
-        "    echo 'using verified source-only npa overlay' >&2\n"
+        "    echo 'using isolated non-root npa overlay environment' >&2\n"
+        "    python3 -m venv --system-site-packages /tmp/npa-overlay-venv\n"
+        "    /tmp/npa-overlay-venv/bin/python -m pip install -q -e "
+        "/tmp/npa-src-overlay --no-deps\n"
+        '    PATH="/tmp/npa-overlay-venv/bin:$PATH"\n'
+        "    export PATH\n"
         "  fi\n"
         # ... and WITH deps if the CLI still will not import. An image that installed npa with
         # its own curated `--no-deps` list leaves the overlay short of whatever that list
