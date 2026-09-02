@@ -209,6 +209,11 @@ class RuntimeOptions:
     #: remains fail closed because an absent scheduler record alone cannot prove an
     #: arbitrary stage has no external side effects.
     retry_absent_in_flight: bool = False
+    #: Explicitly adopt an exact in-flight attempt whose scheduler record was
+    #: lost only after the ledger proves it reached RUNNING and every declared
+    #: durable output validates. This is an operator recovery for controller
+    #: loss, never a default inference from job disappearance.
+    adopt_absent_in_flight_outputs: bool = False
     project: str = "default"
     sky_bin: str = ""
     credential_resolver: Callable[[], Mapping[str, str]] | None = field(
@@ -894,6 +899,61 @@ class SkyPilotWaveExecutor:
                 self.ledger.record(attempt)
                 return attempt
         elif outcome == "absent":
+            observations = record.get("observations") or []
+            reached_running = any(
+                isinstance(item, Mapping)
+                and (
+                    str(item.get("scheduler_state") or "").upper() == "RUNNING"
+                    or "RUNNING"
+                    in {
+                        str(value or "").upper()
+                        for value in (item.get("statuses") or {}).values()
+                    }
+                )
+                for item in observations
+            )
+            explicit_output_adoption = (
+                self.options.adopt_absent_in_flight_outputs
+                and reached_running
+                and bool(attempt.outputs)
+                and bool(job_id)
+                and bool(job_name)
+                and bool(attempt.logical_launch_id)
+                and not is_terminal(attempt.sky_status)
+            )
+            if explicit_output_adoption:
+                try:
+                    outputs_valid = self._outputs_exist(attempt.outputs)
+                except Exception as exc:  # noqa: BLE001 - storage can be unavailable
+                    attempt.reconciliation_error = sanitize_reason(exc)
+                    outputs_valid = False
+                if outputs_valid:
+                    attempt.status = "succeeded"
+                    attempt.sky_status = "SUCCEEDED"
+                    attempt.ended_at = utc_now()
+                    attempt.recovery_decision = (
+                        "operator_authorized_absent_output_adoption"
+                    )
+                    attempt.operator_remedy = (
+                        "The exact attempt reached RUNNING and every declared "
+                        "durable output validated; reuse it without resubmission."
+                    )
+                    attempt.reconciliation.append(
+                        {
+                            "outcome": "absent",
+                            "source": "exact_managed_job_reconciliation",
+                            "declared_outputs_valid": True,
+                            "checked_at": utc_now(),
+                        }
+                    )
+                    attempt.cancellation_state = "not_applicable"
+                    self.ledger.record(attempt)
+                    self._log(
+                        f"wave {key}: operator-authorized recovery adopts the "
+                        "lost scheduler record after RUNNING and declared-output "
+                        "validation; no duplicate attempt will be launched"
+                    )
+                    return attempt
             automatic_retry = attempt.launch_sequence == 0 or (
                 attempt.error_category
                 in {

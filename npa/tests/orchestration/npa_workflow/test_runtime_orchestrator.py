@@ -2264,6 +2264,74 @@ def test_explicit_absent_resume_refuses_existing_declared_output(
     )
 
 
+def test_explicit_resume_adopts_controller_lost_running_wave_with_valid_outputs(
+    tmp_path: Path,
+) -> None:
+    from npa.orchestration.skypilot.workflow import ManagedJobEvidence
+
+    output_spec = FANOUT_SPEC.replace(
+        "    resources: cpu\n\n  shard-b:",
+        "    resources: cpu\n"
+        "    outputs:\n"
+        '      - uri: "s3://{{config.bucket}}/{{config.prefix}}/shard-a.json"\n\n'
+        "  shard-b:",
+        1,
+    )
+    spec = load_spec(_write_spec(tmp_path, output_spec))
+    store = MemoryStore()
+    state = RuntimeRunState(workflow=spec.name, run_id="rt-output-adopt")
+    state.record_wave(
+        {
+            "key": "001|shards|shards:shard-a:-,shards:shard-b:-",
+            "status": "running",
+            "job_id": "77",
+            "job_name": "rt-output-adopt-01-shards",
+            "attempt": 1,
+            "sky_status": "RUNNING",
+            "logical_launch_id": "logical-output-adopt",
+            "launch_sequence": 1,
+            "recovery_decision": "submitted_and_reconciled",
+            "observations": [
+                {
+                    "scheduler_state": "RUNNING",
+                    "statuses": {"rt-output-adopt-01-shards": "RUNNING"},
+                }
+            ],
+        }
+    )
+    store.write_runtime_state(state)
+    options = RuntimeOptions(
+        poll_seconds=0,
+        max_wait_seconds=60,
+        resume=True,
+        adopt_absent_in_flight_outputs=True,
+    )
+    submitter = FakeSubmitter()
+    executor = _executor(
+        spec,
+        run_id="rt-output-adopt",
+        submitter=submitter,
+        options=options,
+        store=store,
+        output_checker=lambda _uri: True,
+        reconcile_fn=lambda *_args, **_kwargs: ManagedJobEvidence("absent"),
+    )
+
+    report = run_workflow_runtime(
+        spec, run_id="rt-output-adopt", executor=executor, options=options
+    )
+
+    assert report.status == "succeeded"
+    adopted = next(item for item in report.waves if item["job_id"] == "77")
+    assert adopted["status"] == "succeeded"
+    assert adopted["adopted"] is True
+    assert (
+        adopted["recovery_decision"]
+        == "operator_authorized_absent_output_adoption"
+    )
+    assert all(call["job_name"] != "rt-output-adopt-01-shards-a2" for call in submitter.calls)
+
+
 def test_resume_blocks_indeterminate_incomplete_wave_without_submit(
     tmp_path: Path,
 ) -> None:
