@@ -1651,6 +1651,12 @@ def parse_metrics_yaml(path: Path | str) -> dict[str, float]:
     ``{"test/psnr": ...}`` -- but the extraction is not limited to ``test/*``; any
     numeric leaf is recorded.
 
+    NRE 26.04 ships validation numbers under an ``aggregated_metrics`` section
+    where each entry is ``test/psnr: {aggregation_method: mean, value: 22.66}``.
+    Those are additionally exposed under the bare metric name (``test/psnr``), so
+    callers always read ``test/psnr`` / ``test/ssim`` / ``test/lpips`` regardless
+    of whether a release writes the flat form or the aggregated wrapper.
+
     Parsed with PyYAML when available and a flat ``key: value`` scan otherwise, so
     the helper stays usable in a dependency-light container. Metrics are EVIDENCE,
     never the deliverable: a metrics file that is missing, unreadable, or corrupt
@@ -1672,6 +1678,19 @@ def parse_metrics_yaml(path: Path | str) -> dict[str, float]:
             for key, value in _flatten(payload):
                 if isinstance(value, (int, float)) and not isinstance(value, bool):
                     metrics[key] = float(value)
+            # NRE 26.04 writes its validation numbers under an
+            # ``aggregated_metrics`` section, each entry a dict like
+            # ``test/psnr: {aggregation_method: mean, value: 22.66}``. Expose the
+            # numeric ``value`` under the bare metric name so callers can read
+            # ``test/psnr`` / ``test/ssim`` / ``test/lpips`` exactly as the skill
+            # documents, rather than the nested ``aggregated_metrics/.../value``.
+            aggregated = payload.get("aggregated_metrics")
+            if isinstance(aggregated, dict):
+                for name, entry in aggregated.items():
+                    if isinstance(entry, dict):
+                        value = entry.get("value")
+                        if isinstance(value, (int, float)) and not isinstance(value, bool):
+                            metrics[str(name)] = float(value)
             return metrics
     except ImportError:
         _logger.debug("PyYAML unavailable; falling back to a flat metrics scan")

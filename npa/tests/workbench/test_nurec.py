@@ -384,6 +384,31 @@ def test_parse_metrics_yaml_flattens_the_test_metrics(tmp_path: Path) -> None:
     assert metrics["test/lpips"] == pytest.approx(0.12)
 
 
+def test_parse_metrics_yaml_flattens_the_aggregated_shape(tmp_path: Path) -> None:
+    """NRE 26.04 wraps validation numbers under ``aggregated_metrics`` with a
+    ``value`` leaf; those must surface as the bare test/psnr|ssim|lpips keys that
+    downstream gates (and the skill docs) read."""
+    path = tmp_path / "metrics.yaml"
+    path.write_text(
+        "aggregated_metrics:\n"
+        "  test/psnr:\n"
+        "    aggregation_method: mean\n"
+        "    value: 22.66\n"
+        "  test/ssim:\n"
+        "    aggregation_method: mean\n"
+        "    value: 0.6447\n"
+        "  test/lpips:\n"
+        "    aggregation_method: mean\n"
+        "    value: 0.3956\n"
+    )
+
+    metrics = parse_metrics_yaml(path)
+
+    assert metrics["test/psnr"] == pytest.approx(22.66)
+    assert metrics["test/ssim"] == pytest.approx(0.6447)
+    assert metrics["test/lpips"] == pytest.approx(0.3956)
+
+
 def test_parse_metrics_yaml_is_quiet_about_a_missing_file(tmp_path: Path) -> None:
     assert parse_metrics_yaml(tmp_path / "nope.yaml") == {}
 
