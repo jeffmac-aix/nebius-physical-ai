@@ -20,6 +20,10 @@ config:
   gpu_disk_size: "100"
   gpu_num_nodes: "8"
   multi_host_enabled: "true"
+  # Zero preserves the upstream 100,000-update recipe. An operator may set
+  # exactly 1000 for a resumable, checkpointed validation pause; a later run
+  # with zero and the same run id/PVC resumes toward the original target.
+  pause_after_updates: "0"
   prepare_cpus: "16"
   prepare_memory: 64Gi
   prepare_disk_size: "100"
@@ -126,7 +130,9 @@ states:
       Invoke pinned scripts/train.py for 100,000 global-batch-256 steps on an
       eight-process, one-GPU-per-node JAX mesh. Each process consumes a
       disjoint pre-shuffle RLDS shard with local batch 32; durable checkpoints
-      make an identical resume safe.
+      make an identical resume safe. The default completes all 100,000 updates;
+      an explicit 1,000-update operator pause emits only the declared run-overlay
+      outputs through that checkpoint and must not be reported as convergence.
     toolRef: workbench.openpi.full_droid_finetune
     resources: rtxpro8
     outputs:

@@ -23,6 +23,7 @@ from pathlib import Path
 
 from npa.workflows.byof.openpi_pipeline import (
     OpenPIPipelineError,
+    _download_checkpoint,
     _load_upstream_train_module,
     _read_json_uri,
     _read_bytes_uri,
@@ -68,6 +69,7 @@ RERUN_TIMELINE = "optimizer_step"
 PREPARATION_TIMELINE = "normalization_batch"
 RERUN_SCHEMA = "application/vnd.rerun.rrd"
 QUALIFICATION_STEPS = 100
+OPERATOR_PAUSE_UPDATES = 1_000
 FULL_PROGRESS_MILESTONES = (1_000, 10_000, 25_000, 50_000, 75_000, 100_000)
 REQUIRED_RRD_ENTITIES = (
     "metrics/loss",
@@ -487,6 +489,7 @@ def _configured_upstream(
     experiment: str,
     *,
     qualification: bool = False,
+    pause_after_updates: int = 0,
 ):
     from openpi.training import config as openpi_config
 
@@ -508,12 +511,25 @@ def _configured_upstream(
         fsdp_devices=EXPECTED_FSDP_DEVICES,
         wandb_enabled=False,
     )
+    if qualification and pause_after_updates:
+        raise OpenPIPipelineError("qualification cannot use a full-run pause")
     if qualification:
         configured = dataclasses.replace(
             configured,
             num_train_steps=QUALIFICATION_STEPS,
             log_interval=1,
             save_interval=QUALIFICATION_STEPS,
+        )
+    elif pause_after_updates:
+        if pause_after_updates != OPERATOR_PAUSE_UPDATES:
+            raise OpenPIPipelineError(
+                "the explicit full-DROID pause must be exactly 1,000 updates"
+            )
+        configured = dataclasses.replace(
+            configured,
+            num_train_steps=pause_after_updates,
+            log_interval=1,
+            save_interval=pause_after_updates,
         )
     return configured
 
@@ -1623,7 +1639,8 @@ def _build_training_rrd_direct(
         f"- producer: `npa.workbench.openpi.full_droid_finetune`\n"
         f"- upstream source ref: `{SOURCE_REF}`\n"
         f"- recipe: `{CONFIG_NAME}`\n"
-        f"- optimizer steps: {int(config.num_train_steps)}\n"
+        f"- upstream recipe optimizer updates: {EXPECTED_STEPS}\n"
+        f"- execution target updates: {int(config.num_train_steps)}\n"
         f"- milestone: `{milestone}`\n"
         f"- factual optimizer coverage through: `{through_step}`\n"
         f"- global batch size: {int(config.batch_size)}\n"
@@ -1637,6 +1654,12 @@ def _build_training_rrd_direct(
         "upstream optimizer step.\n"
         "- held-out/before-after policy trajectory: not produced by this "
         "offline training run; no stock or fabricated trajectory is included."
+        + (
+            "\n- limitation: `operator_requested_pause`; this recording is a "
+            "resumable intermediate milestone, not full-recipe convergence."
+            if int(config.num_train_steps) != EXPECTED_STEPS
+            else ""
+        )
     )
     rr.log(
         "provenance/run",
@@ -2091,6 +2114,7 @@ class _TrainingMilestonePublisher:
         hardware: Mapping[str, object],
         topology: Sequence[Mapping[str, object]],
         rrd_root_uri: str,
+        pause_after_updates: int = 0,
     ) -> None:
         if kind not in {"qualification", "full"}:
             raise OpenPIPipelineError("unknown training milestone kind")
@@ -2103,11 +2127,18 @@ class _TrainingMilestonePublisher:
         self.hardware = hardware
         self.topology = topology
         self.rrd_root_uri = rrd_root_uri.rstrip("/")
+        self.pause_after_updates = pause_after_updates
         self.published: dict[int, dict[str, object]] = {}
-        self.milestones = (
-            {QUALIFICATION_STEPS: QUALIFICATION_STEPS - 1}
-            if kind == "qualification"
-            else {
+        if kind == "qualification":
+            self.milestones = {QUALIFICATION_STEPS: QUALIFICATION_STEPS - 1}
+            self.pause_checkpoint_milestone = False
+        elif pause_after_updates:
+            self.milestones = {
+                pause_after_updates: pause_after_updates - 1,
+            }
+            self.pause_checkpoint_milestone = True
+        else:
+            self.milestones = {
                 1_000: 1_000,
                 10_000: 10_000,
                 25_000: 25_000,
@@ -2115,14 +2146,37 @@ class _TrainingMilestonePublisher:
                 75_000: 75_000,
                 100_000: 99_999,
             }
-        )
+            self.pause_checkpoint_milestone = False
+            existing_pause_manifest = (
+                f"{self.rrd_root_uri}/progress-step-001000.manifest.json"
+            )
+            if _uri_exists(existing_pause_manifest):
+                value = _read_json_uri(existing_pause_manifest)
+                coverage = value.get("source_coverage")
+                if (
+                    value.get("schema") != MILESTONE_MANIFEST_SCHEMA
+                    or value.get("run_id") != run_id
+                    or value.get("milestone") != "progress-step-001000"
+                    or not isinstance(coverage, Mapping)
+                    or coverage.get("through_optimizer_step") != 999
+                    or coverage.get("checkpoint_materialized") is not True
+                ):
+                    raise OpenPIPipelineError(
+                        "existing pause milestone has incompatible provenance"
+                    )
+                self.milestones[1_000] = 999
+                self.pause_checkpoint_milestone = True
 
     def _slug(self, milestone: int) -> str:
         prefix = "qualification" if self.kind == "qualification" else "progress"
         return f"{prefix}-step-{milestone:06d}"
 
     def is_log_only(self, optimizer_step: int) -> bool:
-        return self.kind == "full" and optimizer_step == 1_000
+        return (
+            self.kind == "full"
+            and optimizer_step == self.milestones.get(1_000)
+            and not self.pause_checkpoint_milestone
+        )
 
     def requires_checkpoint(self, optimizer_step: int) -> bool:
         return any(
@@ -2353,6 +2407,59 @@ def _read_topology(work_root: Path) -> list[dict[str, object]]:
     return records
 
 
+def _validate_operator_pause(
+    *, checkpoint_root: Path, telemetry_path: Path, run_id: str, updates: int
+) -> dict[str, object]:
+    if updates != OPERATOR_PAUSE_UPDATES:
+        raise OpenPIPipelineError("unsupported operator pause boundary")
+    final_step = updates - 1
+    records = _load_telemetry_records(telemetry_path, run_id=run_id)
+    metric_steps = [
+        int(record["optimizer_step"])
+        for record in records
+        if record.get("record_type") == "metrics"
+    ]
+    if metric_steps != list(range(updates)):
+        raise OpenPIPipelineError(
+            "operator pause telemetry does not prove updates 0 through 999"
+        )
+    events = {
+        (int(record["optimizer_step"]), str(record.get("event")))
+        for record in records
+        if record.get("record_type") == "checkpoint"
+    }
+    if {
+        (final_step, "save_requested"),
+        (final_step, "materialized"),
+    } - events:
+        raise OpenPIPipelineError(
+            "operator pause checkpoint events are incomplete"
+        )
+    if not _checkpoint_completion_is_valid(
+        checkpoint_root, step=final_step, run_id=run_id
+    ):
+        raise OpenPIPipelineError(
+            "operator pause checkpoint completion marker is invalid"
+        )
+    later = sorted(
+        int(path.name)
+        for path in checkpoint_root.iterdir()
+        if path.is_dir() and path.name.isdigit() and int(path.name) > final_step
+    )
+    if later:
+        raise OpenPIPipelineError(
+            "operator pause checkpoint root contains later optimizer state"
+        )
+    return {
+        "completed_updates": updates,
+        "first_optimizer_step": 0,
+        "last_optimizer_step": final_step,
+        "metric_record_count": len(metric_steps),
+        "telemetry_sha256": hashlib.sha256(telemetry_path.read_bytes()).hexdigest(),
+        "checkpoint_completion_marker": True,
+    }
+
+
 def _fine_tune(args: argparse.Namespace) -> int:
     _require_terms()
     work_root = Path(args.work_root)
@@ -2399,11 +2506,13 @@ def _fine_tune(args: argparse.Namespace) -> int:
 
     started = time.perf_counter()
     qualification = args.training_kind == "qualification"
+    pause_after_updates = int(getattr(args, "pause_after_updates", 0))
     config = _configured_upstream(
         Path(args.data_root),
         work_root,
         args.experiment,
         qualification=qualification,
+        pause_after_updates=pause_after_updates,
     )
     _write_rank_evidence(work_root, rank, hardware, probe)
     multihost_utils.sync_global_devices("npa-openpi-topology-ready")
@@ -2430,6 +2539,7 @@ def _fine_tune(args: argparse.Namespace) -> int:
             hardware=hardware_summary,
             topology=topology,
             rrd_root_uri=args.rrd_root_uri,
+            pause_after_updates=pause_after_updates,
         )
     checkpoint_root, resumed, telemetry_path = _run_training(
         config,
@@ -2447,27 +2557,52 @@ def _fine_tune(args: argparse.Namespace) -> int:
         )
         return 0
 
-    checkpoint = _upload_checkpoint(checkpoint_root, args.checkpoint_uri)
-    hardware_summary["distinct_nodes"] = len(topology)
     if telemetry_path is None:
         raise OpenPIPipelineError("rank zero telemetry journal is absent")
+    pause_evidence = None
+    if pause_after_updates:
+        pause_evidence = _validate_operator_pause(
+            checkpoint_root=checkpoint_root,
+            telemetry_path=telemetry_path,
+            run_id=args.run_id,
+            updates=pause_after_updates,
+        )
+    checkpoint = _upload_checkpoint(checkpoint_root, args.checkpoint_uri)
+    if pause_after_updates:
+        with tempfile.TemporaryDirectory(prefix="npa-openpi-pause-readback-") as tmp:
+            verified_checkpoint = _download_checkpoint(
+                args.checkpoint_uri, Path(tmp) / "checkpoint"
+            )
+        if verified_checkpoint != checkpoint:
+            raise OpenPIPipelineError(
+                "operator pause checkpoint readback manifest differs"
+            )
+    hardware_summary["distinct_nodes"] = len(topology)
     _write_once_or_verify(
         args.telemetry_uri,
         telemetry_path.read_bytes(),
         content_type="application/x-ndjson",
     )
-    final_milestone = QUALIFICATION_STEPS if qualification else EXPECTED_STEPS
+    final_milestone = (
+        QUALIFICATION_STEPS
+        if qualification
+        else pause_after_updates or EXPECTED_STEPS
+    )
     if milestone_publisher is None or final_milestone not in milestone_publisher.published:
         raise OpenPIPipelineError("final mandatory RRD milestone was not published")
     rerun = milestone_publisher.published[final_milestone]
     schema = (
         "npa.workbench.openpi.pi05-full-droid-qualification.v1"
         if qualification
-        else "npa.workbench.openpi.pi05-full-droid-finetune.v1"
+        else (
+            "npa.workbench.openpi.pi05-full-droid-finetune-paused.v1"
+            if pause_after_updates
+            else "npa.workbench.openpi.pi05-full-droid-finetune.v1"
+        )
     )
     result: dict[str, object] = {
         "schema": schema,
-        "status": "passed",
+        "status": "paused" if pause_after_updates else "passed",
         "source": {
             "repository": "https://github.com/Physical-Intelligence/openpi",
             "ref": SOURCE_REF,
@@ -2482,13 +2617,18 @@ def _fine_tune(args: argparse.Namespace) -> int:
             "normalization": prepared["normalization"],
             "global_batch_size": EXPECTED_BATCH_SIZE,
             "batch_per_process": EXPECTED_BATCH_SIZE // EXPECTED_PROCESSES,
-            "optimizer_steps": int(config.num_train_steps),
+            "optimizer_steps": EXPECTED_STEPS,
             "seed": int(config.seed),
             "fsdp_devices": EXPECTED_FSDP_DEVICES,
             "mesh_shape": [1, EXPECTED_FSDP_DEVICES],
             "upstream_entrypoint": "scripts/train.py:main",
-            "upstream_recipe_hyperparameters_unmodified": not qualification,
+            "upstream_recipe_hyperparameters_unmodified": (
+                not qualification and not pause_after_updates
+            ),
             "qualification_only_step_and_log_cadence_override": qualification,
+            "operator_pause_only_step_log_and_save_cadence_override": bool(
+                pause_after_updates
+            ),
             "distributed_rlds_adapter": "pre_shuffle_process_shard_and_local_batch",
             "distributed_shuffle_seed": "upstream_seed_plus_process_index",
             "checkpoint_coordination": "orbax_checkpoint_manager_primary_host_and_global_barriers",
@@ -2515,9 +2655,49 @@ def _fine_tune(args: argparse.Namespace) -> int:
         ],
         "terms": {"forwarded": True, "persisted": False},
         "timings_seconds": {"total": round(time.perf_counter() - started, 3)},
-        "limitations": ["offline_training_does_not_prove_physical_robot_success"],
+        "limitations": [
+            "offline_training_does_not_prove_physical_robot_success",
+            *(
+                [
+                    "operator_requested_pause",
+                    "full_recipe_convergence_not_completed",
+                    "remaining_99000_updates_intentionally_outstanding",
+                ]
+                if pause_after_updates
+                else []
+            ),
+        ],
     }
-    _write_json_uri(args.output_uri, result)
+    if pause_after_updates:
+        if pause_evidence is None:
+            raise OpenPIPipelineError("operator pause evidence is absent")
+        result["pause"] = {
+            **pause_evidence,
+            "reason": "operator_requested_pause",
+            "upstream_recipe_updates": EXPECTED_STEPS,
+            "remaining_updates": EXPECTED_STEPS - pause_after_updates,
+            "resumable": True,
+            "resume_next_optimizer_step": pause_after_updates,
+            "checkpoint_content_manifest_sha256": checkpoint[
+                "content_manifest_sha256"
+            ],
+            "checkpoint_total_size_bytes": checkpoint["total_size_bytes"],
+            "checkpoint_file_count": checkpoint["file_count"],
+            "rrd_sha256": rerun["inspection"]["sha256"],
+            "rrd_bytes": rerun["inspection"]["bytes"],
+            "milestone_manifest_uri": rerun["manifest_uri"],
+        }
+        result["content_sha256"] = ""
+        canonical = json.dumps(
+            result, sort_keys=True, separators=(",", ":")
+        ).encode()
+        result["content_sha256"] = hashlib.sha256(canonical).hexdigest()
+        payload = (json.dumps(result, sort_keys=True) + "\n").encode()
+        _write_once_or_verify(
+            args.output_uri, payload, content_type="application/json"
+        )
+    else:
+        _write_json_uri(args.output_uri, result)
     multihost_utils.sync_global_devices("npa-openpi-artifacts-published")
     print(json.dumps(result, sort_keys=True), flush=True)
     return 0
@@ -2549,6 +2729,8 @@ def build_parser() -> argparse.ArgumentParser:
         train.add_argument("--telemetry-uri", required=True)
         train.add_argument("--rrd-root-uri", required=True)
         train.add_argument("--run-id", required=True)
+        if command == "train":
+            train.add_argument("--pause-after-updates", type=int, default=0)
         train.set_defaults(func=_fine_tune, training_kind=kind)
     worker = subparsers.add_parser("rrd-worker")
     worker.add_argument("--request", required=True)

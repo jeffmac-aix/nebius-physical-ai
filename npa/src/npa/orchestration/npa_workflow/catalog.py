@@ -1211,6 +1211,8 @@ TOOL_CATALOG: dict[str, ToolEntry] = {
             "{{config.rrd_root_uri}}",
             "--run-id",
             "{{run.id}}",
+            "--pause-after-updates",
+            "{{config.pause_after_updates}}",
             "--runtime-image",
             "{{config.runtime_image}}",
             "--work-root",

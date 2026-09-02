@@ -127,6 +127,7 @@ def test_full_droid_spec_is_exactly_eight_one_gpu_nodes() -> None:
     assert config["gpu_count"] == "1"
     assert config["gpu_num_nodes"] == "8"
     assert config["multi_host_enabled"] == "true"
+    assert config["pause_after_updates"] == "0"
     assert profile["accelerators"] == "{{config.gpu_type}}:{{config.gpu_count}}"
     assert profile["num_nodes"] == "{{config.gpu_num_nodes}}"
     assert "persistentVolumeClaim" in str(profile)
@@ -170,6 +171,9 @@ def test_full_droid_toolref_has_no_tunable_recipe_shortcuts() -> None:
     assert "--telemetry-uri" in argv
     assert "--rrd-root-uri" in argv
     assert "--run-id" in argv
+    assert argv[argv.index("--pause-after-updates") + 1] == (
+        "{{config.pause_after_updates}}"
+    )
     assert entry.multi_node_mode == "sharded"
     assert entry.shard_activation_config == "multi_host_enabled"
     assert entry.shard_output_config == "trained_checkpoint_uri"
@@ -484,6 +488,82 @@ def test_telemetry_journal_is_durable_deduplicated_and_run_scoped(
     assert metrics[1]["interval"]["global_samples_per_second"] > 0
     assert "hostname" not in path.read_text(encoding="utf-8")
     assert "s3://" not in path.read_text(encoding="utf-8")
+
+
+def test_operator_pause_requires_exact_zero_based_coverage_and_checkpoint(
+    tmp_path: Path,
+) -> None:
+    checkpoint_root = tmp_path / "checkpoints"
+    step_root = checkpoint_root / "999"
+    step_root.mkdir(parents=True)
+    (step_root / "optimizer-state").write_bytes(b"factual-state")
+    path = checkpoint_root / "npa-training-telemetry.jsonl"
+    config = SimpleNamespace(
+        num_train_steps=1_000,
+        batch_size=256,
+        log_interval=1,
+        save_interval=1_000,
+    )
+    journal = full_droid._TrainingTelemetryJournal(
+        path, run_id="operator-pause", config=config
+    )
+    for step in range(1_000):
+        journal.record_metrics(
+            step=step,
+            values={"loss": 1.0, "grad_norm": 0.2, "param_norm": 10.0},
+            learning_rate=1e-5,
+        )
+    journal.record_checkpoint(step=999, event="save_requested")
+    full_droid._write_checkpoint_completion_marker(
+        checkpoint_root, step=999, run_id="operator-pause"
+    )
+    journal.record_checkpoint(step=999, event="materialized")
+    journal.close()
+
+    evidence = full_droid._validate_operator_pause(
+        checkpoint_root=checkpoint_root,
+        telemetry_path=path,
+        run_id="operator-pause",
+        updates=1_000,
+    )
+
+    assert evidence["completed_updates"] == 1_000
+    assert evidence["first_optimizer_step"] == 0
+    assert evidence["last_optimizer_step"] == 999
+    assert evidence["metric_record_count"] == 1_000
+    assert evidence["checkpoint_completion_marker"] is True
+
+
+def test_operator_pause_fails_closed_when_update_coverage_has_a_gap(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "telemetry.jsonl"
+    config = SimpleNamespace(
+        num_train_steps=1_000,
+        batch_size=256,
+        log_interval=1,
+        save_interval=1_000,
+    )
+    journal = full_droid._TrainingTelemetryJournal(
+        path, run_id="operator-pause-gap", config=config
+    )
+    journal.record_metrics(
+        step=999,
+        values={"loss": 1.0, "grad_norm": 0.2, "param_norm": 10.0},
+        learning_rate=1e-5,
+    )
+    journal.close()
+
+    with pytest.raises(
+        full_droid.OpenPIPipelineError,
+        match="does not prove updates 0 through 999",
+    ):
+        full_droid._validate_operator_pause(
+            checkpoint_root=tmp_path,
+            telemetry_path=path,
+            run_id="operator-pause-gap",
+            updates=1_000,
+        )
 
 
 def test_telemetry_resume_deduplicates_without_inventing_cross_segment_timing(
@@ -858,6 +938,55 @@ def test_milestone_manifest_hashes_rrd_and_journal() -> None:
     ).hexdigest()
     assert value["rrd"]["sha256"] == "a" * 64
     assert value["source_telemetry_sha256"] == "b" * 64
+
+
+def test_operator_pause_milestone_is_checkpointed_at_optimizer_step_999(
+    tmp_path: Path,
+) -> None:
+    publisher = full_droid._TrainingMilestonePublisher(
+        journal_path=tmp_path / "telemetry.jsonl",
+        run_id="pause-mapping",
+        kind="full",
+        config=SimpleNamespace(),
+        prepared={},
+        runtime_image="ghcr.io/example/openpi@sha256:" + "a" * 64,
+        hardware={},
+        topology=[],
+        rrd_root_uri="s3://example.invalid/private/rrd",
+        pause_after_updates=1_000,
+    )
+
+    assert publisher.milestones == {1_000: 999}
+    assert publisher.is_log_only(999) is False
+    assert publisher.requires_checkpoint(999) is True
+
+
+def test_train_parser_exposes_only_the_explicit_pause_boundary() -> None:
+    parser = full_droid.build_parser()
+    args = parser.parse_args(
+        [
+            "train",
+            "--runtime-image",
+            "ghcr.io/example/openpi@sha256:" + "a" * 64,
+            "--experiment",
+            "pause-parser",
+            "--prepare-uri",
+            "s3://example.invalid/private/prepare.json",
+            "--output-uri",
+            "s3://example.invalid/private/paused.json",
+            "--checkpoint-uri",
+            "s3://example.invalid/private/checkpoint",
+            "--telemetry-uri",
+            "s3://example.invalid/private/telemetry.jsonl",
+            "--rrd-root-uri",
+            "s3://example.invalid/private/rrd",
+            "--run-id",
+            "pause-parser",
+            "--pause-after-updates",
+            "1000",
+        ]
+    )
+    assert args.pause_after_updates == 1_000
 
 
 def test_training_rrd_rebuild_has_deterministic_decoded_contract(

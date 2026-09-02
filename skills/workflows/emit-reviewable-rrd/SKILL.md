@@ -86,6 +86,18 @@ trainer numbers updates from zero, keep that factual timeline and state the
 mapping between a human-facing completed-update milestone and its final source
 step instead of inventing a future timeline row.
 
+An operator-requested pause is different from an early log-only review point.
+At the exact completed-update boundary, wait for the trainer's checkpoint
+manager, require the optimizer-state checkpoint and its atomic completion
+marker, and only then close the factual journal prefix and build the immutable
+RRD. Record the zero-based source-step mapping, the original recipe target, the
+completed and outstanding update counts, `operator_requested_pause`, and the
+next resume step. The paused report must prove checkpoint bytes and readback as
+well as RRD bytes and decoded coverage. A later resume must retain the same run
+and recording identity, restore optimizer state, and verify existing milestone
+RRDs/manifests byte-for-byte instead of rewriting them. Do not call a pause
+full-recipe convergence, final model acceptance, or a failed run.
+
 ## Validate before handoff
 
 Independently validate the uploaded bytes:

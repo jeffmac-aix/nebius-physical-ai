@@ -180,7 +180,7 @@ partial file:
   and normalization complete, with dataset coverage and normalization progress;
 - a separate fixed 100-update qualification emits
   `qualification-step-000100.rrd` from its own journal and checkpoint;
-- full training emits an early, explicitly checkpoint-free
+- full training normally emits an early, explicitly checkpoint-free
   `progress-step-001000.rrd`, then checkpoint-aligned snapshots at 10,000,
   25,000, 50,000, 75,000, and 100,000 completed updates.
 
@@ -201,9 +201,18 @@ caches and checkpoints. It is an operator-created run resource, supplied through
 `--var durable_pvc=<claim>`, and is not committed with a live infrastructure
 identity. A replacement pod sees the same dataset and checkpoint directory;
 the wrapper selects upstream `resume=True` only when a checkpoint is actually
-present. It never reduces the upstream step count.
+present. The reference workflow defaults to the complete 100,000-update recipe
+with `pause_after_updates: "0"`. The only supported nonzero value is an explicit
+operator-requested pause after 1,000 completed updates. That run-scoped override
+uses optimizer steps 0 through 999, logs every update, waits for the ordinary
+upstream final-save callback and Orbax manager, writes the atomic completion
+marker, and publishes a checkpoint-required `progress-step-001000.rrd` plus a
+content-hashed paused report. It reports 99,000 updates outstanding and never
+claims convergence. Re-running with zero, the same run id, durable PVC, and
+artifact prefix restores optimizer state and continues at step 1,000 without
+rewriting the immutable pause recording or manifest.
 
-Success requires all of the following machine evidence in the run-scoped report:
+Full-recipe success requires all of the following machine evidence in the run-scoped report:
 eight matching physical devices on eight distinct nodes, the exact one-by-eight mesh, byte-and-object
 agreement with the authoritative GCS listing after checksum sync, normalization
 statistics, normal return from the pinned upstream trainer, the final upstream
@@ -214,6 +223,13 @@ identity/timeline/entity inspection, journal-coverage comparison, and manifest
 hash validation. The telemetry journals, exact RRD URIs, and companion manifests
 are declared run outputs so artifact discovery can find them.
 Offline training does not by itself claim physical-robot task success.
+
+For an explicit 1,000-update pause, the terminal status is `paused`, not
+`passed`. Acceptance requires exact journal coverage for optimizer steps
+0–999, the finalized step-999 checkpoint and completion marker, checkpoint
+upload/download hash agreement, decoded RRD coverage through step 999, the
+write-once milestone manifest, and a content-hashed paused report carrying the
+`operator_requested_pause` limitation and resume-next-step contract.
 
 Validate the production spec locally:
 
