@@ -8,7 +8,7 @@ FROM ${BASE_IMAGE}
 ARG NPA_SOURCE_SHA
 ARG COSMOS3_RAY_SERVE_VERSION=ray1-cu130
 ARG COSMOS3_REF=5e67049cd94acb667786f1e6dd0dab821cb90c97
-ARG COSMOS3_RAY_VERSION=2.46.0
+ARG COSMOS3_RAY_VERSION=2.52.0
 # Exact Ubuntu Noble security build that fixes the parent image's known
 # linux-libc-dev critical findings. This package is compile-time headers only;
 # the workload still uses the host's managed kernel and NVIDIA driver.
@@ -45,6 +45,7 @@ RUN apt-get update \
        "linux-libc-dev=${LINUX_LIBC_DEV_VERSION}" \
     && dpkg --purge --force-depends linux-libc-dev \
     && rm -rf /var/lib/apt/lists/* \
+    && rm -rf /opt/nvidia/nsight-compute \
     && mkdir -p /outputs /tmp/ray \
     && chown ubuntu:ubuntu /outputs /tmp/ray
 USER ubuntu
