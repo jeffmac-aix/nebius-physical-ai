@@ -405,6 +405,41 @@ def test_prepare_report_preserves_filter_dictionary_lineage(
     )
 
 
+def test_normalization_batch_tracker_excludes_unwrapped_progress() -> None:
+    observed: list[int] = []
+    tracker = full_droid._FactualNormalizationBatchTracker(  # noqa: SLF001
+        3, observed.append
+    )
+
+    assert list(range(95_658))[-1] == 95_657
+    assert tracker.processed_batches == 0
+    assert list(tracker.wrap(["batch-1", "batch-2", "batch-3"])) == [
+        "batch-1",
+        "batch-2",
+        "batch-3",
+    ]
+    tracker.assert_complete()
+    assert observed == [1, 2, 3]
+
+
+def test_normalization_batch_tracker_fails_closed_on_partial_or_reuse() -> None:
+    tracker = full_droid._FactualNormalizationBatchTracker(  # noqa: SLF001
+        2, lambda _batch: None
+    )
+    iterator = tracker.wrap(["only-batch"])
+    assert list(iterator) == ["only-batch"]
+    with pytest.raises(
+        full_droid.OpenPIPipelineError,
+        match="pinned number of factual batches",
+    ):
+        tracker.assert_complete()
+    with pytest.raises(
+        full_droid.OpenPIPipelineError,
+        match="constructed more than once",
+    ):
+        list(tracker.wrap(["unexpected-retry"]))
+
+
 def _telemetry_config() -> SimpleNamespace:
     return SimpleNamespace(
         num_train_steps=2,

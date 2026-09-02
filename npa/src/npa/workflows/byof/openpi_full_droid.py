@@ -588,6 +588,33 @@ def _record_dataset_verification_once(
     )
 
 
+class _FactualNormalizationBatchTracker:
+    """Count only batches yielded by the pinned normalization loader."""
+
+    def __init__(self, expected_batches: int, on_batch) -> None:
+        self.expected_batches = expected_batches
+        self.on_batch = on_batch
+        self.processed_batches = 0
+        self._wrapped = False
+
+    def wrap(self, loader):
+        if self._wrapped:
+            raise OpenPIPipelineError(
+                "normalization loader was constructed more than once"
+            )
+        self._wrapped = True
+        for batch in loader:
+            self.processed_batches += 1
+            self.on_batch(self.processed_batches)
+            yield batch
+
+    def assert_complete(self) -> None:
+        if not self._wrapped or self.processed_batches != self.expected_batches:
+            raise OpenPIPipelineError(
+                "normalization did not consume the pinned number of factual batches"
+            )
+
+
 def _compute_norm_stats(
     config: object, repo_root: Path, *, run_id: str, journal_path: Path
 ) -> dict[str, object]:
@@ -602,6 +629,26 @@ def _compute_norm_stats(
         if journal_path.is_file()
         else []
     )
+    completed = [
+        record
+        for record in records
+        if record.get("record_type") == "normalization_complete"
+        and record.get("normalization_batch") == expected_batches
+    ]
+    if stats_path.is_file() and not completed:
+        # A prior interrupted attempt may have written numerical output before
+        # its factual coverage checks ran. Preserve those bytes for private
+        # diagnosis, but never accept or overwrite an unlinked result.
+        digest = hashlib.sha256(stats_path.read_bytes()).hexdigest()
+        quarantine = stats_path.with_name(f"norm_stats.unverified.{digest}.json")
+        if quarantine.exists() and quarantine.read_bytes() != stats_path.read_bytes():
+            raise OpenPIPipelineError(
+                "normalization quarantine collision has different bytes"
+            )
+        if not quarantine.exists():
+            stats_path.replace(quarantine)
+        else:
+            stats_path.unlink()
     normalization_attempt = 1 + max(
         (
             int(record.get("normalization_attempt", 0))
@@ -619,68 +666,102 @@ def _compute_norm_stats(
         original = openpi_config.get_config
         processed_batches = 0
         started = time.perf_counter()
-        tqdm_module = None
-        original_tqdm = None
+        create_rlds_dataloader = None
+        original_create_rlds_dataloader = None
+        target_loader_calls = 0
+
+        def record_progress(batch: int) -> None:
+            nonlocal processed_batches
+            processed_batches = batch
+            if processed_batches % 1_000 == 0:
+                elapsed = time.perf_counter() - started
+                _append_jsonl(
+                    journal_path,
+                    {
+                        "schema": PREPARATION_TELEMETRY_SCHEMA,
+                        "run_id": run_id,
+                        "record_type": "normalization_progress",
+                        "normalization_attempt": normalization_attempt,
+                        "normalization_batch": processed_batches,
+                        "frames_processed": processed_batches
+                        * int(config.batch_size),
+                        "elapsed_seconds": elapsed,
+                        "frames_per_second": (
+                            processed_batches * int(config.batch_size) / elapsed
+                        ),
+                    },
+                )
+
+        tracker = _FactualNormalizationBatchTracker(
+            expected_batches, record_progress
+        )
         try:
             openpi_config.get_config = lambda name: (
                 config if name == CONFIG_NAME else original(name)
             )
             exec(compile(module_path.read_bytes(), str(module_path), "exec"), namespace)  # noqa: S102
-            tqdm_module = namespace["tqdm"]
-            original_tqdm = tqdm_module.tqdm
+            create_rlds_dataloader = namespace["create_rlds_dataloader"]
+            original_create_rlds_dataloader = create_rlds_dataloader
 
-            def tracking_tqdm(iterable, *positional, **keywords):
-                nonlocal processed_batches
-                for batch in original_tqdm(iterable, *positional, **keywords):
-                    processed_batches += 1
-                    if processed_batches % 1_000 == 0:
-                        elapsed = time.perf_counter() - started
-                        _append_jsonl(
-                            journal_path,
-                            {
-                                "schema": PREPARATION_TELEMETRY_SCHEMA,
-                                "run_id": run_id,
-                                "record_type": "normalization_progress",
-                                "normalization_attempt": normalization_attempt,
-                                "normalization_batch": processed_batches,
-                                "frames_processed": processed_batches
-                                * int(config.batch_size),
-                                "elapsed_seconds": elapsed,
-                                "frames_per_second": (
-                                    processed_batches
-                                    * int(config.batch_size)
-                                    / elapsed
-                                ),
-                            },
-                        )
-                    yield batch
+            def tracking_create_rlds_dataloader(*args, **kwargs):
+                nonlocal target_loader_calls
+                loader, num_batches = original_create_rlds_dataloader(
+                    *args, **kwargs
+                )
+                target_loader_calls += 1
+                if target_loader_calls != 1 or num_batches != expected_batches:
+                    raise OpenPIPipelineError(
+                        "pinned normalization loader contract changed"
+                    )
 
-            tqdm_module.tqdm = tracking_tqdm
+                return tracker.wrap(loader), num_batches
+
+            namespace["create_rlds_dataloader"] = tracking_create_rlds_dataloader
             namespace["main"](CONFIG_NAME, max_frames=NORM_MAX_FRAMES)  # type: ignore[operator]
+            if target_loader_calls != 1:
+                raise OpenPIPipelineError(
+                    "pinned normalization loader contract changed"
+                )
+            tracker.assert_complete()
+            elapsed = time.perf_counter() - started
+            _append_jsonl(
+                journal_path,
+                {
+                    "schema": PREPARATION_TELEMETRY_SCHEMA,
+                    "run_id": run_id,
+                    "record_type": "normalization_complete",
+                    "normalization_attempt": normalization_attempt,
+                    "normalization_batch": processed_batches,
+                    "frames_processed": processed_batches * int(config.batch_size),
+                    "elapsed_seconds": elapsed,
+                    "frames_per_second": (
+                        processed_batches * int(config.batch_size) / elapsed
+                    ),
+                },
+            )
+        except Exception as exc:
+            _append_jsonl(
+                journal_path,
+                {
+                    "schema": PREPARATION_TELEMETRY_SCHEMA,
+                    "run_id": run_id,
+                    "record_type": "normalization_incomplete",
+                    "normalization_attempt": normalization_attempt,
+                    "normalization_batch": processed_batches,
+                    "frames_processed": processed_batches * int(config.batch_size),
+                    "failure_type": type(exc).__name__,
+                },
+            )
+            raise
         finally:
             openpi_config.get_config = original
-            if tqdm_module is not None and original_tqdm is not None:
-                tqdm_module.tqdm = original_tqdm
-        if processed_batches != expected_batches:
-            raise OpenPIPipelineError(
-                "normalization did not consume the pinned number of factual batches"
-            )
-        elapsed = time.perf_counter() - started
-        _append_jsonl(
-            journal_path,
-            {
-                "schema": PREPARATION_TELEMETRY_SCHEMA,
-                "run_id": run_id,
-                "record_type": "normalization_complete",
-                "normalization_attempt": normalization_attempt,
-                "normalization_batch": processed_batches,
-                "frames_processed": processed_batches * int(config.batch_size),
-                "elapsed_seconds": elapsed,
-                "frames_per_second": (
-                    processed_batches * int(config.batch_size) / elapsed
-                ),
-            },
-        )
+            if (
+                create_rlds_dataloader is not None
+                and original_create_rlds_dataloader is not None
+            ):
+                namespace["create_rlds_dataloader"] = (
+                    original_create_rlds_dataloader
+                )
         records = _load_preparation_telemetry(journal_path, run_id=run_id)
     if not stats_path.is_file():
         raise OpenPIPipelineError("normalization statistics were not materialized")
