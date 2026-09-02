@@ -39,6 +39,12 @@ COPY --chown=ubuntu:ubuntu docker/workbench/lerobot-policy/requirements.txt /tmp
 # FFmpeg-4 variant crashes with torch 2.12 (ABI mismatch).  Install FFmpeg 8
 # shared libraries from the official BtbN build so torchcodec 0.16.0 can find
 # its matching shared libraries.
+#
+# The imageio-ffmpeg wheel bundles a GPL/BSD-3-licensed static FFmpeg binary
+# whose licensing is incompatible with public redistribution.  Remove it inside
+# this same RUN layer so that the OCI history never records the forbidden bytes;
+# a later RUN with a whiteout delete would leave the payload reachable in an
+# earlier layer.  LeRobot uses the system ffmpeg provided by apt instead.
 RUN python3.12 -m venv /opt/lerobot/venv \
     && /opt/lerobot/venv/bin/python -m pip install --upgrade pip setuptools wheel \
     && /opt/lerobot/venv/bin/pip install --no-cache-dir -r /tmp/npa-lerobot-policy-requirements.txt \
@@ -47,7 +53,11 @@ RUN python3.12 -m venv /opt/lerobot/venv \
       "torchvision==0.27.1" \
       "diffusers>=0.38.0" \
       "torchcodec>=0.16.0" \
-    && /opt/lerobot/venv/bin/pip uninstall -y wandb
+    && /opt/lerobot/venv/bin/pip uninstall -y wandb \
+    && find /opt/lerobot/venv -type f -path '*/imageio_ffmpeg/binaries/ffmpeg*' -delete \
+    && export IMAGEIO_FFMPEG_EXE=/usr/bin/ffmpeg \
+    && test "$(/opt/lerobot/venv/bin/python -c 'import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())')" = /usr/bin/ffmpeg \
+    && test -z "$(find /opt/lerobot/venv -type f -path '*/imageio_ffmpeg/binaries/ffmpeg*' -print -quit)"
 
 USER root
 
@@ -82,14 +92,6 @@ RUN apt-get update \
       xz-utils \
     && dpkg --purge --force-depends linux-libc-dev \
     && rm -rf /var/lib/apt/lists/*
-
-# The imageio-ffmpeg wheel bundles a static FFmpeg executable whose licensing
-# (GPL) is incompatible with public redistribution.  Remove it; LeRobot uses
-# the system ffmpeg provided by apt instead (the same approach cosmos3 uses).
-RUN find /opt/lerobot/venv -type f -path '*/imageio_ffmpeg/binaries/ffmpeg*' -delete \
-    && export IMAGEIO_FFMPEG_EXE=/usr/bin/ffmpeg \
-    && test "$(/opt/lerobot/venv/bin/python -c 'import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())')" = /usr/bin/ffmpeg \
-    && test -z "$(find /opt/lerobot/venv -type f -path '*/imageio_ffmpeg/binaries/ffmpeg*' -print -quit)"
 
 USER ubuntu
 
