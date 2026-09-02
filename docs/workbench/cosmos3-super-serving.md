@@ -337,6 +337,27 @@ be labeled with its own immutable image/model pins and derived from its own
 per-attempt records. These figures establish technical validity and transport
 throughput only; they do not measure semantic quality or human acceptance.
 
+### Live B200 reproduction (2026-09-02)
+
+An operator-private wrapper at digest
+`sha256:df755667ee290717f843b4f565be487787ea5297a85d262317c274f894085a68`
+completed the full primary sweep against model snapshot
+`e0262be9d8f7586bc24c069a2aed2b665bdff266`. The access-controlled durable
+report contains all per-attempt records and MP4s; no live infrastructure
+identifier or generated media is committed here.
+
+| Arrangement | Live mean latency | Live valid video-s/node-hour | Valid requests | Shared window |
+| --- | ---: | ---: | ---: | ---: |
+| 1x8 | 71.4 s | 396.9 | 24/24 | 1714.096 s |
+| 2x4 | 123.6 s | 456.9 | 24/24 | 1489.307 s |
+| 4x2 | 215.0 s | 523.7 | 24/24 | 1299.305 s |
+| 8x1 | 382.1 s | 582.3 | 24/24 | 1168.494 s |
+
+All 96 requests returned HTTP 200 and non-empty, hashed MP4s. Every clip passed
+full 189-frame decode, 1280x720 at 24 fps, blank-frame, and frozen/basic-motion
+checks. The live result reproduces the reference ordering: smaller independent
+services increase node throughput while increasing request latency.
+
 ## Historical baseline (quarantined predecessor; not release evidence)
 
 The measurements below describe the former vendor-based image only. That image
