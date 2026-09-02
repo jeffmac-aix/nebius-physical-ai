@@ -1330,3 +1330,7 @@ def test_default_npa_setup_has_optin_source_overlay() -> None:
     assert "/tmp/npa-src-overlay" in setup
     # Installs route through the PEP 668-tolerant helper (see npa_pip_install).
     assert "npa_pip_install -e /tmp/npa-src-overlay --no-deps" in setup
+    assert "using verified source-only npa overlay" in setup
+    assert setup.index("PYTHONPATH=/tmp/npa-src-overlay/src") < setup.index(
+        "npa_pip_install -e /tmp/npa-src-overlay --no-deps"
+    )
