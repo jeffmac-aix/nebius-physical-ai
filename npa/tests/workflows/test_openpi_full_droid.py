@@ -566,6 +566,44 @@ def test_operator_pause_fails_closed_when_update_coverage_has_a_gap(
         )
 
 
+def test_checkpoint_retry_verifies_existing_manifest_without_reupload(
+    monkeypatch, tmp_path: Path
+) -> None:
+    root = tmp_path / "checkpoint"
+    (root / "999").mkdir(parents=True)
+    (root / "999" / "optimizer-state").write_bytes(b"optimizer")
+    records = full_droid._checkpoint_file_records(root)
+    manifest = {
+        "schema": "npa.workbench.openpi.checkpoint-manifest.v1",
+        "root_uri": "s3://example.invalid/private/checkpoint/",
+        "content_manifest_sha256": hashlib.sha256(
+            json.dumps(records, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest(),
+        "file_count": len(records),
+        "total_size_bytes": sum(int(record["size"]) for record in records),
+        "files": records,
+    }
+    monkeypatch.setattr(full_droid, "_uri_exists", lambda _uri: True)
+    monkeypatch.setattr(full_droid, "_read_json_uri", lambda _uri: manifest)
+    monkeypatch.setattr(
+        full_droid,
+        "_download_checkpoint",
+        lambda _uri, _path: manifest,
+    )
+
+    def unexpected_upload(*_args, **_kwargs):
+        raise AssertionError("an immutable checkpoint must not be re-uploaded")
+
+    monkeypatch.setattr(full_droid, "_upload_checkpoint", unexpected_upload)
+
+    assert (
+        full_droid._upload_or_verify_checkpoint(
+            root, "s3://example.invalid/private/checkpoint"
+        )
+        == manifest
+    )
+
+
 def test_telemetry_resume_deduplicates_without_inventing_cross_segment_timing(
     tmp_path: Path,
 ) -> None:

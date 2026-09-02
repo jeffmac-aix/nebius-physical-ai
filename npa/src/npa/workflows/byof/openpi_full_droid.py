@@ -2412,6 +2412,8 @@ def _validate_operator_pause(
 ) -> dict[str, object]:
     if updates != OPERATOR_PAUSE_UPDATES:
         raise OpenPIPipelineError("unsupported operator pause boundary")
+    if not checkpoint_root.is_dir():
+        raise OpenPIPipelineError("operator pause checkpoint root is absent")
     final_step = updates - 1
     records = _load_telemetry_records(telemetry_path, run_id=run_id)
     metric_steps = [
@@ -2458,6 +2460,55 @@ def _validate_operator_pause(
         "telemetry_sha256": hashlib.sha256(telemetry_path.read_bytes()).hexdigest(),
         "checkpoint_completion_marker": True,
     }
+
+
+def _checkpoint_file_records(local_root: Path) -> list[dict[str, object]]:
+    records: list[dict[str, object]] = []
+    for path in sorted(item for item in local_root.rglob("*") if item.is_file()):
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        records.append(
+            {
+                "path": path.relative_to(local_root).as_posix(),
+                "size": path.stat().st_size,
+                "sha256": digest.hexdigest(),
+            }
+        )
+    return records
+
+
+def _upload_or_verify_checkpoint(
+    local_root: Path, output_uri: str
+) -> dict[str, object]:
+    manifest_uri = output_uri.rstrip("/") + "/manifest.json"
+    if not _uri_exists(manifest_uri):
+        manifest = _upload_checkpoint(local_root, output_uri)
+    else:
+        manifest = _read_json_uri(manifest_uri)
+    with tempfile.TemporaryDirectory(prefix="npa-openpi-checkpoint-readback-") as tmp:
+        verified = _download_checkpoint(output_uri, Path(tmp) / "checkpoint")
+    if verified != manifest:
+        raise OpenPIPipelineError("checkpoint readback manifest differs")
+    local_records = _checkpoint_file_records(local_root)
+    canonical = json.dumps(
+        local_records, sort_keys=True, separators=(",", ":")
+    ).encode()
+    if (
+        manifest.get("schema")
+        != "npa.workbench.openpi.checkpoint-manifest.v1"
+        or manifest.get("files") != local_records
+        or manifest.get("file_count") != len(local_records)
+        or manifest.get("total_size_bytes")
+        != sum(int(record["size"]) for record in local_records)
+        or manifest.get("content_manifest_sha256")
+        != hashlib.sha256(canonical).hexdigest()
+    ):
+        raise OpenPIPipelineError(
+            "checkpoint upload does not match durable local optimizer state"
+        )
+    return manifest
 
 
 def _fine_tune(args: argparse.Namespace) -> int:
@@ -2567,16 +2618,7 @@ def _fine_tune(args: argparse.Namespace) -> int:
             run_id=args.run_id,
             updates=pause_after_updates,
         )
-    checkpoint = _upload_checkpoint(checkpoint_root, args.checkpoint_uri)
-    if pause_after_updates:
-        with tempfile.TemporaryDirectory(prefix="npa-openpi-pause-readback-") as tmp:
-            verified_checkpoint = _download_checkpoint(
-                args.checkpoint_uri, Path(tmp) / "checkpoint"
-            )
-        if verified_checkpoint != checkpoint:
-            raise OpenPIPipelineError(
-                "operator pause checkpoint readback manifest differs"
-            )
+    checkpoint = _upload_or_verify_checkpoint(checkpoint_root, args.checkpoint_uri)
     hardware_summary["distinct_nodes"] = len(topology)
     _write_once_or_verify(
         args.telemetry_uri,
