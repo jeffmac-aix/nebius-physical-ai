@@ -697,7 +697,13 @@ def run_launch_transaction(
                 # absence as permission for a second provider submission.
                 reconciliation_sequence = 0
                 while (
-                    after_success.state is ReconciliationState.ABSENT
+                    (
+                        after_success.state is ReconciliationState.ABSENT
+                        or (
+                            after_success.state is ReconciliationState.FOUND
+                            and is_terminal_failure_job_status(after_success.status)
+                        )
+                    )
                     and clock() < deadline
                 ):
                     reconciliation_sequence += 1
