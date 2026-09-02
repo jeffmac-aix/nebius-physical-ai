@@ -809,6 +809,13 @@ def _compute_norm_stats(
 
 def _prepare(args: argparse.Namespace) -> int:
     _require_terms()
+    # Preparation is intentionally CPU-only.  The runtime image also carries
+    # CUDA-enabled JAX for the later qualification/training stages, and JAX's
+    # plugin discovery otherwise calls cuInit while normalization imports the
+    # upstream trainer.  On a CPU Kubernetes pod that fails before the factual
+    # normalization iterator can start.  Scope the platform override to this
+    # preparation process; GPU stages run in separate pods and retain CUDA.
+    os.environ["JAX_PLATFORMS"] = "cpu"
     repo_root = Path(args.repo_root)
     build = _validate_source(repo_root, args.runtime_image)
     work_root = Path(args.work_root)

@@ -369,11 +369,12 @@ def test_prepare_report_preserves_filter_dictionary_lineage(
         },
     )
     monkeypatch.setattr(full_droid, "_configured_upstream", lambda *args: object())
-    monkeypatch.setattr(
-        full_droid,
-        "_compute_norm_stats",
-        lambda *args, **kwargs: {"sha256": "b" * 64},
-    )
+    def fake_compute_norm_stats(*args, **kwargs):
+        del args, kwargs
+        assert os.environ["JAX_PLATFORMS"] == "cpu"
+        return {"sha256": "b" * 64}
+
+    monkeypatch.setattr(full_droid, "_compute_norm_stats", fake_compute_norm_stats)
     monkeypatch.setattr(
         full_droid,
         "_publish_preparation_rrd",
