@@ -341,6 +341,43 @@ def test_filter_dictionary_rejects_malformed_download(
     assert not list(cache.rglob("*.partial"))
 
 
+def test_verified_dataset_resume_revalidates_durable_identity(tmp_path: Path) -> None:
+    work_root = tmp_path / "work"
+    data_root = tmp_path / "data"
+    dataset_root = data_root / "droid" / "1.0.1"
+    dataset_root.mkdir(parents=True)
+    (dataset_root / "part").write_bytes(b"dataset")
+    listing = b"8 2026-01-01T00:00:00Z gs://example/part\n"
+    work_root.mkdir(parents=True)
+    (work_root / "droid-1.0.1-gcs-listing.txt").write_bytes(listing)
+    journal = work_root / "telemetry" / "preparation.jsonl"
+    full_droid._append_jsonl(
+        journal,
+        {
+            "schema": full_droid.PREPARATION_TELEMETRY_SCHEMA,
+            "run_id": "run",
+            "record_type": "dataset_verified",
+            "normalization_batch": 0,
+            "remote_object_count": 1,
+            "local_file_count": 1,
+            "remote_size_bytes": 7,
+            "local_size_bytes": 7,
+            "listing_sha256": hashlib.sha256(listing).hexdigest(),
+            "checksum_verification_seconds": 2.0,
+            "checksum_verification_bytes_per_second": 3.5,
+        },
+    )
+
+    reused = full_droid._reuse_verified_dataset(
+        journal, run_id="run", data_root=data_root, work_root=work_root
+    )
+
+    assert reused is not None
+    assert reused["verification_reused"] is True
+    assert reused["file_count"] == reused["object_count"] == 1
+    assert reused["local_total_size_bytes"] == reused["remote_total_size_bytes"] == 7
+
+
 def test_prepare_report_preserves_filter_dictionary_lineage(
     monkeypatch, tmp_path: Path
 ) -> None:

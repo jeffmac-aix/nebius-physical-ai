@@ -604,6 +604,65 @@ def _record_dataset_verification_once(
     )
 
 
+def _reuse_verified_dataset(
+    journal_path: Path, *, run_id: str, data_root: Path, work_root: Path
+) -> dict[str, object] | None:
+    """Reuse a durable checksum result only after revalidating its local identity."""
+
+    if not journal_path.is_file():
+        return None
+    records = _load_preparation_telemetry(journal_path, run_id=run_id)
+    verified = [
+        record for record in records if record.get("record_type") == "dataset_verified"
+    ]
+    if not verified:
+        return None
+    record = verified[-1]
+    listing_path = work_root / "droid-1.0.1-gcs-listing.txt"
+    if not listing_path.is_file():
+        raise OpenPIPipelineError(
+            "durable dataset verification exists but its source listing is absent"
+        )
+    listing_sha256 = hashlib.sha256(listing_path.read_bytes()).hexdigest()
+    if listing_sha256 != record.get("listing_sha256"):
+        raise OpenPIPipelineError(
+            "durable dataset verification listing identity changed"
+        )
+    started = time.perf_counter()
+    local = _local_inventory(data_root / "droid" / "1.0.1")
+    local_seconds = time.perf_counter() - started
+    if (
+        local["file_count"] != record.get("local_file_count")
+        or local["total_size_bytes"] != record.get("local_size_bytes")
+        or record.get("remote_object_count") != record.get("local_file_count")
+        or record.get("remote_size_bytes") != record.get("local_size_bytes")
+    ):
+        raise OpenPIPipelineError(
+            "durable checksum state no longer matches the local DROID dataset"
+        )
+    return {
+        "uri": DATASET_URI,
+        "version": "1.0.1",
+        "object_count": record["remote_object_count"],
+        "file_count": local["file_count"],
+        "total_size_bytes": local["total_size_bytes"],
+        "remote_total_size_bytes": record["remote_size_bytes"],
+        "local_total_size_bytes": local["total_size_bytes"],
+        "listing_sha256": listing_sha256,
+        "local_path_role": "run_owned_durable_pvc",
+        "verification_reused": True,
+        "verification_source": "durable_factual_preparation_journal",
+        "timings_seconds": {
+            "remote_inventory": 0.0,
+            "checksum_sync": record["checksum_verification_seconds"],
+            "local_inventory": local_seconds,
+        },
+        "checksum_verification_bytes_per_second": record[
+            "checksum_verification_bytes_per_second"
+        ],
+    }
+
+
 class _FactualNormalizationBatchTracker:
     """Count only batches yielded by the pinned normalization loader."""
 
@@ -824,7 +883,12 @@ def _prepare(args: argparse.Namespace) -> int:
     started = time.perf_counter()
     filter_dictionary = _stage_filter_dictionary(args.gsutil, cache_root)
     preparation_journal = work_root / "telemetry" / "preparation.jsonl"
-    dataset = _stage_dataset(args.gsutil, Path(args.data_root), work_root)
+    dataset = _reuse_verified_dataset(
+        preparation_journal,
+        run_id=args.run_id,
+        data_root=Path(args.data_root),
+        work_root=work_root,
+    ) or _stage_dataset(args.gsutil, Path(args.data_root), work_root)
     _record_dataset_verification_once(
         preparation_journal, run_id=args.run_id, dataset=dataset
     )
