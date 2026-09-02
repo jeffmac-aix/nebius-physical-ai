@@ -128,16 +128,18 @@ def super_benchmark(
     output_path: str,
     topologies: str = ",".join(TOPOLOGY_ORDER),
     attempts: int = 24,
+    gpu_family: str = "B200",
     base_port: int = 8100,
     run_id: str = "",
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Run the immutable Cosmos3-Super primary sweep on one eight-GPU B200 node."""
+    """Run the immutable Cosmos3-Super sweep on one eight-GPU B200 or H200 node."""
 
     return run_benchmark(
         output_path=output_path,
         topologies=topologies,
         attempts=attempts,
+        gpu_family=gpu_family,
         base_port=base_port,
         run_id=run_id,
         dry_run=dry_run,

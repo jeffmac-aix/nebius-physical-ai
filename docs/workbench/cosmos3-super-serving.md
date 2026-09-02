@@ -8,9 +8,11 @@ workload that wants many clips pays it over and over.
 This image is the serving half. It loads `nvidia/Cosmos3-Super` once and serves
 an OpenAI-compatible endpoint against resident weights, on one 8-GPU node.
 
-For the fixed public B200 topology benchmark, use the separate production
-workflow
-[`cosmos3-super-b200-benchmark.yaml`](../../npa/workflows/workbench/npa-workflows/cosmos3-super-b200-benchmark.yaml).
+For the fixed public B200 or H200 topology benchmark, use the corresponding
+production workflow:
+[`cosmos3-super-b200-benchmark.yaml`](../../npa/workflows/workbench/npa-workflows/cosmos3-super-b200-benchmark.yaml)
+or
+[`cosmos3-super-h200-benchmark.yaml`](../../npa/workflows/workbench/npa-workflows/cosmos3-super-h200-benchmark.yaml).
 That recipe intentionally runs the upstream `vllm/vllm-omni:cosmos3` image at
 its recorded digest, rather than this NPA bootstrap image, so a new measurement
 preserves the public benchmark's software boundary.
@@ -265,7 +267,7 @@ to 8 concurrent requests are under 10% and nearly all collected at concurrency
 this server above concurrency 2 unless the marginal 9.8% of throughput is worth
 a 7.2x median-latency cost.
 
-## Reproduce the primary B200 topology sweep
+## Reproduce the primary B200 or H200 topology sweep
 
 The Workbench recipe reproduces the methodology documented by the public
 [`cosmos3-super-serving`](https://github.com/stewtong/cosmos3-super-serving)
@@ -273,10 +275,14 @@ record at upstream revision `532bffd4c2b2ec08909a92d5bc0b3bab4e911b2b`.
 NPA reimplements the measurement contract; it does not redistribute the
 upstream repository's code, prompt text, result records, or generated media.
 The artifact-level decision is recorded in
-[`cosmos3-super-b200-benchmark-licensing.json`](../../npa/workflows/workbench/configs/cosmos3-super-b200-benchmark-licensing.json).
+hardware-specific records
+[`cosmos3-super-b200-benchmark-licensing.json`](../../npa/workflows/workbench/configs/cosmos3-super-b200-benchmark-licensing.json)
+and
+[`cosmos3-super-h200-benchmark-licensing.json`](../../npa/workflows/workbench/configs/cosmos3-super-h200-benchmark-licensing.json).
 
-One workflow task reserves a complete eight-GPU B200 node and runs these cells
-sequentially:
+Each recipe reserves one complete homogeneous eight-GPU node and runs these
+cells sequentially. Select the recipe matching the physical GPU; the command
+also verifies the reported GPU family before model access or measurement:
 
 | Arrangement | Service parallelism | Request concurrency | Measured attempts |
 | --- | --- | ---: | ---: |
@@ -300,6 +306,9 @@ npa workbench health preflight --checks hf,s3 --json
 npa workbench health access --capability cosmos3-serving --json
 npa workbench workflow validate-spec \
   npa/workflows/workbench/npa-workflows/cosmos3-super-b200-benchmark.yaml
+# Or validate the H200 recipe:
+npa workbench workflow validate-spec \
+  npa/workflows/workbench/npa-workflows/cosmos3-super-h200-benchmark.yaml
 ```
 
 After reviewing the runtime terms, submit with the run-scoped exact value
@@ -324,18 +333,25 @@ startup, model loading, and warmups are outside the boundary.
 The public record's approximate primary frontier is a comparison target, never
 a value to hard-code or report as a fresh run:
 
-| Arrangement | Reference mean latency | Reference technically valid video-s/node-hour |
-| --- | ---: | ---: |
-| 1x8 | 68.5 s | 413.6 |
-| 2x4 | 121.5 s | 466.3 |
-| 4x2 | 212.4 s | 529.0 |
-| 8x1 | 378.1 s | 589.4 |
+| GPU | Arrangement | Reference mean latency | Reference technically valid video-s/node-hour |
+| --- | --- | ---: | ---: |
+| B200 | 1x8 | 68.5 s | 413.6 |
+| B200 | 2x4 | 121.5 s | 466.3 |
+| B200 | 4x2 | 212.4 s | 529.0 |
+| B200 | 8x1 | 378.1 s | 589.4 |
+| H200 | 1x8 | 123.3 s | 229.9 |
+| H200 | 2x4 | 230.0 s | 245.6 |
+| H200 | 4x2 | 416.5 s | 271.4 |
+| H200 | 8x1 | 779.0 s | 289.1 |
 
 The expected operational ordering is higher node throughput from more,
 smaller services at the cost of greater per-request latency. A live report must
 be labeled with its own immutable image/model pins and derived from its own
 per-attempt records. These figures establish technical validity and transport
 throughput only; they do not measure semantic quality or human acceptance.
+H200 services set `PYTORCH_ALLOC_CONF=expandable_segments:True` to keep the
+lower-memory TP-1 cell viable at the fixed 720p shape. The B200 recipe does not
+set this allocator override, preserving its existing execution behavior.
 
 ### Live B200 reproduction (2026-09-02)
 

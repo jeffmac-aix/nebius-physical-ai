@@ -36,6 +36,30 @@ def test_plan_pins_primary_contract() -> None:
     assert all(cell["request_concurrency_per_service"] == 1 for cell in plan["topologies"])
     assert all(cell["warmups_per_service"] == 1 for cell in plan["topologies"])
     assert plan["sync_timeout_seconds"] == 5400
+    assert plan["gpu"] == {"family": "B200", "node_gpu_count": 8}
+    assert plan["schema_version"] == benchmark.SCHEMA_VERSION
+
+
+def test_h200_plan_changes_only_hardware_identity() -> None:
+    b200 = benchmark.benchmark_plan(
+        output_path="s3://example-bucket/b200/", topologies="1x8,2x4,4x2,8x1"
+    )
+    h200 = benchmark.benchmark_plan(
+        output_path="s3://example-bucket/h200/",
+        topologies="1x8,2x4,4x2,8x1",
+        gpu_family="h200",
+    )
+    assert h200["gpu"] == {"family": "H200", "node_gpu_count": 8}
+    assert h200["schema_version"] == "npa.cosmos3-super.h200-benchmark.v1"
+    for key in ("model", "runtime_image", "topologies", "workload", "seeds"):
+        assert h200[key] == b200[key]
+
+
+def test_plan_rejects_unqualified_gpu_family() -> None:
+    with pytest.raises(benchmark.Cosmos3SuperBenchmarkError, match="choose from"):
+        benchmark.benchmark_plan(
+            output_path="/tmp/results", topologies="1x8", gpu_family="H100"
+        )
 
 
 def test_plan_rejects_uneven_service_distribution() -> None:

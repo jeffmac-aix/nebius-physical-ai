@@ -2,10 +2,10 @@ apiVersion: npa.workflow/v0.0.1
 kind: Workflow
 
 metadata:
-  name: cosmos3-super-b200-benchmark
+  name: cosmos3-super-h200-benchmark
   description: >-
     Reproduce the public Cosmos3-Super primary serving sweep on one eight-GPU
-    B200 node. Four full-node arrangements run sequentially in the immutable
+    H200 node. Four full-node arrangements run sequentially in the immutable
     vLLM-Omni Cosmos3 image; every service receives one validated warmup before
     a 24-request, concurrency-one measurement cell.
 
@@ -13,17 +13,17 @@ config:
   bucket: example-bucket
   runtime_image: "registry.example.invalid/operator/npa-cosmos3-super-benchmark@sha256:0000000000000000000000000000000000000000000000000000000000000000"
   image_pull_secret: npa-cosmos3-super-registry
-  prefix: "runs/{{run.id}}/cosmos3-super-b200-benchmark"
+  prefix: "runs/{{run.id}}/cosmos3-super-h200-benchmark"
   output_uri: "s3://{{config.bucket}}/{{config.prefix}}/"
   topologies: 1x8,2x4,4x2,8x1
   attempts: "24"
-  gpu_family: B200
+  gpu_family: H200
   base_port: "8100"
 
 resources:
-  b200-node:
+  h200-node:
     cloud: kubernetes
-    accelerators: B200:8
+    accelerators: H200:8
     cpus: 96
     memory: 1400Gi
     image: "{{config.runtime_image}}"
@@ -40,7 +40,7 @@ resources:
                 sizeLimit: 32Gi
           containers:
             # SkyPilot's Kubernetes backend merges overrides into its
-            # generated `ray-node` container by name.  Any other name becomes
+            # generated `ray-node` container by name. Any other name becomes
             # an image-less sidecar and Kubernetes rejects the pod.
             - name: ray-node
               volumeMounts:
@@ -55,8 +55,8 @@ states:
       Start real loopback services on disjoint GPU sets, validate warmups, run
       the fixed BF16 1280x720/189-frame workload, and publish measured evidence.
     toolRef: workbench.cosmos3.super_benchmark
-    resources: b200-node
+    resources: h200-node
     outputs:
       - uri: "{{config.output_uri}}benchmark.json"
-        schema: npa.cosmos3-super.b200-benchmark.v1
+        schema: npa.cosmos3-super.h200-benchmark.v1
     terminal: true

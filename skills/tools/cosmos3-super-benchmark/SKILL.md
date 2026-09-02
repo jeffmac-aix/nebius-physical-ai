@@ -1,15 +1,16 @@
 ---
 name: cosmos3-super-benchmark
-description: Reproduce, operate, validate, or troubleshoot the fixed Cosmos3-Super four-topology serving benchmark on one eight-GPU B200 node through the immutable public vLLM-Omni image.
+description: Reproduce, operate, validate, or troubleshoot the fixed Cosmos3-Super four-topology serving benchmark on one eight-GPU B200 or H200 node through the immutable public vLLM-Omni image.
 ---
 
-# Cosmos3-Super B200 Benchmark
+# Cosmos3-Super B200/H200 Benchmark
 
 Use this skill for the production benchmark in
-`npa/workflows/workbench/npa-workflows/cosmos3-super-b200-benchmark.yaml`.
+`npa/workflows/workbench/npa-workflows/cosmos3-super-b200-benchmark.yaml` or
+`npa/workflows/workbench/npa-workflows/cosmos3-super-h200-benchmark.yaml`.
 It is different from Cosmos Framework native Ray Serve (`cosmos3-ray-serve`):
 this workload runs the public vLLM-Omni synchronous video endpoint and measures
-four independent-service arrangements on one complete B200 node.
+four independent-service arrangements on one complete B200 or H200 node.
 
 ## Fixed contract
 
@@ -42,7 +43,7 @@ Run the exact access gates before provisioning:
 npa/.venv/bin/npa workbench health preflight --checks hf,s3 --json
 npa/.venv/bin/npa workbench health access --capability cosmos3-serving --json
 npa/.venv/bin/npa workbench workflow validate-spec \
-  npa/workflows/workbench/npa-workflows/cosmos3-super-b200-benchmark.yaml
+  npa/workflows/workbench/npa-workflows/cosmos3-super-<gpu>-benchmark.yaml
 ```
 
 The operator must independently review the runtime terms and pass
@@ -55,8 +56,10 @@ clips, or runtime caches.
 Submit the shipped spec through `npa workbench workflow submit`, selecting the
 operator's exact Kubernetes context and bucket. Pass the acceptance value,
 `HF_TOKEN`, and S3 credentials through `--secret-env`; never render their values
-into YAML or logs. The resource profile must remain `B200:8`, must keep the
-32-GiB `/dev/shm`, and must retain the exact external image digest.
+into YAML or logs. Use the recipe for the intended hardware. The resource profile
+must remain `B200:8` or `H200:8`, must keep the 32-GiB `/dev/shm`, and must retain
+the exact external image digest. The H200 path sets PyTorch expandable segments
+for the lower-memory one-GPU service cell; B200 behavior is unchanged.
 
 The command starts services sequentially and refuses to open a cell's measured
 window if any service warmup fails technical validation. It tears down one
@@ -89,5 +92,6 @@ only in access-controlled evidence.
 npa/.venv/bin/python -m pytest \
   npa/tests/workbench/test_cosmos3_super_benchmark.py \
   npa/tests/workflows/test_cosmos3_super_b200_benchmark_workflow.py \
+  npa/tests/workflows/test_cosmos3_super_h200_benchmark_workflow.py \
   npa/tests/cli/test_cosmos3_cli.py -q
 ```

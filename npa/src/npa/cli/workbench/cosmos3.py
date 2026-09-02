@@ -55,19 +55,25 @@ def super_benchmark_cmd(
         help="Comma-separated ordered subset of 1x8,2x4,4x2,8x1.",
     ),
     attempts: int = typer.Option(24, "--attempts", min=1),
+    gpu_family: str = typer.Option(
+        "B200",
+        "--gpu-family",
+        help="Required homogeneous eight-GPU family: B200 or H200.",
+    ),
     base_port: int = typer.Option(8100, "--base-port", min=1024, max=65527),
     run_id: str = typer.Option("", "--run-id"),
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Print the immutable benchmark plan without touching a GPU."
     ),
 ) -> None:
-    """Run the fixed Cosmos3-Super four-topology sweep on one 8xB200 node."""
+    """Run the fixed Cosmos3-Super sweep on one 8xB200 or 8xH200 node."""
 
     try:
         payload = run_super_benchmark(
             output_path=output_path,
             topologies=topologies,
             attempts=attempts,
+            gpu_family=gpu_family,
             base_port=base_port,
             run_id=run_id,
             dry_run=dry_run,

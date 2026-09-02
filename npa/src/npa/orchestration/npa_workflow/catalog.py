@@ -2590,7 +2590,8 @@ TOOL_CATALOG: dict[str, ToolEntry] = {
         access_capabilities=("cosmos3-serving",),
         description=(
             "Run the real fixed Cosmos3-Super primary topology sweep on one "
-            "eight-GPU B200 node, validate every MP4, and publish per-attempt records."
+            "eight-GPU B200 or H200 node, validate every MP4, and publish "
+            "per-attempt records."
         ),
         argv_template=[
             "npa",
@@ -2603,6 +2604,8 @@ TOOL_CATALOG: dict[str, ToolEntry] = {
             "{{config.topologies}}",
             "--attempts",
             "{{config.attempts}}",
+            "--gpu-family",
+            "{{config.gpu_family}}",
             "--base-port",
             "{{config.base_port}}",
             "--run-id",

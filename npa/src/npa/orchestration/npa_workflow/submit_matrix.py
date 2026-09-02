@@ -291,6 +291,21 @@ SUBMIT_LIVE_MATRIX: tuple[SubmitLiveCase, ...] = (
         ),
     ),
     SubmitLiveCase(
+        "cosmos3-super-h200-benchmark.yaml",
+        "gpu",
+        secret_envs=(
+            "HF_TOKEN",
+            "NPA_COSMOS3_ACCEPT_NVIDIA_SOFTWARE_LICENSE",
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+        ),
+        notes=(
+            "Real full-node 8xH200 primary sweep in the same immutable vLLM-Omni "
+            "image: 1x8, 2x4, 4x2, and 8x1 services, 24 validated requests per "
+            "arrangement, and durable MP4/timing/hash evidence."
+        ),
+    ),
+    SubmitLiveCase(
         "cosmos3-ray-batch.yaml",
         "cpu",
         secret_envs=(

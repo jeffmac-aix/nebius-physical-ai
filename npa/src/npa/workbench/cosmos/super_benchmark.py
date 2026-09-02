@@ -1,4 +1,4 @@
-"""Reproducible single-node B200 serving benchmark for Cosmos3-Super.
+"""Reproducible single-node B200/H200 serving benchmark for Cosmos3-Super.
 
 The benchmark runs inside the immutable public vLLM-Omni Cosmos3 image.  It
 starts independent loopback services on disjoint GPU sets, validates one warmup
@@ -33,6 +33,7 @@ from npa.clients.storage import StorageClient
 
 SCHEMA_VERSION = "npa.cosmos3-super.b200-benchmark.v1"
 ATTEMPT_SCHEMA_VERSION = "npa.cosmos3-super.b200-attempt.v1"
+SUPPORTED_GPU_FAMILIES = ("B200", "H200")
 MODEL_ID = "nvidia/Cosmos3-Super"
 MODEL_REVISION = "e0262be9d8f7586bc24c069a2aed2b665bdff266"
 IMAGE = (
@@ -118,10 +119,30 @@ def parse_topologies(value: str | Sequence[str]) -> tuple[str, ...]:
     return selected
 
 
+def _normalize_gpu_family(value: str) -> str:
+    family = value.strip().upper()
+    if family not in SUPPORTED_GPU_FAMILIES:
+        raise Cosmos3SuperBenchmarkError(
+            f"unsupported GPU family {value!r}; choose from "
+            f"{', '.join(SUPPORTED_GPU_FAMILIES)}"
+        )
+    return family
+
+
+def _schema_version(gpu_family: str, *, attempt: bool = False) -> str:
+    suffix = "attempt" if attempt else "benchmark"
+    return f"npa.cosmos3-super.{gpu_family.lower()}-{suffix}.v1"
+
+
 def benchmark_plan(
-    *, output_path: str, topologies: str | Sequence[str], attempts: int = 24
+    *,
+    output_path: str,
+    topologies: str | Sequence[str],
+    attempts: int = 24,
+    gpu_family: str = "B200",
 ) -> dict[str, Any]:
     selected = parse_topologies(topologies)
+    family = _normalize_gpu_family(gpu_family)
     if attempts < 1:
         raise Cosmos3SuperBenchmarkError("attempts must be positive")
     for name in selected:
@@ -135,11 +156,11 @@ def benchmark_plan(
             "output_path must be an s3:// URI or absolute local directory"
         )
     return {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": _schema_version(family),
         "status": "planned",
         "model": {"id": MODEL_ID, "revision": MODEL_REVISION},
         "runtime_image": IMAGE,
-        "gpu": {"family": "B200", "node_gpu_count": 8},
+        "gpu": {"family": family, "node_gpu_count": 8},
         "topologies": [
             {
                 "name": name,
@@ -184,18 +205,20 @@ def _gpu_name() -> str:
     return next(iter(names)) if result.returncode == 0 and len(names) == 1 else ""
 
 
-def _require_b200() -> dict[str, Any]:
+def _require_gpu_family(gpu_family: str) -> dict[str, Any]:
+    family = _normalize_gpu_family(gpu_family)
     count = _visible_gpu_count()
     name = _gpu_name()
     if count != 8:
         raise Cosmos3SuperBenchmarkError(
             f"the benchmark requires exactly 8 visible GPUs; found {count}"
         )
-    if "B200" not in name.upper():
+    if family not in name.upper():
         raise Cosmos3SuperBenchmarkError(
-            f"the benchmark requires B200 GPUs; nvidia-smi reported {name or 'unknown'}"
+            f"the benchmark requires {family} GPUs; "
+            f"nvidia-smi reported {name or 'unknown'}"
         )
-    return {"family": "B200", "node_gpu_count": count}
+    return {"family": family, "node_gpu_count": count}
 
 
 def _load_anchor_prompts() -> tuple[str, str, dict[str, str]]:
@@ -258,7 +281,7 @@ def _ready(url: str) -> bool:
 
 @contextmanager
 def running_services(
-    topology: Topology, *, base_port: int, work_dir: Path
+    topology: Topology, *, base_port: int, work_dir: Path, gpu_family: str = "B200"
 ) -> Iterator[list[str]]:
     processes: list[subprocess.Popen[bytes]] = []
     logs: list[Any] = []
@@ -272,6 +295,8 @@ def running_services(
             env = dict(os.environ)
             env["CUDA_VISIBLE_DEVICES"] = _gpu_set(topology, replica)
             env["VLLM_OMNI_VIDEO_SYNC_TIMEOUT"] = str(SYNC_TIMEOUT_SECONDS)
+            if _normalize_gpu_family(gpu_family) == "H200":
+                env["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
             process = subprocess.Popen(
                 service_command(topology, port=port),
                 env=env,
@@ -471,12 +496,15 @@ def one_attempt(
     replica: int,
     clip_path: Path,
     kind: str,
+    gpu_family: str = "B200",
 ) -> dict[str, Any]:
     body, content_type = _multipart(_request_fields(prompt, negative_prompt, seed))
     started_at = _utc_now()
     started = time.monotonic()
     record: dict[str, Any] = {
-        "schema_version": ATTEMPT_SCHEMA_VERSION,
+        "schema_version": _schema_version(
+            _normalize_gpu_family(gpu_family), attempt=True
+        ),
         "attempt_id": attempt_id,
         "kind": kind,
         "replica": replica,
@@ -577,6 +605,7 @@ def dispatch_cell(
     prompt_hashes: Mapping[str, str],
     clips_dir: Path,
     kind: str,
+    gpu_family: str = "B200",
     attempt_fn: AttemptFn = one_attempt,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     if len(urls) != topology.services:
@@ -609,6 +638,7 @@ def dispatch_cell(
                 replica=replica,
                 clip_path=clips_dir / f"{attempt_id}.mp4",
                 kind=kind,
+                gpu_family=gpu_family,
             )
             completed = time.monotonic()
             with boundary_lock:
@@ -664,11 +694,15 @@ def run_benchmark(
     run_id: str = "",
     dry_run: bool = False,
     storage_client: Any = None,
+    gpu_family: str = "B200",
 ) -> dict[str, Any]:
-    """Run and publish the fixed primary B200 topology sweep."""
+    """Run and publish the fixed primary B200 or H200 topology sweep."""
 
     plan = benchmark_plan(
-        output_path=output_path, topologies=topologies, attempts=attempts
+        output_path=output_path,
+        topologies=topologies,
+        attempts=attempts,
+        gpu_family=gpu_family,
     )
     plan["run_id"] = run_id
     if dry_run:
@@ -678,16 +712,24 @@ def run_benchmark(
             "set NPA_COSMOS3_ACCEPT_NVIDIA_SOFTWARE_LICENSE=YES for this run after "
             "reviewing the vLLM-Omni container's NVIDIA runtime terms"
         )
-    gpu = _require_b200()
+    family = _normalize_gpu_family(gpu_family)
+    gpu = _require_gpu_family(family)
     prompt, negative, prompt_hashes = _load_anchor_prompts()
-    with tempfile.TemporaryDirectory(prefix="npa-cosmos3-super-b200-") as tmp:
+    with tempfile.TemporaryDirectory(
+        prefix=f"npa-cosmos3-super-{family.lower()}-"
+    ) as tmp:
         root = Path(tmp)
         cells: dict[str, Any] = {}
         for name in parse_topologies(topologies):
             topology = TOPOLOGIES[name]
             cell_dir = root / "cells" / name
             log_dir = root / "private-service-logs" / name
-            with running_services(topology, base_port=base_port, work_dir=log_dir) as urls:
+            with running_services(
+                topology,
+                base_port=base_port,
+                work_dir=log_dir,
+                gpu_family=family,
+            ) as urls:
                 warmups, _ = dispatch_cell(
                     topology=topology,
                     urls=urls,
@@ -697,6 +739,7 @@ def run_benchmark(
                     prompt_hashes=prompt_hashes,
                     clips_dir=cell_dir / "warmup-clips",
                     kind="warmup",
+                    gpu_family=family,
                 )
                 if not all(_strict_valid(row) for row in warmups):
                     _write_json(cell_dir / "warmups.json", warmups)
@@ -713,6 +756,7 @@ def run_benchmark(
                     prompt_hashes=prompt_hashes,
                     clips_dir=cell_dir / "clips",
                     kind="production",
+                    gpu_family=family,
                 )
             derived = derive_cell(records, float(window["seconds"]))
             _write_json(cell_dir / "attempts.json", records)
@@ -763,6 +807,7 @@ __all__ = [
     "MODEL_ID",
     "MODEL_REVISION",
     "SCHEMA_VERSION",
+    "SUPPORTED_GPU_FAMILIES",
     "TOPOLOGIES",
     "TOPOLOGY_ORDER",
     "WORKLOAD",

@@ -87,7 +87,7 @@ making architecture, review, or domain judgments.
  Cosmos3-Nano generation through NVIDIA Cosmos Framework's native dynamically
  batched Ray Serve path, with guarded runtime weight fetch and S3 provenance.
 - `skills/tools/cosmos3-super-benchmark/SKILL.md`: reproduce the fixed
- Cosmos3-Super vLLM-Omni primary sweep on one eight-GPU B200 node across the
+ Cosmos3-Super vLLM-Omni primary sweep on one eight-GPU B200 or H200 node across the
  1x8, 2x4, 4x2, and 8x1 arrangements with strict MP4 validity and shared-window
  throughput accounting.
 - `skills/tools/burst/SKILL.md`: one gang-scheduled multi-node GPU job with
