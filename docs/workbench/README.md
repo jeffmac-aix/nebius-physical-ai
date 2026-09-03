@@ -7,6 +7,7 @@ workflows, and operational runbooks.
 
 | Path | Purpose |
 | --- | --- |
+| [intro-for-humans.md](intro-for-humans.md) | Plain-language introduction for a human about to use Workbench: what it is, why it's agent-first, and the main things to ask an agent to run |
 | [getting-started.md](getting-started.md) | Fresh-clone onboarding path for install, credentials, and first Workbench runs |
 | [container-image-catalog.md](container-image-catalog.md) | Verified public GHCR image names, exact published tags, build dates, and capabilities |
 | [container-packaging.md](container-packaging.md) | Container packaging tiers, security baseline, and feature exposure contract |
@@ -40,6 +41,7 @@ workflows, and operational runbooks.
 | Reader | Start with |
 | --- | --- |
 | Salesperson or evaluator | [Workflow catalog](../../npa/workflows/workbench/npa-workflows/README.md) to see what the platform runs |
+| A human new to the platform, before touching a command | [intro-for-humans.md](intro-for-humans.md) |
 | Customer running their first Workbench workload | [getting-started.md](getting-started.md) |
 | Customer or operator using managed Kubernetes | [kubernetes.md](kubernetes.md) |
 | Anyone choosing between CLI, SDK, and YAML | [cli-sdk-yaml-walkthrough.md](cli-sdk-yaml-walkthrough.md) |
