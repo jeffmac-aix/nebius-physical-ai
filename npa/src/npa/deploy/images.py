@@ -51,6 +51,7 @@ CONTAINER_IMAGE_NAMES = {
     "sonic": "npa-sonic",
     "sonic-mujoco": "npa-sonic-mujoco",
     "retargeting": "npa-retargeting",
+    "robocasa": "npa-robocasa",
     "envgen": "npa-envgen",
     "reference-policy": "npa-reference-policy",
     "lerobot-vlm-rl": "npa-lerobot-vlm-rl",
@@ -130,7 +131,7 @@ OMNIVERSE_RESTRICTED_DERIVED_IMAGES = RESTRICTED_DERIVED_IMAGES
 # Remove a tool from this set in the same change that records its accepted image
 # digest and its payload-scan/GPU evidence — not before.
 UNVALIDATED_PUBLICATION_TOOLS: frozenset[str] = frozenset()
-VALIDATION_CANDIDATE_TOOLS: frozenset[str] = frozenset()
+VALIDATION_CANDIDATE_TOOLS: frozenset[str] = frozenset({"robocasa"})
 # Compatibility view used by publication callers and public imports. Derive it
 # from the two canonical validation-state inventories; never maintain it
 # independently.
@@ -208,6 +209,7 @@ SUPPORTED_TOOL_VERSIONS = {
     "sonic": "cuda13-b300-0.1.2-k8s-runtime-sm80-sm90-sm100-sm103-sm120-20260803T034152Z",
     "sonic-mujoco": "0.2.0-runtime",
     "retargeting": "0.1.1",
+    "robocasa": "0.1.0",
     "envgen": "cuda13-b300-0.1.2-sm80-sm90-sm100-sm103-sm120-20260803T034152Z",
     "reference-policy": "cuda13-b300-0.1.2-sm80-sm90-sm100-sm103-sm120-20260803T034152Z",
     "lerobot-vlm-rl": "cuda13-b300-0.1.1-sm80-sm90-sm100-sm103-sm120-20260803T034152Z",

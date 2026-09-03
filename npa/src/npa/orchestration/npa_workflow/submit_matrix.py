@@ -852,6 +852,19 @@ SUBMIT_LIVE_MATRIX: tuple[SubmitLiveCase, ...] = (
         notes="BYOF onboarding flow; covered by test_byof_onboarding_live_e2e.py.",
     ),
     SubmitLiveCase(
+        "robocasa-smoke.yaml",
+        "gpu",
+        plan_only=True,
+        plan_only_justification="npa-robocasa is a validation candidate; its image is not yet built or GPU-validated, so the native RoboCasa smoke cannot submit until the accepted digest and GPU evidence are recorded",
+        notes="Native RoboCasa workbench smoke: task registration, asset availability, EGL reset, random rollout.",
+    ),
+    SubmitLiveCase(
+        "robocasa-data-policy.yaml",
+        "gpu",
+        secret_envs=("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"),
+        notes="Production PandaOmron RoboCasa data->policy pipeline: multi-task trajectory export, LeRobotDataset materialization, real ACT training, disjoint RoboCasa exact-checkpoint evaluation, insights lineage.",
+    ),
+    SubmitLiveCase(
         "byof-openpi.yaml",
         "multi",
         secret_envs=("NPA_OPENPI_ACCEPT_GEMMA_TERMS",),

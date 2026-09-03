@@ -109,7 +109,7 @@ published, and anonymously pullable status for this exact digest only.
 | Cosmos Transfer 2.5 | `npa-cosmos2-transfer` | `2.5.1-skypilot-ready-20260801T053000Z` | 2026-08-03 | Cosmos Transfer 2.5 Sim2Real video augmentation, built from source at an immutable commit with hash-locked dependencies. Gated weights are fetched at runtime with `HF_TOKEN`; baked-byte scans are a release gate. |
 | Foxglove Embed SDK 0.58.0 | `npa-foxglove-embed` | `0.58.0` | 2026-08-03 | Static host for the pinned `@foxglove/embed` browser SDK (MIT) and shared NPA glue module used by the agent UI, on port 8099. Serves operator-mounted MCAP/bag recordings with CORS and byte ranges; the Foxglove app is not redistributed. |
 | Genesis 0.4.6 | `npa-genesis` | `0.4.6`, `cuda13-b300-0.4.6-sm80-sm90-sm100-sm103-sm120-20260803T034152Z` | 2026-08-03 | Genesis physics simulator for interactive simulation and development. It is the base image for the Sim2Real family: environment generation, evaluation, policies, and VLM-RL. |
-| LanceDB 0.30.3 + CLIP | `npa-lancedb` | `0.30.3`, `cuda13-b300-0.30.3-sm80-sm90-sm100-sm103-sm120-20260803T031514Z` | 2026-08-03 | CLIP embedding and LanceDB vector service on port 8686: the query index behind dataset-of-record search. It uses a thin FastAPI layer on the shared CUDA/PyTorch base. |
+| LanceDB 0.30.3 + CLIP | `npa-lancedb` | `0.30.3`, `cuda13-b300-0.30.3-sm80-sm90-sm100-sm103-sm120-20260803T031514Z` | 2026-08-03 | CLIP embedding and LanceDB vector service on port 8686: the query index behind dataset-of-record search. Exact-source builds use a thin FastAPI layer on the shared CUDA/PyTorch base and include the snapshot-pinned non-root SkyPilot Kubernetes bootstrap needed by native insights workflow stages. |
 | LeRobot 0.5.1 | `npa-lerobot` | `0.5.1`, `cuda13-b300-0.5.1-sm80-sm90-sm100-sm103-sm120-20260803T034152Z` | 2026-08-03 | Hugging Face LeRobot training/evaluation service on port 8080 for manipulation policies. Includes CUDA and MuJoCo/EGL headless rendering; checkpoints and job state live on mounted volumes. |
 | LTX-2.5 2.5 | `npa-ltx2` | `2.5-rtfetch-20260817` | 2026-08-17 | Lightricks LTX-2.5 text-to-video, shipped with zero Lightricks bytes: source and gated weights are operator-entitled runtime fetches. The accepted digest passed the exact-layer payload scan, entitlement refusal, and real GPU text-to-video plus decoded-MP4 validation. |
 | LeRobot VLM-RL 0.1.1 | `npa-lerobot-vlm-rl` | `0.1.1`, `cuda13-b300-0.1.1-sm80-sm90-sm100-sm103-sm120-20260803T034152Z` | 2026-08-03 | RL loop in which a VLM supplies reward or shaping signals for LeRobot policies. It is built on the Genesis image so simulation and policy execution share one container. |
@@ -139,6 +139,15 @@ and a successful unauthenticated manifest check; private availability and
 redistribution eligibility are not evidence of publication.
 
 ## Intentionally not published as separate images
+
+- **`npa-robocasa`** is a validation candidate, not yet in the public publishing
+  plan. It is licence-eligible for public redistribution (Apache-2.0 RoboCasa and
+  robosuite), but its built-image payload scan and real GPU capability validation
+  have not yet been recorded, so it is quarantined from `publicly_publishable_tools()`
+  via `VALIDATION_CANDIDATE_TOOLS`. It will gain a public row only when its accepted
+  digest and GPU evidence are recorded.
+  It is a non-root service image with no passwordless-sudo grant; workflow
+  toolRefs call the deployed service from the standard task image.
 
 - **`npa-sim2real-control`** is an internal workflow artifact, not a public-mirror
   tool. Its packaging contract permits redistribution, but it has no entry in

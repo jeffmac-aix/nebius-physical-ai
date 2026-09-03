@@ -469,6 +469,15 @@ def submit_cmd(
             "completed waves do not prove the later attempt ran. Disabled by default."
         ),
     ),
+    adopt_absent_in_flight_outputs: bool = typer.Option(
+        False,
+        "--adopt-absent-in-flight-outputs/--no-adopt-absent-in-flight-outputs",
+        help=(
+            "With --runtime and explicit resume: recover a controller-lost exact "
+            "attempt without resubmission only when its durable ledger reached "
+            "RUNNING and every declared output validates. Disabled by default."
+        ),
+    ),
     poll_seconds: int = typer.Option(
         30,
         "--poll-seconds",
@@ -897,6 +906,11 @@ def submit_cmd(
         return
     if retry_absent_in_flight and not (resume_run or (resume and run_id)):
         _fail("--retry-absent-in-flight requires an explicit --resume-run ID")
+        return
+    if adopt_absent_in_flight_outputs and not (resume_run or (resume and run_id)):
+        _fail(
+            "--adopt-absent-in-flight-outputs requires an explicit --resume-run ID"
+        )
         return
     workflow_identity = ""
     if is_npa_spec:
@@ -1826,6 +1840,7 @@ def submit_cmd(
                 max_concurrency=max_concurrency,
                 resume=resume,
                 retry_absent_in_flight=retry_absent_in_flight,
+                adopt_absent_in_flight_outputs=adopt_absent_in_flight_outputs,
                 preflight_evidence={
                     "exact_image_pull": (
                         "pass" if preflight_images else "unknown"
@@ -2403,6 +2418,7 @@ def _run_npa_workflow_runtime(
     max_concurrency: int,
     resume: bool,
     retry_absent_in_flight: bool,
+    adopt_absent_in_flight_outputs: bool,
     preflight_evidence: Mapping[str, str],
     pre_submit_hook: Callable[[Path], None] | None,
     output_format: "OutputFormat",
@@ -2476,6 +2492,7 @@ def _run_npa_workflow_runtime(
         config_path=config_path,
         resume=resume,
         retry_absent_in_flight=retry_absent_in_flight,
+        adopt_absent_in_flight_outputs=adopt_absent_in_flight_outputs,
         project=project or "default",
         sky_bin=sky_bin,
         credential_resolver=lambda: _resolve_runtime_secret_values(
