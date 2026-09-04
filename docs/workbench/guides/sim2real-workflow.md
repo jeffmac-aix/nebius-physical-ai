@@ -118,7 +118,7 @@ Choose the digest-pinned Isaac image now, then warm a shared RWX cache. The
 template is the authoritative PVC/security/bootstrap contract:
 
 ```bash
-export NPA_ISAAC_IMAGE='<registry>/npa-isaac-lab@sha256:<64-hex>'
+export NPA_ISAAC_IMAGE='ghcr.io/nebius/nebius-physical-ai/npa-isaac-lab@sha256:0a64ffb940a62c639c00a160a21081e7c7200f1d1d740c655616e2c9a967b544'
 sed "s|image: ghcr.io/nebius/nebius-physical-ai/npa-isaac-lab@sha256:<64-hex-digest>|image: ${NPA_ISAAC_IMAGE}|" \
   npa/docker/workbench/common/warm-isaac-cache.yaml | kubectl apply -f -
 kubectl wait --for=condition=complete job/npa-warm-isaac-cache --timeout=-1s
@@ -156,13 +156,13 @@ Put the six references in shell variables, then reproduce the actual manifest
 pulls with the same config used by submit:
 
 ```bash
-export CONTROLLER_IMAGE='<registry>/npa-sim2real-control@sha256:<64-hex>'
-export TRANSFER_IMAGE='<registry>/npa-cosmos2-transfer@sha256:<64-hex>'
-export ENVGEN_IMAGE='<registry>/npa-envgen@sha256:<64-hex>'
+export CONTROLLER_IMAGE='ghcr.io/nebius/nebius-physical-ai/npa-sim2real-control@sha256:7ee326f49cf1a52fc1007dccbac02db7862246ab688bf5ec35ef14a727e33136'
+export TRANSFER_IMAGE='ghcr.io/nebius/nebius-physical-ai/npa-cosmos2-transfer@sha256:47bfe492b6d56f4141f5a6da8accbbdec7cdf2d9b02311c802e3b3b5b1ba5caf'
+export ENVGEN_IMAGE='ghcr.io/nebius/nebius-physical-ai/npa-envgen@sha256:33d49af4703c479a3be71cae6f0a4735ea6f63629b870b946c43929037304f72'
 export ISAAC_IMAGE="${NPA_ISAAC_IMAGE}"
-export VIEWER_IMAGE='<registry>/npa-rerun-viewer@sha256:<64-hex>'
-export SOURCE_SHA='<40-hex-source-sha>'
+export VIEWER_IMAGE='ghcr.io/nebius/nebius-physical-ai/npa-rerun-viewer@sha256:8fc0a76f3df441fd6662e3eb5d893c9996ea66e6c61fcc815de79576f12b8160'
 export SPEC=npa/workflows/workbench/npa-workflows/sim2real.yaml
+export SOURCE_SHA=c164fd3480f8a9ea8f9df9ccb9509502fd527996
 
 npa/.venv/bin/npa workbench workflow preflight-images "${SPEC}" \
   --project "${NPA_PROJECT}" \
@@ -284,7 +284,24 @@ npa/.venv/bin/npa workbench workflow plan-spec "${SPEC}" \
 
 Expected: validation reports valid, and the wave plan shows the 14-stage graph
 with the Stage 4 parallel wave and direct Stage 7 → hosted Stage 8 → Stage 9
-sequence. Then submit through the durable runtime:
+sequence. Render the exact SkyPilot submission plan with the same source and
+image contract before launch:
+
+```bash
+npa/.venv/bin/npa workbench workflow submit "${SPEC}" \
+  --project "${NPA_PROJECT}" --infra "k8s/${NPA_CLUSTER}" \
+  --plan-only --run-id "${RUN_ID}" \
+  --var bucket="${NPA_BUCKET}" \
+  --var source_sha="${SOURCE_SHA}" \
+  --var controller_image="${CONTROLLER_IMAGE}" \
+  --var transfer_image="${TRANSFER_IMAGE}" \
+  --var envgen_image="${ENVGEN_IMAGE}" \
+  --var isaac_image="${ISAAC_IMAGE}" \
+  --var viewer_image="${VIEWER_IMAGE}" \
+  --var isaac_cache_pvc=npa-isaac-cache
+```
+
+Then submit through the durable runtime:
 
 ```bash
 npa/.venv/bin/npa workbench workflow submit "${SPEC}" \
