@@ -140,6 +140,10 @@ redistribution eligibility are not evidence of publication.
 
 ## Intentionally not published as separate images
 
+- **`npa-cosmos3-super-benchmark`** is a restricted, operator-private wrapper
+  around the exact digest-pinned upstream vLLM-Omni benchmark runtime. It adds
+  only the SkyPilot worker bootstrap closure and must be built into the
+  operator's own registry; it is deliberately excluded from the public catalog.
 - **`npa-robocasa`** is a validation candidate, not yet in the public publishing
   plan. It is licence-eligible for public redistribution (Apache-2.0 RoboCasa and
   robosuite), but its built-image payload scan and real GPU capability validation
@@ -148,7 +152,6 @@ redistribution eligibility are not evidence of publication.
   digest and GPU evidence are recorded.
   It is a non-root service image with no passwordless-sudo grant; workflow
   toolRefs call the deployed service from the standard task image.
-
 - **`npa-sim2real-control`** is an internal workflow artifact, not a public-mirror
   tool. Its packaging contract permits redistribution, but it has no entry in
   `CONTAINER_IMAGE_NAMES` and is therefore outside `publicly_publishable_tools()`;

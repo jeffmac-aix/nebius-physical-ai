@@ -337,6 +337,18 @@ images:
       accepted terms, or gated assets. Both gated model repositories are probed
       before the documented 8-GPU service starts.
     redistribution: public
+  cosmos3-super-benchmark:
+    dockerfile: cosmos3-super-benchmark/Dockerfile
+    tier: interactive
+    notes: >-
+      Operator-private SkyPilot wrapper derived from the exact digest-pinned
+      vllm/vllm-omni Cosmos3 benchmark image. It adds only openssh-server,
+      rsync, sudo, a non-root runtime user, and the reviewed SkyPilot bootstrap
+      attestation. The inherited vendor runtime is never published through the
+      NPA public release channel; models remain operator-entitled runtime
+      downloads.
+    redistribution: restricted
+    skypilot_bootstrap_contract: skypilot-0.12.2-v1
   cosmos3-ray-serve:
     dockerfile: cosmos3-ray-serve/Dockerfile
     tier: service

@@ -43,6 +43,7 @@ CONTAINER_IMAGE_NAMES = {
     "cosmos3": "npa-cosmos3",
     "cosmos3-ray-serve": "npa-cosmos3-ray-serve",
     "cosmos3-serving": "npa-cosmos3-serving",
+    "cosmos3-super-benchmark": "npa-cosmos3-super-benchmark",
     "cosmos3-reason": "npa-cosmos3-reason",
     "cosmos-curate": "npa-cosmos-curate",
     "cosmos-evaluator": "npa-cosmos-evaluator",
@@ -77,6 +78,7 @@ SKYPILOT_BOOTSTRAP_ATTESTED_TOOLS: frozenset[str] = frozenset(
         "cosmos2-transfer",
         "cosmos3",
         "cosmos3-reason",
+        "cosmos3-super-benchmark",
         "cosmos-curate",
         "cosmos-evaluator",
         "content-agents",
@@ -108,10 +110,12 @@ def requires_skypilot_bootstrap_runtime_probe(image: str) -> bool:
 
 
 # General public-registry refusal inventories. They intentionally describe the
-# redistribution decision, not a particular vendor payload. Both are empty now:
-# Cosmos3 serving is a zero-payload runtime bootstrap on a public Python base,
-# and sonic-mujoco is rebuilt independently without its quarantined parent.
-RESTRICTED_PUBLICATION_TOOLS: frozenset[str] = frozenset()
+# redistribution decision, not a particular vendor payload. The Cosmos3-Super
+# benchmark wrapper inherits the exact upstream vLLM-Omni runtime and therefore
+# remains build-your-own in an operator-controlled registry.
+RESTRICTED_PUBLICATION_TOOLS: frozenset[str] = frozenset(
+    {"cosmos3-super-benchmark"}
+)
 RESTRICTED_DERIVED_IMAGES: frozenset[str] = frozenset()
 
 # Compatibility exports for installed callers. New code uses the general names.
@@ -206,6 +210,7 @@ SUPPORTED_TOOL_VERSIONS = {
     "cosmos3": "1.2.2-cu130-r6",
     "cosmos3-ray-serve": "ray1-cu130",
     "cosmos3-serving": "0.2.0-oss",
+    "cosmos3-super-benchmark": "0.1.0",
     "cosmos3-reason": "cuda13-b300-3.0.1-sm80-sm90-sm100-sm103-sm120-20260803T034152Z",
     "cosmos-curate": "0.1.2-skypilot-v1-20260813T164700Z",
     "cosmos-evaluator": "0.1.2-skypilot-v1-20260813T164700Z-r2",
